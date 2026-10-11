@@ -18,10 +18,7 @@ class Pay extends Base implements \App\Pay\Pay
      */
     public function trade(): PayEntity
     {
-        $rate = (float)($this->config['rate'] ?? 0);
-        if ($rate <= 0) {
-            throw new JSONException('币安收款未配置汇率');
-        }
+        $rate = Rate::resolve($this->config);
         $minutes = (int)($this->config['timeout'] ?? 0);
         $timeout = ($minutes > 0 ? min($minutes, 180) : 20) * 60;
 

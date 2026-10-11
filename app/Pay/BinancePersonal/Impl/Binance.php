@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace App\Pay\BinancePersonal\Impl;
 
 use App\Pay\PayKit\Http;
+use App\Util\PayConfig;
 use Kernel\Exception\JSONException;
 
 /**
@@ -140,12 +141,29 @@ final class Binance
         $query .= '&signature=' . hash_hmac('sha256', $query, $secret);
         $response = Http::request('GET', self::base($config) . $path . '?' . $query, ['headers' => ['X-MBX-APIKEY' => $key]]);
 
-        $data = Http::json($response['body']);
-        if ($response['status'] !== 200) {
-            //常见：-2015 Key/IP/权限不对，-1021 服务器时间不准
-            throw new JSONException('币安接口错误：' . ($data['msg'] ?? $data['message'] ?? ('HTTP ' . $response['status'])));
+        $data = json_decode($response['body'], true);
+        if ($response['status'] !== 200 || !is_array($data)) {
+            $raw = is_array($data) ? (string)($data['msg'] ?? $data['message'] ?? '') : Http::shorten($response['body']);
+            PayConfig::log('BinancePersonal', 'API', "{$path} HTTP {$response['status']} " . json_encode($data['code'] ?? null) . " {$raw}");
+            throw new JSONException('币安接口错误：' . self::explain($response['status'], is_array($data) ? ($data['code'] ?? null) : null, $raw));
         }
         return $data;
+    }
+
+    /**
+     * 常见错误翻成中文，原文写进插件日志（后台「支付插件 → 日志」可看）
+     */
+    private static function explain(int $status, mixed $code, string $raw): string
+    {
+        return match (true) {
+            $status === 451 => '服务器所在地区被币安限制访问（HTTP 451），请把站点部署在币安提供服务的地区',
+            $code === -2015 => 'API Key、IP 白名单或权限不对（-2015），请确认 Key 已开「允许读取」且白名单里有服务器 IP',
+            $code === -2014 => 'API Key 格式不对（-2014）',
+            $code === -1022 => '签名不对，请检查 Secret Key（-1022）',
+            $code === -1021 => '服务器时间与币安相差太多，请校准服务器时间（-1021）',
+            $status === 429 || $status === 418 => "请求太频繁被币安限流（HTTP {$status}），请稍后再试",
+            default => $raw !== '' ? $raw : "HTTP {$status}",
+        };
     }
 
     private static function base(array $config): string

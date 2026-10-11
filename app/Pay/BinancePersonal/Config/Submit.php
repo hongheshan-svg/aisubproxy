@@ -18,7 +18,7 @@ return [
         'title' => '汇率',
         'name' => 'rate',
         'type' => 'input',
-        'placeholder' => '1 USDT = 多少元，例如 7.20。订单人民币金额除以它、向上取到分，就是买家要付的 USDT',
+        'placeholder' => '留空=自动取实时价；7.20=固定汇率；~1.02=实时价×1.02；+0.05 / -0.05=实时价加减',
     ],
     [
         'title' => '付款时限（分钟）',
@@ -32,6 +32,12 @@ return [
         'name' => 'pay_id',
         'type' => 'input',
         'placeholder' => '用「币安 Pay 转账」时必填：币安 App → 支付 → 收款 页面上的 Pay ID',
+    ],
+    [
+        'title' => '汇率接口',
+        'name' => 'rate_api',
+        'type' => 'input',
+        'placeholder' => '一般留空，即 CoinGecko 的 USDT 人民币价格；服务器连不上 CoinGecko 时可换成返回同样格式的地址',
     ],
     [
         'title' => '接口地址',

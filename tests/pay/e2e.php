@@ -31,6 +31,7 @@ const BINANCE_KEY = 'mock-binance-key';
 const BINANCE_SECRET = 'mock-binance-secret';
 const BINANCE_RATE = 7.2;
 const BINANCE_DIR = BASE . '/runtime/binance-personal';
+const COINGECKO = MOCK . '/coingecko/api/v3/simple/price?ids=tether&vs_currencies=cny';
 
 date_default_timezone_set('Asia/Shanghai'); //与站点一致：要按站点时区改订单的 create_time
 
@@ -148,6 +149,7 @@ function binance_forget(array $tradeNos): void
             @unlink($f);
         }
     }
+    @unlink(BINANCE_DIR . '/rate-' . substr(md5(COINGECKO), 0, 12) . '.json');
 }
 
 if (isset($opts['cleanup'])) {
@@ -192,6 +194,7 @@ function test_member(PDO $pdo, callable $t): array
 @unlink(MOCK_DIR . '/orders.json');
 @unlink(MOCK_DIR . '/cron-state.json');
 @unlink(MOCK_DIR . '/binance.json');
+@unlink(MOCK_DIR . '/coingecko.json');
 [$aliAppPriv, $aliAppPub] = keypair();
 [$aliPlatPriv, $aliPlatPub] = keypair();
 [$wxMchPriv, $wxMchPub] = keypair();
@@ -202,6 +205,7 @@ $keys = [
     'wechat_merchant_public' => $wxMchPub, 'wechat_merchant_serial' => '5157F09EFDC096DE15EBE81A47057A72',
     'wechat_platform_private' => $wxPlatPriv, 'wechat_platform_serial' => 'PUB_KEY_ID_0114232134912410000000000000',
     'wechat_apiv3_key' => 'MockApiV3Key0123456789abcdefABCD',
+    'usdt_token' => 'epusdt_password_mock', 'gm_pid' => '1000', 'gm_secret' => 'gm_secret_mock',
     'binance_key' => BINANCE_KEY, 'binance_secret' => BINANCE_SECRET,
 ];
 file_put_contents(MOCK_DIR . '/keys.json', json_encode($keys));
@@ -217,11 +221,18 @@ $configs = [
     'Wechat' => ['WechatPayV3', ['mchid' => '1900000001', 'appid' => 'wx0000000000000001', 'apiv3_key' => $keys['wechat_apiv3_key'],
         'serial_no' => $keys['wechat_merchant_serial'], 'private_key' => $wxMchPriv, 'wechatpay_public_key' => $wxPlatPub,
         'wechatpay_serial' => $keys['wechat_platform_serial'], 'api_base' => MOCK . '/wechat']],
+    'Usdt' => ['UsdtGateway', ['protocol' => 'epusdt', 'url' => MOCK . '/usdt', 'token' => 'epusdt_password_mock', 'timeout' => '1200']],
+    'GmPay' => ['UsdtGateway', ['protocol' => 'gmpay', 'url' => MOCK . '/usdt', 'token' => 'gm_secret_mock', 'pid' => '1000']],
     'Binance' => ['BinancePersonal', ['api_key' => BINANCE_KEY, 'api_secret' => BINANCE_SECRET, 'rate' => (string)BINANCE_RATE, 'timeout' => '20',
         'pay_id' => '123456789', 'api_base' => MOCK . '/binance']],
     'Binance.badsecret' => ['BinancePersonal', ['api_key' => BINANCE_KEY, 'api_secret' => 'wrong-secret', 'rate' => (string)BINANCE_RATE, 'timeout' => '20',
         'pay_id' => '123456789', 'api_base' => MOCK . '/binance']],
 ];
+// 自动汇率的几种写法，都走模拟的 CoinGecko
+foreach (['auto' => '', 'mul' => '~1.02', 'add' => '+0.1', 'sub' => '-0.1', 'bad' => '7,2'] as $label => $rate) {
+    $configs["Binance.rate.{$label}"] = ['BinancePersonal', ['api_key' => BINANCE_KEY, 'api_secret' => BINANCE_SECRET, 'rate' => $rate, 'timeout' => '20',
+        'pay_id' => '123456789', 'api_base' => MOCK . '/binance', 'rate_api' => COINGECKO]];
+}
 
 // [名称, 配置, code, 呈现方式, 期望内容, 额外检查]
 $scenarios = [
@@ -232,6 +243,8 @@ $scenarios = [
     ['支付宝·手机网站', 'Alipay', 'wap', 'submit', MOCK . '/alipay/gateway.do?charset=utf-8', []],
     ['微信·Native', 'Wechat', 'native', 'qrcode', 'weixin://wxpay/bizpayurl?pr=mock', ['tamper']],
     ['微信·H5', 'Wechat', 'h5', 'jump', 'checkmweb?prepay_id=wxmock', []],
+    ['收U·BEpusdt', 'Usdt', 'usdt.trc20', 'redirect', MOCK . '/usdt/pay/checkout-counter/', ['tamper', 'pending']],
+    ['收U·GM Pay', 'GmPay', 'cashier', 'redirect', MOCK . '/usdt/pay/checkout-counter/', []],
 ];
 
 $tradeVerification = $pdo->query("SELECT value FROM {$t('config')} WHERE `key` = 'trade_verification'")->fetchColumn();
@@ -265,8 +278,12 @@ try {
     $notify = fn(string $no, array $q = []) => json_decode(http('GET', MOCK . '/_mock/notify?' . http_build_query(['order' => $no] + $q))['body'], true) ?: [];
     $acked = fn(array $r) => in_array(trim($r['body'] ?? ''), ['success', '{"code":"SUCCESS","message":"成功"}'], true);
 
-    // 走一遍买家会看到的支付页；$returnPath 不为空时，顺带核对本站收银台「支付完成后返回」的地址。返回本站收银台页面（表单提交方式返回空串）
+    // 走一遍买家会看到的支付页；$returnPath 不为空时，顺带核对本站收银台「支付完成后返回」的地址。返回本站收银台页面（跳转、表单提交方式返回空串）
     $walk = function (string $mode, string $url, string $expect, ?string $returnPath = null): string {
+        if ($mode === 'redirect') {
+            check('跳转到网关收银台', str_starts_with($url, $expect), $url);
+            return '';
+        }
         $page = http('GET', SITE . $url);
         if ($mode === 'submit') {
             preg_match('/<form action="([^"]+)"/', $page['body'], $fm);
@@ -307,7 +324,7 @@ try {
             'epay' => $o['money'],
             'alipay' => $o['total_amount'],
             'wechat' => $o['total'] / 100,
-            default => null,
+            default => $o['amount'],
         };
         check('网关收到金额 ¥' . cents($amount), cents($got) === cents($amount), (string)$got);
         check('通知地址指向本单回调', str_ends_with((string)$o['notify_url'], $callbackPath . $no), (string)$o['notify_url']);
@@ -338,10 +355,20 @@ try {
             if ($handle === 'WechatPayV3') {
                 check('微信验签失败返回 HTTP 500（让微信重试）', ($r['http_code'] ?? 0) === 500, (string)($r['http_code'] ?? ''));
             }
+            if ($handle === 'UsdtGateway') {
+                check('收U验签失败返回 HTTP 500（BEpusdt 只看状态码，回 200 就不重发了）', ($r['http_code'] ?? 0) === 500, (string)($r['http_code'] ?? ''));
+            }
         }
         if (in_array('amount', $extras, true)) {
             $r = $notify($no, ['amount' => '0.01']);
             check('金额不符的通知被拒绝（签名正确）', ($orderRow($no)['status'] ?? null) == 0, substr($r['body'] ?? '', 0, 80));
+        }
+        if (in_array('pending', $extras, true)) {
+            $log = BASE . "/app/Pay/{$handle}/runtime.log";
+            $before = substr_count((string)@file_get_contents($log), '状态验证失败');
+            $r = $notify($no, ['status' => 1]);
+            check('「等待支付」状态推送：回 200、订单不变、不记失败日志', ($r['http_code'] ?? 0) === 200 && ($orderRow($no)['status'] ?? null) == 0
+                && substr_count((string)@file_get_contents($log), '状态验证失败') === $before, "HTTP {$r['http_code']} " . substr($r['body'] ?? '', 0, 80));
         }
 
         $r = $notify($no, in_array('finished', $extras, true) ? ['finished' => 1] : []);
@@ -401,8 +428,8 @@ try {
             $r = $notify($no, ['tamper' => 1]);
             check('篡改签名的通知被拒绝，余额不变', ($rechargeRow($no)['status'] ?? null) == 0 && $gained($before) === '0.00' && !$acked($r),
                 "HTTP {$r['http_code']} " . substr($r['body'] ?? '', 0, 80));
-            if ($handle === 'WechatPayV3') {
-                check('微信验签失败返回 HTTP 500（让微信重试）', ($r['http_code'] ?? 0) === 500, (string)($r['http_code'] ?? ''));
+            if (in_array($handle, ['WechatPayV3', 'UsdtGateway'], true)) {
+                check('验签失败返回 HTTP 500（让网关重发）', ($r['http_code'] ?? 0) === 500, (string)($r['http_code'] ?? ''));
             }
         }
         if (in_array('amount', $extras, true)) {
@@ -473,10 +500,14 @@ try {
     $mockPay = fn(string $no, ?string $amount = null) => http('GET', MOCK . '/_mock/pay?' . http_build_query(['order' => $no] + ($amount === null ? [] : ['amount' => $amount])));
     $mockQueries = fn(string $no) => (int)(((json_decode(http('GET', MOCK . '/_mock/orders')['body'], true) ?: [])[$no] ?? [])['queries'] ?? 0);
     $queryAcked = fn(array $q) => in_array($q['body'], ['success', '{"code":"SUCCESS","message":"成功"}'], true);
+    $querySupported = fn(string $configLabel) => is_file(BASE . '/app/Pay/' . $configs[$configLabel][0] . '/Impl/Query.php');
     $unthrottle();
 
     $throttleTested = false;
     foreach ($scenarios as [$name, $configLabel, $code, $mode, $expect]) {
+        if (!$querySupported($configLabel)) {
+            continue; //收U网关没有按商户单号查单的接口
+        }
         echo "\n▶ 查单 · {$name}\n";
         [$handle] = $configs[$configLabel];
         $payId = $newPay($handle, $code, $configIds[$configLabel]);
@@ -682,6 +713,56 @@ try {
     $payId = $newPay('BinancePersonal', 'trc20', $configIds['Binance.badsecret']);
     $res = $order($payId);
     check('Secret Key 填错：下单时直接报错，不会给出收款地址', ($res['code'] ?? 0) !== 200 && str_contains((string)($res['msg'] ?? ''), '币安接口错误'), (string)($res['msg'] ?? ''));
+
+    echo "\n▶ 币安 · 自动汇率\n";
+    $coingecko = fn(array $q) => json_decode(http('GET', MOCK . '/_mock/coingecko?' . http_build_query($q))['body'], true) ?: [];
+    $rateCache = BINANCE_DIR . '/rate-' . substr(md5(COINGECKO), 0, 12) . '.json';
+    // 下一笔单：返回 [收银台显示的汇率, USDT 金额, 下单失败时的提示]
+    $rateOrder = function (string $configLabel) use ($newPay, $order, $configIds): array {
+        $res = $order($newPay('BinancePersonal', 'trc20', $configIds[$configLabel]));
+        if (($res['code'] ?? 0) !== 200) {
+            return [null, null, (string)($res['msg'] ?? '')];
+        }
+        $body = http('GET', SITE . $res['data']['url'])['body'];
+        preg_match('/1 USDT = ¥([\d.]+)/u', $body, $rm);
+        preg_match('/data-usdt="([^"]*)"/', $body, $um);
+        return [$rm[1] ?? null, $um[1] ?? null, ''];
+    };
+    $atLeast = fn(?string $usdt, float $rate) => $usdt !== null && (float)$usdt >= (float)cents(ceil(round(7 / $rate * 100, 6)) / 100);
+    @unlink($rateCache);
+    $coingecko(['cny' => 7.1]);
+
+    [$rate, $usdt] = $rateOrder('Binance.rate.auto');
+    check("留空：自动取实时价 7.1，¥7 付 {$usdt} USDT", $rate === '7.1' && $atLeast($usdt, 7.1), "汇率 {$rate}");
+    [$rate] = $rateOrder('Binance.rate.mul');
+    check('~1.02：实时价 × 1.02 = 7.242', $rate === '7.242', "汇率 {$rate}");
+    [$rate, , $msg] = $rateOrder('Binance.rate.add');
+    check('+0.1：实时价 + 0.1 = 7.2', $rate === '7.2', "汇率 {$rate} {$msg}");
+    [$rate, , $msg] = $rateOrder('Binance.rate.sub');
+    check('-0.1：实时价 - 0.1 = 7', $rate === '7', "汇率 {$rate} {$msg}");
+
+    $coingecko(['cny' => 7.3]);
+    $calls = (int)($coingecko(['cny' => 7.3])['calls'] ?? 0);
+    [$rate] = $rateOrder('Binance.rate.auto');
+    check('10 分钟内复用缓存的价格，不重复请求', $rate === '7.1' && (int)($coingecko(['cny' => 7.3])['calls'] ?? 0) === $calls, "汇率 {$rate}");
+    @unlink($rateCache);
+    [$rate] = $rateOrder('Binance.rate.auto');
+    check('缓存过期后取到新价格 7.3', $rate === '7.3', "汇率 {$rate}");
+
+    $coingecko(['fail' => 1]);
+    file_put_contents($rateCache, json_encode(['at' => time() - 3600, 'rate' => 7.3])); //把缓存改成 1 小时前取的：过了 10 分钟有效期，但还在 6 小时兜底期内
+    [$rate] = $rateOrder('Binance.rate.auto');
+    check('接口暂时连不上：用 6 小时内取到过的价格', $rate === '7.3', "汇率 {$rate}");
+    @unlink($rateCache);
+    [, , $msg] = $rateOrder('Binance.rate.auto');
+    check('连不上又没有可用的旧价格：拒绝下单并提示改固定汇率', str_contains($msg, '自动获取 USDT 汇率失败'), $msg);
+
+    $coingecko(['cny' => 0.5]);
+    [, , $msg] = $rateOrder('Binance.rate.auto');
+    check('接口返回离谱价格（0.5）：拒绝下单', str_contains($msg, '自动获取 USDT 汇率失败'), $msg);
+    $coingecko(['cny' => 7.1]);
+    [, , $msg] = $rateOrder('Binance.rate.bad');
+    check('汇率写法不对（7,2）：拒绝下单并说明正确写法', str_contains($msg, '汇率格式不正确'), $msg);
 } finally {
     if (!$keep) {
         [$orders, $users] = cleanup($pdo, $t);

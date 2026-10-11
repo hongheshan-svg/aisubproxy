@@ -6,10 +6,11 @@ declare(strict_types=1);
  *
  *   php -S 127.0.0.1:9100 tests/pay/MockGateway.php
  *
- * 模拟易支付、支付宝开放平台、微信支付 APIv3 三类网关：
+ * 模拟易支付、支付宝开放平台、微信支付 APIv3、BEpusdt / GM Pay 四类网关：
  * 校验站点发来的下单请求签名、返回带签名的应答、按各平台格式发送签名正确（或故意篡改）的异步通知，
  * 并提供易支付、支付宝、微信的查单接口（主动查单测试用）；
- * 还模拟币安现货 API 的充值地址、充值记录、Pay 交易记录（币安个人账户收款测试用），到账记录由 /_mock/binance/* 写入。
+ * 还模拟币安现货 API 的充值地址、充值记录、Pay 交易记录（币安个人账户收款测试用），到账记录由 /_mock/binance/* 写入；
+ * 以及 CoinGecko 的 USDT 人民币价格（自动汇率测试用），价格由 /_mock/coingecko 设置。
  * 签名/加密全部独立实现，不引用 app/Pay 下的代码，这样才能交叉验证插件实现是否正确。
  *
  * 密钥与配置由 e2e.php 写入 $MOCK_DIR/keys.json，已收到的下单记录存在 $MOCK_DIR/orders.json。
@@ -247,6 +248,28 @@ if (str_starts_with($path, '/wechat/v3/pay/transactions/')) {
     return;
 }
 
+// ---------------------------------------------------------------- BEpusdt / GM Pay
+if (preg_match('#^/usdt/(api/v1|payments/gmpay/v1)/order/create-(transaction|order)$#', $path, $mm)) {
+    $p = json_decode($raw, true) ?: [];
+    $gm = $mm[1] === 'payments/gmpay/v1';
+    $expect = $gm
+        ? hash_hmac('sha256', canonical($p, ['signature']), $keys['gm_secret'])
+        : md5(canonical($p, ['signature']) . $keys['usdt_token']);
+    if (($p['signature'] ?? '') !== $expect || ($gm && ($p['pid'] ?? '') !== $keys['gm_pid'])) {
+        json_reply(['status_code' => 401, 'message' => '签名认证错误', 'data' => null]);
+        return;
+    }
+    $tradeId = 'mock-' . $p['order_id'];
+    remember($p['order_id'], ['gw' => $gm ? 'gmpay' : 'usdt', 'amount' => $p['amount'], 'notify_url' => $p['notify_url'], 'trade_id' => $tradeId,
+        'trade_type' => $p['trade_type'] ?? '', 'endpoint' => $mm[2]]);
+    json_reply(['status_code' => 200, 'message' => 'success', 'data' => [
+        'trade_id' => $tradeId, 'order_id' => $p['order_id'], 'amount' => (string)$p['amount'], 'actual_amount' => '1.01',
+        'token' => 'TMockReceiveAddress', 'expiration_time' => 600, 'status' => 1,
+        'payment_url' => 'http://127.0.0.1:9100/usdt/pay/checkout-counter/' . $tradeId,
+    ]]);
+    return;
+}
+
 // ---------------------------------------------------------------- 币安现货 API（只读）
 function binance(): array
 {
@@ -317,8 +340,32 @@ if (str_starts_with($path, '/_mock/binance/')) {
     return;
 }
 
+// ---------------------------------------------------------------- CoinGecko 价格
+// /coingecko/api/v3/simple/price?ids=tether&vs_currencies=cny；/_mock/coingecko?cny=7.1[&fail=1] 设置价格或让接口报错
+if ($path === '/coingecko/api/v3/simple/price' || $path === '/_mock/coingecko') {
+    $file = MOCK_DIR . '/coingecko.json';
+    $cg = json_decode((string)@file_get_contents($file), true) ?: ['cny' => 7.1, 'fail' => false, 'calls' => 0];
+    if ($path === '/_mock/coingecko') {
+        if (isset($_GET['cny'])) {
+            $cg['cny'] = (float)$_GET['cny'];
+        }
+        $cg['fail'] = !empty($_GET['fail']);
+        file_put_contents($file, json_encode($cg));
+        json_reply($cg);
+        return;
+    }
+    $cg['calls']++;
+    file_put_contents($file, json_encode($cg));
+    if ($cg['fail']) {
+        json_reply(['status' => ['error_code' => 429, 'error_message' => 'rate limited']], 429);
+        return;
+    }
+    json_reply(['tether' => ['cny' => $cg['cny']]]);
+    return;
+}
+
 // ---------------------------------------------------------------- 测试控制：发送异步通知
-// /_mock/notify?order=单号[&tamper=1][&amount=x][&finished=1][&to=回调地址]
+// /_mock/notify?order=单号[&tamper=1][&amount=x][&finished=1][&to=回调地址][&status=1（BEpusdt 的等待支付推送）]
 // to：把这份签名正确的通知投到别的回调地址，用来测「拿 A 单的合法通知去刷 B 单」
 if ($path === '/_mock/notify') {
     $no = (string)($_GET['order'] ?? '');
@@ -380,6 +427,25 @@ if ($path === '/_mock/notify') {
             json_reply(deliver('POST', $target, $body, ['Content-Type' => 'application/json', 'Wechatpay-Timestamp' => $ts,
                 'Wechatpay-Nonce' => $hn, 'Wechatpay-Signature' => $sig, 'Wechatpay-Serial' => $keys['wechat_platform_serial']]));
             return;
+
+        case 'usdt':
+        case 'gmpay':
+            $money = $amount !== null ? (float)$amount : (float)$o['amount'];
+            if ($o['gw'] === 'gmpay') {
+                $n = ['pid' => $keys['gm_pid'], 'trade_id' => $o['trade_id'], 'order_id' => $no, 'amount' => $money, 'actual_amount' => 1.0137,
+                    'receive_address' => 'TMockReceiveAddress', 'token' => 'USDT', 'block_transaction_id' => 'ab' . md5($no), 'status' => 2];
+                $n['signature'] = hash_hmac('sha256', canonical($n, ['signature']), $keys['gm_secret']);
+            } else {
+                //BEpusdt 的 actual_amount 是字符串（EpNotify.ActualAmount string），amount 是数字
+                $n = ['trade_id' => $o['trade_id'], 'order_id' => $no, 'amount' => $money, 'actual_amount' => '1.01',
+                    'token' => 'TMockReceiveAddress', 'block_transaction_id' => 'ab' . md5($no), 'status' => (int)($_GET['status'] ?? 2)];
+                $n['signature'] = md5(canonical($n, ['signature']) . $keys['usdt_token']);
+            }
+            if ($tamper) {
+                $n['signature'] = md5('forged');
+            }
+            json_reply(deliver('POST', $target, json_encode($n), ['Content-Type' => 'application/json']));
+            return;
     }
 }
 
@@ -395,7 +461,7 @@ if ($path === '/_mock/pay') {
         'epay' => $o['money'],
         'alipay' => $o['total_amount'],
         'wechat' => number_format($o['total'] / 100, 2, '.', ''),
-        default => '',
+        default => (string)$o['amount'],
     };
     patch($no, ['paid' => true, 'paid_amount' => (string)$amount]);
     json_reply(['ok' => true, 'paid_amount' => (string)$amount]);

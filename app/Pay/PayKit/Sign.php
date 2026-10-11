@@ -4,7 +4,7 @@ declare(strict_types=1);
 namespace App\Pay\PayKit;
 
 /**
- * 「参数排序拼接 + 摘要」类签名，易支付、epusdt/BEpusdt、GM Pay 都是这一套，只是摘要算法和排除字段不同。
+ * 「参数排序拼接 + 摘要」类签名：易支付用它加 MD5，支付宝用它拼 RSA2 的待签名串，只是排除字段不同。
  *
  * 本目录不是支付插件（没有 Config/Info.php，后台不会列出），只给同仓库的支付插件共用。
  */
@@ -32,8 +32,7 @@ final class Sign
     }
 
     /**
-     * 标量转字符串，数字的写法与 Go 的 strconv.FormatFloat(v, 'f', -1, 64) / fmt %v 一致：
-     * epusdt、BEpusdt 回调里的 amount 是 JSON 数字，网关按 Go 的写法参与签名（100 而不是 100.0）。
+     * 标量转字符串；数字取最短写法（100 而不是 100.0），布尔值写成 true / false
      */
     public static function scalar(mixed $value): string
     {
@@ -56,11 +55,6 @@ final class Sign
     public static function md5(array $params, string $key, array $exclude): string
     {
         return md5(self::canonical($params, $exclude) . $key);
-    }
-
-    public static function hmacSha256(array $params, string $key, array $exclude): string
-    {
-        return hash_hmac('sha256', self::canonical($params, $exclude), $key);
     }
 
     /**

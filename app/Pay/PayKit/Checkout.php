@@ -14,7 +14,7 @@ use App\Pay\Pay;
  *   支付宝/易支付那种带签名的长 URL 会写不进去，所以长链接一律走表单提交。
  * - 表单提交（TYPE_SUBMIT）：pay_url 只存网关地址，参数放进订单附加数据，由系统模板 POST 过去。
  * - 本站收银台（TYPE_LOCAL_RENDER）：展示二维码或中转跳转，模板是插件 View/{code}.html，
- *   统一 include PayKit/View/Checkout.html。
+ *   统一 include PayKit/View/Checkout.html；加密货币收款 include PayKit/View/Crypto.html（见 crypto()）。
  */
 final class Checkout
 {
@@ -78,6 +78,52 @@ final class Checkout
     {
         $path = (string)parse_url($callbackUrl, PHP_URL_PATH);
         return preg_match('#^/user/api/(order|rechargeNotification)/callback\.\d+$#D', $path) === 1 ? $path : '';
+    }
+
+    /**
+     * 加密货币网络：展示名 + 原生币（「请勿发送 BNB 或其他资产」这句要用）
+     */
+    public const CHAINS = [
+        'tron' => ['TRON (TRC20)', 'TRX'],
+        'bsc' => ['BSC (BEP20)', 'BNB'],
+        'ethereum' => ['Ethereum (ERC20)', 'ETH'],
+        'polygon' => ['Polygon', 'POL'],
+        'arbitrum' => ['Arbitrum One', 'ETH'],
+        'solana' => ['Solana', 'SOL'],
+        'aptos' => ['Aptos', 'APT'],
+        'ton' => ['TON', 'TON'],
+    ];
+
+    /**
+     * 本站加密货币收银台（PayKit/View/Crypto.html）：金额、收款地址或 Pay ID、二维码、倒计时，以及转账说明和提醒
+     *
+     * @param string $mode chain 链上转账 | pay 币安 Pay | cashier 先看说明、再去网关收银台选网络
+     * @param string $asset 币种，如 USDT
+     * @param string $chain CHAINS 的键；pay、cashier 模式可空
+     * @param string $target 收款地址或 Pay ID；cashier 模式可空
+     * @param string $amount 要付的币数，原样展示（不要转 float，免得丢掉尾数）
+     * @param array $extra label、cny、rate、expires（时间戳）、cashier_url、return_url、query_url（回调地址，主动查单用）
+     */
+    public static function crypto(string $mode, string $asset, string $chain, string $target, string $amount, array $extra): PayEntity
+    {
+        [$network, $native] = self::CHAINS[$chain] ?? ['', ''];
+        $option = array_merge([
+            'label' => $asset . ($network !== '' ? ' · ' . $network : ''),
+            'cny' => '',
+            'rate' => '',
+            'expires' => '',
+            'cashier_url' => '',
+            'return_url' => '',
+        ], $extra, [
+            'mode' => $mode,
+            'asset' => $asset,
+            'network' => $network,
+            'native' => $native,
+            'target' => $target,
+            'amount' => $amount,
+            'query_url' => self::queryPath((string)($extra['query_url'] ?? '')),
+        ]);
+        return self::local($target !== '' ? $target : (string)$option['cashier_url'], $option);
     }
 
     private static function local(string $url, array $option): PayEntity

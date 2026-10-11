@@ -12,6 +12,21 @@ use Kernel\Exception\JSONException;
 
 class Pay extends Base implements \App\Pay\Pay
 {
+    /** 交易类型 => [币种, PayKit\Checkout::CHAINS 的键] */
+    private const TRADE_TYPES = [
+        'usdt.trc20' => ['USDT', 'tron'],
+        'usdt.bep20' => ['USDT', 'bsc'],
+        'usdt.erc20' => ['USDT', 'ethereum'],
+        'usdt.polygon' => ['USDT', 'polygon'],
+        'usdt.arbitrum' => ['USDT', 'arbitrum'],
+        'usdt.solana' => ['USDT', 'solana'],
+        'usdt.aptos' => ['USDT', 'aptos'],
+        'usdt.ton' => ['USDT', 'ton'],
+        'usdc.polygon' => ['USDC', 'polygon'],
+        'usdc.bep20' => ['USDC', 'bsc'],
+        'tron.trx' => ['TRX', 'tron'],
+    ];
+
     /**
      * @return PayEntity
      * @throws JSONException
@@ -76,7 +91,35 @@ class Pay extends Base implements \App\Pay\Pay
         if ((int)($data['status_code'] ?? 0) !== 200 || $url === '') {
             throw new JSONException("收U网关下单失败：" . ($data['message'] ?? ('HTTP ' . $response['status'])));
         }
-        return Checkout::redirect($url);
+        if (($this->config['checkout'] ?? 'local') === 'gateway') {
+            return Checkout::redirect($url);
+        }
+        return $this->localCheckout((array)$data['data'], $url);
+    }
+
+    /**
+     * 本站收银台：网关下单时已经返回了收款地址（token）、应付币数（actual_amount）和有效期，直接在本站展示，
+     * 附上转账说明和提醒；网关收银台链接留作备用。
+     * 收银台模式（cashier）、GM Pay 这类下单时还没定网络的，展示说明后让买家点按钮去网关收银台选。
+     */
+    private function localCheckout(array $order, string $cashierUrl): PayEntity
+    {
+        $extra = [
+            'cny' => number_format($this->amount, 2, '.', ''),
+            'expires' => time() + max(60, (int)($order['expiration_time'] ?? $this->config['timeout'] ?? 1200)),
+            'cashier_url' => $cashierUrl,
+            'return_url' => $this->returnUrl,
+        ];
+        $address = trim((string)($order['token'] ?? ''));
+        $amount = trim((string)($order['actual_amount'] ?? ''));
+        [$asset, $chain] = self::TRADE_TYPES[$this->code] ?? ['USDT', ''];
+        //GM Pay 下单不带网络，返回的地址不代表买家要用的链，一律去网关收银台选
+        $gm = ($this->config['protocol'] ?? 'epusdt') === 'gmpay';
+
+        if ($gm || $chain === '' || $address === '' || $amount === '' || !is_numeric($amount)) {
+            return Checkout::crypto('cashier', $asset, '', '', '', $extra + ['label' => $asset . ' 收银台']);
+        }
+        return Checkout::crypto('chain', $asset, $chain, $address, $amount, $extra);
     }
 
     /**

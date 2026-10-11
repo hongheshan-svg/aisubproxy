@@ -37,6 +37,16 @@ return [
         'placeholder' => '可空，留空使用网关默认值（BEpusdt 最低 120 秒）',
     ],
     [
+        'title' => '付款页面',
+        'name' => 'checkout',
+        'type' => 'select',
+        'default' => 'local',
+        'dict' => [
+            ['id' => 'local', 'name' => '本站收银台（展示地址、金额和转账说明，推荐）'],
+            ['id' => 'gateway', 'name' => '直接跳转网关收银台'],
+        ],
+    ],
+    [
         'title' => '汇率',
         'name' => 'rate',
         'type' => 'input',

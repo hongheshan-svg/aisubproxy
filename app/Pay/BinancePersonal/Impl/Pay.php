@@ -10,6 +10,9 @@ use Kernel\Exception\JSONException;
 
 class Pay extends Base implements \App\Pay\Pay
 {
+    /** 币安网络代码 => PayKit\Checkout::CHAINS 的键 */
+    private const CHAINS = ['TRX' => 'tron', 'BSC' => 'bsc', 'SOL' => 'solana', 'ARBITRUM' => 'arbitrum', 'ETH' => 'ethereum'];
+
     /**
      * 分一个唯一的 USDT 金额，在本站收银台展示收款地址（或 Pay ID）和金额，之后靠查单对账
      *
@@ -42,20 +45,13 @@ class Pay extends Base implements \App\Pay\Pay
         $usdt = number_format($entry['cents'] / 100, 2, '.', '');
         $this->log("{$this->tradeNo} {$label} ¥{$cny} → {$usdt} USDT");
 
-        $entity = new PayEntity();
-        $entity->setType(\App\Pay\Pay::TYPE_LOCAL_RENDER);
-        $entity->setUrl(mb_substr($target, 0, 255));
-        $entity->setOption([
-            'mode' => $channel === Binance::PAY ? 'pay' : 'chain',
+        return Checkout::crypto($channel === Binance::PAY ? 'pay' : 'chain', 'USDT', self::CHAINS[$channel] ?? '', $target, $usdt, [
             'label' => $label,
-            'target' => $target,
-            'usdt' => $usdt,
             'cny' => $cny,
             'rate' => rtrim(rtrim(number_format($rate, 4, '.', ''), '0'), '.'),
             'expires' => $entry['expires'],
             'return_url' => $this->returnUrl,
-            'query_url' => Checkout::queryPath($this->callbackUrl),
+            'query_url' => $this->callbackUrl,
         ]);
-        return $entity;
     }
 }

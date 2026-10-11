@@ -222,6 +222,7 @@ $configs = [
         'serial_no' => $keys['wechat_merchant_serial'], 'private_key' => $wxMchPriv, 'wechatpay_public_key' => $wxPlatPub,
         'wechatpay_serial' => $keys['wechat_platform_serial'], 'api_base' => MOCK . '/wechat']],
     'Usdt' => ['UsdtGateway', ['protocol' => 'epusdt', 'url' => MOCK . '/usdt', 'token' => 'epusdt_password_mock', 'timeout' => '1200']],
+    'Usdt.gateway' => ['UsdtGateway', ['protocol' => 'epusdt', 'url' => MOCK . '/usdt', 'token' => 'epusdt_password_mock', 'checkout' => 'gateway']],
     'GmPay' => ['UsdtGateway', ['protocol' => 'gmpay', 'url' => MOCK . '/usdt', 'token' => 'gm_secret_mock', 'pid' => '1000']],
     'Binance' => ['BinancePersonal', ['api_key' => BINANCE_KEY, 'api_secret' => BINANCE_SECRET, 'rate' => (string)BINANCE_RATE, 'timeout' => '20',
         'pay_id' => '123456789', 'api_base' => MOCK . '/binance']],
@@ -243,8 +244,9 @@ $scenarios = [
     ['支付宝·手机网站', 'Alipay', 'wap', 'submit', MOCK . '/alipay/gateway.do?charset=utf-8', []],
     ['微信·Native', 'Wechat', 'native', 'qrcode', 'weixin://wxpay/bizpayurl?pr=mock', ['tamper']],
     ['微信·H5', 'Wechat', 'h5', 'jump', 'checkmweb?prepay_id=wxmock', []],
-    ['收U·BEpusdt', 'Usdt', 'usdt.trc20', 'redirect', MOCK . '/usdt/pay/checkout-counter/', ['tamper', 'pending']],
-    ['收U·GM Pay', 'GmPay', 'cashier', 'redirect', MOCK . '/usdt/pay/checkout-counter/', []],
+    ['收U·BEpusdt（本站收银台）', 'Usdt', 'usdt.bep20', 'crypto', 'TMockReceiveAddress', ['tamper', 'pending']],
+    ['收U·GM Pay', 'GmPay', 'cashier', 'cashier', MOCK . '/usdt/pay/checkout-counter/', []],
+    ['收U·直接跳转网关收银台', 'Usdt.gateway', 'usdt.trc20', 'redirect', MOCK . '/usdt/pay/checkout-counter/', []],
 ];
 
 $tradeVerification = $pdo->query("SELECT value FROM {$t('config')} WHERE `key` = 'trade_verification'")->fetchColumn();
@@ -285,6 +287,26 @@ try {
             return '';
         }
         $page = http('GET', SITE . $url);
+        if ($mode === 'crypto' || $mode === 'cashier') {
+            preg_match_all('/data-(mode|target|amount|cashier|return)="([^"]*)"/', $page['body'], $dm, PREG_SET_ORDER);
+            $data = [];
+            foreach ($dm as [, $k, $v]) {
+                $data[$k] = html_entity_decode($v, ENT_QUOTES);
+            }
+            if ($mode === 'crypto') {
+                check("本站收银台展示网关返回的地址和金额 " . ($data['amount'] ?? ''), ($data['mode'] ?? '') === 'chain' && ($data['target'] ?? '') === $expect
+                    && ($data['amount'] ?? '') === '1.01' && str_starts_with($data['cashier'] ?? '', MOCK . '/usdt/pay/checkout-counter/'), json_encode($data, JSON_UNESCAPED_UNICODE));
+                check('转账说明按网络提示：仅可通过 BSC (BEP20) 发送 USDT，请勿发送 BNB',
+                    str_contains($page['body'], '转账说明和提醒') && str_contains($page['body'], '仅可通过 <b>BSC (BEP20)</b> 发送 <b>USDT</b>。请勿发送 BNB 或其他资产'), '');
+            } else {
+                check('先展示转账说明，再由买家点按钮去网关收银台选网络', ($data['mode'] ?? '') === 'cashier' && str_starts_with($data['cashier'] ?? '', $expect)
+                    && str_contains($page['body'], '前往收银台付款') && str_contains($page['body'], '转账说明和提醒'), json_encode($data, JSON_UNESCAPED_UNICODE));
+            }
+            if ($returnPath !== null) {
+                check("支付完成后返回 {$returnPath}", str_ends_with($data['return'] ?? '', $returnPath), $data['return'] ?? '');
+            }
+            return $page['body'];
+        }
         if ($mode === 'submit') {
             preg_match('/<form action="([^"]+)"/', $page['body'], $fm);
             preg_match_all('/name="([^"]+)" value="([^"]*)"/', $page['body'], $fields, PREG_SET_ORDER);
@@ -623,7 +645,7 @@ try {
     $binancePay = fn(string $amount, string $type = 'C2C') => http('GET', MOCK . '/_mock/binance/pay?' . http_build_query(['amount' => $amount, 'type' => $type]));
     // 收银台页面上的 data-* 属性
     $cryptoPage = function (string $url): array {
-        preg_match_all('/data-(mode|target|usdt|expires|query)="([^"]*)"/', http('GET', SITE . $url)['body'], $m, PREG_SET_ORDER);
+        preg_match_all('/data-(mode|target|amount|expires|query)="([^"]*)"/', http('GET', SITE . $url)['body'], $m, PREG_SET_ORDER);
         $out = [];
         foreach ($m as [, $k, $v]) {
             $out[$k] = html_entity_decode($v, ENT_QUOTES);
@@ -640,8 +662,8 @@ try {
     $b = (string)($resB['data']['tradeNo'] ?? '');
     $pageA = $cryptoPage((string)($resA['data']['url'] ?? ''));
     $pageB = $cryptoPage((string)($resB['data']['url'] ?? ''));
-    $usdtA = $pageA['usdt'] ?? '';
-    $usdtB = $pageB['usdt'] ?? '';
+    $usdtA = $pageA['amount'] ?? '';
+    $usdtB = $pageB['amount'] ?? '';
     $base = $baseUsdt($orderRow($a)['gateway_amount'] ?? 0);
     check("收银台展示币安充值地址和金额 {$usdtA} USDT（¥{$resA['data']['amount']} ÷ " . BINANCE_RATE . "，向上取到分）",
         ($pageA['mode'] ?? '') === 'chain' && ($pageA['target'] ?? '') === 'MockTRXDepositAddress' && (float)$usdtA >= (float)$base && ($pageA['query'] ?? '') === ORDER_CALLBACK . $a,
@@ -666,7 +688,7 @@ try {
     check('金额、网络都对上的到账：订单已付款并发货', $queryAcked($q) && ($row['status'] ?? null) == 1 && !empty($row['secret']), $q['body'] . ' ' . json_encode($row, JSON_UNESCAPED_UNICODE));
 
     $c = (string)($order($payId)['data']['tradeNo'] ?? '');
-    $usdtC = $cryptoPage('/user/pay/order.' . $c . '.1')['usdt'] ?? '';
+    $usdtC = $cryptoPage('/user/pay/order.' . $c . '.1')['amount'] ?? '';
     check("已付款订单的金额在保留期内不分给新订单（新单 {$usdtC} USDT）", $usdtC !== '' && !in_array($usdtC, [$usdtA, $usdtB], true), "{$usdtA} / {$usdtB} / {$usdtC}");
 
     $deposit($usdtB, 'TRX', 6);
@@ -679,7 +701,7 @@ try {
     $res = $order($payId);
     $p = (string)($res['data']['tradeNo'] ?? '');
     $page = $cryptoPage((string)($res['data']['url'] ?? ''));
-    $usdtP = $page['usdt'] ?? '';
+    $usdtP = $page['amount'] ?? '';
     check("收银台展示 Pay ID 和金额 {$usdtP} USDT", ($page['mode'] ?? '') === 'pay' && ($page['target'] ?? '') === '123456789' && $usdtP !== '', json_encode($page, JSON_UNESCAPED_UNICODE));
     $binancePay('-' . $usdtP);
     $binancePay($usdtP, 'PAY_REFUND');
@@ -696,7 +718,7 @@ try {
     $res = $recharge($payId, RECHARGE_AMOUNT);
     $r = (string)($res['data']['tradeNo'] ?? '');
     $page = $cryptoPage((string)($res['data']['url'] ?? ''));
-    $usdtR = $page['usdt'] ?? '';
+    $usdtR = $page['amount'] ?? '';
     check("充值 ¥" . RECHARGE_AMOUNT . " 要付 {$usdtR} USDT", ($page['target'] ?? '') === 'MockBSCDepositAddress' && (float)$usdtR >= (float)$baseUsdt(RECHARGE_AMOUNT)
         && ($page['query'] ?? '') === RECHARGE_CALLBACK . $r, json_encode($page, JSON_UNESCAPED_UNICODE));
     $before = $member();
@@ -725,7 +747,7 @@ try {
         }
         $body = http('GET', SITE . $res['data']['url'])['body'];
         preg_match('/1 USDT = ¥([\d.]+)/u', $body, $rm);
-        preg_match('/data-usdt="([^"]*)"/', $body, $um);
+        preg_match('/data-amount="([^"]*)"/', $body, $um);
         return [$rm[1] ?? null, $um[1] ?? null, ''];
     };
     $atLeast = fn(?string $usdt, float $rate) => $usdt !== null && (float)$usdt >= (float)cents(ceil(round(7 / $rate * 100, 6)) / 100);

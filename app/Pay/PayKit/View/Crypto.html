@@ -1,0 +1,230 @@
+#{* 加密货币收银台：链上转账（地址 + 二维码）、币安 Pay（Pay ID）、网关收银台（先说明再跳转）三种模式，附转账说明和提醒。
+   各插件的 View/{code}.html 直接 include 本文件，数据由 PayKit\Checkout::crypto() 组装。 *}
+#{$mode = $option.mode|default:'chain'}
+#{$asset = $option.asset|default:'USDT'}
+#{$network = $option.network|default:''}
+#{$native = $option.native|default:''}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="referrer" content="origin">
+    <title>#{$option.label|escape:'html'} - 收银台</title>
+    <style>
+        :root { --ink: #111418; --ink-2: #4a5260; --ink-3: #8a93a1; --line: #e5eaf0; --bg: #f4f8fc; --ok: #13834a; --warn: #b54708; --brand: #26a17b; }
+        * { box-sizing: border-box; }
+        html, body { margin: 0; min-height: 100%; background: linear-gradient(180deg, var(--bg) 0, #e6f2fd 100%); }
+        body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", Roboto, sans-serif; color: var(--ink); -webkit-font-smoothing: antialiased; }
+        .ck { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px 16px; }
+        .ck-card { width: 420px; max-width: 100%; background: #fff; border: 1px solid var(--line); border-radius: 26px; box-shadow: 0 1px 2px rgba(16,24,40,.04), 0 12px 36px rgba(16,24,40,.08); overflow: hidden; }
+        .ck-top { height: 6px; background: var(--brand); }
+        .ck-body { padding: 24px 24px 20px; text-align: center; }
+        .ck-brand { display: inline-flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 800; }
+        .ck-brand img { width: 26px; height: 26px; border-radius: 7px; object-fit: contain; }
+        .ck-amount { margin: 16px 0 2px; display: inline-flex; align-items: baseline; gap: 6px; font-size: 36px; font-weight: 900; letter-spacing: -.02em; font-variant-numeric: tabular-nums; word-break: break-all; }
+        .ck-amount small { font-size: 16px; font-weight: 800; color: var(--ink-2); }
+        .ck-sub { font-size: 12px; color: var(--ink-3); }
+        .ck-qr { width: 196px; height: 196px; margin: 18px auto 12px; padding: 10px; border: 1px solid var(--line); border-radius: 18px; }
+        .ck-qr canvas { width: 100%; height: 100%; display: block; }
+        .ck-field { margin-top: 14px; text-align: left; }
+        .ck-field label { display: block; margin-bottom: 6px; font-size: 12px; font-weight: 700; color: var(--ink-3); }
+        .ck-copy { display: flex; align-items: center; gap: 8px; padding: 10px 10px 10px 14px; border: 1px solid var(--line); border-radius: 14px; background: #fafcfe; }
+        .ck-copy code { flex: 1; min-width: 0; font: 600 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; word-break: break-all; }
+        .ck-copy button { flex: none; height: 30px; padding: 0 12px; border: 0; border-radius: 999px; background: var(--ink); color: #fff; font-size: 12px; font-weight: 800; cursor: pointer; }
+        .ck-copy button.is-done { background: var(--ok); }
+        .ck-notes { margin: 18px 0 0; padding: 14px 16px 12px; border: 1px solid #fde3b0; border-radius: 16px; background: #fffaf0; text-align: left; }
+        .ck-notes h2 { margin: 0 0 8px; font-size: 14px; font-weight: 900; color: #93370d; }
+        .ck-notes ol { margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.75; color: #6b3d0b; }
+        .ck-notes li + li { margin-top: 4px; }
+        .ck-notes b { color: #93370d; }
+        .ck-steps { margin: 14px 0 0; padding-left: 18px; font-size: 13px; line-height: 1.8; color: var(--ink-2); text-align: left; }
+        .ck-btn { display: inline-flex; align-items: center; justify-content: center; width: 100%; height: 44px; margin-top: 16px; border-radius: 999px; border: 1px solid var(--line); background: #fff; color: var(--ink); font-size: 14px; font-weight: 800; text-decoration: none; }
+        .ck-btn--primary { border-color: var(--brand); background: var(--brand); color: #fff; }
+        .ck-link { display: inline-block; margin-top: 10px; font-size: 12px; color: var(--ink-3); }
+        .ck-status { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 16px; padding-top: 14px; border-top: 1px solid #eef2f6; font-size: 13px; font-weight: 700; color: var(--ink-2); }
+        .ck-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--brand); animation: ck-pulse 1.2s ease-in-out infinite; }
+        .ck-status.is-paid { color: var(--ok); }
+        .ck-status.is-paid .ck-dot { background: var(--ok); animation: none; }
+        .ck-status.is-late { color: var(--warn); }
+        .ck-status.is-late .ck-dot { background: var(--warn); }
+        @keyframes ck-pulse { 50% { opacity: .25; } }
+    </style>
+</head>
+<body>
+<main class="ck">
+    <section class="ck-card" id="ck" data-mode="#{$mode|escape:'html'}" data-target="#{$option.target|default:''|escape:'html'}"
+             data-amount="#{$option.amount|default:''|escape:'html'}" data-expires="#{$option.expires|default:''|escape:'html'}"
+             data-return="#{$option.return_url|default:''|escape:'html'}" data-trade="#{$order->trade_no|escape:'html'}"
+             data-query="#{$option.query_url|default:''|escape:'html'}" data-cashier="#{$option.cashier_url|default:''|escape:'html'}">
+        <div class="ck-top"></div>
+        <div class="ck-body">
+            <div class="ck-brand">
+                #{if $asset == 'USDT'}<img src="/assets/user/images/cash/usdt.png" alt="">#{/if}
+                <span>#{$option.label|escape:'html'}</span>
+            </div>
+
+            #{if $mode != 'cashier'}
+                <div><span class="ck-amount">#{$option.amount|escape:'html'}<small>#{$asset|escape:'html'}</small></span></div>
+            #{/if}
+            <div class="ck-sub">
+                ≈ ¥#{$option.cny|escape:'html'}#{if $option.rate|default:''} · 1 #{$asset|escape:'html'} = ¥#{$option.rate|escape:'html'}#{/if} · 订单号 #{$order->trade_no|escape:'html'}
+            </div>
+
+            #{if $mode == 'cashier'}
+                <ol class="ck-steps">
+                    <li>点下面的按钮打开收银台，选择付款网络</li>
+                    <li>按收银台显示的地址和金额转账</li>
+                    <li>付款完成后回到本页或订单页查看结果</li>
+                </ol>
+                <a class="ck-btn ck-btn--primary" href="#{$option.cashier_url|escape:'html'}" rel="noreferrer">前往收银台付款</a>
+            #{else}
+                <div class="ck-field">
+                    <label>付款金额（必须一分不差）</label>
+                    <div class="ck-copy"><code>#{$option.amount|escape:'html'}</code><button type="button" data-copy="#{$option.amount|escape:'html'}">复制</button></div>
+                </div>
+
+                #{if $mode == 'pay'}
+                    <div class="ck-field">
+                        <label>收款方币安 Pay ID</label>
+                        <div class="ck-copy"><code>#{$option.target|escape:'html'}</code><button type="button" data-copy="#{$option.target|escape:'html'}">复制</button></div>
+                    </div>
+                    <ol class="ck-steps">
+                        <li>打开币安 App →「支付」→「发送」</li>
+                        <li>收款人选 Pay ID，填上面的 Pay ID</li>
+                        <li>币种选 <b>#{$asset|escape:'html'}</b>，金额填 <b>#{$option.amount|escape:'html'}</b>，确认发送</li>
+                    </ol>
+                #{else}
+                    <div class="ck-qr" id="ck-qr"></div>
+                    <div class="ck-field">
+                        <label>收款地址（#{$network|escape:'html'}）</label>
+                        <div class="ck-copy"><code>#{$option.target|escape:'html'}</code><button type="button" data-copy="#{$option.target|escape:'html'}">复制</button></div>
+                    </div>
+                #{/if}
+            #{/if}
+
+            <div class="ck-notes">
+                <h2>转账说明和提醒</h2>
+                <ol>
+                    #{if $mode == 'pay'}
+                        <li>仅可通过 <b>币安 Pay</b> 转账，币种选 <b>#{$asset|escape:'html'}</b>。请勿发送其他币种。</li>
+                    #{elseif $mode == 'cashier'}
+                        <li>在收银台选好网络后，只能通过<b>所选网络</b>发送对应的币种。请勿发送其他资产，也不要换用其他网络。</li>
+                    #{elseif $native && $native != $asset}
+                        <li>仅可通过 <b>#{$network|escape:'html'}</b> 发送 <b>#{$asset|escape:'html'}</b>。请勿发送 #{$native|escape:'html'} 或其他资产。</li>
+                    #{else}
+                        <li>仅可通过 <b>#{$network|escape:'html'}</b> 发送 <b>#{$asset|escape:'html'}</b>。请勿发送其他资产，也不要换用其他网络。</li>
+                    #{/if}
+                    <li>请<b>准确发送显示的金额</b>，包括所有小数位。直接复制金额，不要四舍五入。</li>
+                    #{if $mode == 'pay'}
+                        <li>币安 Pay 转账没有手续费，金额填页面显示的数字即可。</li>
+                    #{else}
+                        <li>如果交易所从发送的金额中<b>扣除提现手续费</b>，请确保此地址收到的净金额与显示的金额完全一致。</li>
+                    #{/if}
+                    <li>如果尚未付款，请在订单过期前转账。如果已发货，请勿再次付款。只有在系统验证实际收到的金额与订单金额相符#{if $mode == 'pay'}且币安确认到账#{else}且链上确认完成#{/if}后，才会自动发货。</li>
+                    <li>如有任何问题，请联系客服并提供您的商家订单号（#{$order->trade_no|escape:'html'}）和#{if $mode == 'pay'}币安 Pay 交易单号#{else}交易哈希值#{/if}。</li>
+                </ol>
+            </div>
+
+            #{if $option.return_url|default:''}
+                <a class="ck-btn" href="#{$option.return_url|escape:'html'}">我已付款，查看订单</a>
+            #{/if}
+            #{if $mode == 'chain' && $option.cashier_url|default:''}
+                <a class="ck-link" href="#{$option.cashier_url|escape:'html'}" rel="noreferrer">也可以打开网关收银台付款</a>
+            #{/if}
+            <div class="ck-status" id="ck-status"><span class="ck-dot"></span><span id="ck-status-text">等待付款…</span></div>
+        </div>
+    </section>
+</main>
+<script src="/assets/common/js/jquery.min.js"></script>
+<script src="/assets/common/js/jquery.qrcode.min.js"></script>
+<script>
+(function () {
+    var box = document.getElementById('ck');
+    var d = box.dataset;
+    var status = document.getElementById('ck-status');
+    var statusText = document.getElementById('ck-status-text');
+
+    if (d.mode === 'chain' && d.target) {
+        jQuery('#ck-qr').qrcode({render: 'canvas', width: 360, height: 360, text: d.target});
+    }
+
+    Array.prototype.forEach.call(document.querySelectorAll('[data-copy]'), function (btn) {
+        btn.addEventListener('click', function () {
+            var text = btn.getAttribute('data-copy');
+            var done = function () {
+                btn.textContent = '已复制';
+                btn.classList.add('is-done');
+                setTimeout(function () { btn.textContent = '复制'; btn.classList.remove('is-done'); }, 1500);
+            };
+            if (navigator.clipboard && window.isSecureContext) {
+                navigator.clipboard.writeText(text).then(done);
+            } else {
+                var ta = document.createElement('textarea');
+                ta.value = text;
+                document.body.appendChild(ta);
+                ta.select();
+                try { document.execCommand('copy'); done(); } catch (e) {}
+                document.body.removeChild(ta);
+            }
+        });
+    });
+
+    // 倒计时：过期后提示不要再转账
+    var expires = Number(d.expires) * 1000;
+    var isPaid = false;
+    function tick() {
+        if (isPaid || !expires) {
+            return;
+        }
+        var left = Math.floor((expires - Date.now()) / 1000);
+        if (left <= 0) {
+            status.classList.add('is-late');
+            statusText.textContent = '订单已过期，请勿再转账；如已转账，请联系客服并提供订单号和交易哈希值';
+            return;
+        }
+        statusText.textContent = '等待付款… 剩余 ' + Math.floor(left / 60) + ':' + ('0' + left % 60).slice(-2);
+        setTimeout(tick, 1000);
+    }
+    tick();
+
+    // 轮询订单状态；支持主动查单的插件每三次顺带让本站去查一次（服务端对同一单限流）
+    var started = Date.now();
+    var polls = 0;
+    function post(url, body) {
+        return fetch(url, {method: 'POST', headers: {'Content-Type': 'application/x-www-form-urlencoded'}, body: body});
+    }
+    function poll() {
+        polls++;
+        var ask = d.query && polls % 3 === 0 ? post(d.query, 'pay_query=1').catch(function () {}) : Promise.resolve();
+        ask.then(function () {
+            return post('/user/api/order/state', 'tradeNo=' + encodeURIComponent(d.trade));
+        }).then(function (r) { return r.json(); }).then(function (res) {
+            if (res && res.code === 200 && res.data && Number(res.data.status) === 1) {
+                paid();
+                return;
+            }
+            next();
+        }).catch(next);
+    }
+    function next() {
+        if (Date.now() - started > 60 * 60 * 1000) {
+            statusText.textContent = '已停止自动刷新，付款后请点击「查看订单」';
+            return;
+        }
+        setTimeout(poll, 6000);
+    }
+    function paid() {
+        isPaid = true;
+        status.classList.remove('is-late');
+        status.classList.add('is-paid');
+        statusText.textContent = '已到账，正在跳转…';
+        if (d['return']) {
+            setTimeout(function () { location.href = d['return']; }, 1200);
+        }
+    }
+    setTimeout(poll, 3000);
+})();
+</script>
+</body>
+</html>

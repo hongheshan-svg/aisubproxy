@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="#{lang_code()}" translate="no" class="notranslate">
+<head>
+    <meta charset="UTF-8">
+    <meta name="google" content="notranslate">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="keywords" content="#{$config.keywords}"/>
+    <meta name="description" content="#{$config.description}"/>
+    <link href="#{$favicon}?v=#{$app.version}" rel="icon">
+    <title>#{$title} - #{$config.shop_name}</title>
+    #{css(
+    [
+    "/assets/common/css/bootstrap.min.css",
+    "/assets/common/css/_.css"
+    ],
+    [
+    "/assets/common/css/font.min.css",
+    "/assets/common/js/layui/css/layui.css",
+    "/assets/common/css/select2.min.css",
+    "/assets/common/css/component.css",
+    "/assets/common/js/table/bootstrap-table.css",
+    "/assets/common/js/layer/theme/default/layer.css",
+    "/assets/common/css/bootstrap.min.css",
+    "/assets/common/css/toastr.min.css"
+    ])}
+    <link rel="stylesheet" href="#{$static}/Assets/Style.css?v=#{$app.version}.4">
+    #{js("/assets/common/js/ready.js")}
+    #{index_var()}
+    <!--start::HOOK-->
+    #{hook(\App\Consts\Hook::USER_GLOBAL_VIEW_HEADER)}
+    #{if $page|default:"" != "auth"}#{hook(\App\Consts\Hook::USER_VIEW_INDEX_HEADER)}#{/if}
+    <!--end::HOOK-->
+</head>
+<body class="tokyo-theme">
+<div class="tokyo-frame">
+    <header class="tokyo-nav-shell">
+        <nav class="tokyo-nav">
+            <a class="tokyo-brand" href="/">
+                <img src="#{$favicon}" alt="logo" class="tokyo-brand__mark">
+                <span class="tokyo-brand__name">#{$config.shop_name}</span>
+            </a>
+
+            <button class="tokyo-burger" type="button" aria-label="menu" aria-expanded="false">
+                <i class="fa-duotone fa-regular fa-bars"></i>
+            </button>
+
+            <div class="tokyo-nav__menu">
+                <ul class="tokyo-nav__links" data-links="#{$setting.nav_links}">
+                    #{foreach user_header_nav() as $nav}
+                        <li>
+                            <a class="tokyo-nav__link #{if $nav.match}#{active($nav.match, 'is-active')}#{/if}"
+                               href="#{$nav.url}" target="#{$nav.target}">
+                                #{user_nav_icon($nav, 'tokyo-nav__icon')}<span>#{$nav.name}</span>
+                            </a>
+                        </li>
+                    #{/foreach}
+                    #{if $config.notice}
+                        <li>
+                            <a class="tokyo-nav__link tokyo-notice-open" href="javascript:void(0);">
+                                <i class="fa-duotone fa-regular fa-bullhorn tokyo-nav__icon"></i><span>#{t("公告")}</span>
+                            </a>
+                        </li>
+                    #{/if}
+                </ul>
+
+                <div class="tokyo-nav__right">
+                    #{if count($langs) > 1}
+                        <div class="tokyo-lang" role="group" aria-label="#{t('语言')}">
+                            #{foreach $langs as $l}
+                                <a class="tokyo-lang__opt #{if $l.active}is-active#{/if}" href="javascript:;"
+                                   data-lang-value="#{$l.code}" title="#{$l.name}">#{$l.short}</a>
+                            #{/foreach}
+                        </div>
+                    #{/if}
+
+                    #{if $user}
+                        <a class="tokyo-btn tokyo-btn--ghost" href="/user/recharge/index">
+                            <i class="fa-duotone fa-regular fa-wallet"></i>
+                            <span>#{$config.currency_symbol}#{$user.balance}</span>
+                        </a>
+                        <a class="tokyo-btn tokyo-btn--dark tokyo-user" href="/user/dashboard/index">
+                            <img src="#{$user.avatar}" alt="" class="tokyo-user__avatar">
+                            <span>#{$user.username}</span>
+                        </a>
+                    #{else}
+                        <a class="tokyo-btn tokyo-btn--ghost" href="/user/authentication/login">
+                            <i class="fa-duotone fa-regular fa-right-to-bracket"></i><span>#{t("登录")}</span>
+                        </a>
+                        <a class="tokyo-btn tokyo-btn--dark" href="/user/authentication/register">
+                            <i class="fa-duotone fa-regular fa-user-plus"></i><span>#{t("创建账号")}</span>
+                        </a>
+                    #{/if}
+                </div>
+            </div>
+        </nav>
+    </header>
+
+    #{if $config.notice}
+        <div class="tokyo-modal" id="tokyo-notice" hidden data-popup="#{$setting.notice_popup}">
+            <div class="tokyo-modal__shade"></div>
+            <div class="tokyo-modal__card" role="dialog" aria-modal="true" aria-labelledby="tokyo-notice-title">
+                <div class="tokyo-eyebrow">NOTICE</div>
+                <h3 class="tokyo-modal__title" id="tokyo-notice-title">
+                    <i class="fa-duotone fa-regular fa-bullhorn"></i>#{t("公告")}
+                </h3>
+                <div class="tokyo-modal__body tokyo-richtext">#{lang($config.notice)}</div>
+                <div class="tokyo-modal__foot">
+                    <button type="button" class="tokyo-btn tokyo-btn--ghost tokyo-notice-close">
+                        <i class="fa-duotone fa-regular fa-xmark"></i>#{t("取消")}
+                    </button>
+                    <button type="button" class="tokyo-btn tokyo-btn--dark tokyo-notice-ack">
+                        <i class="fa-duotone fa-regular fa-check"></i>#{t("我已阅读")}
+                    </button>
+                </div>
+                <div class="tokyo-modal__hint">#{t("点击“我已阅读”后，1小时内不再弹出")}</div>
+            </div>
+        </div>
+    #{/if}
+
+    <div id="pjax-container">

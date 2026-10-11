@@ -1,0 +1,351 @@
+/* ==========================================================
+   Tokyo · 会员中心皮肤
+   叠加在 Cartoon 会员中心样式（_glass.css）之后：
+   先改写它的设计令牌（玻璃 → 实心白、圆角、主色），再逐个收口组件。
+   选择器沿用 :root[data-theme] 前缀，保证优先级不低于 _glass.css。
+   ========================================================== */
+
+:root[data-theme] {
+    --tk-bg: #f4f8fc;
+    --tk-bg-2: #e6f2fd;
+    --tk-surface-2: #f7f9fb;
+    --tk-line: #e5eaf0;
+    --tk-line-2: #eef2f6;
+    --tk-ink: #111418;
+    --tk-ink-2: #4a5260;
+    --tk-ink-3: #8a93a1;
+    --tk-dark: #0e1116;
+    --tk-shadow: 0 1px 2px rgba(16, 24, 40, .04), 0 8px 28px rgba(16, 24, 40, .05);
+    --tk-shadow-sm: 0 1px 2px rgba(16, 24, 40, .06), 0 2px 8px rgba(16, 24, 40, .05);
+    --tk-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Segoe UI", Roboto, sans-serif;
+
+    /* 改写 Cartoon / MUI 令牌 */
+    --md-primary: #0e1116;
+    --md-primary-rgb: 14, 17, 22;
+    --md-on-primary: #ffffff;
+    --uc-primary-deep: #0e1116;
+    --md-radius: 14px;
+    --md-radius-lg: 20px;
+    --md-divider: #eef2f6;
+    --md-outline: #dbe2ea;
+
+    --glass-bg: #ffffff;
+    --glass-bg-strong: #ffffff;
+    --glass-bg-soft: #ffffff;
+    --glass-border: #e5eaf0;
+    --glass-border-soft: #eef2f6;
+    --glass-hi: 0 0 0 transparent;
+    --glass-filter: none;
+    --glass-filter-strong: none;
+    --glass-shadow: var(--tk-shadow);
+    --glass-shadow-lg: 0 18px 48px rgba(16, 24, 40, .12);
+    --glass-radius: 26px;
+    --glass-radius-sm: 18px;
+    --uc-field-bg: #ffffff;
+
+    --uc-ink: #111418;
+    --uc-ink-med: #4a5260;
+    --uc-ink-dis: #8a93a1;
+    --uc-focus: #4a5260;
+    --uc-focus-rgb: 74, 82, 96;
+}
+
+/* ---------- 底色 ---------- */
+html { background: var(--tk-bg); }
+
+:root[data-theme] body.uc-body.tokyo-uc {
+    min-height: 100vh;
+    background: linear-gradient(180deg, var(--tk-bg) 0, var(--tk-bg) 35%, var(--tk-bg-2) 100%);
+    font-family: var(--tk-font);
+    -webkit-font-smoothing: antialiased;
+}
+
+:root[data-theme] .bg-content.uc-bg { background: transparent !important; }
+
+:root[data-theme] .uc-main { box-sizing: border-box; max-width: 1400px; padding: 26px 32px 60px; }
+
+/* ---------- 顶栏（与商城前台同款胶囊） ---------- */
+:root[data-theme] .uc-nav-wrap { padding: 14px 32px 4px; }
+
+:root[data-theme] .uc-nav {
+    max-width: 1336px;
+    height: 78px;
+    gap: 14px;
+    padding: 0 14px 0 16px;
+    background: rgba(255, 255, 255, .86);
+    -webkit-backdrop-filter: saturate(160%) blur(18px);
+    backdrop-filter: saturate(160%) blur(18px);
+    border-color: var(--tk-line);
+    box-shadow: var(--tk-shadow);
+}
+
+:root[data-theme] .uc-brand { padding-right: 4px; }
+:root[data-theme] .uc-brand__logo {
+    width: 44px;
+    height: 44px;
+    border-radius: 50%;
+    border: 1px solid var(--tk-line-2);
+    box-shadow: none;
+}
+
+:root[data-theme] .uc-brand__name {
+    font-size: 16px;
+    font-weight: 800;
+    letter-spacing: -.01em;
+    padding-bottom: 3px;
+    border-bottom: 3px solid var(--tk-ink);
+}
+
+:root[data-theme] .uc-nav__item {
+    height: 52px;
+    padding: 0 14px;
+    font-size: 13.5px;
+    font-weight: 600;
+    color: var(--tk-ink-2);
+}
+
+:root[data-theme] .uc-nav__item .material-icons-outlined { font-size: 18px; }
+:root[data-theme] .uc-nav__item:hover { background: var(--tk-surface-2); color: var(--tk-ink); }
+
+:root[data-theme] .uc-nav__item.active,
+:root[data-theme] .uc-nav__list > li.has-active > .uc-nav__item {
+    background: #fff;
+    color: var(--tk-ink);
+    box-shadow: 0 2px 10px rgba(16, 24, 40, .1);
+}
+
+:root[data-theme] .uc-nav__item.active:hover { color: var(--tk-ink); }
+
+:root[data-theme] .uc-submenu {
+    padding: 8px;
+    border-radius: 18px;
+    border-color: var(--tk-line);
+}
+
+:root[data-theme] .uc-subitem { border-radius: 12px; font-weight: 600; color: var(--tk-ink-2); }
+:root[data-theme] .uc-subitem:hover { background: var(--tk-surface-2); color: var(--tk-ink); }
+:root[data-theme] .uc-subitem:hover .material-icons-outlined { color: var(--tk-ink); }
+:root[data-theme] .uc-subitem.active { background: var(--tk-dark); color: #fff; }
+:root[data-theme] .uc-subitem.active .material-icons-outlined { color: #fff; }
+:root[data-theme] .uc-subitem__badge { background: var(--tk-surface-2); color: var(--tk-ink-2); }
+:root[data-theme] .uc-subitem.active .uc-subitem__badge { background: rgba(255, 255, 255, .18); color: #fff; }
+:root[data-theme] .uc-submenu__sep { background: var(--tk-line-2); }
+
+:root[data-theme] .uc-nav__right { gap: 8px; }
+
+:root[data-theme] .uc-nav__link {
+    height: 42px;
+    padding: 0 14px;
+    font-weight: 600;
+    color: var(--tk-ink-2);
+}
+
+:root[data-theme] .uc-nav__link:hover { background: var(--tk-surface-2); color: var(--tk-ink); }
+
+/* “购买商品”做成描边胶囊，回商城的入口更显眼 */
+:root[data-theme] .uc-nav__right > .uc-nav__link[href="/"] {
+    border: 1px solid var(--tk-line);
+    background: #fff;
+    color: var(--tk-ink);
+    font-weight: 700;
+}
+
+:root[data-theme] .uc-message-btn {
+    width: 42px;
+    height: 42px;
+    border: 1px solid var(--tk-line) !important;
+    border-radius: 50% !important;
+    background: #fff !important;
+    color: var(--tk-ink) !important;
+}
+
+/* 用户胶囊：黑底，对应前台的“创建账号”按钮 */
+:root[data-theme] .uc-user__btn {
+    height: 44px;
+    padding: 0 5px 0 14px;
+    border-color: var(--tk-dark);
+    background: var(--tk-dark);
+}
+
+:root[data-theme] .uc-user__btn:hover { background: #262b33; border-color: #262b33; }
+:root[data-theme] .uc-user__lv { color: #fff; font-weight: 700; }
+:root[data-theme] .uc-user__avatar { width: 34px; height: 34px; box-shadow: none; border: 2px solid rgba(255, 255, 255, .9); }
+
+:root[data-theme] .uc-burger {
+    width: 44px;
+    height: 44px;
+    border: 1px solid var(--tk-line);
+    border-radius: 50%;
+    background: #fff;
+    color: var(--tk-ink);
+}
+
+/* ---------- 卡片 ---------- */
+:root[data-theme] .uc-card {
+    border-color: var(--tk-line);
+    box-shadow: var(--tk-shadow);
+}
+
+
+:root[data-theme] .uc-card__head {
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--tk-line-2);
+}
+
+:root[data-theme] .uc-card__head > .material-icons-outlined,
+:root[data-theme] .uc-card__head > .material-icons {
+    width: 36px;
+    height: 36px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    background: var(--tk-surface-2);
+    border: 1px solid var(--tk-line-2);
+    font-size: 19px;
+    color: var(--tk-ink);
+}
+
+:root[data-theme] .uc-card__title { font-size: 17px; font-weight: 800; letter-spacing: -.01em; }
+:root[data-theme] .uc-card__body { padding: 22px 24px 24px; }
+
+/* 分节小标题：去掉为壁纸准备的光晕，改成小圆点 + 字距 */
+:root[data-theme] .uc-subhead {
+    margin: 30px 0 4px;
+    font-size: 12.5px;
+    font-weight: 800;
+    letter-spacing: .12em;
+    color: var(--tk-ink-2);
+    text-shadow: none;
+}
+
+:root[data-theme] .uc-subhead::before {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--tk-ink);
+    box-shadow: none;
+}
+
+/* ---------- 统计磁贴 ---------- */
+:root[data-theme] .uc-stats { gap: 18px; }
+
+:root[data-theme] .uc-stat {
+    padding: 20px 22px;
+    border-radius: 20px;
+    background: #fff;
+    border: 1px solid var(--tk-line);
+    box-shadow: var(--tk-shadow-sm);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+}
+
+:root[data-theme] .uc-stat:hover { box-shadow: var(--tk-shadow); border-color: #cfd6df; }
+:root[data-theme] .uc-stat__label { font-weight: 600; color: var(--tk-ink-2); }
+:root[data-theme] .uc-stat__value { margin-top: 10px; font-size: 28px; font-weight: 900; letter-spacing: -.02em; }
+
+/* ---------- 按钮 ---------- */
+:root[data-theme] .uc-cta,
+:root[data-theme] .uc-quick {
+    border-radius: 999px;
+    background: var(--tk-dark);
+    color: #fff;
+    font-weight: 800;
+    box-shadow: none;
+}
+
+:root[data-theme] .uc-cta:hover,
+:root[data-theme] .uc-quick:hover {
+    background: #262b33;
+    color: #fff;
+    filter: none;
+    box-shadow: none;
+    transform: translateY(-1px);
+}
+
+:root[data-theme] .uc-cta--ghost,
+:root[data-theme] .uc-quick.uc-quick--ghost,
+:root[data-theme] .uc-subhead__tools .uc-quick + .uc-quick {
+    background: #fff;
+    color: var(--tk-ink);
+    border: 1px solid var(--tk-line);
+}
+
+:root[data-theme] .uc-cta--ghost:hover,
+:root[data-theme] .uc-subhead__tools .uc-quick + .uc-quick:hover { background: var(--tk-surface-2); color: var(--tk-ink); }
+
+:root[data-theme] .uc-toolbar .layui-btn { border-radius: 999px !important; font-weight: 700; }
+:root[data-theme] .uc-toolbar .layui-btn.button-add { background: var(--tk-dark) !important; border-color: var(--tk-dark) !important; }
+
+/* ---------- 表格（bootstrap-table） ---------- */
+:root[data-theme] .uc-card .bootstrap-table .fixed-table-container {
+    border: 1px solid var(--tk-line) !important;
+    border-radius: 20px;
+    overflow: hidden;
+}
+
+:root[data-theme] .uc-card .bootstrap-table .table { margin-bottom: 0; border: 0 !important; }
+:root[data-theme] .uc-card .bootstrap-table .table thead th { border-left: 0 !important; border-right: 0 !important; }
+
+:root[data-theme] .uc-card .bootstrap-table .table > :not(caption) > * > * {
+    border-width: 0 0 1px 0 !important;
+    border-color: var(--tk-line-2) !important;
+}
+
+:root[data-theme] .uc-card .bootstrap-table .table thead th {
+    background: var(--tk-surface-2) !important;
+    border-bottom-color: var(--tk-line) !important;
+    color: var(--tk-ink-2);
+    font-size: 12px;
+    font-weight: 700;
+}
+
+:root[data-theme] .uc-card .bootstrap-table .table tbody tr:last-child > * { border-bottom-width: 0 !important; }
+:root[data-theme] .uc-card .bootstrap-table .table-hover > tbody > tr:hover > * { background: #fafbfd !important; }
+
+/* ---------- 提示条（layui elem-quote） ---------- */
+:root[data-theme] .uc-card .elem-quote,
+:root[data-theme] .uc-main .layui-elem-quote {
+    padding: 14px 16px;
+    border: 1px solid #d9e9f8 !important;
+    border-radius: 14px;
+    background: #f1f8fe !important;
+    color: var(--tk-ink);
+}
+
+/* ---------- 二级页签 / 标签页 ---------- */
+:root[data-theme] .uc-subtab { gap: 6px; padding-bottom: 12px; border-bottom-color: var(--tk-line-2); }
+
+:root[data-theme] .uc-subtab a {
+    border: 1px solid transparent !important;
+    border-radius: 999px !important;
+    margin-bottom: 0 !important;
+    padding: 8px 14px !important;
+    font-weight: 600;
+}
+
+:root[data-theme] .uc-subtab a:hover { background: var(--tk-surface-2); }
+:root[data-theme] .uc-subtab a.active { background: var(--tk-dark); color: #fff !important; border-color: var(--tk-dark) !important; }
+
+/* ---------- 移动端 ---------- */
+@media (max-width: 992px) {
+    :root[data-theme] .uc-nav-wrap { padding: 10px 16px 4px; }
+    :root[data-theme] .uc-nav { height: 64px; border-radius: 22px; }
+    :root[data-theme] .uc-brand__logo { width: 38px; height: 38px; }
+    :root[data-theme] .uc-main { padding: 18px 16px 50px; }
+    :root[data-theme] .uc-card { border-radius: 20px; }
+    :root[data-theme] .uc-card__head { padding: 16px 18px; }
+    :root[data-theme] .uc-card__body { padding: 16px 18px 18px; }
+    :root[data-theme] .uc-stats { gap: 12px; }
+
+    :root[data-theme] .uc-drawer { background: #fff; border-right-color: var(--tk-line); }
+    :root[data-theme] .uc-drawer__link { border-radius: 999px; font-weight: 600; }
+    :root[data-theme] .uc-drawer__link.active { background: var(--tk-dark); color: #fff; }
+    :root[data-theme] .uc-drawer__link.active .material-icons-outlined { color: #fff; }
+}
+
+@media (max-width: 520px) {
+    :root[data-theme] .uc-user__btn { padding: 0 4px; }
+    :root[data-theme] .uc-stat { padding: 16px; }
+    :root[data-theme] .uc-stat__value { font-size: 22px; }
+}

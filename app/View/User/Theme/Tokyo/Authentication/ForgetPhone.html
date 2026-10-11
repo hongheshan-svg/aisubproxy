@@ -1,0 +1,39 @@
+#{include file="../Index/Header.html" page="auth"}
+<main class="tokyo-auth">
+    <section class="tokyo-card tokyo-auth__card">
+        <div class="tokyo-eyebrow">RESET PASSWORD</div>
+        <h1 class="tokyo-auth__title">#{t("找回密码")}</h1>
+        <p class="tokyo-auth__sub">#{t("手机号遗失？")}<a href="/">#{t("联系客服")}</a>#{t("协助帮忙找回！")}</p>
+
+        <form class="needs-validation tokyo-auth__form">
+            <div>
+                <label class="form-label" for="username">#{t("手机号")}</label>
+                <input type="number" class="form-control" id="username" name="username" placeholder="#{t('手机号')}"
+                       autocomplete="tel" required>
+            </div>
+
+            <div>
+                <label class="form-label" for="captcha">#{t("验证码")}</label>
+                <div class="tokyo-captcha">
+                    <input type="text" class="form-control" id="captcha" name="captcha" placeholder="#{t('验证码')}"
+                           autocomplete="one-time-code">
+                    <button type="button" class="tokyo-captcha__send send-phone-captcha">#{t("发送验证码")}</button>
+                </div>
+            </div>
+
+            <div>
+                <label class="form-label" for="password">#{t("设置登录密码")}</label>
+                <input type="password" class="form-control" id="password" name="password"
+                       placeholder="#{t('设置登录密码')}" autocomplete="new-password" minlength="6" required>
+            </div>
+
+            <button type="submit" class="tokyo-btn tokyo-btn--dark tokyo-btn--block">
+                <i class="fa-duotone fa-regular fa-key"></i>#{t("确认重置")}
+            </button>
+        </form>
+
+        <p class="tokyo-auth__foot">#{t("想起密码？")}<a class="tokyo-link" href="/user/authentication/login">#{t("前往登录")}</a></p>
+    </section>
+</main>
+#{ready("/assets/user/controller/auth/forget.phone.js")}
+#{include file="../Index/Footer.html" page="auth"}

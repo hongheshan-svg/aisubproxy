@@ -1,0 +1,83 @@
+#{include file="../Index/Header.html" page="auth"}
+<main class="tokyo-auth">
+    <section class="tokyo-card tokyo-auth__card">
+        <div class="tokyo-eyebrow">CREATE ACCOUNT</div>
+        <h1 class="tokyo-auth__title">#{t("创建账号")}</h1>
+        <p class="tokyo-auth__sub">#{t("注册")}<a href="/">#{$config.shop_name}</a>#{t("，获取更多折扣！")}</p>
+
+        <form class="needs-validation tokyo-auth__form">
+            <div>
+                <label class="form-label" for="username">#{t("用户名，支持中文")}</label>
+                <input type="text" class="form-control" id="username" name="username"
+                       placeholder="#{t('用户名，支持中文')}" autocomplete="username" required>
+            </div>
+
+            <div>
+                <label class="form-label" for="password">#{t("设置登录密码")}</label>
+                <input type="password" class="form-control" id="password" name="password"
+                       placeholder="#{t('设置登录密码')}" autocomplete="new-password" minlength="6" required>
+            </div>
+
+            #{if $config.registered_type == 2}
+                <div>
+                    <label class="form-label" for="email">#{t("邮箱")}</label>
+                    <input type="email" class="form-control" id="email" name="email" placeholder="#{t('邮箱')}" required>
+                </div>
+                #{if $config.registered_email_verification == 1}
+                    <div>
+                        <label class="form-label" for="email_captcha">#{t("邮箱验证码")}</label>
+                        <div class="tokyo-captcha">
+                            <input type="text" class="form-control" id="email_captcha" name="email_captcha"
+                                   placeholder="#{t('邮箱验证码')}" autocomplete="one-time-code">
+                            <button type="button" class="tokyo-captcha__send send-email-code">#{t("发送验证码")}</button>
+                        </div>
+                    </div>
+                #{/if}
+            #{/if}
+
+            #{if $config.registered_type == 1}
+                <div>
+                    <label class="form-label" for="phone">#{t("手机号")}</label>
+                    <input type="number" class="form-control" id="phone" name="phone" placeholder="#{t('手机号')}" required>
+                </div>
+                #{if $config.registered_phone_verification == 1}
+                    <div>
+                        <label class="form-label" for="phone_captcha">#{t("手机验证码")}</label>
+                        <div class="tokyo-captcha">
+                            <input type="text" class="form-control" id="phone_captcha" name="phone_captcha"
+                                   placeholder="#{t('手机验证码')}" autocomplete="one-time-code">
+                            <button type="button" class="tokyo-captcha__send send-phone-captcha">#{t("发送验证码")}</button>
+                        </div>
+                    </div>
+                #{/if}
+            #{/if}
+
+            #{if $config.registered_verification == 1}
+                <div>
+                    <label class="form-label" for="image-captcha">#{t("图形验证码")}</label>
+                    <div class="tokyo-captcha">
+                        <input type="text" class="form-control" id="image-captcha" name="captcha"
+                               placeholder="#{t('请输入验证码')}" autocomplete="off">
+                        <img src="/user/captcha/image?action=register" data-acg-refresh="/user/captcha/image?action=register"
+                             class="image-code" alt="#{t('更换验证码')}" title="#{t('更换验证码')}">
+                    </div>
+                </div>
+            #{/if}
+
+            <button type="submit" class="tokyo-btn tokyo-btn--dark tokyo-btn--block">
+                <i class="fa-duotone fa-regular fa-user-plus"></i>#{t("注册")}
+            </button>
+        </form>
+
+        #{if getHookNum(\App\Consts\Hook::USER_VIEW_AUTH_REGISTER_BUTTON) > 0}
+            <div class="tokyo-auth__divider"><span>OR</span></div>
+        #{/if}
+        <!--start::HOOK-->
+        #{hook(\App\Consts\Hook::USER_VIEW_AUTH_REGISTER_BUTTON)}
+        <!--end::HOOK-->
+
+        <p class="tokyo-auth__foot">#{t("已有账号？")}<a class="tokyo-link" href="/user/authentication/login">#{t("前往登录")}</a></p>
+    </section>
+</main>
+#{ready("/assets/user/controller/auth/register.js")}
+#{include file="../Index/Footer.html" page="auth"}

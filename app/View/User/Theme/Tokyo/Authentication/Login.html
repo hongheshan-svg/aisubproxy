@@ -1,0 +1,63 @@
+#{include file="../Index/Header.html" page="auth"}
+<main class="tokyo-auth">
+    <section class="tokyo-card tokyo-auth__card">
+        <div class="tokyo-eyebrow">SIGN IN</div>
+        <h1 class="tokyo-auth__title">#{t("登录")}</h1>
+        <p class="tokyo-auth__sub">#{t("登入")}<a href="/">#{$config.shop_name}</a>#{t("，获取更多折扣！")}</p>
+
+        <form method="post" class="needs-validation tokyo-auth__form">
+            <div>
+                <label class="form-label" for="username">#{t("用户名/手机号/邮箱")}</label>
+                <input type="text" class="form-control" id="username" name="username"
+                       placeholder="#{t('用户名/手机号/邮箱')}" autocomplete="username webauthn" required>
+            </div>
+
+            <div>
+                <label class="form-label" for="password">#{t("密码")}</label>
+                <input type="password" class="form-control" id="password" name="password" placeholder="••••••••"
+                       autocomplete="current-password" minlength="6" required>
+            </div>
+
+            #{if $config.login_verification == 1}
+                <div>
+                    <label class="form-label" for="image-captcha">#{t("图形验证码")}</label>
+                    <div class="tokyo-captcha">
+                        <input type="text" class="form-control" id="image-captcha" name="captcha"
+                               placeholder="#{t('请输入验证码')}" autocomplete="off">
+                        <img src="/user/captcha/image?action=login" data-acg-refresh="/user/captcha/image?action=login"
+                             class="image-code" alt="#{t('更换验证码')}" title="#{t('更换验证码')}">
+                    </div>
+                </div>
+            #{/if}
+
+            <div class="tokyo-auth__row">
+                <label class="tokyo-check">
+                    <input id="rememberMe" name="remember" type="checkbox" value="1">
+                    <span>#{t("保持会话")}</span>
+                </label>
+                <a class="tokyo-link" href="#{if $config.forget_type == 0}/user/authentication/emailForget#{else}/user/authentication/phoneForget#{/if}">#{t("忘记密码？")}</a>
+            </div>
+
+            <button type="submit" class="tokyo-btn tokyo-btn--dark tokyo-btn--block">
+                <i class="fa-duotone fa-regular fa-right-to-bracket"></i>#{t("登录")}
+            </button>
+            <button type="button" id="passkey-login" class="tokyo-btn tokyo-btn--ghost tokyo-btn--block" hidden>
+                <i class="fa-duotone fa-regular fa-fingerprint"></i><span>#{t("使用通行密钥登录")}</span>
+            </button>
+        </form>
+
+        #{if getHookNum(\App\Consts\Hook::USER_VIEW_AUTH_LOGIN_BUTTON) > 0}
+            <div class="tokyo-auth__divider"><span>OR</span></div>
+        #{/if}
+        <!--start::HOOK-->
+        #{hook(\App\Consts\Hook::USER_VIEW_AUTH_LOGIN_BUTTON)}
+        <!--end::HOOK-->
+
+        #{if $config.registered_state == 1}
+            <p class="tokyo-auth__foot">#{t("还没有账号？")}<a class="tokyo-link" href="/user/authentication/register">#{t("立即注册")}</a></p>
+        #{/if}
+    </section>
+</main>
+#{ready("/assets/user/js/webauthn.js")}
+#{ready("/assets/user/controller/auth/login.js")}
+#{include file="../Index/Footer.html" page="auth"}

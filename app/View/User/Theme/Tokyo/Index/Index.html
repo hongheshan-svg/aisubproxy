@@ -1,0 +1,64 @@
+#{include file="./Header.html"}
+<main class="tokyo-shop">
+    <aside class="tokyo-card tokyo-cats">
+        <div class="tokyo-card__head">
+            <div class="tokyo-eyebrow">CATEGORIES</div>
+            <h2 class="tokyo-card__title">#{t("商品分类")}</h2>
+        </div>
+        <div class="tokyo-cats__list">
+            #{foreach $category as $cate}
+                <a href="javascript:void(0);" data-id="#{$cate.id}" data-name="#{lang($cate.name)}"
+                   class="tokyo-cat switch-category #{if $cate@first && $categoryId == 0}is-active#{elseif $cate.id == $categoryId}is-active#{/if}">
+                    <span class="tokyo-cat__icon">
+                        #{if $cate.icon}<img src="#{$cate.icon}" alt="" loading="lazy">#{else}<i class="fa-duotone fa-regular fa-folder"></i>#{/if}
+                    </span>
+                    <span class="tokyo-cat__name">#{lang($cate.name)}</span>
+                    <span class="tokyo-cat__count">#{$cate.commodity_count}</span>
+                </a>
+            #{/foreach}
+        </div>
+    </aside>
+
+    <section class="tokyo-card tokyo-catalog">
+        <div class="tokyo-card__head tokyo-catalog__head">
+            <div>
+                <div class="tokyo-eyebrow">CATALOG</div>
+                <h2 class="tokyo-card__title tokyo-catalog__title">#{t("全部商品")}</h2>
+            </div>
+            <form class="tokyo-search" role="search">
+                <i class="fa-duotone fa-regular fa-magnifying-glass"></i>
+                <input class="tokyo-search__input" type="search" placeholder="#{t('搜索商品关键词')}"
+                       aria-label="#{t('搜索商品关键词')}">
+                <button class="tokyo-search__btn" type="submit">
+                    <i class="fa-duotone fa-regular fa-magnifying-glass"></i>#{t("搜索")}
+                </button>
+            </form>
+        </div>
+
+        <div class="tokyo-table-wrap">
+            <table class="tokyo-table">
+                <colgroup>
+                    <col>
+                    <col class="tokyo-col-price">
+                    <col class="tokyo-col-stock">
+                    <col class="tokyo-col-action">
+                </colgroup>
+                <thead>
+                <tr>
+                    <th>#{t("商品")}</th>
+                    <th class="text-center">#{t("价格")}</th>
+                    <th class="text-center">#{t("库存")}</th>
+                    <th></th>
+                </tr>
+                </thead>
+                <tbody class="item-list">
+                <tr class="tokyo-table__state">
+                    <td colspan="4"><i class="fa-duotone fa-regular fa-spinner-third icon-spin"></i> #{t("正在加载商品列表...")}</td>
+                </tr>
+                </tbody>
+            </table>
+        </div>
+    </section>
+</main>
+#{ready($static|cat:"/Assets/Index.js?t=1")}
+#{include file="./Footer.html"}

@@ -1,0 +1,132 @@
+#{* 本站收银台：二维码 / 中转跳转 + 轮询支付状态。各插件的 View/{code}.html 直接 include 本文件。 *}
+#{$brand = $option.brand|default:''}
+#{if $brand == 'alipay'}#{$brandName = '支付宝'}#{$brandIcon = '/assets/user/images/cash/alipay.png'}#{$scanTip = '打开支付宝「扫一扫」完成付款'}#{$openText = '打开支付宝 App 付款'}
+#{elseif $brand == 'wechat'}#{$brandName = '微信支付'}#{$brandIcon = '/assets/user/images/cash/wechat.png'}#{$scanTip = '打开微信「扫一扫」完成付款；手机上可截图后在微信里识别'}#{$openText = ''}
+#{elseif $brand == 'qq'}#{$brandName = 'QQ钱包'}#{$brandIcon = ''}#{$scanTip = '打开手机 QQ「扫一扫」完成付款'}#{$openText = ''}
+#{elseif $brand == 'bank'}#{$brandName = '云闪付'}#{$brandIcon = ''}#{$scanTip = '使用云闪付或银行 App 扫码付款'}#{$openText = ''}
+#{elseif $brand == 'usdt'}#{$brandName = 'USDT'}#{$brandIcon = '/assets/user/images/cash/usdt.png'}#{$scanTip = '使用钱包扫码付款'}#{$openText = ''}
+#{else}#{$brandName = '在线支付'}#{$brandIcon = ''}#{$scanTip = '请扫码完成付款'}#{$openText = ''}#{/if}
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="referrer" content="origin">
+    <title>#{$brandName} - 收银台</title>
+    <style>
+        :root { --ink: #111418; --ink-2: #4a5260; --ink-3: #8a93a1; --line: #e5eaf0; --bg: #f4f8fc; --ok: #13834a; --brand: #0e1116; }
+        [data-brand="alipay"] { --brand: #1677ff; }
+        [data-brand="wechat"] { --brand: #07c160; }
+        [data-brand="qq"] { --brand: #12b7f5; }
+        [data-brand="bank"] { --brand: #e60012; }
+        [data-brand="usdt"] { --brand: #26a17b; }
+        * { box-sizing: border-box; }
+        html, body { margin: 0; min-height: 100%; background: linear-gradient(180deg, var(--bg) 0, #e6f2fd 100%); }
+        body { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", Roboto, sans-serif; color: var(--ink); -webkit-font-smoothing: antialiased; }
+        .ck { min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px 16px; }
+        .ck-card { width: 380px; max-width: 100%; background: #fff; border: 1px solid var(--line); border-radius: 26px; box-shadow: 0 1px 2px rgba(16,24,40,.04), 0 12px 36px rgba(16,24,40,.08); overflow: hidden; }
+        .ck-top { height: 6px; background: var(--brand); }
+        .ck-body { padding: 26px 26px 22px; text-align: center; }
+        .ck-brand { display: inline-flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 800; }
+        .ck-brand img { width: 26px; height: 26px; border-radius: 7px; object-fit: contain; }
+        .ck-brand i { width: 26px; height: 26px; border-radius: 7px; background: var(--brand); display: inline-block; }
+        .ck-amount { margin: 18px 0 2px; font-size: 38px; font-weight: 900; letter-spacing: -.02em; }
+        .ck-amount small { font-size: 18px; font-weight: 800; margin-right: 2px; }
+        .ck-no { font-size: 12px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+        .ck-qr { position: relative; width: 224px; height: 224px; margin: 20px auto 14px; padding: 12px; border: 1px solid var(--line); border-radius: 18px; }
+        .ck-qr canvas { width: 100%; height: 100%; display: block; }
+        .ck-qr.is-paid::after { content: "✓"; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; border-radius: 18px; background: rgba(255,255,255,.94); color: var(--ok); font-size: 64px; font-weight: 900; }
+        .ck-tip { margin: 0 0 16px; font-size: 13px; color: var(--ink-2); line-height: 1.6; }
+        .ck-btn { display: inline-flex; align-items: center; justify-content: center; width: 100%; height: 46px; border-radius: 999px; background: var(--brand); color: #fff; font-size: 14px; font-weight: 800; text-decoration: none; }
+        .ck-btn--ghost { background: #fff; color: var(--ink); border: 1px solid var(--line); margin-top: 10px; }
+        .ck-status { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 16px; padding-top: 16px; border-top: 1px solid #eef2f6; font-size: 13px; font-weight: 700; color: var(--ink-2); }
+        .ck-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--brand); animation: ck-pulse 1.2s ease-in-out infinite; }
+        .ck-status.is-paid { color: var(--ok); }
+        .ck-status.is-paid .ck-dot { background: var(--ok); animation: none; }
+        @keyframes ck-pulse { 50% { opacity: .25; } }
+        .ck-jump { margin: 26px 0 8px; color: var(--ink-2); font-size: 14px; }
+    </style>
+</head>
+<body>
+<main class="ck">
+    <section class="ck-card" id="ck" data-brand="#{$brand|escape:'html'}" data-mode="#{$option.mode|escape:'html'}"
+             data-content="#{$option.content|escape:'html'}" data-return="#{$option.return_url|escape:'html'}"
+             data-trade="#{$order->trade_no|escape:'html'}">
+        <div class="ck-top"></div>
+        <div class="ck-body">
+            <div class="ck-brand">
+                #{if $brandIcon}<img src="#{$brandIcon}" alt="">#{else}<i></i>#{/if}
+                <span>#{$brandName}</span>
+            </div>
+            <div class="ck-amount"><small>¥</small>#{if $order->gateway_amount}#{$order->gateway_amount|string_format:"%.2f"}#{else}#{$order->amount|string_format:"%.2f"}#{/if}</div>
+            <div class="ck-no">订单号 #{$order->trade_no|escape:'html'}</div>
+
+            #{if $option.mode == 'qrcode'}
+                <div class="ck-qr" id="ck-qr"></div>
+                <p class="ck-tip">#{$scanTip}</p>
+                #{if $option.open_url && $openText}
+                    <a class="ck-btn" href="#{$option.open_url|escape:'html'}">#{$openText}</a>
+                #{/if}
+            #{else}
+                <p class="ck-jump">正在前往支付页面…</p>
+                <a class="ck-btn" href="#{$option.content|escape:'html'}" rel="noreferrer">如未自动跳转，请点击这里</a>
+            #{/if}
+            #{if $option.return_url}
+                <a class="ck-btn ck-btn--ghost" href="#{$option.return_url|escape:'html'}">我已付款，查看订单</a>
+            #{/if}
+
+            <div class="ck-status" id="ck-status"><span class="ck-dot"></span><span id="ck-status-text">等待付款…</span></div>
+        </div>
+    </section>
+</main>
+<script src="/assets/common/js/jquery.min.js"></script>
+<script src="/assets/common/js/jquery.qrcode.min.js"></script>
+<script>
+(function () {
+    var box = document.getElementById('ck');
+    var d = box.dataset;
+
+    if (d.mode === 'qrcode') {
+        jQuery('#ck-qr').qrcode({render: 'canvas', width: 400, height: 400, text: d.content});
+    } else if (d.mode === 'jump' && /^(https?:|alipays?:|weixin:|upwrp:)/i.test(d.content)) {
+        setTimeout(function () { location.href = d.content; }, 300);
+    }
+
+    // 轮询订单状态。/user/api/order/state 限流 120 次 / 10 分钟，6 秒一次正好留出余量
+    var statusText = document.getElementById('ck-status-text');
+    var started = Date.now();
+    function poll() {
+        fetch('/user/api/order/state', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+            body: 'tradeNo=' + encodeURIComponent(d.trade)
+        }).then(function (r) { return r.json(); }).then(function (res) {
+            if (res && res.code === 200 && res.data && Number(res.data.status) === 1) {
+                paid();
+                return;
+            }
+            next();
+        }).catch(next);
+    }
+    function next() {
+        var elapsed = Date.now() - started;
+        if (elapsed > 30 * 60 * 1000) {
+            statusText.textContent = '已停止自动刷新，付款后请点击「查看订单」';
+            return;
+        }
+        setTimeout(poll, elapsed > 10 * 60 * 1000 ? 15000 : 6000);
+    }
+    function paid() {
+        document.getElementById('ck-status').classList.add('is-paid');
+        statusText.textContent = '支付成功，正在跳转…';
+        var qr = document.getElementById('ck-qr');
+        qr && qr.classList.add('is-paid');
+        if (d['return']) {
+            setTimeout(function () { location.href = d['return']; }, 1200);
+        }
+    }
+    setTimeout(poll, 3000);
+})();
+</script>
+</body>
+</html>

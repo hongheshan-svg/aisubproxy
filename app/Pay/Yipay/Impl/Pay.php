@@ -60,17 +60,17 @@ class Pay extends Base implements \App\Pay\Pay
 
         $brand = self::BRANDS[$this->code] ?? '';
         if (!empty($data['qrcode'])) {
-            return Checkout::qrcode((string)$data['qrcode'], $brand, $this->returnUrl);
+            return Checkout::qrcode((string)$data['qrcode'], $brand, $this->returnUrl, '', $this->callbackUrl);
         }
         $url = (string)($data['payurl'] ?? $data['urlscheme'] ?? '');
         if ($url === '') {
             throw new JSONException("易支付下单失败：网关未返回支付地址");
         }
-        return Checkout::jump($url, $brand, $this->returnUrl);
+        return Checkout::jump($url, $brand, $this->returnUrl, $this->callbackUrl);
     }
 
     /**
-     * 后台常有人把 submit.php 一起填进来，统一去掉
+     * 后台常有人把 submit.php（或 mapi.php、api.php）一起填进来，统一去掉
      */
     public static function gateway(string $url): string
     {
@@ -78,6 +78,6 @@ class Pay extends Base implements \App\Pay\Pay
         if ($url === '') {
             throw new JSONException("易支付网关地址未配置");
         }
-        return (string)preg_replace('#/(submit|mapi)\.php$#i', '', $url);
+        return (string)preg_replace('#/(submit|mapi|api)\.php$#i', '', $url);
     }
 }

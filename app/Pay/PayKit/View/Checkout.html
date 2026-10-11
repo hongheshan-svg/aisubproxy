@@ -51,7 +51,7 @@
 <main class="ck">
     <section class="ck-card" id="ck" data-brand="#{$brand|escape:'html'}" data-mode="#{$option.mode|escape:'html'}"
              data-content="#{$option.content|escape:'html'}" data-return="#{$option.return_url|escape:'html'}"
-             data-trade="#{$order->trade_no|escape:'html'}">
+             data-trade="#{$order->trade_no|escape:'html'}" data-query="#{$option.query_url|default:''|escape:'html'}">
         <div class="ck-top"></div>
         <div class="ck-body">
             <div class="ck-brand">
@@ -95,11 +95,20 @@
     // 轮询订单状态。/user/api/order/state 限流 120 次 / 10 分钟，6 秒一次正好留出余量
     var statusText = document.getElementById('ck-status-text');
     var started = Date.now();
-    function poll() {
-        fetch('/user/api/order/state', {
+    var polls = 0;
+    function post(url, body) {
+        return fetch(url, {
             method: 'POST',
             headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-            body: 'tradeNo=' + encodeURIComponent(d.trade)
+            body: body
+        });
+    }
+    function poll() {
+        polls++;
+        // 每轮询三次，顺带让本站去支付平台主动查一次单：平台通知迟迟不到时也能确认付款并发货。服务端对同一单限流
+        var ask = d.query && polls % 3 === 0 ? post(d.query, 'pay_query=1').catch(function () {}) : Promise.resolve();
+        ask.then(function () {
+            return post('/user/api/order/state', 'tradeNo=' + encodeURIComponent(d.trade));
         }).then(function (r) { return r.json(); }).then(function (res) {
             if (res && res.code === 200 && res.data && Number(res.data.status) === 1) {
                 paid();

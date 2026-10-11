@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace App\Pay\WechatPayV3\Impl;
 
+use App\Pay\PayKit\ActiveQuery;
 use App\Pay\PayKit\Rsa;
 use Kernel\Util\Context;
 
@@ -14,9 +15,15 @@ class Signature implements \App\Pay\Signature
      *
      * 验签/解密失败时返回 HTTP 500：系统默认对拒绝的回调回 200，
      * 而微信 APIv3 把任何 2xx 都当作「已收到」，不会再重试，配置写错时这笔款就收不到通知了。
+     *
+     * 带 pay_query 的请求是主动查单，不是通知，见 PayKit\ActiveQuery
      */
     public function verification(array $data, array $config): bool
     {
+        if (ActiveQuery::requested($data)) {
+            return ActiveQuery::run('WechatPayV3', new Query(), $config);
+        }
+
         $body = (string)file_get_contents('php://input');
 
         $ok = self::verifyMessage(

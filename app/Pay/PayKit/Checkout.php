@@ -95,12 +95,12 @@ final class Checkout
     ];
 
     /**
-     * 本站加密货币收银台（PayKit/View/Crypto.html）：金额、收款地址或 Pay ID、二维码、倒计时，以及转账说明和提醒
+     * 本站加密货币收银台（PayKit/View/Crypto.html）：金额、收款地址、二维码、倒计时，以及转账说明和提醒
      *
-     * @param string $mode chain 链上转账 | pay 币安 Pay | cashier 先看说明、再去网关收银台选网络
+     * @param string $mode chain 链上转账 | cashier 先看说明、再去网关收银台选网络
      * @param string $asset 币种，如 USDT
-     * @param string $chain CHAINS 的键；pay、cashier 模式可空
-     * @param string $target 收款地址或 Pay ID；cashier 模式可空
+     * @param string $chain CHAINS 的键；cashier 模式可空
+     * @param string $target 收款地址；cashier 模式可空
      * @param string $amount 要付的币数，原样展示（不要转 float，免得丢掉尾数）
      * @param array $extra label、cny、rate、expires（时间戳）、cashier_url、return_url、query_url（回调地址，主动查单用）
      */

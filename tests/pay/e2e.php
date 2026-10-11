@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 /**
  * 支付插件端到端测试：真实下单 / 余额充值 → 网关模拟器收单 → 异步通知 → 订单已付款并发货 / 余额到账；
- * 以及通知丢失时的主动查单（收银台页面触发、PayKit/cron.php 定时任务触发），和币安个人账户收款（唯一金额对账）。
+ * 以及通知丢失时的主动查单（收银台页面触发、PayKit/cron.php 定时任务触发）。
  *
  * 在站点容器里运行（需要能连本站数据库，站点监听 127.0.0.1:80）：
  *
@@ -27,11 +27,6 @@ const TEST_USER = 'e2e_recharge';
 const RECHARGE_AMOUNT = '12.34';
 const ORDER_CALLBACK = '/user/api/order/callback.';
 const RECHARGE_CALLBACK = '/user/api/rechargeNotification/callback.';
-const BINANCE_KEY = 'mock-binance-key';
-const BINANCE_SECRET = 'mock-binance-secret';
-const BINANCE_RATE = 7.2;
-const BINANCE_DIR = BASE . '/runtime/binance-personal';
-const COINGECKO = MOCK . '/coingecko/api/v3/simple/price?ids=tether&vs_currencies=cny';
 
 date_default_timezone_set('Asia/Shanghai'); //与站点一致：要按站点时区改订单的 create_time
 
@@ -98,11 +93,6 @@ function cents(mixed $value): string
  */
 function cleanup(PDO $pdo, callable $t): array
 {
-    $tradeNos = array_merge(
-        $pdo->query("SELECT trade_no FROM {$t('order')} WHERE contact = " . $pdo->quote(CONTACT))->fetchAll(PDO::FETCH_COLUMN),
-        $pdo->query("SELECT r.trade_no FROM {$t('user_recharge')} r JOIN {$t('user')} u ON u.id = r.user_id WHERE u.username = " . $pdo->quote(TEST_USER))->fetchAll(PDO::FETCH_COLUMN)
-    );
-    binance_forget($tradeNos);
     $ids = $pdo->query("SELECT id FROM {$t('order')} WHERE contact = " . $pdo->quote(CONTACT))->fetchAll(PDO::FETCH_COLUMN);
     if ($ids) {
         $idList = implode(',', array_map('intval', $ids));
@@ -120,36 +110,6 @@ function cleanup(PDO $pdo, callable $t): array
     $pdo->exec("DELETE FROM {$t('pay')} WHERE name LIKE " . $pdo->quote(LABEL . '%'));
     $pdo->exec("DELETE FROM {$t('pay_config')} WHERE name LIKE " . $pdo->quote(LABEL . '%'));
     return [count($ids), count($users)];
-}
-
-/** 测试用币安账户（含故意填错 Secret 的那套）的缓存文件名后缀，与 BinancePersonal\Impl\Binance::account 一致 */
-function binance_accounts(): array
-{
-    return [substr(md5(BINANCE_KEY . "\n" . BINANCE_SECRET), 0, 12), substr(md5(BINANCE_KEY . "\nwrong-secret"), 0, 12)];
-}
-
-/** 从币安收款台账里摘掉测试订单的金额占用和到账认领，删掉测试账户的地址/记录缓存；台账文件不存在就不碰（免得以 root 建出站点写不了的文件） */
-function binance_forget(array $tradeNos): void
-{
-    $file = BINANCE_DIR . '/ledger.json';
-    if ($tradeNos && is_file($file) && ($fp = fopen($file, 'c+'))) {
-        flock($fp, LOCK_EX);
-        $ledger = json_decode((string)stream_get_contents($fp), true) ?: [];
-        $drop = array_flip(array_map('strval', $tradeNos));
-        $ledger['orders'] = array_diff_key($ledger['orders'] ?? [], $drop);
-        $ledger['used'] = array_filter($ledger['used'] ?? [], fn($u) => !isset($drop[$u['trade_no'] ?? '']));
-        ftruncate($fp, 0);
-        rewind($fp);
-        fwrite($fp, json_encode($ledger, JSON_UNESCAPED_SLASHES));
-        flock($fp, LOCK_UN);
-        fclose($fp);
-    }
-    foreach (binance_accounts() as $account) {
-        foreach (glob(BINANCE_DIR . "/*-{$account}.json") ?: [] as $f) {
-            @unlink($f);
-        }
-    }
-    @unlink(BINANCE_DIR . '/rate-' . substr(md5(COINGECKO), 0, 12) . '.json');
 }
 
 if (isset($opts['cleanup'])) {
@@ -193,8 +153,6 @@ function test_member(PDO $pdo, callable $t): array
 @mkdir(MOCK_DIR, 0777, true);
 @unlink(MOCK_DIR . '/orders.json');
 @unlink(MOCK_DIR . '/cron-state.json');
-@unlink(MOCK_DIR . '/binance.json');
-@unlink(MOCK_DIR . '/coingecko.json');
 [$aliAppPriv, $aliAppPub] = keypair();
 [$aliPlatPriv, $aliPlatPub] = keypair();
 [$wxMchPriv, $wxMchPub] = keypair();
@@ -206,7 +164,6 @@ $keys = [
     'wechat_platform_private' => $wxPlatPriv, 'wechat_platform_serial' => 'PUB_KEY_ID_0114232134912410000000000000',
     'wechat_apiv3_key' => 'MockApiV3Key0123456789abcdefABCD',
     'usdt_token' => 'epusdt_password_mock', 'gm_pid' => '1000', 'gm_secret' => 'gm_secret_mock',
-    'binance_key' => BINANCE_KEY, 'binance_secret' => BINANCE_SECRET,
 ];
 file_put_contents(MOCK_DIR . '/keys.json', json_encode($keys));
 
@@ -224,16 +181,7 @@ $configs = [
     'Usdt' => ['UsdtGateway', ['protocol' => 'epusdt', 'url' => MOCK . '/usdt', 'token' => 'epusdt_password_mock', 'timeout' => '1200']],
     'Usdt.gateway' => ['UsdtGateway', ['protocol' => 'epusdt', 'url' => MOCK . '/usdt', 'token' => 'epusdt_password_mock', 'checkout' => 'gateway']],
     'GmPay' => ['UsdtGateway', ['protocol' => 'gmpay', 'url' => MOCK . '/usdt', 'token' => 'gm_secret_mock', 'pid' => '1000']],
-    'Binance' => ['BinancePersonal', ['api_key' => BINANCE_KEY, 'api_secret' => BINANCE_SECRET, 'rate' => (string)BINANCE_RATE, 'timeout' => '20',
-        'pay_id' => '123456789', 'api_base' => MOCK . '/binance']],
-    'Binance.badsecret' => ['BinancePersonal', ['api_key' => BINANCE_KEY, 'api_secret' => 'wrong-secret', 'rate' => (string)BINANCE_RATE, 'timeout' => '20',
-        'pay_id' => '123456789', 'api_base' => MOCK . '/binance']],
 ];
-// 自动汇率的几种写法，都走模拟的 CoinGecko
-foreach (['auto' => '', 'mul' => '~1.02', 'add' => '+0.1', 'sub' => '-0.1', 'bad' => '7,2'] as $label => $rate) {
-    $configs["Binance.rate.{$label}"] = ['BinancePersonal', ['api_key' => BINANCE_KEY, 'api_secret' => BINANCE_SECRET, 'rate' => $rate, 'timeout' => '20',
-        'pay_id' => '123456789', 'api_base' => MOCK . '/binance', 'rate_api' => COINGECKO]];
-}
 
 // [名称, 配置, code, 呈现方式, 期望内容, 额外检查]
 $scenarios = [
@@ -513,11 +461,6 @@ try {
         foreach (glob(BASE . '/runtime/pay-query/*') ?: [] as $f) {
             @unlink($f);
         }
-        foreach (binance_accounts() as $account) {
-            foreach (glob(BINANCE_DIR . "/records-*-{$account}.json") ?: [] as $f) {
-                @unlink($f);
-            }
-        }
     };
     $mockPay = fn(string $no, ?string $amount = null) => http('GET', MOCK . '/_mock/pay?' . http_build_query(['order' => $no] + ($amount === null ? [] : ['amount' => $amount])));
     $mockQueries = fn(string $no) => (int)(((json_decode(http('GET', MOCK . '/_mock/orders')['body'], true) ?: [])[$no] ?? [])['queries'] ?? 0);
@@ -634,157 +577,6 @@ try {
     check('定时任务查到充值单已付款并入账', ($rechargeRow($rechargeNo)['status'] ?? null) == 1 && $gained($before) === RECHARGE_AMOUNT && str_contains($out, "#{$rechargeNo} 已付款"), $rechargeNo);
     $out = $cron();
     check('一分钟内再跑：刚查过的未付款单按间隔跳过', str_contains($out, '本次查单 0 笔'), trim($out));
-
-    // ============================================================ 币安收款（个人账户）
-    // 没有支付通知，全靠「唯一金额 + 查到账记录」对账；到账记录由 /_mock/binance/deposit、/_mock/binance/pay 写进模拟器
-    echo "\n━━ 币安收款（个人账户） ━━\n";
-    binance_forget([]);
-    $binanceCalls = fn() => json_decode(http('GET', MOCK . '/_mock/binance/calls')['body'], true) ?: [];
-    $deposit = fn(string $amount, string $network = 'TRX', int $status = 1, ?int $time = null)
-        => http('GET', MOCK . '/_mock/binance/deposit?' . http_build_query(['amount' => $amount, 'network' => $network, 'status' => $status] + ($time ? ['time' => $time] : [])));
-    $binancePay = fn(string $amount, string $type = 'C2C') => http('GET', MOCK . '/_mock/binance/pay?' . http_build_query(['amount' => $amount, 'type' => $type]));
-    // 收银台页面上的 data-* 属性
-    $cryptoPage = function (string $url): array {
-        preg_match_all('/data-(mode|target|amount|expires|query)="([^"]*)"/', http('GET', SITE . $url)['body'], $m, PREG_SET_ORDER);
-        $out = [];
-        foreach ($m as [, $k, $v]) {
-            $out[$k] = html_entity_decode($v, ENT_QUOTES);
-        }
-        return $out;
-    };
-    $baseUsdt = fn(mixed $cny) => cents(ceil(round((float)$cny / BINANCE_RATE * 100, 6)) / 100);
-
-    echo "\n▶ 币安 · 链上充值 USDT-TRC20\n";
-    $payId = $newPay('BinancePersonal', 'trc20', $configIds['Binance']);
-    $resA = $order($payId);
-    $resB = $order($payId);
-    $a = (string)($resA['data']['tradeNo'] ?? '');
-    $b = (string)($resB['data']['tradeNo'] ?? '');
-    $pageA = $cryptoPage((string)($resA['data']['url'] ?? ''));
-    $pageB = $cryptoPage((string)($resB['data']['url'] ?? ''));
-    $usdtA = $pageA['amount'] ?? '';
-    $usdtB = $pageB['amount'] ?? '';
-    $base = $baseUsdt($orderRow($a)['gateway_amount'] ?? 0);
-    check("收银台展示币安充值地址和金额 {$usdtA} USDT（¥{$resA['data']['amount']} ÷ " . BINANCE_RATE . "，向上取到分）",
-        ($pageA['mode'] ?? '') === 'chain' && ($pageA['target'] ?? '') === 'MockTRXDepositAddress' && (float)$usdtA >= (float)$base && ($pageA['query'] ?? '') === ORDER_CALLBACK . $a,
-        json_encode($pageA, JSON_UNESCAPED_UNICODE));
-    check("同价的第二笔单分到不同金额 {$usdtB} USDT", $usdtB !== '' && $usdtB !== $usdtA && (float)$usdtB >= (float)$base, "{$usdtA} / {$usdtB}");
-    check('充值地址从币安接口取一次后缓存', (int)($binanceCalls()['/sapi/v1/capital/deposit/address'] ?? 0) === 1, json_encode($binanceCalls()));
-
-    $q = $query(ORDER_CALLBACK, $a);
-    check('还没到账：查单回「尚未付款」', !$queryAcked($q) && str_contains($q['msg'], '尚未付款'), $q['body']);
-    $deposit(cents((float)$usdtA - 0.01));
-    $deposit(sprintf('%.3f', (float)$usdtA + 0.001));
-    $deposit($usdtA, 'BSC');
-    $deposit($usdtA, 'TRX', 0);
-    $deposit($usdtA, 'TRX', 1, (time() - 600) * 1000);
-    $unthrottle();
-    $q = $query(ORDER_CALLBACK, $a);
-    check('差一分、有零头、网络不对、还在确认中、下单前的旧到账，都不认', !$queryAcked($q) && ($orderRow($a)['status'] ?? null) == 0, $q['body']);
-    $deposit($usdtA);
-    $unthrottle();
-    $q = $query(ORDER_CALLBACK, $a);
-    $row = $orderRow($a);
-    check('金额、网络都对上的到账：订单已付款并发货', $queryAcked($q) && ($row['status'] ?? null) == 1 && !empty($row['secret']), $q['body'] . ' ' . json_encode($row, JSON_UNESCAPED_UNICODE));
-
-    $c = (string)($order($payId)['data']['tradeNo'] ?? '');
-    $usdtC = $cryptoPage('/user/pay/order.' . $c . '.1')['amount'] ?? '';
-    check("已付款订单的金额在保留期内不分给新订单（新单 {$usdtC} USDT）", $usdtC !== '' && !in_array($usdtC, [$usdtA, $usdtB], true), "{$usdtA} / {$usdtB} / {$usdtC}");
-
-    $deposit($usdtB, 'TRX', 6);
-    $unthrottle();
-    $out = $cron();
-    check('「已入账、暂不能提现」也算到账，定时任务自动确认', ($orderRow($b)['status'] ?? null) == 1 && str_contains($out, "#{$b} 已付款"), trim($out));
-
-    echo "\n▶ 币安 · 币安 Pay 转账\n";
-    $payId = $newPay('BinancePersonal', 'pay', $configIds['Binance']);
-    $res = $order($payId);
-    $p = (string)($res['data']['tradeNo'] ?? '');
-    $page = $cryptoPage((string)($res['data']['url'] ?? ''));
-    $usdtP = $page['amount'] ?? '';
-    check("收银台展示 Pay ID 和金额 {$usdtP} USDT", ($page['mode'] ?? '') === 'pay' && ($page['target'] ?? '') === '123456789' && $usdtP !== '', json_encode($page, JSON_UNESCAPED_UNICODE));
-    $binancePay('-' . $usdtP);
-    $binancePay($usdtP, 'PAY_REFUND');
-    $unthrottle();
-    $q = $query(ORDER_CALLBACK, $p);
-    check('转出、退款记录不算收款', !$queryAcked($q) && ($orderRow($p)['status'] ?? null) == 0, $q['body']);
-    $binancePay($usdtP);
-    $unthrottle();
-    $q = $query(ORDER_CALLBACK, $p);
-    check('收到金额相符的 Pay 转账：订单已付款并发货', $queryAcked($q) && ($orderRow($p)['status'] ?? null) == 1 && !empty($orderRow($p)['secret']), $q['body']);
-
-    echo "\n▶ 币安 · 余额充值 USDT-BEP20\n";
-    $payId = $newPay('BinancePersonal', 'bep20', $configIds['Binance'], true);
-    $res = $recharge($payId, RECHARGE_AMOUNT);
-    $r = (string)($res['data']['tradeNo'] ?? '');
-    $page = $cryptoPage((string)($res['data']['url'] ?? ''));
-    $usdtR = $page['amount'] ?? '';
-    check("充值 ¥" . RECHARGE_AMOUNT . " 要付 {$usdtR} USDT", ($page['target'] ?? '') === 'MockBSCDepositAddress' && (float)$usdtR >= (float)$baseUsdt(RECHARGE_AMOUNT)
-        && ($page['query'] ?? '') === RECHARGE_CALLBACK . $r, json_encode($page, JSON_UNESCAPED_UNICODE));
-    $before = $member();
-    $deposit($usdtR, 'BSC');
-    $unthrottle();
-    $q = $query(RECHARGE_CALLBACK, $r);
-    check('到账后余额 +¥' . RECHARGE_AMOUNT, $queryAcked($q) && ($rechargeRow($r)['status'] ?? null) == 1 && $gained($before) === RECHARGE_AMOUNT, $q['body'] . ' 实际 +¥' . $gained($before));
-
-    echo "\n▶ 币安 · 伪造回调与配置错误\n";
-    $payId = $newPay('BinancePersonal', 'trc20', $configIds['Binance']);
-    $f = (string)($order($payId)['data']['tradeNo'] ?? '');
-    $res = http('POST', SITE . ORDER_CALLBACK . $f, ['order_id' => $f, 'status' => 'paid', 'amount' => (string)($orderRow($f)['gateway_amount'] ?? '')]);
-    check('冒充的「已付款」回调被拒绝（个人账户只认查单）', ($orderRow($f)['status'] ?? null) == 0 && trim($res['body']) !== 'success', substr($res['body'], 0, 80));
-    $payId = $newPay('BinancePersonal', 'trc20', $configIds['Binance.badsecret']);
-    $res = $order($payId);
-    check('Secret Key 填错：下单时直接报错，不会给出收款地址', ($res['code'] ?? 0) !== 200 && str_contains((string)($res['msg'] ?? ''), '币安接口错误'), (string)($res['msg'] ?? ''));
-
-    echo "\n▶ 币安 · 自动汇率\n";
-    $coingecko = fn(array $q) => json_decode(http('GET', MOCK . '/_mock/coingecko?' . http_build_query($q))['body'], true) ?: [];
-    $rateCache = BINANCE_DIR . '/rate-' . substr(md5(COINGECKO), 0, 12) . '.json';
-    // 下一笔单：返回 [收银台显示的汇率, USDT 金额, 下单失败时的提示]
-    $rateOrder = function (string $configLabel) use ($newPay, $order, $configIds): array {
-        $res = $order($newPay('BinancePersonal', 'trc20', $configIds[$configLabel]));
-        if (($res['code'] ?? 0) !== 200) {
-            return [null, null, (string)($res['msg'] ?? '')];
-        }
-        $body = http('GET', SITE . $res['data']['url'])['body'];
-        preg_match('/1 USDT = ¥([\d.]+)/u', $body, $rm);
-        preg_match('/data-amount="([^"]*)"/', $body, $um);
-        return [$rm[1] ?? null, $um[1] ?? null, ''];
-    };
-    $atLeast = fn(?string $usdt, float $rate) => $usdt !== null && (float)$usdt >= (float)cents(ceil(round(7 / $rate * 100, 6)) / 100);
-    @unlink($rateCache);
-    $coingecko(['cny' => 7.1]);
-
-    [$rate, $usdt] = $rateOrder('Binance.rate.auto');
-    check("留空：自动取实时价 7.1，¥7 付 {$usdt} USDT", $rate === '7.1' && $atLeast($usdt, 7.1), "汇率 {$rate}");
-    [$rate] = $rateOrder('Binance.rate.mul');
-    check('~1.02：实时价 × 1.02 = 7.242', $rate === '7.242', "汇率 {$rate}");
-    [$rate, , $msg] = $rateOrder('Binance.rate.add');
-    check('+0.1：实时价 + 0.1 = 7.2', $rate === '7.2', "汇率 {$rate} {$msg}");
-    [$rate, , $msg] = $rateOrder('Binance.rate.sub');
-    check('-0.1：实时价 - 0.1 = 7', $rate === '7', "汇率 {$rate} {$msg}");
-
-    $coingecko(['cny' => 7.3]);
-    $calls = (int)($coingecko(['cny' => 7.3])['calls'] ?? 0);
-    [$rate] = $rateOrder('Binance.rate.auto');
-    check('10 分钟内复用缓存的价格，不重复请求', $rate === '7.1' && (int)($coingecko(['cny' => 7.3])['calls'] ?? 0) === $calls, "汇率 {$rate}");
-    @unlink($rateCache);
-    [$rate] = $rateOrder('Binance.rate.auto');
-    check('缓存过期后取到新价格 7.3', $rate === '7.3', "汇率 {$rate}");
-
-    $coingecko(['fail' => 1]);
-    file_put_contents($rateCache, json_encode(['at' => time() - 3600, 'rate' => 7.3])); //把缓存改成 1 小时前取的：过了 10 分钟有效期，但还在 6 小时兜底期内
-    [$rate] = $rateOrder('Binance.rate.auto');
-    check('接口暂时连不上：用 6 小时内取到过的价格', $rate === '7.3', "汇率 {$rate}");
-    @unlink($rateCache);
-    [, , $msg] = $rateOrder('Binance.rate.auto');
-    check('连不上又没有可用的旧价格：拒绝下单并提示改固定汇率', str_contains($msg, '自动获取 USDT 汇率失败'), $msg);
-
-    $coingecko(['cny' => 0.5]);
-    [, , $msg] = $rateOrder('Binance.rate.auto');
-    check('接口返回离谱价格（0.5）：拒绝下单', str_contains($msg, '自动获取 USDT 汇率失败'), $msg);
-    $coingecko(['cny' => 7.1]);
-    [, , $msg] = $rateOrder('Binance.rate.bad');
-    check('汇率写法不对（7,2）：拒绝下单并说明正确写法', str_contains($msg, '汇率格式不正确'), $msg);
 } finally {
     if (!$keep) {
         [$orders, $users] = cleanup($pdo, $t);

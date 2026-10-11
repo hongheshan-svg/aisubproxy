@@ -1,4 +1,4 @@
-#{* 加密货币收银台：链上转账（地址 + 二维码）、币安 Pay（Pay ID）、网关收银台（先说明再跳转）三种模式，附转账说明和提醒。
+#{* 加密货币收银台：链上转账（地址 + 二维码）、网关收银台（先说明再跳转）两种模式，附转账说明和提醒。
    各插件的 View/{code}.html 直接 include 本文件，数据由 PayKit\Checkout::crypto() 组装。 *}
 #{$mode = $option.mode|default:'chain'}
 #{$asset = $option.asset|default:'USDT'}
@@ -84,31 +84,17 @@
                     <div class="ck-copy"><code>#{$option.amount|escape:'html'}</code><button type="button" data-copy="#{$option.amount|escape:'html'}">复制</button></div>
                 </div>
 
-                #{if $mode == 'pay'}
-                    <div class="ck-field">
-                        <label>收款方币安 Pay ID</label>
-                        <div class="ck-copy"><code>#{$option.target|escape:'html'}</code><button type="button" data-copy="#{$option.target|escape:'html'}">复制</button></div>
-                    </div>
-                    <ol class="ck-steps">
-                        <li>打开币安 App →「支付」→「发送」</li>
-                        <li>收款人选 Pay ID，填上面的 Pay ID</li>
-                        <li>币种选 <b>#{$asset|escape:'html'}</b>，金额填 <b>#{$option.amount|escape:'html'}</b>，确认发送</li>
-                    </ol>
-                #{else}
-                    <div class="ck-qr" id="ck-qr"></div>
-                    <div class="ck-field">
-                        <label>收款地址（#{$network|escape:'html'}）</label>
-                        <div class="ck-copy"><code>#{$option.target|escape:'html'}</code><button type="button" data-copy="#{$option.target|escape:'html'}">复制</button></div>
-                    </div>
-                #{/if}
+                <div class="ck-qr" id="ck-qr"></div>
+                <div class="ck-field">
+                    <label>收款地址（#{$network|escape:'html'}）</label>
+                    <div class="ck-copy"><code>#{$option.target|escape:'html'}</code><button type="button" data-copy="#{$option.target|escape:'html'}">复制</button></div>
+                </div>
             #{/if}
 
             <div class="ck-notes">
                 <h2>转账说明和提醒</h2>
                 <ol>
-                    #{if $mode == 'pay'}
-                        <li>仅可通过 <b>币安 Pay</b> 转账，币种选 <b>#{$asset|escape:'html'}</b>。请勿发送其他币种。</li>
-                    #{elseif $mode == 'cashier'}
+                    #{if $mode == 'cashier'}
                         <li>在收银台选好网络后，只能通过<b>所选网络</b>发送对应的币种。请勿发送其他资产，也不要换用其他网络。</li>
                     #{elseif $native && $native != $asset}
                         <li>仅可通过 <b>#{$network|escape:'html'}</b> 发送 <b>#{$asset|escape:'html'}</b>。请勿发送 #{$native|escape:'html'} 或其他资产。</li>
@@ -116,13 +102,9 @@
                         <li>仅可通过 <b>#{$network|escape:'html'}</b> 发送 <b>#{$asset|escape:'html'}</b>。请勿发送其他资产，也不要换用其他网络。</li>
                     #{/if}
                     <li>请<b>准确发送显示的金额</b>，包括所有小数位。直接复制金额，不要四舍五入。</li>
-                    #{if $mode == 'pay'}
-                        <li>币安 Pay 转账没有手续费，金额填页面显示的数字即可。</li>
-                    #{else}
-                        <li>如果交易所从发送的金额中<b>扣除提现手续费</b>，请确保此地址收到的净金额与显示的金额完全一致。</li>
-                    #{/if}
-                    <li>如果尚未付款，请在订单过期前转账。如果已发货，请勿再次付款。只有在系统验证实际收到的金额与订单金额相符#{if $mode == 'pay'}且币安确认到账#{else}且链上确认完成#{/if}后，才会自动发货。</li>
-                    <li>如有任何问题，请联系客服并提供您的商家订单号（#{$order->trade_no|escape:'html'}）和#{if $mode == 'pay'}币安 Pay 交易单号#{else}交易哈希值#{/if}。</li>
+                    <li>如果交易所从发送的金额中<b>扣除提现手续费</b>，请确保#{if $mode == 'cashier'}收款地址#{else}此地址#{/if}收到的净金额与显示的金额完全一致。</li>
+                    <li>如果尚未付款，请在订单过期前转账。如果已发货，请勿再次付款。只有在系统验证实际收到的金额与订单金额相符且链上确认完成后，才会自动发货。</li>
+                    <li>如有任何问题，请联系客服并提供您的商家订单号（#{$order->trade_no|escape:'html'}）和交易哈希值。</li>
                 </ol>
             </div>
 

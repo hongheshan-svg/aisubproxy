@@ -8,9 +8,7 @@ declare(strict_types=1);
  *
  * 模拟易支付、支付宝开放平台、微信支付 APIv3、BEpusdt / GM Pay 四类网关：
  * 校验站点发来的下单请求签名、返回带签名的应答、按各平台格式发送签名正确（或故意篡改）的异步通知，
- * 并提供易支付、支付宝、微信的查单接口（主动查单测试用）；
- * 还模拟币安现货 API 的充值地址、充值记录、Pay 交易记录（币安个人账户收款测试用），到账记录由 /_mock/binance/* 写入；
- * 以及 CoinGecko 的 USDT 人民币价格（自动汇率测试用），价格由 /_mock/coingecko 设置。
+ * 并提供易支付、支付宝、微信的查单接口（主动查单测试用）。
  * 签名/加密全部独立实现，不引用 app/Pay 下的代码，这样才能交叉验证插件实现是否正确。
  *
  * 密钥与配置由 e2e.php 写入 $MOCK_DIR/keys.json，已收到的下单记录存在 $MOCK_DIR/orders.json。
@@ -267,100 +265,6 @@ if (preg_match('#^/usdt/(api/v1|payments/gmpay/v1)/order/create-(transaction|ord
         'token' => 'TMockReceiveAddress', 'expiration_time' => 600, 'status' => 1,
         'payment_url' => 'http://127.0.0.1:9100/usdt/pay/checkout-counter/' . $tradeId,
     ]]);
-    return;
-}
-
-// ---------------------------------------------------------------- 币安现货 API（只读）
-function binance(): array
-{
-    $b = json_decode((string)@file_get_contents(MOCK_DIR . '/binance.json'), true) ?: [];
-    return $b + ['deposits' => [], 'pay' => [], 'calls' => []];
-}
-
-function binance_save(array $b): void
-{
-    file_put_contents(MOCK_DIR . '/binance.json', json_encode($b, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
-}
-
-if (str_starts_with($path, '/binance/')) {
-    //签名：signature 必须是查询串最后一个参数，对它前面的整段做 HMAC-SHA256
-    $qs = (string)($_SERVER['QUERY_STRING'] ?? '');
-    $cut = strrpos($qs, '&signature=');
-    if (($_SERVER['HTTP_X_MBX_APIKEY'] ?? '') !== $keys['binance_key']) {
-        json_reply(['code' => -2015, 'msg' => 'Invalid API-key, IP, or permissions for action.'], 401);
-        return;
-    }
-    if ($cut === false || !hash_equals(hash_hmac('sha256', substr($qs, 0, $cut), $keys['binance_secret']), substr($qs, $cut + 11))
-        || abs((int)($_GET['timestamp'] ?? 0) - (int)floor(microtime(true) * 1000)) > (int)($_GET['recvWindow'] ?? 5000)) {
-        json_reply(['code' => -1022, 'msg' => 'Signature for this request is not valid.'], 400);
-        return;
-    }
-
-    $api = substr($path, strlen('/binance'));
-    $b = binance();
-    $b['calls'][$api] = (int)($b['calls'][$api] ?? 0) + 1;
-    binance_save($b);
-    $since = (int)($_GET['startTime'] ?? 0);
-
-    if ($api === '/sapi/v1/capital/deposit/address') {
-        json_reply(['address' => 'Mock' . ($_GET['network'] ?? '') . 'DepositAddress', 'coin' => $_GET['coin'] ?? '', 'tag' => '', 'url' => '']);
-    } elseif ($api === '/sapi/v1/capital/deposit/hisrec') {
-        json_reply(array_values(array_filter($b['deposits'], fn($r) => $r['coin'] === ($_GET['coin'] ?? $r['coin']) && $r['insertTime'] >= $since)));
-    } elseif ($api === '/sapi/v1/pay/transactions') {
-        json_reply(['code' => '000000', 'message' => 'success', 'data' => array_values(array_filter($b['pay'], fn($r) => $r['transactionTime'] >= $since)), 'success' => true]);
-    } else {
-        json_reply(['code' => -1000, 'msg' => 'mock: unknown endpoint'], 404);
-    }
-    return;
-}
-
-// /_mock/binance/deposit?amount=&network=TRX[&status=1][&time=毫秒]：账户收到一笔链上充值
-// /_mock/binance/pay?amount=[&currency=USDT][&type=C2C][&time=毫秒]：账户收到一笔币安 Pay 转账（amount 为负表示转出）
-// /_mock/binance/calls：各接口被调用的次数
-if (str_starts_with($path, '/_mock/binance/')) {
-    $b = binance();
-    $time = (int)($_GET['time'] ?? floor(microtime(true) * 1000));
-    if ($path === '/_mock/binance/deposit') {
-        $b['deposits'][] = ['id' => (string)random_int(1000000000000000, 9000000000000000), 'amount' => sprintf('%.8F', (float)$_GET['amount']), 'coin' => 'USDT',
-            'network' => $_GET['network'] ?? 'TRX', 'status' => (int)($_GET['status'] ?? 1), 'address' => 'Mock' . ($_GET['network'] ?? 'TRX') . 'DepositAddress',
-            'addressTag' => '', 'txId' => bin2hex(random_bytes(32)), 'insertTime' => $time, 'completeTime' => $time, 'transferType' => 0,
-            'confirmTimes' => '1/1', 'unlockConfirm' => 0, 'walletType' => 0, 'travelRuleStatus' => 0];
-    } elseif ($path === '/_mock/binance/pay') {
-        $amount = sprintf('%.8F', (float)$_GET['amount']);
-        $b['pay'][] = ['orderType' => $_GET['type'] ?? 'C2C', 'transactionId' => 'M' . random_int(1000000000000000, 9000000000000000), 'transactionTime' => $time,
-            'amount' => $amount, 'currency' => $_GET['currency'] ?? 'USDT', 'walletType' => 1, 'walletTypes' => [1],
-            'fundsDetail' => [['currency' => $_GET['currency'] ?? 'USDT', 'amount' => $amount]],
-            'payerInfo' => ['name' => 'Buyer', 'type' => 'USER', 'binanceId' => 10000001], 'receiverInfo' => ['name' => 'Shop', 'type' => 'USER', 'binanceId' => 10000002]];
-    } elseif ($path === '/_mock/binance/calls') {
-        json_reply($b['calls']);
-        return;
-    }
-    binance_save($b);
-    json_reply(['ok' => true]);
-    return;
-}
-
-// ---------------------------------------------------------------- CoinGecko 价格
-// /coingecko/api/v3/simple/price?ids=tether&vs_currencies=cny；/_mock/coingecko?cny=7.1[&fail=1] 设置价格或让接口报错
-if ($path === '/coingecko/api/v3/simple/price' || $path === '/_mock/coingecko') {
-    $file = MOCK_DIR . '/coingecko.json';
-    $cg = json_decode((string)@file_get_contents($file), true) ?: ['cny' => 7.1, 'fail' => false, 'calls' => 0];
-    if ($path === '/_mock/coingecko') {
-        if (isset($_GET['cny'])) {
-            $cg['cny'] = (float)$_GET['cny'];
-        }
-        $cg['fail'] = !empty($_GET['fail']);
-        file_put_contents($file, json_encode($cg));
-        json_reply($cg);
-        return;
-    }
-    $cg['calls']++;
-    file_put_contents($file, json_encode($cg));
-    if ($cg['fail']) {
-        json_reply(['status' => ['error_code' => 429, 'error_message' => 'rate limited']], 429);
-        return;
-    }
-    json_reply(['tether' => ['cny' => $cg['cny']]]);
     return;
 }
 

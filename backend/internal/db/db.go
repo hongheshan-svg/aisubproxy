@@ -285,6 +285,9 @@ func createTables() error {
 	if err := ensureDefaultAdmin(); err != nil {
 		return err
 	}
+	if err := MigrateMarsWallex(); err != nil {
+		return fmt.Errorf("migrate marswallex: %w", err)
+	}
 	return nil
 }
 

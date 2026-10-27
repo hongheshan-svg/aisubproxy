@@ -1,7 +1,7 @@
 <template>
   <div class="space-y-4">
     <div v-if="cfg && !cfg.master_key_ready" class="card warn-box">
-      服务器未配置 APP_MASTER_KEY，无法保存密钥
+      服务器未配置 APP_MASTER_KEY，无法保存密钥（API Token、私钥）；地址、Developer ID、平台公钥仍可保存
       <span v-if="cfg.master_key_error" class="text-xs">（{{ cfg.master_key_error }}）</span>
     </div>
 
@@ -39,7 +39,8 @@
             show-password
             size="large"
             autocomplete="new-password"
-            :placeholder="cfg?.api_token_set ? '已配置，留空不修改' : '请输入'"
+            :disabled="!masterKeyReady"
+            :placeholder="secretPlaceholder(cfg?.api_token_set, '请输入')"
           />
         </el-form-item>
         <el-form-item label="私钥（PEM）">
@@ -49,8 +50,10 @@
             :rows="5"
             class="mono"
             autocomplete="off"
-            :placeholder="cfg?.private_key_set ? '已配置，留空不修改' : '粘贴私钥 PEM'"
+            :disabled="!masterKeyReady"
+            :placeholder="secretPlaceholder(cfg?.private_key_set, '粘贴私钥 PEM')"
           />
+          <p v-if="cfg?.private_key_error" class="field-error">{{ cfg.private_key_error }}</p>
         </el-form-item>
         <el-form-item label="平台公钥（PEM）">
           <el-input
@@ -80,7 +83,7 @@
         type="primary"
         size="large"
         :loading="saving"
-        :disabled="!cfg || !cfg.master_key_ready"
+        :disabled="!cfg"
         @click="save"
       >
         保存
@@ -164,6 +167,7 @@ interface Config {
   platform_public_key_fingerprint: string
   master_key_ready: boolean
   master_key_error: string
+  private_key_error?: string
   webhook_url: string
 }
 interface Balance { currency: string; available_balance: string; freeze_balance: string }
@@ -194,6 +198,14 @@ const testing = ref(false)
 const result = ref<TestResult | null>(null)
 const events = ref<WebhookEvent[]>([])
 const loadingEvents = ref(false)
+
+// 主密钥未就绪时只禁用、不提交密钥字段（API Token、私钥）；其余配置照常保存。
+const masterKeyReady = computed(() => !!cfg.value?.master_key_ready)
+
+function secretPlaceholder(isSet: boolean | undefined, empty: string) {
+  if (!masterKeyReady.value) return '服务器未配置 APP_MASTER_KEY，暂不能录入'
+  return isSet ? '已配置，留空不修改' : empty
+}
 
 const presetActive = computed(() => {
   const presets = cfg.value?.base_url_presets || []
@@ -269,8 +281,10 @@ async function save() {
       base_url: form.base_url.trim(),
       developer_id: form.developer_id.trim(),
     }
-    if (secrets.api_token.trim()) body.api_token = secrets.api_token.trim()
-    if (secrets.private_key.trim()) body.private_key = secrets.private_key.trim()
+    if (masterKeyReady.value) {
+      if (secrets.api_token.trim()) body.api_token = secrets.api_token.trim()
+      if (secrets.private_key.trim()) body.private_key = secrets.private_key.trim()
+    }
     if (secrets.platform_public_key.trim()) body.platform_public_key = secrets.platform_public_key.trim()
     const r = await authFetch('/api/v1/admin/marswallex/config', { method: 'PUT', body: JSON.stringify(body) })
     const d = await r.json().catch(() => ({}))
@@ -281,6 +295,8 @@ async function save() {
     secrets.api_token = ''
     secrets.private_key = ''
     secrets.platform_public_key = ''
+    // 配置已变，旧的测试结果不再代表当前配置。
+    result.value = null
     dialog.toast('已保存', 'ok')
     await loadConfig()
   } finally {
@@ -343,5 +359,11 @@ onMounted(() => {
 }
 .text-warn {
   color: #d97706;
+}
+.field-error {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #dc2626;
 }
 </style>

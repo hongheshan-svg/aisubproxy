@@ -74,6 +74,10 @@ type MarsWallexWebhookEvent struct {
 	ReceivedAt   time.Time
 	ProcessedAt  *time.Time
 	ProcessError string
+	// 处理重试状态
+	ProcessAttempts int
+	NextAttemptAt   *int64
+	ProcessNote     string
 }
 
 // InsertMarsWallexWebhookEvent 幂等写入；重复 message_id 返回 (false, nil)。
@@ -97,7 +101,8 @@ func ListMarsWallexWebhookEvents(limit int) ([]MarsWallexWebhookEvent, error) {
 	if limit > 200 {
 		limit = 200
 	}
-	rows, err := DB.Query(`SELECT id, message_id, topic, payload, received_at, processed_at, process_error
+	rows, err := DB.Query(`SELECT id, message_id, topic, payload, received_at, processed_at, process_error,
+		process_attempts, next_attempt_at, process_note
 		FROM marswallex_webhook_events ORDER BY id DESC LIMIT ?`, limit)
 	if err != nil {
 		return nil, err
@@ -108,7 +113,9 @@ func ListMarsWallexWebhookEvents(limit int) ([]MarsWallexWebhookEvent, error) {
 		var e MarsWallexWebhookEvent
 		var pa sql.NullTime
 		var pe sql.NullString
-		if err := rows.Scan(&e.ID, &e.MessageID, &e.Topic, &e.Payload, &e.ReceivedAt, &pa, &pe); err != nil {
+		var na sql.NullInt64
+		if err := rows.Scan(&e.ID, &e.MessageID, &e.Topic, &e.Payload, &e.ReceivedAt, &pa, &pe,
+			&e.ProcessAttempts, &na, &e.ProcessNote); err != nil {
 			return nil, err
 		}
 		if pa.Valid {
@@ -116,6 +123,10 @@ func ListMarsWallexWebhookEvents(limit int) ([]MarsWallexWebhookEvent, error) {
 			e.ProcessedAt = &t
 		}
 		e.ProcessError = pe.String
+		if na.Valid {
+			v := na.Int64
+			e.NextAttemptAt = &v
+		}
 		out = append(out, e)
 	}
 	return out, rows.Err()

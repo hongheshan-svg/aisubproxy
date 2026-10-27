@@ -288,8 +288,14 @@ func createTables() error {
 	if err := MigrateMarsWallex(); err != nil {
 		return fmt.Errorf("migrate marswallex: %w", err)
 	}
+	if err := MigrateCardPool(); err != nil {
+		return fmt.Errorf("migrate card pool: %w", err)
+	}
 	return nil
 }
+
+// Migrate 是 createTables 的导出入口，供测试在内存库上建表。
+func Migrate() error { return createTables() }
 
 // migrateCardplatformCDKStatusCol 为已存完整码表补 status（禁用后列表要展示）。
 func migrateCardplatformCDKStatusCol() error {

@@ -26,6 +26,9 @@ func setupMarsWallexDB(t *testing.T) {
 	if err := MigrateMarsWallex(); err != nil {
 		t.Fatal(err)
 	}
+	if err := MigrateCardPool(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func testKey(b byte) string {

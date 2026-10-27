@@ -81,11 +81,24 @@ else
   echo "[3/6] JWT Secret 已存在 ✓"
 fi
 
+# 3.5) 生成 APP_MASTER_KEY（首次；用于加密 MarsWallex 等密钥，丢失后已保存的密钥无法解密）
+MASTER_KEY_FILE="$INSTALL_DIR/.master_key"
+if [[ ! -f "$MASTER_KEY_FILE" ]]; then
+  APP_MASTER_KEY=$(openssl rand -base64 32)
+  echo "$APP_MASTER_KEY" > "$MASTER_KEY_FILE"
+  chmod 600 "$MASTER_KEY_FILE"
+  echo "[3/6] 生成 APP_MASTER_KEY ✓"
+else
+  APP_MASTER_KEY=$(cat "$MASTER_KEY_FILE")
+  echo "[3/6] APP_MASTER_KEY 已存在 ✓"
+fi
+
 # 4) 写入 .env（docker compose 自动读取）
 ENV_FILE="$INSTALL_DIR/.env"
 if [[ ! -f "$ENV_FILE" ]]; then
   cat > "$ENV_FILE" <<EOF
 JWT_SECRET=${JWT_SECRET}
+APP_MASTER_KEY=${APP_MASTER_KEY}
 INSTALL_MODE=wizard
 EOF
   chmod 600 "$ENV_FILE"
@@ -94,6 +107,10 @@ else
   # 确保 JWT_SECRET 存在
   if ! grep -q "^JWT_SECRET=" "$ENV_FILE"; then
     echo "JWT_SECRET=${JWT_SECRET}" >> "$ENV_FILE"
+  fi
+  # 确保 APP_MASTER_KEY 存在
+  if ! grep -q "^APP_MASTER_KEY=" "$ENV_FILE"; then
+    echo "APP_MASTER_KEY=${APP_MASTER_KEY}" >> "$ENV_FILE"
   fi
   echo "[4/6] .env 已存在 ✓"
 fi

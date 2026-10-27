@@ -162,6 +162,8 @@ func setupRoutes(r *gin.Engine) {
 
 		// 卡台 Webhook（须在卡台开发者页配置 https://你的域名/api/v1/webhooks/cardplatform）
 		api.POST("/webhooks/cardplatform", handler.CardPlatformWebhook)
+		// MarsWallex Webhook（须在 MarsWallex 后台配置 https://你的域名/api/v1/webhooks/marswallex）
+		api.POST("/webhooks/marswallex", handler.MarsWallexWebhook)
 
 		// 账单：粘贴 session 查 ChatGPT 订阅 + hosted_invoice（小助手同款）
 		api.POST("/public/billing/check", handler.SessionBillingCheck)
@@ -185,6 +187,10 @@ func setupRoutes(r *gin.Engine) {
 			admin.POST("/system/update", handler.AdminSystemUpdate)
 
 			// 卡台 Open API：实时价格 / 余额 / 发码 / 列码 / CDK 订单
+			admin.GET("/marswallex/config", handler.AdminGetMarsWallexConfig)
+			admin.PUT("/marswallex/config", handler.AdminPutMarsWallexConfig)
+			admin.POST("/marswallex/test", handler.AdminTestMarsWallex)
+			admin.GET("/marswallex/webhook-events", handler.AdminListMarsWallexWebhookEvents)
 			admin.GET("/cardplatform/ping", handler.CardPlatformPing)
 			admin.GET("/cardplatform/plans", handler.CardPlatformPlans)
 			admin.GET("/cardplatform/balance", handler.CardPlatformBalance)

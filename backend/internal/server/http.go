@@ -186,11 +186,13 @@ func setupRoutes(r *gin.Engine) {
 			admin.GET("/system/update/status", handler.AdminSystemUpdateStatus)
 			admin.POST("/system/update", handler.AdminSystemUpdate)
 
-			// 卡台 Open API：实时价格 / 余额 / 发码 / 列码 / CDK 订单
+			// MarsWallex 对接：配置 / 测试连接 / Webhook 事件
 			admin.GET("/marswallex/config", handler.AdminGetMarsWallexConfig)
 			admin.PUT("/marswallex/config", handler.AdminPutMarsWallexConfig)
 			admin.POST("/marswallex/test", handler.AdminTestMarsWallex)
 			admin.GET("/marswallex/webhook-events", handler.AdminListMarsWallexWebhookEvents)
+
+			// 卡台 Open API：实时价格 / 余额 / 发码 / 列码 / CDK 订单
 			admin.GET("/cardplatform/ping", handler.CardPlatformPing)
 			admin.GET("/cardplatform/plans", handler.CardPlatformPlans)
 			admin.GET("/cardplatform/balance", handler.CardPlatformBalance)

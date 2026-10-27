@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -104,12 +103,22 @@ func marsWallexWebhookURL(c *gin.Context) string {
 	return scheme + "://" + c.Request.Host + "/api/v1/webhooks/marswallex"
 }
 
+// marsWallexSetting 读取设置；出错时记日志（不含值）并按未设置处理。
+func marsWallexSetting(key string) string {
+	v, err := db.GetSetting(key)
+	if err != nil {
+		log.Printf("marswallex config: read %s failed: %v", key, err)
+		return ""
+	}
+	return v
+}
+
 func marsWallexConfigView(c *gin.Context) gin.H {
-	baseURL, _ := db.GetSetting(db.SettingMarsWallexBaseURL)
-	devID, _ := db.GetSetting(db.SettingMarsWallexDeveloperID)
-	tokenRaw, _ := db.GetSetting(db.SettingMarsWallexAPIToken)
-	privRaw, _ := db.GetSetting(db.SettingMarsWallexPrivateKey)
-	platPEM, _ := db.GetSetting(db.SettingMarsWallexPlatformPublicKey)
+	baseURL := marsWallexSetting(db.SettingMarsWallexBaseURL)
+	devID := marsWallexSetting(db.SettingMarsWallexDeveloperID)
+	tokenRaw := marsWallexSetting(db.SettingMarsWallexAPIToken)
+	privRaw := marsWallexSetting(db.SettingMarsWallexPrivateKey)
+	platPEM := marsWallexSetting(db.SettingMarsWallexPlatformPublicKey)
 
 	view := gin.H{
 		"base_url":                        baseURL,
@@ -117,6 +126,7 @@ func marsWallexConfigView(c *gin.Context) gin.H {
 		"developer_id":                    devID,
 		"api_token_set":                   tokenRaw != "",
 		"private_key_set":                 privRaw != "",
+		"private_key_error":               "",
 		"public_key_pem":                  "",
 		"public_key_fingerprint":          "",
 		"platform_public_key_set":         strings.TrimSpace(platPEM) != "",
@@ -128,12 +138,20 @@ func marsWallexConfigView(c *gin.Context) gin.H {
 	if _, err := secretbox.LoadKey(); err != nil {
 		view["master_key_ready"] = false
 		view["master_key_error"] = err.Error()
+		if privRaw != "" {
+			view["private_key_error"] = "服务器的 APP_MASTER_KEY 不可用，已保存的私钥无法解密"
+		}
 	} else if privRaw != "" {
-		if pemText, err := db.GetSecretSetting(db.SettingMarsWallexPrivateKey); err == nil {
-			if priv, err := marswallex.ParsePrivateKey(pemText); err == nil {
-				view["public_key_pem"] = marswallex.PublicKeyPEM(&priv.PublicKey)
-				view["public_key_fingerprint"] = marswallex.Fingerprint(&priv.PublicKey)
-			}
+		pemText, err := db.GetSecretSetting(db.SettingMarsWallexPrivateKey)
+		if err != nil {
+			// 只记错误，不记密文或明文。
+			log.Printf("marswallex config: decrypt private key failed: %v", err)
+			view["private_key_error"] = "已保存的私钥无法解密，请检查 APP_MASTER_KEY 或重新录入私钥"
+		} else if priv, err := marswallex.ParsePrivateKey(pemText); err != nil {
+			view["private_key_error"] = "已保存的私钥无法解析，请重新录入私钥"
+		} else {
+			view["public_key_pem"] = marswallex.PublicKeyPEM(&priv.PublicKey)
+			view["public_key_fingerprint"] = marswallex.Fingerprint(&priv.PublicKey)
 		}
 	}
 	if strings.TrimSpace(platPEM) != "" {
@@ -157,21 +175,6 @@ type marsWallexConfigReq struct {
 	PlatformPublicKey *string `json:"platform_public_key"`
 }
 
-func validMarsWallexBaseURL(raw string) bool {
-	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" {
-		return false
-	}
-	switch u.Scheme {
-	case "https":
-		return true
-	case "http":
-		h := u.Hostname()
-		return h == "127.0.0.1" || h == "localhost"
-	}
-	return false
-}
-
 // AdminPutMarsWallexConfig 保存配置：先全部校验，通过后才写库；api_token/private_key 空串表示不修改。
 func AdminPutMarsWallexConfig(c *gin.Context) {
 	var req marsWallexConfigReq
@@ -184,9 +187,11 @@ func AdminPutMarsWallexConfig(c *gin.Context) {
 	var baseURL string
 	if req.BaseURL != nil {
 		baseURL = strings.TrimSpace(*req.BaseURL)
-		if baseURL != "" && !validMarsWallexBaseURL(baseURL) {
-			bad("接口地址必须是 https（本机调试可用 127.0.0.1/localhost 的 http）")
-			return
+		if baseURL != "" {
+			if err := marswallex.ValidateBaseURL(baseURL); err != nil {
+				bad("接口地址无效：" + err.Error())
+				return
+			}
 		}
 	}
 	setToken := req.APIToken != nil && *req.APIToken != ""
@@ -218,6 +223,10 @@ func AdminPutMarsWallexConfig(c *gin.Context) {
 	var changed []string
 	fail := func(field string, err error) {
 		log.Printf("marswallex config: save %s failed: %v", field, err)
+		// 前面已写入的字段同样要审计（只记字段名）。
+		if len(changed) > 0 {
+			auditAdmin(c, "update_marswallex_config", "partial (failed at "+field+"); changed: "+strings.Join(changed, ","))
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存失败"})
 	}
 	if req.BaseURL != nil {
@@ -255,7 +264,9 @@ func AdminPutMarsWallexConfig(c *gin.Context) {
 		}
 		changed = append(changed, "platform_public_key")
 	}
-	auditAdmin(c, "update_marswallex_config", "changed: "+strings.Join(changed, ","))
+	if len(changed) > 0 {
+		auditAdmin(c, "update_marswallex_config", "changed: "+strings.Join(changed, ","))
+	}
 	c.JSON(http.StatusOK, marsWallexConfigView(c))
 }
 

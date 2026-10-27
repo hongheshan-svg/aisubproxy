@@ -36,17 +36,30 @@ func MarsWallexWebhook(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "平台公钥无法解析"})
 		return
 	}
+	messageID, topic := "", ""
 	ev, err := marswallex.ParseWebhook(c.GetHeader("F-Signature"), raw, pub, time.Now())
-	if err != nil {
-		switch {
-		case errors.Is(err, marswallex.ErrWebhookSignature), errors.Is(err, marswallex.ErrWebhookStale):
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "签名无效"})
-		default:
-			c.JSON(http.StatusBadRequest, gin.H{"error": "请求体无效"})
+	switch {
+	case err == nil:
+		messageID, topic = ev.MessageID, ev.Topic
+	case errors.Is(err, marswallex.ErrWebhookSignature), errors.Is(err, marswallex.ErrWebhookStale):
+		// 只记原因，不记请求体和签名值。
+		reason := "signature"
+		if errors.Is(err, marswallex.ErrWebhookStale) {
+			reason = "stale"
 		}
+		log.Printf("marswallex webhook: rejected 401 (%s) from %s", reason, c.ClientIP())
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "签名无效"})
+		return
+	case errors.Is(err, marswallex.ErrWebhookPayload):
+		// 验签与时间窗口已通过，确是平台发来的，只是解析不了：按原始请求体存档（ID 取请求体 sha256，
+		// 与 ParseWebhook 的缺省 ID 一致，重发仍能去重），返回 200，避免平台重试耗尽后丢消息。
+		log.Printf("marswallex webhook: verified payload unparseable, stored raw (%d bytes)", len(raw))
+		messageID = marswallex.WebhookRawMessageID(raw)
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请求体无效"})
 		return
 	}
-	if _, err := db.InsertMarsWallexWebhookEvent(ev.MessageID, ev.Topic, string(ev.Raw)); err != nil {
+	if _, err := db.InsertMarsWallexWebhookEvent(messageID, topic, string(raw)); err != nil {
 		log.Printf("marswallex webhook: store event failed: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存失败"})
 		return
@@ -56,7 +69,7 @@ func MarsWallexWebhook(c *gin.Context) {
 
 // AdminListMarsWallexWebhookEvents 列出最近收到的 Webhook（不含 payload）。
 func AdminListMarsWallexWebhookEvents(c *gin.Context) {
-	rows, err := db.ListMarsWallexWebhookEvents(parseLimit(c.Query("limit"), 100))
+	rows, err := db.ListMarsWallexWebhookEvents(parseLimit(c.Query("limit"), 50))
 	if err != nil {
 		log.Printf("marswallex webhook: list failed: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询失败"})

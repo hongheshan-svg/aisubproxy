@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/x509"
 	"database/sql"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"io"
@@ -181,6 +183,113 @@ func TestMarsWallexPutConfigRejectsBadPEMAndBadURL(t *testing.T) {
 	}
 }
 
+func TestMarsWallexPutConfigBaseURLAllowlist(t *testing.T) {
+	c := mwSetup(t)
+	for _, u := range []string{
+		"https://evil.example.com/portal/api",
+		"https://user:pw@api.feibeiglobal.com/portal/api",
+		"https://api.feibeiglobal.com/portal/api?x=1",
+		"https://api.feibeiglobal.com/portal/api#frag",
+		"http://api.feibeiglobal.com/portal/api",
+	} {
+		req, _ := json.Marshal(map[string]string{"base_url": u})
+		if w := mwPut(t, string(req)); w.Code != 400 {
+			t.Errorf("%s: %d %s", u, w.Code, w.Body.String())
+		}
+	}
+	if n := mwCount(t, c, `SELECT COUNT(*) FROM site_settings`); n != 0 {
+		t.Errorf("wrote %d settings despite rejected base_url", n)
+	}
+	for _, u := range []string{
+		"https://api.feibeiglobal.com/portal/api",
+		"https://api.feibeiglobal-test.com/portal/api",
+		"http://LOCALHOST:1234/portal/api",
+		"",
+	} {
+		req, _ := json.Marshal(map[string]string{"base_url": u})
+		if w := mwPut(t, string(req)); w.Code != 200 {
+			t.Errorf("%q: %d %s", u, w.Code, w.Body.String())
+		}
+		if v, _ := db.GetSetting(db.SettingMarsWallexBaseURL); v != u {
+			t.Errorf("%q: stored %q", u, v)
+		}
+	}
+}
+
+// 已保存的地址不在白名单时，测试连接也不会发出请求（NewClient 同一规则）。
+func TestMarsWallexTestConnectionRejectsStoredForeignURL(t *testing.T) {
+	mwSetup(t)
+	hit := false
+	s := mwPlatform(t, func(w http.ResponseWriter, r *http.Request, sign func(int, string)) { hit = true })
+	mwConfigure(t, s.URL+"/portal/api")
+	if err := db.SetSetting(db.SettingMarsWallexBaseURL, "https://evil.example.com/portal/api"); err != nil {
+		t.Fatal(err)
+	}
+	m := mwJSON(t, mwDo(AdminTestMarsWallex, "POST", "/x", "", nil))
+	if m["outcome"] != "not_sent" || m["reason"] != "config" || hit {
+		t.Errorf("foreign url: %v hit=%v", m, hit)
+	}
+}
+
+// 换了 APP_MASTER_KEY 后已保存的私钥无法解密：GET 要说明原因，且不泄露任何 PEM。
+func TestMarsWallexGetConfigReportsUndecryptablePrivateKey(t *testing.T) {
+	mwSetup(t)
+	our, _ := mwKeys(t)
+	req, _ := json.Marshal(map[string]string{"private_key": mwPrivPEM(t, our)})
+	if w := mwPut(t, string(req)); w.Code != 200 {
+		t.Fatalf("PUT %d %s", w.Code, w.Body.String())
+	}
+	if m := mwJSON(t, mwDo(AdminGetMarsWallexConfig, "GET", "/x", "", nil)); m["private_key_error"] != "" {
+		t.Errorf("healthy key: private_key_error = %v", m["private_key_error"])
+	}
+	t.Setenv("APP_MASTER_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{9}, 32)))
+	g := mwDo(AdminGetMarsWallexConfig, "GET", "/x", "", nil)
+	m := mwJSON(t, g)
+	if g.Code != 200 || m["private_key_set"] != true || m["master_key_ready"] != true {
+		t.Fatalf("%d %v", g.Code, m)
+	}
+	if e, _ := m["private_key_error"].(string); e == "" {
+		t.Errorf("private_key_error empty: %v", m)
+	}
+	if m["public_key_pem"] != "" || m["public_key_fingerprint"] != "" || strings.Contains(g.Body.String(), "BEGIN") {
+		t.Errorf("PEM leaked or stale: %s", g.Body.String())
+	}
+}
+
+// PUT {}：没有任何字段被写入，不写审计。
+func TestMarsWallexPutConfigNoChangeNoAudit(t *testing.T) {
+	c := mwSetup(t)
+	for _, body := range []string{`{}`, `{"api_token":"","private_key":"  ","platform_public_key":""}`} {
+		if w := mwPut(t, body); w.Code != 200 {
+			t.Fatalf("%s: %d %s", body, w.Code, w.Body.String())
+		}
+	}
+	if n := mwCount(t, c, `SELECT COUNT(*) FROM admin_audit_logs`); n != 0 {
+		t.Errorf("audit rows = %d, want 0", n)
+	}
+}
+
+// 写到一半失败：已写入的字段仍要审计（只记字段名），并返回 500。
+func TestMarsWallexPutConfigPartialFailureAudited(t *testing.T) {
+	c := mwSetup(t)
+	if _, err := c.Exec(`CREATE TRIGGER mw_fail_token BEFORE INSERT ON site_settings
+		WHEN NEW.key = 'marswallex_api_token' BEGIN SELECT RAISE(ABORT, 'boom'); END`); err != nil {
+		t.Fatal(err)
+	}
+	w := mwPut(t, `{"base_url":"`+mwProdURL+`","developer_id":"dev-9","api_token":"tok-SECRET-9"}`)
+	if w.Code != 500 {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	var detail string
+	if err := c.QueryRow(`SELECT detail FROM admin_audit_logs WHERE action='update_marswallex_config'`).Scan(&detail); err != nil {
+		t.Fatalf("no audit row: %v", err)
+	}
+	if !strings.Contains(detail, "base_url,developer_id") || strings.Contains(detail, "developer_id,api_token") ||
+		strings.Contains(detail, "tok-SECRET") || strings.Contains(detail, "dev-9") {
+		t.Errorf("audit detail %q", detail)
+	}
+}
+
 func TestMarsWallexPutConfigWithoutMasterKey(t *testing.T) {
 	mwSetup(t)
 	t.Setenv("APP_MASTER_KEY", "")
@@ -328,6 +437,46 @@ func TestMarsWallexWebhookEndpoint(t *testing.T) {
 	if w := mwDo(MarsWallexWebhook, "POST", "/x", body2, mwSignedWebhook(t, body2, time.Now().Add(-10*time.Minute))); w.Code != 401 || rows() != 1 {
 		t.Errorf("stale: %d rows=%d", w.Code, rows())
 	}
+	// 验签与时间窗口都通过、但请求体无法解析：按原始请求体的 sha256 存档并返回 200，不能丢。
+	idOf := func(raw string) string {
+		sum := sha256.Sum256([]byte(raw))
+		return hex.EncodeToString(sum[:])
+	}
+	byID := func(id string) (n int, topic, payload string) {
+		t.Helper()
+		n = mwCount(t, c, `SELECT COUNT(*) FROM marswallex_webhook_events WHERE message_id='`+id+`'`)
+		if n > 0 {
+			if err := c.QueryRow(`SELECT topic, payload FROM marswallex_webhook_events WHERE message_id=?`, id).Scan(&topic, &payload); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return n, topic, payload
+	}
+	for i, raw := range []string{`not json`, `{"topic":"CARD_APPLY_RESULT","message_id":123,"data":{}}`} {
+		before := rows()
+		hs := mwSignedWebhook(t, raw, time.Now())
+		if w := mwDo(MarsWallexWebhook, "POST", "/x", raw, hs); w.Code != 200 || rows() != before+1 {
+			t.Errorf("unparseable #%d: %d %s rows=%d want %d", i, w.Code, w.Body.String(), rows(), before+1)
+		}
+		if n, topic, payload := byID(idOf(raw)); n != 1 || topic != "" || payload != raw {
+			t.Errorf("unparseable #%d stored: n=%d topic=%q payload=%q", i, n, topic, payload)
+		}
+		if w := mwDo(MarsWallexWebhook, "POST", "/x", raw, hs); w.Code != 200 || rows() != before+1 {
+			t.Errorf("unparseable #%d resend: %d rows=%d", i, w.Code, rows())
+		}
+		if n, _, _ := byID(idOf(raw)); n != 1 {
+			t.Errorf("unparseable #%d resend: %d rows for its id", i, n)
+		}
+	}
+	// 无法解析但签名无效 / 过期：仍是 401，不入库。
+	n := rows()
+	if w := mwDo(MarsWallexWebhook, "POST", "/x", `still not json`, bad); w.Code != 401 || rows() != n {
+		t.Errorf("unparseable bad sig: %d rows=%d", w.Code, rows())
+	}
+	if w := mwDo(MarsWallexWebhook, "POST", "/x", `still not json`, mwSignedWebhook(t, `still not json`, time.Now().Add(-10*time.Minute))); w.Code != 401 || rows() != n {
+		t.Errorf("unparseable stale: %d rows=%d", w.Code, rows())
+	}
+
 	big := strings.Repeat("a", 1<<20+1)
 	if w := mwDo(MarsWallexWebhook, "POST", "/x", big, nil); w.Code != 413 {
 		t.Errorf("big: %d", w.Code)
@@ -337,6 +486,25 @@ func TestMarsWallexWebhookEndpoint(t *testing.T) {
 	}
 	if w := mwDo(MarsWallexWebhook, "POST", "/x", body2, mwSignedWebhook(t, body2, time.Now())); w.Code != 500 {
 		t.Errorf("db error: %d", w.Code)
+	}
+	if w := mwDo(MarsWallexWebhook, "POST", "/x", `not json 2`, mwSignedWebhook(t, `not json 2`, time.Now())); w.Code != 500 {
+		t.Errorf("db error (unparseable): %d", w.Code)
+	}
+}
+
+func TestMarsWallexListWebhookEventsDefaultLimit(t *testing.T) {
+	mwSetup(t)
+	for i := 0; i < 60; i++ {
+		if _, err := db.InsertMarsWallexWebhookEvent("e"+strconv.Itoa(i), "T", `{}`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w := mwDo(AdminListMarsWallexWebhookEvents, "GET", "/x", "", nil)
+	if w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	if evs := mwJSON(t, w)["events"].([]any); len(evs) != 50 {
+		t.Errorf("default limit: len %d, want 50", len(evs))
 	}
 }
 

@@ -146,3 +146,35 @@ func TestParseWebhookBadJSON(t *testing.T) {
 		t.Fatalf("err=%v", err)
 	}
 }
+
+func TestDecodeWebhookPayloadMatchesParse(t *testing.T) {
+	k := whKey(t)
+	now := time.Unix(1766123535, 0)
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{"message_id 与对象 data", `{"topic":"CARD_APPLY_RESULT","message_id":"m1","data":{"card_id":"c1"}}`},
+		{"messageId 与字符串 data", `{"topic":"CARD_STATUS_CHANGED","messageId":"m2","data":"{\"card_id\":\"c2\"}"}`},
+		{"无 ID 用 sha256", `{"topic":"CARD_TRANSFER_RESULT","data":{"x":1}}`},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			raw := []byte(c.raw)
+			want, err := ParseWebhook(whSign(t, k, strconv.FormatInt(now.Unix(), 10), raw), raw, &k.PublicKey, now)
+			if err != nil {
+				t.Fatalf("ParseWebhook: %v", err)
+			}
+			got, err := DecodeWebhookPayload(raw)
+			if err != nil {
+				t.Fatalf("DecodeWebhookPayload: %v", err)
+			}
+			if got.Topic != want.Topic || got.MessageID != want.MessageID || string(got.Data) != string(want.Data) {
+				t.Errorf("got %+v, want %+v", got, want)
+			}
+		})
+	}
+	if _, err := DecodeWebhookPayload([]byte(`not json`)); !errors.Is(err, ErrWebhookPayload) {
+		t.Errorf("非法 JSON: err=%v", err)
+	}
+}

@@ -68,7 +68,12 @@ func ParseWebhook(signatureHeader string, raw []byte, platformPub *rsa.PublicKey
 	if diff > WebhookWindow {
 		return nil, ErrWebhookStale
 	}
+	return DecodeWebhookPayload(raw)
+}
 
+// DecodeWebhookPayload 不验签，只解析事件原文（用于解析已存档、此前已验过签的推送）。
+// 错误包装 ErrWebhookPayload。
+func DecodeWebhookPayload(raw []byte) (*WebhookEvent, error) {
 	var env struct {
 		Topic      string          `json:"topic"`
 		MessageID  string          `json:"message_id"`

@@ -205,6 +205,61 @@ func TestCallUndecodableOKIsUnknown(t *testing.T) {
 	}
 }
 
+// 200 但顶层没有可用的 data（带错误码、只有 count、data 为 null）不能当成功：归未知。
+func TestCallOKWithoutDataIsUnknown(t *testing.T) {
+	m, c := newMockPlatform(t)
+	page := func() any { return &Page[pingOut]{} }
+	single := func() any { return &pingOut{} }
+	cases := []struct {
+		name string
+		body string
+		out  func() any
+	}{
+		{"分页带错误码", `{"code":"SYSTEM_ERROR","message":"x"}`, page},
+		{"分页只有 count", `{"count":"0"}`, page},
+		{"分页 data 为 null", `{"count":"0","data":null}`, page},
+		{"分页响应体为 null", `null`, page},
+		{"单对象 data 为 null", `{"data":null}`, single},
+		{"单对象带错误码", `{"code":"SYSTEM_ERROR","message":"x"}`, single},
+		{"单对象响应体为 null", `null`, single},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m.Reply = func(w http.ResponseWriter, r *http.Request) { m.signedJSON(w, 200, tc.body) }
+			e := asError(t, ping(c, tc.out()), OutcomeUnknown, ReasonDecode)
+			if e.HTTPStatus != 200 {
+				t.Errorf("HTTPStatus = %d", e.HTTPStatus)
+			}
+		})
+	}
+
+	// 真实方法：分页查询与单对象查单同样不能把空结果当成功。
+	m.Reply = func(w http.ResponseWriter, r *http.Request) {
+		m.signedJSON(w, 200, `{"code":"SYSTEM_ERROR","message":"x"}`)
+	}
+	if p, err := c.ListCardBalanceTransactions(context.Background(), CardBalanceTransactionsQuery{PageNo: 1, PageSize: 10}); p != nil {
+		t.Errorf("ListCardBalanceTransactions 返回了结果: %+v", p)
+	} else {
+		asError(t, err, OutcomeUnknown, ReasonDecode)
+	}
+	m.Reply = func(w http.ResponseWriter, r *http.Request) { m.signedJSON(w, 200, `{"data":null}`) }
+	if o, err := c.GetCardTransferOrder(context.Background(), OrderRef{OutOrderNo: "M1"}); o != nil {
+		t.Errorf("GetCardTransferOrder 返回了结果: %+v", o)
+	} else {
+		asError(t, err, OutcomeUnknown, ReasonDecode)
+	}
+
+	// 正常成功不受影响：空分页、空对象、默认回复。
+	m.Reply = func(w http.ResponseWriter, r *http.Request) { m.signedJSON(w, 200, `{"count":"0","data":[]}`) }
+	if err := ping(c, &Page[pingOut]{}); err != nil {
+		t.Errorf("空分页: %v", err)
+	}
+	m.Reply = func(w http.ResponseWriter, r *http.Request) { m.signedJSON(w, 200, `{"data":{}}`) }
+	if err := ping(c, &pingOut{}); err != nil {
+		t.Errorf("空对象: %v", err)
+	}
+}
+
 // 签名覆盖不到状态行：4xx 的响应体说不清发生了什么时不能算「被拒」。
 func TestCallUndecodableRejectionIsUnknown(t *testing.T) {
 	m, c := newMockPlatform(t)
@@ -267,6 +322,48 @@ func TestCallConnectionDropIsUnknown(t *testing.T) {
 	}
 }
 
+// recordingTransport 记录发出的请求是否可被 Transport 重放（GetBody）。
+type recordingTransport struct {
+	next       http.RoundTripper
+	hadBody    bool
+	hadGetBody bool
+}
+
+func (rt *recordingTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	rt.hadBody = r.Body != nil && r.Body != http.NoBody
+	rt.hadGetBody = r.GetBody != nil
+	return rt.next.RoundTrip(r)
+}
+
+// 带请求体的请求不得设置 GetBody：否则 Transport（尤其 HTTP/2）可能在体已写出后透明重放 POST。
+func TestSendDisablesBodyReplay(t *testing.T) {
+	m, _ := newMockPlatform(t)
+	tr := &http.Transport{}
+	t.Cleanup(tr.CloseIdleConnections)
+	rec := &recordingTransport{next: tr}
+	cfg := m.cfg
+	cfg.HTTPClient = &http.Client{Transport: rec}
+	c, err := NewClient(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.call(context.Background(), "POST", "/v1/thing", "", map[string]string{"k": "v"}, &pingOut{}); err != nil {
+		t.Fatalf("POST err = %v", err)
+	}
+	if !rec.hadBody || rec.hadGetBody {
+		t.Errorf("POST: hadBody=%v hadGetBody=%v, want body without GetBody", rec.hadBody, rec.hadGetBody)
+	}
+	if string(m.LastBody) != `{"k":"v"}` || m.Last.ContentLength != int64(len(`{"k":"v"}`)) {
+		t.Errorf("请求体未完整送达: body=%q len=%d", m.LastBody, m.Last.ContentLength)
+	}
+	if _, err := c.UploadFile(context.Background(), "KYC", "a.png", []byte("png-bytes")); err != nil {
+		t.Fatalf("upload err = %v", err)
+	}
+	if !rec.hadBody || rec.hadGetBody {
+		t.Errorf("upload: hadBody=%v hadGetBody=%v, want body without GetBody", rec.hadBody, rec.hadGetBody)
+	}
+}
+
 func TestCallConnectionRefusedIsNotSent(t *testing.T) {
 	m, _ := newMockPlatform(t)
 	closed := httptest.NewServer(http.NotFoundHandler())
@@ -283,7 +380,14 @@ func TestCallConnectionRefusedIsNotSent(t *testing.T) {
 func TestCallDNSFailureIsNotSent(t *testing.T) {
 	m, _ := newMockPlatform(t)
 	cfg := m.cfg
-	cfg.BaseURL = "https://no-such-host.invalid/portal/api"
+	// BaseURL 只允许白名单主机，故用合法地址，在拨号时改连一个必然解析失败的主机。
+	cfg.BaseURL = "https://api.feibeiglobal.com/portal/api"
+	cfg.HTTPClient = &http.Client{Transport: &http.Transport{
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			var d net.Dialer
+			return d.DialContext(ctx, network, "no-such-host.invalid:443")
+		},
+	}}
 	c, err := NewClient(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -306,6 +410,13 @@ func TestNewClientRejectsIncompleteConfig(t *testing.T) {
 		"带查询串":              func(c *Config) { c.BaseURL = "https://api.example.com/portal/api?x=1" },
 		"无法解析":              func(c *Config) { c.BaseURL = "https://api.example.com:bad/portal/api" },
 		"http 冒充 localhost": func(c *Config) { c.BaseURL = "http://localhost.evil.com/portal/api" },
+		"非白名单主机":            func(c *Config) { c.BaseURL = "https://evil.example.com/portal/api" },
+		"带用户信息":             func(c *Config) { c.BaseURL = "https://user:pw@api.feibeiglobal.com/portal/api" },
+		"白名单主机带查询串":         func(c *Config) { c.BaseURL = "https://api.feibeiglobal.com/portal/api?x=1" },
+		"白名单主机带空查询串":        func(c *Config) { c.BaseURL = "https://api.feibeiglobal.com/portal/api?" },
+		"白名单主机带片段":          func(c *Config) { c.BaseURL = "https://api.feibeiglobal.com/portal/api#x" },
+		"白名单主机用 http":       func(c *Config) { c.BaseURL = "http://api.feibeiglobal.com/portal/api" },
+		"白名单主机后缀冒充":         func(c *Config) { c.BaseURL = "https://api.feibeiglobal.com.evil.com/portal/api" },
 	}
 	for name, mutate := range cases {
 		cfg := m.cfg
@@ -323,7 +434,15 @@ func TestNewClientRejectsIncompleteConfig(t *testing.T) {
 			t.Errorf("%s: err = %v", name, err)
 		}
 	}
-	for _, ok := range []string{"https://api.example.com/portal/api", "http://127.0.0.1:8080/portal/api", "http://localhost/portal/api"} {
+	for _, ok := range []string{
+		"https://api.feibeiglobal.com/portal/api",
+		"https://api.feibeiglobal-test.com/portal/api",
+		"https://API.FeiBeiGlobal.com/portal/api",
+		"http://127.0.0.1:8080/portal/api",
+		"https://127.0.0.1:8443/portal/api",
+		"http://localhost/portal/api",
+		"http://LOCALHOST:1234/portal/api",
+	} {
 		cfg := m.cfg
 		cfg.BaseURL = ok
 		if _, err := NewClient(cfg); err != nil {

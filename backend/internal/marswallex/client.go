@@ -26,7 +26,10 @@ type Config struct {
 	PrivateKey        *rsa.PrivateKey // 我方私钥，签请求
 	PlatformPublicKey *rsa.PublicKey  // 平台公钥，验响应
 	// HTTPClient 为空时用 30 秒超时的默认客户端。其 Transport 不得自行重试，
-	// 否则「拨号失败 = 未发出」的判断不再成立。重定向一律不跟随（会被覆盖）。
+	// 否则「拨号失败 = 未发出」的判断不再成立。带请求体的请求一律不设 GetBody，
+	// 标准 Transport（含 HTTP/2）无法在体已写出后重放；不带体的 GET 可能被 net/http
+	// 在复用连接失败时重发，MarsWallex 的 GET 都是只读查询，无副作用。
+	// 重定向一律不跟随（会被覆盖）。
 	HTTPClient *http.Client
 	Now        func() time.Time
 }
@@ -36,7 +39,7 @@ type Outcome int
 
 const (
 	OutcomeSuccess  Outcome = iota + 1 // 200 且验签通过
-	OutcomeRejected                    // 400/401/403/404 且验签通过：确定未执行
+	OutcomeRejected                    // 400/401/403/404 且验签通过：本次请求未执行；若该 out_order_no 之前出现过「未知」，必须先查单确认，不得换新单号重来
 	OutcomeUnknown                     // 可能已执行：必须查单，重试沿用原单号
 	OutcomeNotSent                     // 能证明一个字节都没发出：确定未执行
 )
@@ -153,22 +156,9 @@ func NewClient(cfg Config) (*Client, error) {
 	case cfg.PlatformPublicKey == nil:
 		return nil, configError("缺少平台公钥", nil)
 	}
-	u, err := url.Parse(strings.TrimSpace(cfg.BaseURL))
+	u, err := parseBaseURL(strings.TrimSpace(cfg.BaseURL))
 	if err != nil {
-		return nil, configError("BaseURL 无法解析", err)
-	}
-	if u.Host == "" || u.Opaque != "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return nil, configError("BaseURL 无效", nil)
-	}
-	switch u.Scheme {
-	case "https":
-	case "http":
-		// 明文只允许本机（联调代理 / 测试）。
-		if h := u.Hostname(); h != "127.0.0.1" && !strings.EqualFold(h, "localhost") {
-			return nil, configError("BaseURL 必须使用 https", nil)
-		}
-	default:
-		return nil, configError("BaseURL 必须使用 https", nil)
+		return nil, configError(err.Error(), nil)
 	}
 	p := strings.TrimRight(u.EscapedPath(), "/")
 	p = strings.TrimRight(strings.TrimSuffix(p, "/v1"), "/")
@@ -196,6 +186,44 @@ func NewClient(cfg Config) (*Client, error) {
 		hc:      hc,
 		now:     now,
 	}, nil
+}
+
+// 允许的 BaseURL 主机。只放行官方地址，防止被改成他人主机后「测试连接」把 apiToken 发过去。
+var (
+	officialHosts = map[string]bool{"api.feibeiglobal.com": true, "api.feibeiglobal-test.com": true}
+	localHosts    = map[string]bool{"127.0.0.1": true, "localhost": true}
+)
+
+// ValidateBaseURL 校验接口地址：只允许 https 的 api.feibeiglobal.com / api.feibeiglobal-test.com，
+// 以及本机调试用的 127.0.0.1 / localhost（http 或 https）；主机名不区分大小写；
+// 不得带用户信息、查询串或片段。后台保存配置与 NewClient 共用此规则。
+func ValidateBaseURL(raw string) error {
+	_, err := parseBaseURL(raw)
+	return err
+}
+
+func parseBaseURL(raw string) (*url.URL, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return nil, errors.New("BaseURL 无法解析")
+	}
+	if u.Opaque != "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawFragment != "" {
+		return nil, errors.New("BaseURL 不得包含用户信息、查询串或片段")
+	}
+	host := strings.ToLower(u.Hostname())
+	switch {
+	case officialHosts[host]:
+		if u.Scheme != "https" {
+			return nil, errors.New("BaseURL 必须使用 https")
+		}
+	case localHosts[host]:
+		if u.Scheme != "https" && u.Scheme != "http" {
+			return nil, errors.New("BaseURL 必须使用 http(s)")
+		}
+	default:
+		return nil, errors.New("BaseURL 只允许 api.feibeiglobal.com、api.feibeiglobal-test.com（本机调试可用 127.0.0.1/localhost）")
+	}
+	return u, nil
 }
 
 // buildQuery 按传入顺序拼接成对的键值，跳过空值，键值均用 url.QueryEscape。
@@ -245,6 +273,10 @@ func (c *Client) send(ctx context.Context, method, path, rawQuery, contentType s
 		return configError("构造请求失败", err)
 	}
 	req.URL.RawQuery = rawQuery
+	if payload != nil {
+		// 不给 Transport 重放请求体的能力：体一旦可能写出，失败就只能归「未知」，不能被透明重发。
+		req.GetBody = nil
+	}
 
 	// 签名 URI 用线上实际发送的转义路径（RequestURI 同样取 EscapedPath）。
 	epoch := strconv.FormatInt(c.now().Unix(), 10)
@@ -269,7 +301,10 @@ func (c *Client) send(ctx context.Context, method, path, rawQuery, contentType s
 }
 
 // classifyTransportErr 对网络错误分类：只有能证明一个字节没发出去的才算 NotSent。
-// （标准 Transport 仅在请求一个字节都没写出时才会内部重发非幂等请求，故最终的拨号错误仍表示未发出。）
+// 拨号/DNS 失败归 NotSent 只对 Transport 无法重放的请求成立：带体请求已清掉 GetBody，
+// 标准 Transport 不会在体可能写出后重发，最终的拨号错误即表示这次请求从未发出。
+// 不带体的 GET 可能在复用连接失败后被 net/http 重发，之后的拨号错误不代表此前没发出过，
+// 但 MarsWallex 的 GET 都是只读查询，重发无副作用。
 func classifyTransportErr(err error) (Outcome, Reason) {
 	var dnsErr *net.DNSError
 	if errors.As(err, &dnsErr) {
@@ -341,12 +376,11 @@ type wholeBody interface{ wholeBody() }
 
 func (*Page[T]) wholeBody() {}
 
-// decodeSuccess 把 200 响应解析到 out。out 非 nil 时响应必须带 data 字段，
-// 缺失视为无法解析（宁可归未知，也不把空结果当成功）。
+// decodeSuccess 把 200 响应解析到 out。out 非 nil 时（单对象与 *Page 都一样）响应顶层必须带
+// data 字段且不为 null，否则视为无法解析——宁可归未知，也不把空结果当成功
+// （如 200 + {"code":"SYSTEM_ERROR"} 或 {"data":null}）。
 func decodeSuccess(body []byte, out any) error {
-	if _, ok := out.(wholeBody); ok {
-		return json.Unmarshal(body, out)
-	}
+	// json.RawMessage 会原样收下 null，故 data 为 null 时得到的是 "null" 而不是 nil，需单独判断。
 	var env envelope[json.RawMessage]
 	if err := json.Unmarshal(body, &env); err != nil {
 		return err
@@ -354,8 +388,11 @@ func decodeSuccess(body []byte, out any) error {
 	if out == nil {
 		return nil
 	}
-	if env.Data == nil {
-		return errors.New("marswallex: 响应缺少 data")
+	if d := bytes.TrimSpace(env.Data); len(d) == 0 || string(d) == "null" {
+		return errors.New("marswallex: 响应缺少 data 或 data 为 null")
+	}
+	if _, ok := out.(wholeBody); ok {
+		return json.Unmarshal(body, out)
 	}
 	return json.Unmarshal(env.Data, out)
 }

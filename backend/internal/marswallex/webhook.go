@@ -83,8 +83,7 @@ func ParseWebhook(signatureHeader string, raw []byte, platformPub *rsa.PublicKey
 		id = env.MessageID2
 	}
 	if id == "" {
-		sum := sha256.Sum256(raw)
-		id = hex.EncodeToString(sum[:])
+		id = WebhookRawMessageID(raw)
 	}
 	data := env.Data
 	if t := bytes.TrimSpace(data); len(t) > 0 && t[0] == '"' {
@@ -98,6 +97,13 @@ func ParseWebhook(signatureHeader string, raw []byte, platformPub *rsa.PublicKey
 		data = json.RawMessage(s)
 	}
 	return &WebhookEvent{Topic: env.Topic, MessageID: id, Data: data, Raw: raw}, nil
+}
+
+// WebhookRawMessageID 为没有可用消息 ID 的推送生成 ID：原始请求体的 sha256（小写十六进制）。
+// ParseWebhook 的缺省 ID 与接收端对无法解析的请求体存档都用它，同一请求体总得到同一 ID。
+func WebhookRawMessageID(raw []byte) string {
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:])
 }
 
 // DecodeData 将事件 data 解码到 v。

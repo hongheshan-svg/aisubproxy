@@ -1,0 +1,4702 @@
+{
+  "openapi": "3.0.1",
+  "info": {
+    "title": "MarsWallex API",
+    "description": "MarsWallex 企业级支付平台 API。所有请求需包含 Authorization 和 F-Signature 头。\n# 认证与安全\nMarsWallex API 使用 API 密钥来验证请求。使用以下命令生成 RSA 密钥：\n```\n# creating rsa private key\nopenssl genrsa -out rsa_private_key.pem 2048\n# convert private key into PKCS#8 format\nopenssl pkcs8 -topk8 -inform PEM -in rsa_private_key.pem -outform PEM -nocrypt -out private_pkcs8.pem\n# get public key from private key (X509 format)\nopenssl rsa -in rsa_private_key.pem -pubout -out rsa_public_key.pem\n```\n在所有请求中必须包含 **Authorization** 头，其格式如下：\n```\nAuthorization: Basic {token}\n```\n令牌值计算方式为 `BASE64(developerId + \":\" + apiToken)`，示例：\n```\nString developerId = \"2sfn7zUrD530FFZ9gl5E8Yvex\";\nString apiToken = \"fZjOVab5E7xDfDEyXU75SFaI137s8iL6\";\nString authorization = \"Basic \" + Base64.getEncoder().encodeToString((\"2sfn7zUrD530FFZ9gl5E8Yvex:fZjOVab5E7xDfDEyXU75SFaI137s8iL6\").getBytes());\n```\n您的 API 密钥具有许多权限，因此请务必妥善保存，不要在公开访问的区域（如 GitHub、客户端代码等）分享您的秘密 API 密钥。所有 API 请求必须通过 HTTPS 进行，通过普通 HTTP 进行的调用将会失败，没有身份验证的 API 请求也将会失败。\n## 防止重放攻击\n重放攻击是指攻击者拦截有效的有效载荷及其签名，然后重新进行传输。为了减轻这种攻击，MarsWallex 在请求和响应的 F-Signature 头中包含了一个时间戳。由于此时间戳是签名有效载荷的一部分，因此也会被签名验证，所以攻击者不能在不使签名失效的情况下更改时间戳。如果签名有效但时间戳太旧，调用将被拒绝。\n## 请求签名\nF-Signature 头包含时间戳和签名。时间戳以 `t=` 为前缀，每个签名以一个方案为前缀，方案以 `v` 开头。\n```\nt=1706498637,v=XJkZiVrkxgyhBOdw/9hmvbr+aetZ1YU44nEGuX0XYvFpsrRtiiKxcWzQ4ugbtE6mo/9A5hEvpalSDbeXBU968hslKBxkyfCPM1tm8Ye8gF8/tt4UqjSDGCwLqWAG9A98QFAhU6N1exBpANv7/BZwLmKJcutqhG0jdd6EsgsavI4=\n```\n请注意，上述示例中为了清晰起见可能添加了换行符，但实际的 F-Signature 头是单行的。MarsWallex 和客户将交换各自的公钥，F-Signature 使用 RSA 私钥进行签名。\n\n**步骤 1：** 确定签名负载。使用以下公式创建 payload 字符串：\n`HTTP_METHOD&URI&REQUEST_EPOCH&REQUEST_PAYLOAD[&QUERY_STRING]`\n- **HTTP_METHOD**：为特定 API 端点定义的实际方法，如 POST\n- **URI**：请求的 URL 路径，例如 /profiles/{profileId}\n- **REQUEST_EPOCH**：自 1970/1/1 00:00:00 GMT 以来经过的秒数，与 `t` 的值相同\n- **REQUEST_PAYLOAD**：请求体的内容，格式为 JSON；**multipart/form-data（文件上传）请求为空，见下文「文件上传」**\n- **QUERY_STRING**：URL 的查询字符串，经过 URL 编码，例如 attr1%3Dvalue1%26attr2%3Dvalue2\n  - 案例 1：QUERY_STRING 为空，公式为：`HTTP_METHOD&URI&REQUEST_EPOCH&REQUEST_PAYLOAD`\n  - 案例 2：REQUEST_PAYLOAD 为空，公式为：`HTTP_METHOD&URI&REQUEST_EPOCH&&QUERY_STRING`\n  - 案例 3：REQUEST_PAYLOAD 和 QUERY_STRING 都为空，公式为：`HTTP_METHOD&URI&REQUEST_EPOCH&`\n\nGET 示例 payload：\n```\nGET&/portal/api/v1/accounts&1766123535&\n```\nPOST 示例 payload：\n```\nPOST&/portal/api/v1/cardholder&1766123535&{\"out_card_holder_id\":\"CH0001\",\"first_name\":\"Tom\"}\n```\n**文件上传（multipart/form-data）**\n\n文件上传接口的请求体为 multipart/form-data，文件内容**不参与签名**，REQUEST_PAYLOAD 按空处理，适用「案例 2」的公式：\n- 表单中只放 `file` 一个字段；\n- 业务参数（如 `biz_type`）必须放在 URL 查询字符串中，随 QUERY_STRING 参与签名，表单中的同名参数不会被读取。\n\n请求示例：\n```\nPOST /portal/api/v1/file/upload?biz_type=CARDHOLDER_ID_PHOTO\nContent-Type: multipart/form-data; boundary=----FormBoundary\n```\n签名 payload：\n```\nPOST&/portal/api/v1/file/upload&1766123535&&biz_type%3DCARDHOLDER_ID_PHOTO\n```\n**步骤 2：** 准备 F-Signature 字符串：\n- 时间戳（自 1970 年 1 月 1 日 00:00:00 GMT 以来的秒数，作为字符串）\n- 使用您的 RSA 私钥计算 `BASE64(RSAwithSHA256(STEP_1_RESULT))` 字符串（使用步骤 1 中的结果）\n## 响应消息签名\nMarsWallex 的响应头同样包含 F-Signature，该签名由 MarsWallex 的 RSA 私钥签署。您可以使用 MarsWallex 的 RSA 公钥验证签名是否与响应体对应，步骤如下：\n\n**步骤 1：确定签名 payload**\n\n创建一个以 `&` 分隔如下内容的 payload 字符串：\n- 响应时间戳：从 F-Signature 中提取 `t` 作为时间戳\n- 响应有效负载：响应体的内容，格式为 JSON\n\npayload 示例：\n```\n1766123822742&{\"data\":[{\"account_name\":\"Wallet Account\",\"account_no\":\"2000519969952288769\",\"account_status\":\"NORMAL\",\"available_balance\":\"89246.14\",\"create_time\":\"2025-12-15T10:55:03.000+00:00\",\"currency\":\"USD\"},{\"account_name\":\"Wallet Account\",\"account_no\":\"2000519969964871682\",\"account_status\":\"NORMAL\",\"available_balance\":\"35.00\",\"create_time\":\"2025-12-15T10:55:03.000+00:00\",\"currency\":\"USDT\"}]}\n```\n**步骤 2：使用 RSA 验证比较签名**\n\n使用 MarsWallex 公钥将接收到的 F-Signature 与步骤 1 中计算的 payload 进行验证：\n```\nRSA.verify(F-Signature, '1766123822742&{\"data\":[...]}', MarsWallex Public Key)\n```\n# Webhook 通知\n## 概述\nWebhook 是一种基于 HTTP 回调的实时通知机制。当 MarsWallex 平台上发生特定业务事件时，系统会主动向商户预先配置的通知地址发送 HTTP POST 请求，将事件数据推送到商户服务器。\n## Webhook 触发机制\nMarsWallex 在以下条件同时满足时触发 Webhook 通知：\n1. **开发者完成审核**：商户在开发者平台完成 API 接入审核\n2. **订阅关系已建立**：商户已订阅该事件类型\n## 数据传输格式\n### 请求方法\n所有 Webhook 通知均使用 **HTTP POST** 方法发送，请求体为 JSON 格式。\n### 请求头\n| 请求头 | 说明 |\n|---|---|\n| `Content-Type` | `application/json; charset=utf-8` |\n| `F-Signature` | 签名信息，格式为 `t={epoch},v={signature}` |\n### 请求体结构\n```json\n{\n    \"topic\": \"CARD_APPLY_RESULT\",\n    \"messageId\": \"1234567890\",\n    \"data\": \"{业务数据JSON字符串}\"\n}\n```\n| 字段 | 类型 | 说明 |\n|---|---|---|\n| `topic` | String | 事件类型标识，对应事件类型表中的 topic 值 |\n| `messageId` | String | 事件消息唯一标识，用于消息追踪和幂等校验 |\n| `data` | String | 业务数据内容，为 JSON 字符串格式，具体结构由各事件类型决定 |\n### 响应要求\n商户服务器收到 Webhook 请求后，应返回 **HTTP 200** 状态码，表示接收成功。任何非 200 状态码或网络异常均视为投递失败，将触发重试机制。\n## Webhook 签名验证\n为确保 Webhook 通知的真实性和完整性，MarsWallex 对每一条 Webhook 请求都会进行 RSA 签名。商户在接收到 Webhook 通知后，**必须**验证签名，以确认请求确实来自 MarsWallex 平台且未被篡改。\n### 签名算法\n- **签名方式**：`SHA256withRSA`\n- **签名密钥**：MarsWallex 平台私钥\n- **验签密钥**：MarsWallex 平台公钥（商户需提前获取）\n### 签名头格式\nF-Signature 请求头与 API 请求签名格式一致：\n```\nF-Signature: t={epoch},v={signature}\n```\n- `t`：时间戳，自 1970/1/1 00:00:00 GMT 以来经过的秒数\n- `v`：签名值，为 `Base64(SHA256withRSA(签名原文))` 的结果\n### 验签步骤\n**步骤 1：确定签名原文**\n\n签名原文由时间戳和请求体以 `&` 连接而成：\n```\n{epoch}&{请求体JSON}\n```\n示例：\n```\n1706498637&{\"topic\":\"CARD_APPLY_RESULT\",\"messageId\":\"1234567890\",\"data\":\"{\\\"cardId\\\":\\\"C123456\\\",\\\"status\\\":\\\"ACTIVE\\\"}\"}\n```\n**步骤 2：提取签名信息**\n\n从请求头 `F-Signature` 中提取时间戳 `t` 和签名值 `v`：\n```\nt=1706498637,v=XJkZiVrkxgyhBOdw/9hmvbr+aetZ1YU44nEGuX0XYvFpsrRtiiKxcWzQ4ugbtE6mo/9A5hEvpalSDbeXBU968hslKBxkyfCPM1tm8Ye8gF8/tt4UqjSDGCwLqWAG9A98QFAhU6N1exBpANv7/BZwLmKJcutqhG0jdd6EsgsavI4=\n```\n**步骤 3：使用 MarsWallex 公钥验签**\n\n使用步骤 1 中构造的签名原文和步骤 2 中提取的签名值，通过 MarsWallex 平台公钥进行 RSA 验签：\n```\nRSA.verify(signatureValue, signingPayload, marsWallexPublicKey)\n```\n其中：\n- `signatureValue`：从 F-Signature 中提取的 `v` 值（Base64 解码后的签名字节）\n- `signingPayload`：步骤 1 构造的签名原文字符串\n- `marsWallexPublicKey`：MarsWallex 平台公钥\n### 防重放攻击\n签名原文中包含时间戳，因此攻击者无法在不使签名失效的情况下更改时间戳。建议商户在验签通过后，额外校验时间戳与当前时间的差值，超过合理范围（如 5 分钟）的请求应予以拒绝。\n## 重试策略\n当 Webhook 投递失败（商户返回非 200 状态码或网络异常）时，MarsWallex 将自动进行重试。\n## 可靠性相关\n1. **幂等处理**：同一条 Webhook 消息可能因网络问题或重试机制被多次推送，商户应基于 `messageId` 进行幂等处理，避免重复处理同一事件。\n2. **快速响应**：商户服务器收到 Webhook 请求后，应尽快返回 HTTP 200，将业务逻辑异步处理。如果处理时间过长导致连接超时（连接超时 3 秒，读取超时 15 秒），系统将视为投递失败并触发重试。\n3. **时效性**：在极少情况下可能发生异步通知无法正常通知到您服务器的情况，请务必对接主动查单接口。",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "https://api.feibeiglobal.com",
+      "description": "Production"
+    }
+  ],
+  "tags": [
+    {
+      "name": "账户管理",
+      "description": "账户查询与流水"
+    },
+    {
+      "name": "卡管理",
+      "description": "卡产品、申卡、转入转出、状态管理"
+    },
+    {
+      "name": "持卡人",
+      "description": "持卡人添加、修改与查询"
+    },
+    {
+      "name": "卡交易",
+      "description": "授权交易与结算交易查询"
+    },
+    {
+      "name": "收款",
+      "description": "数币收款地址"
+    },
+    {
+      "name": "兑换",
+      "description": "法币与数币兑换"
+    },
+    {
+      "name": "转账",
+      "description": "主钱包与子账户间资金划转"
+    },
+    {
+      "name": "公共接口",
+      "description": "文件上传等通用能力"
+    },
+    {
+      "name": "Webhook",
+      "description": "异步通知回调"
+    }
+  ],
+  "security": [
+    {
+      "BasicAuth": []
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "BasicAuth": {
+        "type": "http",
+        "scheme": "basic",
+        "description": "Basic BASE64(developerId:apiToken)"
+      }
+    },
+    "parameters": {
+      "FSignature": {
+        "name": "F-Signature",
+        "in": "header",
+        "description": "RSA 签名，格式：t={timestamp},v={signature}",
+        "required": true,
+        "schema": {
+          "type": "string"
+        }
+      }
+    },
+    "schemas": {
+      "ErrorResponse": {
+        "type": "object",
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "错误码"
+          },
+          "message": {
+            "type": "string",
+            "description": "错误描述"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ]
+      },
+      "BalanceItem": {
+        "type": "object",
+        "properties": {
+          "currency": {
+            "type": "string",
+            "description": "币种 (ISO 4217 / USDT)"
+          },
+          "available_balance": {
+            "type": "string",
+            "description": "可用余额（元）"
+          },
+          "freeze_balance": {
+            "type": "string",
+            "description": "冻结余额（元）"
+          }
+        },
+        "required": [
+          "currency",
+          "available_balance",
+          "freeze_balance"
+        ]
+      },
+      "Account": {
+        "type": "object",
+        "properties": {
+          "account_no": {
+            "type": "string",
+            "description": "账户号"
+          },
+          "account_name": {
+            "type": "string",
+            "description": "账户名称"
+          },
+          "account_status": {
+            "type": "string",
+            "enum": [
+              "ACTIVE",
+              "DISABLED",
+              "INITIALIZING",
+              "FAILED",
+              "REJECTED"
+            ],
+            "description": "账户状态"
+          },
+          "create_time": {
+            "type": "number",
+            "description": "创建时间（Unix 秒）"
+          },
+          "balance_list": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/BalanceItem"
+            },
+            "description": "余额列表"
+          },
+          "account_type": {
+            "type": "string",
+            "enum": [
+              "MAIN",
+              "SUB_ACCOUNT"
+            ],
+            "description": "账户类型：MAIN=主钱包，SUB_ACCOUNT=子账户"
+          },
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "SHARED_ACCOUNT"
+            ],
+            "nullable": true,
+            "description": "用途：SHARED_ACCOUNT=共享账户，null 或不返回=普通账户"
+          }
+        },
+        "required": [
+          "account_no",
+          "account_name",
+          "account_status",
+          "create_time",
+          "account_type"
+        ]
+      },
+      "CardProduct": {
+        "type": "object",
+        "properties": {
+          "product_id": {
+            "type": "string",
+            "description": "卡产品ID"
+          },
+          "product_name": {
+            "type": "string",
+            "description": "卡产品名称"
+          },
+          "card_label": {
+            "type": "string",
+            "description": "卡组（如 VISA）"
+          },
+          "card_country": {
+            "type": "string",
+            "description": "卡所属国家 (ISO 3166-2)"
+          },
+          "card_mode": {
+            "type": "string",
+            "enum": [
+              "NORMAL",
+              "SHARE"
+            ],
+            "description": "NORMAL=储值卡, SHARE=共享卡"
+          },
+          "card_currency": {
+            "type": "string",
+            "description": "卡币种 (ISO 4217)"
+          },
+          "supported_fee_deduct_types": {
+            "type": "array",
+            "description": "卡产品支持的手续费扣收方式：CARD_ACCOUNT=卡扣费，WALLET=钱包扣费",
+            "items": {
+              "type": "string",
+              "enum": [
+                "CARD_ACCOUNT",
+                "WALLET"
+              ]
+            }
+          }
+        },
+        "required": [
+          "product_id",
+          "product_name",
+          "card_label",
+          "card_country",
+          "card_mode",
+          "card_currency"
+        ]
+      },
+      "CardDetail": {
+        "type": "object",
+        "properties": {
+          "card_id": {
+            "type": "string"
+          },
+          "card_no": {
+            "type": "string",
+            "description": "卡号"
+          },
+          "card_name": {
+            "type": "string"
+          },
+          "card_type": {
+            "type": "string",
+            "description": "卡类型（虚拟卡）"
+          },
+          "card_mode": {
+            "type": "string"
+          },
+          "card_label": {
+            "type": "string"
+          },
+          "card_country": {
+            "type": "string"
+          },
+          "card_currency": {
+            "type": "string"
+          },
+          "expiry_date": {
+            "type": "string",
+            "description": "MMyy"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ACTIVE",
+              "REVOKED",
+              "CANCELED",
+              "INCANCELED"
+            ]
+          },
+          "available_balance": {
+            "type": "string"
+          },
+          "freeze_balance": {
+            "type": "string"
+          },
+          "remark": {
+            "type": "string",
+            "description": "备注"
+          },
+          "create_time": {
+            "type": "number"
+          },
+          "limit": {
+            "type": "object",
+            "description": "交易限额",
+            "properties": {
+              "single_limit": {
+                "type": "string",
+                "description": "单笔限额"
+              }
+            }
+          }
+        },
+        "required": [
+          "card_id",
+          "card_no",
+          "card_name",
+          "status"
+        ]
+      },
+      "CardSensitive": {
+        "type": "object",
+        "properties": {
+          "card_id": {
+            "type": "string"
+          },
+          "card_no": {
+            "type": "string"
+          },
+          "expiry_date": {
+            "type": "string",
+            "description": "MMyy"
+          },
+          "cvv2": {
+            "type": "string"
+          },
+          "freeze_balance": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "card_id",
+          "card_no"
+        ]
+      },
+      "CardBalanceTransaction": {
+        "type": "object",
+        "properties": {
+          "out_order_no": {
+            "type": "string",
+            "description": "商家订单号"
+          },
+          "transaction_id": {
+            "type": "string",
+            "description": "平台订单号"
+          },
+          "card_id": {
+            "type": "string"
+          },
+          "currency": {
+            "type": "string"
+          },
+          "amount": {
+            "type": "string",
+            "description": "金额（元）"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "CHARGE",
+              "WITHDRAW"
+            ],
+            "description": "CHARGE=转入, WITHDRAW=转出"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "APPLY",
+              "SUCCESS",
+              "FAIL"
+            ]
+          },
+          "create_time": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "out_order_no",
+          "transaction_id",
+          "card_id",
+          "status"
+        ]
+      },
+      "AuthTransaction": {
+        "type": "object",
+        "properties": {
+          "transaction_id": {
+            "type": "string"
+          },
+          "origin_transaction_id": {
+            "type": "string",
+            "description": "原交易单号（授权撤销时返回）"
+          },
+          "transaction_type": {
+            "type": "string",
+            "enum": [
+              "AUTH",
+              "AUTH_REVERSAL"
+            ]
+          },
+          "card_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "description": "交易状态，终态才会通知。approved=成功，failed=失败，pending=处理中",
+            "enum": [
+              "approved",
+              "failed",
+              "pending"
+            ]
+          },
+          "transaction_amount": {
+            "type": "string"
+          },
+          "transaction_currency": {
+            "type": "string"
+          },
+          "billing_amount": {
+            "type": "string"
+          },
+          "billing_currency": {
+            "type": "string"
+          },
+          "auth_code": {
+            "type": "string"
+          },
+          "merchant": {
+            "type": "object",
+            "description": "商家信息",
+            "properties": {
+              "merchant_name": {
+                "type": "string",
+                "description": "商家名称"
+              },
+              "merchant_description": {
+                "type": "string",
+                "description": "商家描述"
+              },
+              "country_code": {
+                "type": "string",
+                "description": "商家国家/地区编码，参考 ISO 3166-2"
+              },
+              "mcc": {
+                "type": "string",
+                "description": "商家MCC"
+              }
+            }
+          },
+          "otp": {
+            "type": "string",
+            "description": "one-time-password"
+          },
+          "decline_reason": {
+            "type": "string",
+            "description": "拒绝原因"
+          },
+          "transaction_time": {
+            "type": "number",
+            "description": "交易时间（Unix 秒）"
+          },
+          "fee_details": {
+            "type": "array",
+            "description": "手续费明细",
+            "items": {
+              "type": "object",
+              "required": [
+                "amount",
+                "currency",
+                "type"
+              ],
+              "properties": {
+                "amount": {
+                  "type": "string",
+                  "description": "手续费金额"
+                },
+                "currency": {
+                  "type": "string",
+                  "description": "手续费币种"
+                },
+                "type": {
+                  "type": "string",
+                  "description": "手续费类型",
+                  "enum": [
+                    "smallTransactionFee",
+                    "transactionFee",
+                    "failedFee",
+                    "conversionFee",
+                    "discardFee",
+                    "refundFee",
+                    "crossBorderTransactionFee",
+                    "gatewayFee"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "required": [
+          "transaction_id",
+          "transaction_type",
+          "card_id",
+          "status",
+          "transaction_amount",
+          "transaction_currency",
+          "billing_amount",
+          "billing_currency",
+          "merchant",
+          "transaction_time"
+        ]
+      },
+      "SettlementTransaction": {
+        "type": "object",
+        "properties": {
+          "transaction_id": {
+            "type": "string"
+          },
+          "transaction_type": {
+            "type": "string",
+            "enum": [
+              "SETTLE",
+              "REFUND"
+            ]
+          },
+          "origin_transaction_id": {
+            "type": "string",
+            "description": "原结算交易ID，退款时返回"
+          },
+          "auth_transaction_id": {
+            "type": "string",
+            "description": "授权单号"
+          },
+          "card_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "description": "交易状态，终态才会通知。approved=成功，pending=处理中",
+            "enum": [
+              "approved",
+              "pending"
+            ]
+          },
+          "transaction_amount": {
+            "type": "string"
+          },
+          "transaction_currency": {
+            "type": "string"
+          },
+          "billing_amount": {
+            "type": "string"
+          },
+          "billing_currency": {
+            "type": "string"
+          },
+          "auth_code": {
+            "type": "string"
+          },
+          "arn": {
+            "type": "string",
+            "description": "收单方参考号（Acquirer Reference Number），国际银行卡交易清算过程中由收单行生成的全局唯一交易标识符，用于跨机构交易追踪、对账、争议处理和资金结算"
+          },
+          "merchant": {
+            "type": "object",
+            "description": "商家信息",
+            "properties": {
+              "merchant_name": {
+                "type": "string",
+                "description": "商家名称"
+              },
+              "merchant_description": {
+                "type": "string",
+                "description": "商家描述"
+              },
+              "country_code": {
+                "type": "string",
+                "description": "商家国家/地区编码，参考 ISO 3166-2"
+              },
+              "mcc": {
+                "type": "string",
+                "description": "商家MCC"
+              }
+            }
+          },
+          "transaction_time": {
+            "type": "number",
+            "description": "交易时间（Unix 秒）"
+          },
+          "fee_details": {
+            "type": "array",
+            "description": "手续费明细",
+            "items": {
+              "type": "object",
+              "required": [
+                "amount",
+                "currency",
+                "type"
+              ],
+              "properties": {
+                "amount": {
+                  "type": "string",
+                  "description": "手续费金额"
+                },
+                "currency": {
+                  "type": "string",
+                  "description": "手续费币种"
+                },
+                "type": {
+                  "type": "string",
+                  "description": "手续费类型",
+                  "enum": [
+                    "smallTransactionFee",
+                    "transactionFee",
+                    "failedFee",
+                    "conversionFee",
+                    "discardFee",
+                    "refundFee",
+                    "crossBorderTransactionFee",
+                    "gatewayFee"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "required": [
+          "transaction_id",
+          "transaction_type",
+          "card_id",
+          "status",
+          "transaction_amount",
+          "transaction_currency",
+          "billing_amount",
+          "billing_currency",
+          "merchant",
+          "transaction_time"
+        ]
+      },
+      "AuthTransactionWebhook": {
+        "type": "object",
+        "properties": {
+          "transaction_id": {
+            "type": "string",
+            "description": "交易单号"
+          },
+          "origin_transaction_id": {
+            "type": "string",
+            "description": "原交易单号（授权撤销时返回）"
+          },
+          "transaction_type": {
+            "type": "string",
+            "enum": [
+              "AUTH",
+              "AUTH_REVERSAL"
+            ]
+          },
+          "card_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "description": "交易状态，终态才会通知。approved=成功，failed=失败，pending=处理中",
+            "enum": [
+              "approved",
+              "failed",
+              "pending"
+            ]
+          },
+          "transaction_amount": {
+            "type": "string"
+          },
+          "transaction_currency": {
+            "type": "string"
+          },
+          "billing_amount": {
+            "type": "string"
+          },
+          "billing_currency": {
+            "type": "string"
+          },
+          "auth_code": {
+            "type": "string"
+          },
+          "merchant": {
+            "type": "object",
+            "description": "商家信息",
+            "properties": {
+              "merchant_name": {
+                "type": "string",
+                "description": "商家名称"
+              },
+              "merchant_description": {
+                "type": "string",
+                "description": "商家描述"
+              },
+              "country_code": {
+                "type": "string",
+                "description": "商家国家/地区编码，参考 ISO 3166-2"
+              },
+              "mcc": {
+                "type": "string",
+                "description": "商家MCC"
+              }
+            }
+          },
+          "otp": {
+            "type": "string",
+            "description": "one-time-password"
+          },
+          "decline_reason": {
+            "type": "string",
+            "description": "拒绝原因"
+          },
+          "transaction_time": {
+            "type": "number",
+            "description": "交易时间（Unix 秒）"
+          }
+        },
+        "required": [
+          "transaction_id",
+          "transaction_type",
+          "card_id",
+          "status",
+          "transaction_amount",
+          "transaction_currency",
+          "billing_amount",
+          "billing_currency",
+          "merchant",
+          "transaction_time"
+        ]
+      },
+      "SettlementTransactionWebhook": {
+        "type": "object",
+        "properties": {
+          "transaction_id": {
+            "type": "string"
+          },
+          "transaction_type": {
+            "type": "string",
+            "enum": [
+              "SETTLE",
+              "REFUND"
+            ]
+          },
+          "origin_transaction_id": {
+            "type": "string",
+            "description": "原结算交易ID，退款时返回"
+          },
+          "auth_transaction_id": {
+            "type": "string",
+            "description": "授权单号"
+          },
+          "card_id": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "description": "交易状态，终态才会通知。approved=成功，pending=处理中",
+            "enum": [
+              "approved",
+              "pending"
+            ]
+          },
+          "transaction_amount": {
+            "type": "string"
+          },
+          "transaction_currency": {
+            "type": "string"
+          },
+          "billing_amount": {
+            "type": "string"
+          },
+          "billing_currency": {
+            "type": "string"
+          },
+          "auth_code": {
+            "type": "string"
+          },
+          "arn": {
+            "type": "string",
+            "description": "收单方参考号（Acquirer Reference Number），国际银行卡交易清算过程中由收单行生成的全局唯一交易标识符，用于跨机构交易追踪、对账、争议处理和资金结算"
+          },
+          "merchant": {
+            "type": "object",
+            "description": "商家信息",
+            "properties": {
+              "merchant_name": {
+                "type": "string",
+                "description": "商家名称"
+              },
+              "merchant_description": {
+                "type": "string",
+                "description": "商家描述"
+              },
+              "country_code": {
+                "type": "string",
+                "description": "商家国家/地区编码，参考 ISO 3166-2"
+              },
+              "mcc": {
+                "type": "string",
+                "description": "商家MCC"
+              }
+            }
+          },
+          "transaction_time": {
+            "type": "number",
+            "description": "交易时间（Unix 秒）"
+          }
+        },
+        "required": [
+          "transaction_id",
+          "transaction_type",
+          "card_id",
+          "status",
+          "transaction_amount",
+          "transaction_currency",
+          "billing_amount",
+          "billing_currency",
+          "transaction_time"
+        ]
+      },
+      "ReceivingAddress": {
+        "type": "object",
+        "properties": {
+          "currencies": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "address": {
+            "type": "string"
+          },
+          "chain_type": {
+            "type": "string",
+            "enum": [
+              "ETH",
+              "TRX"
+            ]
+          }
+        },
+        "required": [
+          "currencies",
+          "address",
+          "chain_type"
+        ]
+      },
+      "ConversionDetail": {
+        "type": "object",
+        "properties": {
+          "out_order_no": {
+            "type": "string"
+          },
+          "user_id": {
+            "type": "string",
+            "description": "用户ID"
+          },
+          "transaction_id": {
+            "type": "string"
+          },
+          "sell_currency": {
+            "type": "string"
+          },
+          "sell_amount": {
+            "type": "string"
+          },
+          "buy_currency": {
+            "type": "string"
+          },
+          "buy_amount": {
+            "type": "string"
+          },
+          "fee_amount": {
+            "type": "string"
+          },
+          "fee_currency": {
+            "type": "string"
+          },
+          "rate": {
+            "type": "string"
+          },
+          "base_currency": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "PROCESSING",
+              "SUCCESS",
+              "FAILED"
+            ]
+          },
+          "fail_reason": {
+            "type": "string"
+          },
+          "success_time": {
+            "type": "number"
+          },
+          "create_time": {
+            "type": "number"
+          }
+        }
+      },
+      "TransferDetail": {
+        "type": "object",
+        "required": [
+          "out_order_no",
+          "status",
+          "amount",
+          "currency",
+          "payer_account_no",
+          "payee_account_no",
+          "create_time"
+        ],
+        "properties": {
+          "out_order_no": {
+            "type": "string",
+            "description": "商户订单号"
+          },
+          "order_no": {
+            "type": "string",
+            "description": "平台订单号"
+          },
+          "status": {
+            "type": "string",
+            "description": "转账状态",
+            "enum": [
+              "PROCESSING",
+              "SUCCESS",
+              "FAIL"
+            ]
+          },
+          "amount": {
+            "type": "string",
+            "description": "转账金额"
+          },
+          "currency": {
+            "type": "string",
+            "description": "币种"
+          },
+          "payer_account_no": {
+            "type": "string",
+            "description": "付款方账户号（钱包ID）"
+          },
+          "payee_account_no": {
+            "type": "string",
+            "description": "收款方账户号（钱包ID）"
+          },
+          "fail_reason": {
+            "type": "string",
+            "description": "失败原因（状态为FAIL时返回）"
+          },
+          "success_time": {
+            "type": "number",
+            "description": "成功时间（Unix毫秒，状态为SUCCESS时返回）"
+          },
+          "create_time": {
+            "type": "number",
+            "description": "创建时间（Unix毫秒）"
+          }
+        }
+      },
+      "SubAccount": {
+        "type": "object",
+        "properties": {
+          "account_no": {
+            "type": "string",
+            "description": "账户 ID"
+          },
+          "account_name": {
+            "type": "string",
+            "description": "账户别名"
+          },
+          "out_account_no": {
+            "type": "string",
+            "description": "商户侧账户号"
+          },
+          "purpose": {
+            "type": "string",
+            "enum": [
+              "SHARED_ACCOUNT"
+            ],
+            "nullable": true,
+            "description": "用途：SHARED_ACCOUNT=共享账户，null=普通子账户"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ACTIVE",
+              "DISABLED"
+            ],
+            "description": "账户状态：ACTIVE=启用，DISABLED=停用"
+          },
+          "create_time": {
+            "type": "number",
+            "description": "创建时间（Unix 秒）"
+          }
+        },
+        "required": [
+          "account_no",
+          "account_name",
+          "out_account_no",
+          "status",
+          "create_time"
+        ]
+      },
+      "Address": {
+        "type": "object",
+        "description": "地址",
+        "required": [
+          "country",
+          "state",
+          "city",
+          "address",
+          "post_code"
+        ],
+        "properties": {
+          "country": {
+            "type": "string",
+            "description": "国家，ISO 3166-1 alpha-2 两位码",
+            "minLength": 2,
+            "maxLength": 2
+          },
+          "state": {
+            "type": "string",
+            "description": "省 / 州",
+            "maxLength": 64
+          },
+          "city": {
+            "type": "string",
+            "description": "城市",
+            "maxLength": 64
+          },
+          "address": {
+            "type": "string",
+            "description": "详细地址",
+            "maxLength": 256
+          },
+          "post_code": {
+            "type": "string",
+            "description": "邮编",
+            "maxLength": 10
+          }
+        }
+      },
+      "IdType": {
+        "type": "string",
+        "enum": [
+          "PASSPORT",
+          "IDCARD",
+          "OTHER_CERTIFICATE"
+        ],
+        "description": "证件类型：PASSPORT=护照，IDCARD=身份证，OTHER_CERTIFICATE=其他"
+      },
+      "CardholderStatus": {
+        "type": "string",
+        "enum": [
+          "PENDING_REVIEW",
+          "APPROVED",
+          "REJECTED",
+          "SUSPENDED",
+          "DISABLED"
+        ],
+        "description": "持卡人状态：PENDING_REVIEW=待审核，APPROVED=已通过（可开卡），REJECTED=已拒绝，SUSPENDED=风控停用，DISABLED=禁用"
+      },
+      "CardholderDetail": {
+        "type": "object",
+        "required": [
+          "card_holder_id",
+          "out_card_holder_id",
+          "first_name",
+          "last_name",
+          "date_of_birth",
+          "zone_number",
+          "mobile",
+          "email",
+          "country_code",
+          "id_type",
+          "id_no",
+          "id_period_begin",
+          "id_period_end",
+          "id_photo_file_ids",
+          "residential_address",
+          "billing_address",
+          "status"
+        ],
+        "properties": {
+          "card_holder_id": {
+            "type": "string",
+            "description": "平台持卡人ID"
+          },
+          "out_card_holder_id": {
+            "type": "string",
+            "description": "商户侧持卡人ID"
+          },
+          "first_name": {
+            "type": "string",
+            "description": "名（英文，仅 ASCII 字符）",
+            "maxLength": 32
+          },
+          "last_name": {
+            "type": "string",
+            "description": "姓（英文，仅 ASCII 字符）",
+            "maxLength": 32
+          },
+          "chinese_first_name": {
+            "type": "string",
+            "description": "名（中文），选填",
+            "maxLength": 32
+          },
+          "chinese_last_name": {
+            "type": "string",
+            "description": "姓（中文），选填",
+            "maxLength": 32
+          },
+          "date_of_birth": {
+            "type": "string",
+            "format": "date",
+            "description": "出生日期，YYYY-MM-DD"
+          },
+          "zone_number": {
+            "type": "string",
+            "description": "手机国家区号，如 1、86",
+            "maxLength": 10
+          },
+          "mobile": {
+            "type": "string",
+            "description": "手机号",
+            "maxLength": 50
+          },
+          "email": {
+            "type": "string",
+            "description": "邮箱",
+            "format": "email",
+            "maxLength": 100
+          },
+          "country_code": {
+            "type": "string",
+            "description": "国家/地区，ISO 3166-1 alpha-2 两位码",
+            "minLength": 2,
+            "maxLength": 2
+          },
+          "id_type": {
+            "$ref": "#/components/schemas/IdType"
+          },
+          "id_no": {
+            "type": "string",
+            "description": "证件号",
+            "maxLength": 64
+          },
+          "id_period_begin": {
+            "type": "string",
+            "format": "date",
+            "description": "证件有效期起始日，YYYY-MM-DD，不得晚于提交日期，且不得晚于截止日"
+          },
+          "id_period_end": {
+            "type": "string",
+            "format": "date",
+            "description": "证件有效期截止日，YYYY-MM-DD，须晚于提交日期；长期有效请填写 9999-12-31"
+          },
+          "id_photo_file_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 2,
+            "description": "证件照片文件ID（由上传文件接口返回），最多 2 个"
+          },
+          "residential_address": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Address"
+              }
+            ],
+            "description": "居住地址"
+          },
+          "billing_address": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Address"
+              }
+            ],
+            "description": "账单地址"
+          },
+          "ssn": {
+            "type": "string",
+            "description": "美国社会安全号码，国家/地区为 US 时必填，否则不传",
+            "pattern": "^\\d{3}-\\d{2}-\\d{4}$"
+          },
+          "status": {
+            "$ref": "#/components/schemas/CardholderStatus"
+          },
+          "remark": {
+            "type": "string",
+            "description": "备注，驳回时为驳回原因"
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/v1/accounts": {
+      "get": {
+        "summary": "查询账户列表",
+        "x-internal": true,
+        "tags": [
+          "账户管理"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/FSignature"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Account"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "summary": "创建账户",
+        "tags": [
+          "账户管理"
+        ],
+        "description": "创建账户/共享账户。传 purpose=SHARED_ACCOUNT 创建共享账户。",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/FSignature"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "data"
+                ],
+                "properties": {
+                  "data": {
+                    "type": "object",
+                    "required": [
+                      "account_name",
+                      "out_account_no"
+                    ],
+                    "properties": {
+                      "account_name": {
+                        "type": "string",
+                        "maxLength": 50,
+                        "description": "账户别名，不含空格或换行",
+                        "example": "SubAccountA"
+                      },
+                      "out_account_no": {
+                        "type": "string",
+                        "maxLength": 64,
+                        "description": "商户侧账户号（创建必填，必回显），不含空格或换行",
+                        "example": "SUB202607200001"
+                      },
+                      "purpose": {
+                        "type": "string",
+                        "enum": [
+                          "SHARED_ACCOUNT"
+                        ],
+                        "description": "用途：传 SHARED_ACCOUNT 创建共享账户；不传或传 null 创建普通子账户",
+                        "nullable": true
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/SubAccount"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "收到该状态码说明资源已创建，请勿重复提交，需轮询交易结果或等待异步通知。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "收到该状态码说明请求已受理，请稍后查询结果或等待异步通知。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未认证",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "权限不足",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "收到该状态码说明请求重复提交，需轮询交易结果或等待异步通知。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "收到该状态码说明服务端有异常，收到该状态码不能作为交易结果的依据，请稍后查询结果或等待异步通知。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/page": {
+      "get": {
+        "summary": "分页查询账户",
+        "tags": [
+          "账户管理"
+        ],
+        "parameters": [
+          {
+            "name": "page_no",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "页码"
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "分页大小"
+          },
+          {
+            "name": "account_type",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "MAIN",
+                "SUB_ACCOUNT"
+              ]
+            },
+            "description": "账户类型：MAIN=主钱包，SUB_ACCOUNT=子账户"
+          },
+          {
+            "name": "account_no",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "账户号"
+          },
+          {
+            "$ref": "#/components/parameters/FSignature"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "count",
+                    "data"
+                  ],
+                  "properties": {
+                    "count": {
+                      "type": "string",
+                      "description": "结果集总数"
+                    },
+                    "data": {
+                      "type": "array",
+                      "description": "结果集",
+                      "items": {
+                        "$ref": "#/components/schemas/Account"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/serials": {
+      "get": {
+        "summary": "查询账户流水",
+        "tags": [
+          "账户管理"
+        ],
+        "parameters": [
+          {
+            "name": "page_no",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "页码"
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "分页大小"
+          },
+          {
+            "name": "account_no",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "currency",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start_time",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "开始时间（Unix 秒）"
+          },
+          {
+            "name": "end_time",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            },
+            "description": "结束时间（Unix 秒）"
+          },
+          {
+            "$ref": "#/components/parameters/FSignature"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "count": {
+                      "type": "string",
+                      "description": "结果集总数"
+                    },
+                    "data": {
+                      "type": "array",
+                      "description": "流水列表",
+                      "items": {
+                        "type": "object",
+                        "required": [
+                          "serial_id",
+                          "currency",
+                          "amount",
+                          "flag_dc",
+                          "transaction_type",
+                          "create_time"
+                        ],
+                        "properties": {
+                          "serial_id": {
+                            "type": "string",
+                            "description": "流水号"
+                          },
+                          "currency": {
+                            "type": "string",
+                            "description": "币种"
+                          },
+                          "amount": {
+                            "type": "string",
+                            "description": "金额"
+                          },
+                          "flag_dc": {
+                            "type": "string",
+                            "enum": [
+                              "DEBIT",
+                              "CREDIT",
+                              "MAIN_TO_SUB_ACCOUNT",
+                              "SUB_ACCOUNT_TO_MAIN"
+                            ],
+                            "description": "收支方向：DEBIT=出账，CREDIT=入账，MAIN_TO_SUB_ACCOUNT=主账户转入子账户，SUB_ACCOUNT_TO_MAIN=子账户转入主账户"
+                          },
+                          "transaction_type": {
+                            "type": "string",
+                            "enum": [
+                              "CONSUME",
+                              "CHARGE",
+                              "REFUND",
+                              "EXCHANGE",
+                              "REVERSE",
+                              "FEE",
+                              "LIMIT_ADJUST",
+                              "TRANSFER"
+                            ],
+                            "description": "交易类型：CONSUME=消费，CHARGE=充值，REFUND=退款，EXCHANGE=汇兑，REVERSE=撤销，FEE=手续费，LIMIT_ADJUST=限额调整，TRANSFER=转账"
+                          },
+                          "create_time": {
+                            "type": "number",
+                            "description": "动账时间（Unix 秒）"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/detail/{account_no}": {
+      "get": {
+        "summary": "查询账户详情",
+        "tags": [
+          "账户管理"
+        ],
+        "parameters": [
+          {
+            "name": "account_no",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/FSignature"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/Account"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/accounts/{account_no}/status": {
+      "put": {
+        "summary": "账户状态变更",
+        "tags": [
+          "账户管理"
+        ],
+        "description": "变更账户/共享账户状态。停用时冻结该钱包关联的发卡，不影响已发行卡的消费。主钱包禁止变更。状态变更后异步推送 ACCOUNT_STATUS_CHANGED Webhook。",
+        "parameters": [
+          {
+            "name": "account_no",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "子账户系统ID"
+          },
+          {
+            "$ref": "#/components/parameters/FSignature"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "account_status",
+                  "remark"
+                ],
+                "properties": {
+                  "account_status": {
+                    "type": "string",
+                    "enum": [
+                      "DISABLED",
+                      "ACTIVE"
+                    ],
+                    "description": "目标状态：DISABLED=停用，ACTIVE=启用"
+                  },
+                  "remark": {
+                    "type": "string",
+                    "minLength": 2,
+                    "maxLength": 100,
+                    "description": "变更原因（必填），2~100字符，不支持 emoji"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "required": [
+                        "account_no",
+                        "out_account_no"
+                      ],
+                      "properties": {
+                        "account_no": {
+                          "type": "string",
+                          "description": "账户号"
+                        },
+                        "out_account_no": {
+                          "type": "string",
+                          "description": "商户侧账户号"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "收到该状态码说明资源已创建，请勿重复提交，需轮询交易结果或等待异步通知。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "收到该状态码说明请求已受理，请稍后查询结果或等待异步通知。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未认证",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "权限不足",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "收到该状态码说明请求重复提交，需轮询交易结果或等待异步通知。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "收到该状态码说明服务端有异常，收到该状态码不能作为交易结果的依据，请稍后查询结果或等待异步通知。",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/card/product": {
+      "get": {
+        "summary": "查询卡产品",
+        "tags": [
+          "卡管理"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/FSignature"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/CardProduct"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/card": {
+      "post": {
+        "summary": "申卡",
+        "tags": [
+          "卡管理"
+        ],
+        "description": "使用已创建的持卡人申卡，传入平台持卡人ID `card_holder_id`。持卡人需先通过「添加持卡人」接口创建，且审核通过（`APPROVED`）后方可开卡。",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/FSignature"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "out_order_no",
+                  "product_id",
+                  "amount",
+                  "currency",
+                  "card_holder_id",
+                  "card_name",
+                  "expiry_date"
+                ],
+                "properties": {
+                  "out_order_no": {
+                    "type": "string",
+                    "description": "商家订单号",
+                    "maxLength": 32
+                  },
+                  "product_id": {
+                    "type": "string",
+                    "description": "卡产品ID"
+                  },
+                  "amount": {
+                    "type": "string",
+                    "description": "充值金额（最多2位小数）"
+                  },
+                  "currency": {
+                    "type": "string",
+                    "description": "币种"
+                  },
+                  "card_holder_id": {
+                    "type": "string",
+                    "description": "平台持卡人ID，需先调用添加持卡人接口创建获取"
+                  },
+                  "card_name": {
+                    "type": "string",
+                    "description": "卡名称",
+                    "maxLength": 16
+                  },
+                  "expiry_date": {
+                    "type": "string",
+                    "description": "过期时间 MMyy（一个月后到四年内）"
+                  },
+                  "account_no": {
+                    "type": "string",
+                    "description": "共享钱包账户号（共享卡需要传）"
+                  },
+                  "remark": {
+                    "type": "string",
+                    "description": "备注（最多255字符）",
+                    "maxLength": 255
+                  },
+                  "fee_deduct_type": {
+                    "type": "string",
+                    "description": "手续费扣收方式：CARD_ACCOUNT=卡扣费，WALLET=钱包扣费。不传或传空默认 WALLET；是否支持 CARD_ACCOUNT 取决于卡产品，取值须在卡产品 supported_fee_deduct_types 列表内",
+                    "enum": [
+                      "CARD_ACCOUNT",
+                      "WALLET"
+                    ]
+                  },
+                  "limit": {
+                    "type": "object",
+                    "description": "交易限额",
+                    "properties": {
+                      "single_limit": {
+                        "type": "string",
+                        "description": "单笔限额"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "required": [
+                        "out_order_no",
+                        "transaction_id"
+                      ],
+                      "properties": {
+                        "out_order_no": {
+                          "type": "string",
+                          "description": "商家订单号",
+                          "maxLength": 32
+                        },
+                        "transaction_id": {
+                          "type": "string",
+                          "description": "平台订单号"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "资源已创建，请勿重复提交，需轮询结果或等待异步通知",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "请求已受理，请稍后查询结果或等待异步通知",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未认证",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "权限不足",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "请求重复提交，需轮询结果或等待异步通知",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "服务端异常，不能作为交易结果的依据，请稍后查询结果或等待异步通知",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/card/apply-order": {
+      "get": {
+        "summary": "查询卡申请单",
+        "tags": [
+          "卡管理"
+        ],
+        "parameters": [
+          {
+            "name": "out_order_no",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "商家订单号（二选一）"
+          },
+          {
+            "name": "transaction_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "订单号（二选一，优先）"
+          },
+          {
+            "$ref": "#/components/parameters/FSignature"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "card_id": {
+                          "type": "string"
+                        },
+                        "out_order_no": {
+                          "type": "string"
+                        },
+                        "transaction_id": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "SUCCESS",
+                            "FAILED",
+                            "PROCESSING"
+                          ]
+                        },
+                        "failure_reason": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/card/recharge-transaction": {
+      "post": {
+        "summary": "卡转入",
+        "tags": [
+          "卡管理"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/FSignature"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "out_order_no": {
+                    "type": "string"
+                  },
+                  "card_id": {
+                    "type": "string"
+                  },
+                  "currency": {
+                    "type": "string"
+                  },
+                  "amount": {
+                    "type": "string",
+                    "description": "金额（元）"
+                  }
+                },
+                "required": [
+                  "out_order_no",
+                  "card_id",
+                  "currency",
+                  "amount"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/CardBalanceTransaction"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "资源已创建"
+          },
+          "400": {
+            "description": "请求错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/card/withdraw-transaction": {
+      "post": {
+        "summary": "卡转出",
+        "tags": [
+          "卡管理"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/FSignature"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "out_order_no": {
+                    "type": "string"
+                  },
+                  "card_id": {
+                    "type": "string"
+                  },
+                  "currency": {
+                    "type": "string"
+                  },
+                  "amount": {
+                    "type": "string",
+                    "description": "金额（元）"
+                  }
+                },
+                "required": [
+                  "out_order_no",
+                  "card_id",
+                  "currency",
+                  "amount"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/CardBalanceTransaction"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "资源已创建"
+          },
+          "400": {
+            "description": "请求错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/card/status": {
+      "put": {
+        "summary": "更新卡状态",
+        "tags": [
+          "卡管理"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/FSignature"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "card_id": {
+                    "type": "string"
+                  },
+                  "card_status": {
+                    "type": "string",
+                    "enum": [
+                      "ACTIVE",
+                      "REVOKED",
+                      "CANCELED"
+                    ],
+                    "description": "ACTIVE=正常, REVOKED=冻结, CANCELED=注销"
+                  },
+                  "remark": {
+                    "type": "string"
+                  },
+                  "account_no": {
+                    "type": "integer",
+                    "description": "钱包ID，注销卡时（card_status=CANCELED）可选传入，指定余额转入的目标钱包；不传则转入卡绑定的默认主账户"
+                  }
+                },
+                "required": [
+                  "card_id",
+                  "card_status"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "card_id": {
+                          "type": "string"
+                        },
+                        "card_status": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/card/transfer-order": {
+      "get": {
+        "summary": "转入转出结果查询",
+        "tags": [
+          "卡管理"
+        ],
+        "parameters": [
+          {
+            "name": "out_order_no",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "商家订单号（二选一）"
+          },
+          {
+            "name": "transaction_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "平台订单号（二选一，优先）"
+          },
+          {
+            "$ref": "#/components/parameters/FSignature"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/CardBalanceTransaction"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/card/balance-transactions": {
+      "get": {
+        "summary": "分页卡转入转出明细",
+        "tags": [
+          "卡管理"
+        ],
+        "parameters": [
+          {
+            "name": "page_no",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "card_id",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start_time",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "end_time",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "out_order_no",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/FSignature"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "count": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/CardBalanceTransaction"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/card/sensitive/{card_id}": {
+      "get": {
+        "summary": "查询卡敏感信息",
+        "tags": [
+          "卡管理"
+        ],
+        "parameters": [
+          {
+            "name": "card_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/FSignature"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/CardSensitive"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/card/detail/{card_id}": {
+      "get": {
+        "summary": "查询卡详情",
+        "tags": [
+          "卡管理"
+        ],
+        "parameters": [
+          {
+            "name": "card_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/FSignature"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/CardDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cardholder": {
+      "post": {
+        "summary": "添加持卡人",
+        "tags": [
+          "持卡人"
+        ],
+        "description": "按商户侧持卡人ID（`out_card_holder_id`）添加持卡人，同一商户下不得重复。添加后状态为 `PENDING_REVIEW`，经平台审核通过（`APPROVED`）后方可用于开卡。",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/FSignature"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "out_card_holder_id",
+                  "first_name",
+                  "last_name",
+                  "date_of_birth",
+                  "zone_number",
+                  "mobile",
+                  "email",
+                  "country_code",
+                  "id_type",
+                  "id_no",
+                  "id_period_begin",
+                  "id_period_end",
+                  "id_photo_file_ids",
+                  "residential_address",
+                  "billing_address"
+                ],
+                "properties": {
+                  "out_card_holder_id": {
+                    "type": "string",
+                    "description": "商户侧持卡人ID"
+                  },
+                  "first_name": {
+                    "type": "string",
+                    "description": "名（英文，仅 ASCII 字符）",
+                    "maxLength": 32
+                  },
+                  "last_name": {
+                    "type": "string",
+                    "description": "姓（英文，仅 ASCII 字符）",
+                    "maxLength": 32
+                  },
+                  "chinese_first_name": {
+                    "type": "string",
+                    "description": "名（中文），选填",
+                    "maxLength": 32
+                  },
+                  "chinese_last_name": {
+                    "type": "string",
+                    "description": "姓（中文），选填",
+                    "maxLength": 32
+                  },
+                  "date_of_birth": {
+                    "type": "string",
+                    "format": "date",
+                    "description": "出生日期，YYYY-MM-DD"
+                  },
+                  "zone_number": {
+                    "type": "string",
+                    "description": "手机国家区号，如 1、86",
+                    "maxLength": 10
+                  },
+                  "mobile": {
+                    "type": "string",
+                    "description": "手机号",
+                    "maxLength": 50
+                  },
+                  "email": {
+                    "type": "string",
+                    "description": "邮箱",
+                    "format": "email",
+                    "maxLength": 100
+                  },
+                  "country_code": {
+                    "type": "string",
+                    "description": "国家/地区，ISO 3166-1 alpha-2 两位码",
+                    "minLength": 2,
+                    "maxLength": 2
+                  },
+                  "id_type": {
+                    "$ref": "#/components/schemas/IdType"
+                  },
+                  "id_no": {
+                    "type": "string",
+                    "description": "证件号",
+                    "maxLength": 64
+                  },
+                  "id_period_begin": {
+                    "type": "string",
+                    "format": "date",
+                    "description": "证件有效期起始日，YYYY-MM-DD，不得晚于提交日期，且不得晚于截止日"
+                  },
+                  "id_period_end": {
+                    "type": "string",
+                    "format": "date",
+                    "description": "证件有效期截止日，YYYY-MM-DD，须晚于提交日期；长期有效请填写 9999-12-31"
+                  },
+                  "id_photo_file_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 2,
+                    "description": "证件照片文件ID（由上传文件接口返回），最多 2 个"
+                  },
+                  "residential_address": {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/Address"
+                      }
+                    ],
+                    "description": "居住地址"
+                  },
+                  "billing_address": {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/Address"
+                      }
+                    ],
+                    "description": "账单地址"
+                  },
+                  "ssn": {
+                    "type": "string",
+                    "description": "美国社会安全号码，国家/地区为 US 时必填，否则不传",
+                    "pattern": "^\\d{3}-\\d{2}-\\d{4}$"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "required": [
+                        "card_holder_id"
+                      ],
+                      "properties": {
+                        "card_holder_id": {
+                          "type": "string",
+                          "description": "平台持卡人ID"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未认证",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "权限不足",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "请求重复提交，需轮询结果或等待异步通知",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "服务端异常，不能作为交易结果的依据，请稍后查询结果或等待异步通知",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cardholder/{card_holder_id}": {
+      "get": {
+        "summary": "查询持卡人",
+        "tags": [
+          "持卡人"
+        ],
+        "description": "按平台持卡人ID查询持卡人信息及审核状态。",
+        "parameters": [
+          {
+            "name": "card_holder_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "平台持卡人ID（添加持卡人接口返回）"
+          },
+          {
+            "$ref": "#/components/parameters/FSignature"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/CardholderDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未认证",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "权限不足",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "请求重复提交，需轮询结果或等待异步通知",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "服务端异常，不能作为交易结果的依据，请稍后查询结果或等待异步通知",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "summary": "修改持卡人",
+        "tags": [
+          "持卡人"
+        ],
+        "description": "按平台持卡人ID修改持卡人信息。",
+        "parameters": [
+          {
+            "name": "card_holder_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "平台持卡人ID（添加持卡人接口返回）"
+          },
+          {
+            "$ref": "#/components/parameters/FSignature"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "first_name",
+                  "last_name",
+                  "date_of_birth",
+                  "zone_number",
+                  "mobile",
+                  "email",
+                  "country_code",
+                  "id_type",
+                  "id_no",
+                  "id_period_begin",
+                  "id_period_end",
+                  "id_photo_file_ids",
+                  "residential_address",
+                  "billing_address"
+                ],
+                "properties": {
+                  "first_name": {
+                    "type": "string",
+                    "description": "名（英文，仅 ASCII 字符）",
+                    "maxLength": 32
+                  },
+                  "last_name": {
+                    "type": "string",
+                    "description": "姓（英文，仅 ASCII 字符）",
+                    "maxLength": 32
+                  },
+                  "chinese_first_name": {
+                    "type": "string",
+                    "description": "名（中文），选填",
+                    "maxLength": 32
+                  },
+                  "chinese_last_name": {
+                    "type": "string",
+                    "description": "姓（中文），选填",
+                    "maxLength": 32
+                  },
+                  "date_of_birth": {
+                    "type": "string",
+                    "format": "date",
+                    "description": "出生日期，YYYY-MM-DD"
+                  },
+                  "zone_number": {
+                    "type": "string",
+                    "description": "手机国家区号，如 1、86",
+                    "maxLength": 10
+                  },
+                  "mobile": {
+                    "type": "string",
+                    "description": "手机号",
+                    "maxLength": 50
+                  },
+                  "email": {
+                    "type": "string",
+                    "description": "邮箱",
+                    "format": "email",
+                    "maxLength": 100
+                  },
+                  "country_code": {
+                    "type": "string",
+                    "description": "国家/地区，ISO 3166-1 alpha-2 两位码",
+                    "minLength": 2,
+                    "maxLength": 2
+                  },
+                  "id_type": {
+                    "$ref": "#/components/schemas/IdType"
+                  },
+                  "id_no": {
+                    "type": "string",
+                    "description": "证件号",
+                    "maxLength": 64
+                  },
+                  "id_period_begin": {
+                    "type": "string",
+                    "format": "date",
+                    "description": "证件有效期起始日，YYYY-MM-DD，不得晚于提交日期，且不得晚于截止日"
+                  },
+                  "id_period_end": {
+                    "type": "string",
+                    "format": "date",
+                    "description": "证件有效期截止日，YYYY-MM-DD，须晚于提交日期；长期有效请填写 9999-12-31"
+                  },
+                  "id_photo_file_ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    },
+                    "maxItems": 2,
+                    "description": "证件照片文件ID（由上传文件接口返回），最多 2 个"
+                  },
+                  "residential_address": {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/Address"
+                      }
+                    ],
+                    "description": "居住地址"
+                  },
+                  "billing_address": {
+                    "allOf": [
+                      {
+                        "$ref": "#/components/schemas/Address"
+                      }
+                    ],
+                    "description": "账单地址"
+                  },
+                  "ssn": {
+                    "type": "string",
+                    "description": "美国社会安全号码，国家/地区为 US 时必填，否则不传",
+                    "pattern": "^\\d{3}-\\d{2}-\\d{4}$"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "required": [
+                        "card_holder_id"
+                      ],
+                      "properties": {
+                        "card_holder_id": {
+                          "type": "string",
+                          "description": "平台持卡人ID"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未认证",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "权限不足",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "请求重复提交，需轮询结果或等待异步通知",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "服务端异常，不能作为交易结果的依据，请稍后查询结果或等待异步通知",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/cardholder/status/{card_holder_id}": {
+      "put": {
+        "summary": "修改持卡人状态",
+        "tags": [
+          "持卡人"
+        ],
+        "description": "启用或禁用持卡人：仅 `APPROVED`（启用）状态可禁用，仅 `DISABLED`（禁用）状态可启用。",
+        "parameters": [
+          {
+            "name": "card_holder_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "平台持卡人ID（添加持卡人接口返回）"
+          },
+          {
+            "$ref": "#/components/parameters/FSignature"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "status"
+                ],
+                "properties": {
+                  "status": {
+                    "type": "string",
+                    "enum": [
+                      "APPROVED",
+                      "DISABLED"
+                    ],
+                    "description": "目标状态：APPROVED=启用，DISABLED=禁用。启用状态才能禁用，禁用状态才能启用"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "required": [
+                        "card_holder_id",
+                        "out_card_holder_id",
+                        "status"
+                      ],
+                      "properties": {
+                        "card_holder_id": {
+                          "type": "string",
+                          "description": "平台持卡人ID"
+                        },
+                        "out_card_holder_id": {
+                          "type": "string",
+                          "description": "商户侧持卡人ID"
+                        },
+                        "status": {
+                          "$ref": "#/components/schemas/CardholderStatus"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未认证",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "权限不足",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "请求重复提交，需轮询结果或等待异步通知",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "服务端异常，不能作为交易结果的依据，请稍后查询结果或等待异步通知",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/card/transactions/authorization": {
+      "get": {
+        "summary": "查询卡授权交易",
+        "tags": [
+          "卡交易"
+        ],
+        "parameters": [
+          {
+            "name": "page_no",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "card_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "transaction_id",
+            "in": "query",
+            "description": "交易单号",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start_time",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "end_time",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/FSignature"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "count": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AuthTransaction"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/card/transactions/settlement": {
+      "get": {
+        "summary": "查询卡结算交易",
+        "tags": [
+          "卡交易"
+        ],
+        "parameters": [
+          {
+            "name": "page_no",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "page_size",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "card_id",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "transaction_id",
+            "in": "query",
+            "description": "交易单号",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "start_time",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "name": "end_time",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "number"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/FSignature"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "count": {
+                      "type": "string"
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/SettlementTransaction"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/receiving/receiving-address": {
+      "get": {
+        "summary": "查询数币收款地址",
+        "tags": [
+          "收款"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/FSignature"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ReceivingAddress"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/conversion": {
+      "post": {
+        "summary": "兑换申请",
+        "description": "目前仅支持数币兑换法币，即卖出数币买入法币",
+        "tags": [
+          "兑换"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/FSignature"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "out_order_no": {
+                    "type": "string",
+                    "description": "商户订单号",
+                    "maxLength": 32
+                  },
+                  "sell_currency": {
+                    "type": "string",
+                    "maxLength": 10
+                  },
+                  "sell_amount": {
+                    "type": "string",
+                    "description": "卖出金额（元）"
+                  },
+                  "buy_currency": {
+                    "type": "string",
+                    "maxLength": 10
+                  }
+                },
+                "required": [
+                  "out_order_no",
+                  "sell_currency",
+                  "buy_currency"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "transaction_id": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "资源已创建"
+          },
+          "400": {
+            "description": "请求错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/conversion/{out_order_no}": {
+      "get": {
+        "summary": "查询兑换单详情",
+        "tags": [
+          "兑换"
+        ],
+        "parameters": [
+          {
+            "name": "out_order_no",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "商户订单号"
+          },
+          {
+            "$ref": "#/components/parameters/FSignature"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "$ref": "#/components/schemas/ConversionDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/file/upload": {
+      "post": {
+        "summary": "上传文件",
+        "tags": [
+          "公共接口"
+        ],
+        "description": "上传文件并返回文件ID，目前用于持卡人证件照片。\n\n签名说明：请求体为 `multipart/form-data`，文件内容不参与签名，`REQUEST_PAYLOAD` 按空处理；表单中只放 `file` 一个字段，业务参数 `biz_type` 必须放在 URL 查询字符串中随 `QUERY_STRING` 参与签名。\n\n签名 payload 示例：`POST&/portal/api/v1/file/upload&1766123535&&biz_type%3DCARDHOLDER_ID_PHOTO`",
+        "parameters": [
+          {
+            "name": "biz_type",
+            "in": "query",
+            "required": true,
+            "description": "业务类型：CARDHOLDER_ID_PHOTO=持卡人证件",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "CARDHOLDER_ID_PHOTO"
+              ]
+            }
+          },
+          {
+            "$ref": "#/components/parameters/FSignature"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "file"
+                ],
+                "properties": {
+                  "file": {
+                    "type": "string",
+                    "format": "binary",
+                    "description": "文件，最大不超过 7MB"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "data"
+                  ],
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "required": [
+                        "file_id"
+                      ],
+                      "properties": {
+                        "file_id": {
+                          "type": "string",
+                          "description": "文件ID"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "参数错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "未认证",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "权限不足",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "资源不存在",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "请求重复提交，需轮询结果或等待异步通知",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "服务端异常，不能作为交易结果的依据，请稍后查询结果或等待异步通知",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/webhook/card-apply-result": {
+      "post": {
+        "summary": "申卡结果通知",
+        "tags": [
+          "Webhook"
+        ],
+        "description": "申卡处理完成后，MarsWallex 会向商户配置的回调地址发送通知",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "topic",
+                  "message_id",
+                  "data"
+                ],
+                "properties": {
+                  "topic": {
+                    "type": "string",
+                    "description": "事件主题",
+                    "example": "CARD_APPLY_RESULT",
+                    "enum": [
+                      "CARD_APPLY_RESULT"
+                    ]
+                  },
+                  "message_id": {
+                    "type": "string",
+                    "description": "唯一消息ID，用于幂等去重",
+                    "example": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+                  },
+                  "data": {
+                    "type": "object",
+                    "description": "事件数据",
+                    "properties": {
+                      "card_id": {
+                        "type": "string",
+                        "description": "卡ID"
+                      },
+                      "out_order_no": {
+                        "type": "string",
+                        "description": "商家订单号"
+                      },
+                      "transaction_id": {
+                        "type": "string",
+                        "description": "平台流水号"
+                      },
+                      "status": {
+                        "type": "string",
+                        "enum": [
+                          "SUCCESS",
+                          "FAILED"
+                        ],
+                        "description": "申卡结果"
+                      },
+                      "failure_reason": {
+                        "type": "string",
+                        "description": "失败原因（status 为 FAILED 时返回）"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "商户返回 200 表示已接收"
+          }
+        },
+        "security": []
+      }
+    },
+    "/webhook/card-status-change": {
+      "post": {
+        "summary": "卡状态变更通知",
+        "tags": [
+          "Webhook"
+        ],
+        "description": "卡状态发生变更时触发（如激活、冻结、注销）",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "topic",
+                  "message_id",
+                  "data"
+                ],
+                "properties": {
+                  "topic": {
+                    "type": "string",
+                    "description": "事件主题",
+                    "example": "CARD_STATUS_CHANGED",
+                    "enum": [
+                      "CARD_STATUS_CHANGED"
+                    ]
+                  },
+                  "message_id": {
+                    "type": "string",
+                    "description": "唯一消息ID，用于幂等去重",
+                    "example": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+                  },
+                  "data": {
+                    "type": "object",
+                    "description": "事件数据",
+                    "properties": {
+                      "card_id": {
+                        "type": "string",
+                        "description": "卡ID"
+                      },
+                      "card_status": {
+                        "type": "string",
+                        "enum": [
+                          "ACTIVE",
+                          "REVOKED",
+                          "CANCELED"
+                        ],
+                        "description": "卡的最新状态"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "已接收"
+          }
+        },
+        "security": []
+      }
+    },
+    "/webhook/cardholder-status-change": {
+      "post": {
+        "summary": "持卡人状态变更通知",
+        "tags": [
+          "Webhook"
+        ],
+        "description": "持卡人审核结果或状态发生变更时触发",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "topic",
+                  "message_id",
+                  "data"
+                ],
+                "properties": {
+                  "topic": {
+                    "type": "string",
+                    "description": "事件主题",
+                    "enum": [
+                      "CARDHOLDER_STATUS_CHANGE"
+                    ],
+                    "example": "CARDHOLDER_STATUS_CHANGE"
+                  },
+                  "message_id": {
+                    "type": "string",
+                    "description": "唯一消息ID，用于幂等去重"
+                  },
+                  "data": {
+                    "type": "object",
+                    "description": "事件数据",
+                    "required": [
+                      "card_holder_id",
+                      "out_card_holder_id",
+                      "status"
+                    ],
+                    "properties": {
+                      "card_holder_id": {
+                        "type": "string",
+                        "description": "平台持卡人ID"
+                      },
+                      "out_card_holder_id": {
+                        "type": "string",
+                        "description": "商户侧持卡人ID"
+                      },
+                      "status": {
+                        "$ref": "#/components/schemas/CardholderStatus"
+                      },
+                      "remark": {
+                        "type": "string",
+                        "description": "备注，驳回时为驳回原因"
+                      },
+                      "update_time": {
+                        "type": "integer",
+                        "format": "int64",
+                        "description": "变更时间（Unix 秒）"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "已接收"
+          }
+        },
+        "security": []
+      }
+    },
+    "/webhook/account-status-change": {
+      "post": {
+        "summary": "账户状态变更通知",
+        "tags": [
+          "Webhook"
+        ],
+        "description": "子账户/共享账户状态发生变更（启用或停用）时触发",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "topic",
+                  "message_id",
+                  "data"
+                ],
+                "properties": {
+                  "topic": {
+                    "type": "string",
+                    "description": "事件主题",
+                    "example": "ACCOUNT_STATUS_CHANGED",
+                    "enum": [
+                      "ACCOUNT_STATUS_CHANGED"
+                    ]
+                  },
+                  "message_id": {
+                    "type": "string",
+                    "description": "唯一消息ID，用于幂等去重",
+                    "example": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+                  },
+                  "data": {
+                    "type": "object",
+                    "description": "事件数据",
+                    "properties": {
+                      "account_no": {
+                        "type": "string",
+                        "description": "账户号（钱包ID）"
+                      },
+                      "out_account_no": {
+                        "type": "string",
+                        "description": "商户侧账户号。API 创建的账户为创建时传入的值"
+                      },
+                      "account_status": {
+                        "type": "string",
+                        "enum": [
+                          "ACTIVE",
+                          "DISABLED"
+                        ],
+                        "description": "账户最新状态"
+                      },
+                      "account_type": {
+                        "type": "string",
+                        "enum": [
+                          "MAIN",
+                          "SUB_ACCOUNT"
+                        ],
+                        "description": "账户类型：MAIN=主钱包，SUB_ACCOUNT=子账户"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "已接收"
+          }
+        },
+        "security": []
+      }
+    },
+    "/webhook/auth-transaction": {
+      "post": {
+        "summary": "授权交易通知",
+        "tags": [
+          "Webhook"
+        ],
+        "description": "卡产生授权交易（通过或拒绝）时触发",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "topic",
+                  "message_id",
+                  "data"
+                ],
+                "properties": {
+                  "topic": {
+                    "type": "string",
+                    "description": "事件主题",
+                    "example": "AUTH_EVENT",
+                    "enum": [
+                      "AUTH_EVENT"
+                    ]
+                  },
+                  "message_id": {
+                    "type": "string",
+                    "description": "唯一消息ID，用于幂等去重",
+                    "example": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+                  },
+                  "data": {
+                    "$ref": "#/components/schemas/AuthTransactionWebhook",
+                    "description": "授权交易详情"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "已接收"
+          }
+        },
+        "security": []
+      }
+    },
+    "/webhook/settlement-transaction": {
+      "post": {
+        "summary": "结算交易通知",
+        "tags": [
+          "Webhook"
+        ],
+        "description": "卡结算或退款交易处理完成时触发",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "topic",
+                  "message_id",
+                  "data"
+                ],
+                "properties": {
+                  "topic": {
+                    "type": "string",
+                    "description": "事件主题",
+                    "example": "SETTLE_EVENT",
+                    "enum": [
+                      "SETTLE_EVENT"
+                    ]
+                  },
+                  "message_id": {
+                    "type": "string",
+                    "description": "唯一消息ID，用于幂等去重",
+                    "example": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+                  },
+                  "data": {
+                    "$ref": "#/components/schemas/SettlementTransactionWebhook",
+                    "description": "结算交易详情"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "已接收"
+          }
+        },
+        "security": []
+      }
+    },
+    "/webhook/card-transfer-result": {
+      "post": {
+        "summary": "卡转入转出结果通知",
+        "tags": [
+          "Webhook"
+        ],
+        "description": "卡充值或提现交易完成时触发",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "topic",
+                  "message_id",
+                  "data"
+                ],
+                "properties": {
+                  "topic": {
+                    "type": "string",
+                    "description": "事件主题",
+                    "example": "CARD_TRANSFER_RESULT",
+                    "enum": [
+                      "CARD_TRANSFER_RESULT"
+                    ]
+                  },
+                  "message_id": {
+                    "type": "string",
+                    "description": "唯一消息ID，用于幂等去重",
+                    "example": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+                  },
+                  "data": {
+                    "$ref": "#/components/schemas/CardBalanceTransaction",
+                    "description": "卡转账交易详情"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "已接收"
+          }
+        },
+        "security": []
+      }
+    },
+    "/webhook/conversion-result": {
+      "post": {
+        "summary": "兑换结果通知",
+        "tags": [
+          "Webhook"
+        ],
+        "description": "兑换订单完成或失败时触发",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "topic",
+                  "message_id",
+                  "data"
+                ],
+                "properties": {
+                  "topic": {
+                    "type": "string",
+                    "description": "事件主题",
+                    "example": "CONVERSION_RESULT",
+                    "enum": [
+                      "CONVERSION_RESULT"
+                    ]
+                  },
+                  "message_id": {
+                    "type": "string",
+                    "description": "唯一消息ID，用于幂等去重",
+                    "example": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+                  },
+                  "data": {
+                    "$ref": "#/components/schemas/ConversionDetail",
+                    "description": "兑换订单详情"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "已接收"
+          }
+        },
+        "security": []
+      }
+    },
+    "/webhook/transfer-result": {
+      "post": {
+        "summary": "转账结果通知",
+        "tags": [
+          "Webhook"
+        ],
+        "description": "OpenAPI转账订单到达终态时触发（仅tradeSource=API的转账）",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "topic",
+                  "message_id",
+                  "data"
+                ],
+                "properties": {
+                  "topic": {
+                    "type": "string",
+                    "description": "事件主题",
+                    "example": "TRANSFER_RESULT",
+                    "enum": [
+                      "TRANSFER_RESULT"
+                    ]
+                  },
+                  "message_id": {
+                    "type": "string",
+                    "description": "唯一消息ID，用于幂等去重",
+                    "example": "msg_1234567890"
+                  },
+                  "data": {
+                    "$ref": "#/components/schemas/TransferDetail",
+                    "description": "转账订单详情"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "已接收"
+          }
+        },
+        "security": []
+      }
+    },
+    "/webhook/card-3ds-otp": {
+      "post": {
+        "summary": "卡3DS OTP通知",
+        "tags": [
+          "Webhook"
+        ],
+        "description": "卡发生3DS验证时，向商户推送OTP验证码",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "topic",
+                  "message_id",
+                  "data"
+                ],
+                "properties": {
+                  "topic": {
+                    "type": "string",
+                    "description": "事件主题",
+                    "example": "CARD_3DS_OTP",
+                    "enum": [
+                      "CARD_3DS_OTP"
+                    ]
+                  },
+                  "message_id": {
+                    "type": "string",
+                    "description": "唯一消息ID，用于幂等去重"
+                  },
+                  "data": {
+                    "type": "object",
+                    "description": "字段类型为string字符串",
+                    "required": [
+                      "card_id",
+                      "card_no",
+                      "otp"
+                    ],
+                    "properties": {
+                      "card_id": {
+                        "type": "string",
+                        "description": "卡ID"
+                      },
+                      "card_no": {
+                        "type": "string",
+                        "description": "卡号脱敏"
+                      },
+                      "otp": {
+                        "type": "string",
+                        "description": "3DS 验证码",
+                        "maxLength": 32
+                      },
+                      "transaction_currency": {
+                        "type": "string",
+                        "description": "交易币种"
+                      },
+                      "transaction_amount": {
+                        "type": "string",
+                        "description": "交易金额"
+                      },
+                      "merchant_name": {
+                        "type": "string",
+                        "description": "商户名称"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "已接收"
+          }
+        },
+        "security": []
+      }
+    },
+    "/v1/transfer": {
+      "post": {
+        "summary": "转账申请",
+        "tags": [
+          "转账"
+        ],
+        "description": "发起主钱包与子账户之间的资金划转。付款方和收款方必须是「主钱包 + 子账户」的组合；out_order_no 作为幂等键使用，重复请求会返回已有结果。",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/FSignature"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "out_order_no",
+                  "payer_account_no",
+                  "payee_account_no",
+                  "amount",
+                  "currency"
+                ],
+                "properties": {
+                  "out_order_no": {
+                    "type": "string",
+                    "maxLength": 64,
+                    "description": "商户订单号（幂等键）",
+                    "example": "M202607200001"
+                  },
+                  "payer_account_no": {
+                    "type": "string",
+                    "description": "付款方账户号（钱包ID）",
+                    "example": "100001"
+                  },
+                  "payee_account_no": {
+                    "type": "string",
+                    "description": "收款方账户号（钱包ID）",
+                    "example": "100002"
+                  },
+                  "amount": {
+                    "type": "string",
+                    "pattern": "^\\d{1,12}(\\.\\d{1,2})?$",
+                    "description": "转账金额，最多2位小数",
+                    "example": "100.50"
+                  },
+                  "currency": {
+                    "type": "string",
+                    "maxLength": 10,
+                    "description": "币种",
+                    "example": "USD"
+                  },
+                  "remark": {
+                    "type": "string",
+                    "maxLength": 200,
+                    "description": "备注（选填）"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "count": {
+                      "type": "integer",
+                      "nullable": true,
+                      "description": "总数（本接口固定为null）"
+                    },
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "out_order_no": {
+                          "type": "string",
+                          "description": "商户订单号"
+                        },
+                        "order_no": {
+                          "type": "string",
+                          "description": "平台订单号"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "PROCESSING",
+                            "SUCCESS",
+                            "FAIL"
+                          ],
+                          "description": "转账状态"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "账户不存在"
+          }
+        }
+      }
+    },
+    "/v1/transfer/order": {
+      "get": {
+        "summary": "转账查询",
+        "tags": [
+          "转账"
+        ],
+        "description": "查询转账订单详情，out_order_no 与 order_no 二选一传入",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/FSignature"
+          },
+          {
+            "name": "out_order_no",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "商户订单号（与order_no二选一）"
+          },
+          {
+            "name": "order_no",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            },
+            "description": "平台订单号（与out_order_no二选一）"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "count": {
+                      "type": "integer",
+                      "nullable": true
+                    },
+                    "data": {
+                      "$ref": "#/components/schemas/TransferDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "订单不存在"
+          }
+        }
+      }
+    }
+  }
+}

@@ -75,6 +75,9 @@ func mwSetup(t *testing.T) *sql.DB {
 	if err := db.MigrateMarsWallex(); err != nil {
 		t.Fatal(err)
 	}
+	if err := db.MigrateCardPool(); err != nil {
+		t.Fatal(err)
+	}
 	return c
 }
 

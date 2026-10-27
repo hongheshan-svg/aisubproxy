@@ -325,6 +325,11 @@ func (c *Client) handleResponse(resp *http.Response, out any) error {
 		}
 		return nil
 	case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound:
+		// 签名只覆盖 epoch&body，不覆盖状态行：响应体本身给出字符串错误码才算「确定被拒」，
+		// 否则按无法解析归未知。
+		if !hasErrorCode(body) {
+			return fail(OutcomeUnknown, ReasonDecode, nil)
+		}
 		return fail(OutcomeRejected, ReasonStatus, nil)
 	}
 	// 201/202/409/5xx/30x 等：可能已执行。
@@ -353,6 +358,14 @@ func decodeSuccess(body []byte, out any) error {
 		return errors.New("marswallex: 响应缺少 data")
 	}
 	return json.Unmarshal(env.Data, out)
+}
+
+// hasErrorCode 判断响应体是否为带非空字符串 code 的 JSON 对象（被拒的必要条件）。
+func hasErrorCode(body []byte) bool {
+	var e struct {
+		Code string `json:"code"`
+	}
+	return json.Unmarshal(body, &e) == nil && strings.TrimSpace(e.Code) != ""
 }
 
 // parseErrorBody 尽量从响应体取 code/message，取不到返回空串。

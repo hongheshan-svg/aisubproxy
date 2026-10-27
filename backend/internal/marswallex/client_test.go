@@ -205,6 +205,30 @@ func TestCallUndecodableOKIsUnknown(t *testing.T) {
 	}
 }
 
+// 签名覆盖不到状态行：4xx 的响应体说不清发生了什么时不能算「被拒」。
+func TestCallUndecodableRejectionIsUnknown(t *testing.T) {
+	m, c := newMockPlatform(t)
+	cases := []struct {
+		status    int
+		body, msg string
+	}{
+		{400, `not json`, ""},
+		{400, `{}`, ""},
+		{400, `null`, ""},
+		{400, `[]`, ""},
+		{400, `{"code":"","message":"bad"}`, "bad"},
+		{404, `{"message":"bad"}`, "bad"},
+		{403, `{"code":123,"message":"bad"}`, "bad"},
+	}
+	for _, tc := range cases {
+		m.Reply = func(w http.ResponseWriter, r *http.Request) { m.signedJSON(w, tc.status, tc.body) }
+		e := asError(t, ping(c, &pingOut{}), OutcomeUnknown, ReasonDecode)
+		if e.HTTPStatus != tc.status || e.Message != tc.msg {
+			t.Errorf("%d %q: got %+v", tc.status, tc.body, e)
+		}
+	}
+}
+
 func TestCallTimeoutIsUnknown(t *testing.T) {
 	m, _ := newMockPlatform(t)
 	m.Reply = func(w http.ResponseWriter, r *http.Request) {

@@ -81,36 +81,86 @@ else
   echo "[3/6] JWT Secret 已存在 ✓"
 fi
 
-# 3.5) 生成 APP_MASTER_KEY（首次；用于加密 MarsWallex 等密钥，丢失后已保存的密钥无法解密）
+# 3.5) APP_MASTER_KEY（用于加密 MarsWallex 等密钥；丢失或更换后已保存的密钥无法解密）
+# 容器实际使用 .env 中的值：.env 已有非空 APP_MASTER_KEY 时一律沿用，绝不另生成一个不同的。
 MASTER_KEY_FILE="$INSTALL_DIR/.master_key"
-if [[ ! -f "$MASTER_KEY_FILE" ]]; then
-  APP_MASTER_KEY=$(openssl rand -base64 32)
-  echo "$APP_MASTER_KEY" > "$MASTER_KEY_FILE"
+ENV_FILE="$INSTALL_DIR/.env"
+ENV_MASTER_KEY=""
+if [[ -f "$ENV_FILE" ]]; then
+  # 取最后一行 APP_MASTER_KEY= 的值，去掉首尾空白（含 \r）与成对引号
+  ENV_MASTER_KEY=$(grep -E '^APP_MASTER_KEY=' "$ENV_FILE" | tail -n 1 | cut -d= -f2- \
+    | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' || true)
+  re_dq='^"(.*)"$'
+  re_sq="^'(.*)'$"
+  if [[ "$ENV_MASTER_KEY" =~ $re_dq || "$ENV_MASTER_KEY" =~ $re_sq ]]; then
+    ENV_MASTER_KEY="${BASH_REMATCH[1]}"
+  fi
+fi
+write_master_key_file() {
+  # umask 077：文件从创建起就只有属主可读，没有全员可读的窗口
+  (umask 077 && printf '%s\n' "$1" > "$MASTER_KEY_FILE")
   chmod 600 "$MASTER_KEY_FILE"
-  echo "[3/6] 生成 APP_MASTER_KEY ✓"
-else
+}
+if [[ -n "$ENV_MASTER_KEY" ]]; then
+  APP_MASTER_KEY="$ENV_MASTER_KEY"
+  if [[ ! -f "$MASTER_KEY_FILE" ]]; then
+    write_master_key_file "$APP_MASTER_KEY"
+    echo "[3/6] 沿用 .env 中的 APP_MASTER_KEY，已备份到 .master_key ✓"
+  else
+    if [[ "$(cat "$MASTER_KEY_FILE")" != "$APP_MASTER_KEY" ]]; then
+      echo "  警告: .master_key 与 .env 中的 APP_MASTER_KEY 不一致；容器使用 .env 中的值，请人工核对"
+    fi
+    echo "[3/6] APP_MASTER_KEY 已存在 ✓"
+  fi
+elif [[ -f "$MASTER_KEY_FILE" ]]; then
   APP_MASTER_KEY=$(cat "$MASTER_KEY_FILE")
   echo "[3/6] APP_MASTER_KEY 已存在 ✓"
+else
+  APP_MASTER_KEY=$(openssl rand -base64 32)
+  write_master_key_file "$APP_MASTER_KEY"
+  echo "[3/6] 生成 APP_MASTER_KEY ✓"
 fi
 
 # 4) 写入 .env（docker compose 自动读取）
-ENV_FILE="$INSTALL_DIR/.env"
 if [[ ! -f "$ENV_FILE" ]]; then
-  cat > "$ENV_FILE" <<EOF
+  (
+    umask 077
+    cat > "$ENV_FILE" <<EOF
 JWT_SECRET=${JWT_SECRET}
 APP_MASTER_KEY=${APP_MASTER_KEY}
 INSTALL_MODE=wizard
 EOF
+  )
   chmod 600 "$ENV_FILE"
   echo "[4/6] 创建 .env ✓"
 else
+  # 追加前确保文件以换行结尾，避免新行与最后一行粘连
+  if [[ -s "$ENV_FILE" && -n "$(tail -c 1 "$ENV_FILE")" ]]; then
+    echo >> "$ENV_FILE"
+  fi
   # 确保 JWT_SECRET 存在
   if ! grep -q "^JWT_SECRET=" "$ENV_FILE"; then
     echo "JWT_SECRET=${JWT_SECRET}" >> "$ENV_FILE"
   fi
-  # 确保 APP_MASTER_KEY 存在
-  if ! grep -q "^APP_MASTER_KEY=" "$ENV_FILE"; then
-    echo "APP_MASTER_KEY=${APP_MASTER_KEY}" >> "$ENV_FILE"
+  # 确保 APP_MASTER_KEY 存在且非空：空的 APP_MASTER_KEY= 行就地填入，没有该行则追加
+  if [[ -z "$ENV_MASTER_KEY" ]]; then
+    if grep -q "^APP_MASTER_KEY=" "$ENV_FILE"; then
+      ENV_TMP=$(mktemp "$ENV_FILE.XXXXXX")
+      # 用环境变量传值，密钥不出现在进程参数里
+      K="$APP_MASTER_KEY" awk '
+        /^APP_MASTER_KEY=/ {
+          v = substr($0, 16)
+          gsub(/^[ \t\r]+|[ \t\r]+$/, "", v)
+          if (v == "" || v == "\"\"" || v == "\047\047") { print "APP_MASTER_KEY=" ENVIRON["K"]; next }
+        }
+        { print }
+      ' "$ENV_FILE" > "$ENV_TMP"
+      chmod 600 "$ENV_TMP"
+      mv "$ENV_TMP" "$ENV_FILE"
+      echo "  .env 中的 APP_MASTER_KEY 为空，已填入 ✓"
+    else
+      echo "APP_MASTER_KEY=${APP_MASTER_KEY}" >> "$ENV_FILE"
+    fi
   fi
   echo "[4/6] .env 已存在 ✓"
 fi

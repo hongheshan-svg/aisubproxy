@@ -232,7 +232,7 @@ func TestFundParsesAmount(t *testing.T) {
 }
 
 func TestPolicyPutValidates(t *testing.T) {
-	cpEnv(t, false)
+	c, _, _ := cpEnv(t, false)
 	before := cpDo(AdminCardPoolGetPolicy, "GET", "/x", "/x", ``)
 	if before.Code != 200 {
 		t.Fatal(before.Body.String())
@@ -255,6 +255,12 @@ func TestPolicyPutValidates(t *testing.T) {
 	}
 	if m := mwJSON(t, cpDo(AdminCardPoolGetPolicy, "GET", "/x", "/x", ``)); m["card_name_prefix"] != "POOL2" {
 		t.Errorf("not saved: %v", m)
+	}
+	// 审计内容为保存后的完整策略 JSON
+	a := cpAudit(t, c)
+	if !strings.Contains(a, `cardpool.policy {`) || !strings.Contains(a, `"card_name_prefix":"POOL2"`) ||
+		!strings.Contains(a, `"validity_months":12`) || !strings.Contains(a, `"plan_products":{}`) {
+		t.Errorf("audit %q", a)
 	}
 }
 

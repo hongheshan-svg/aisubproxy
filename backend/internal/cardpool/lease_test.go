@@ -3,6 +3,7 @@ package cardpool
 import (
 	"context"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -355,8 +356,26 @@ func TestFundRequiresValidLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	if o.Kind != KindRecharge || o.CardID != "c2" || o.AmountCents != 150 || o.Currency != "EUR" ||
-		o.RequestedBy != "lease:"+l2.Token || o.State != StateProcessing {
+		o.RequestedBy != "lease:o2" || o.State != StateProcessing {
 		t.Fatalf("%+v", o)
+	}
+	// 租约令牌是持有凭证，不得出现在后台能看到的单据里（单据列表、卡详情）
+	list, _, err := s.ListOrders(ctx, OrderFilter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	detail, err := s.CardDetail(ctx, "c2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, v := range map[string]any{"单据列表": list, "卡详情": detail} {
+		b, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(b), l2.Token) {
+			t.Fatalf("%s 泄露了租约令牌: %s", name, b)
+		}
 	}
 }
 

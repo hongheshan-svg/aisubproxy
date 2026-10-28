@@ -333,6 +333,20 @@ func (s *Service) recordFirstSend(ctx context.Context, no string, v sendVerdict)
 	return o, nil
 }
 
+// abortIfCanceled 在写入 pending 之后、发送之前检查 ctx：已取消时请求确定没有发出，单据记为 not_sent，返回 ctx 的错误。
+// 记录失败时单据留在 pending，2 分钟后按 unknown 处理（偏保守）。
+func (s *Service) abortIfCanceled(ctx context.Context, no string) error {
+	cerr := ctx.Err()
+	if cerr == nil {
+		return nil
+	}
+	if _, err := s.recordFirstSend(context.WithoutCancel(ctx), no,
+		sendVerdict{state: StateNotSent, lastErr: "发送前已取消: " + cerr.Error()}); err != nil {
+		return errors.Join(cerr, err)
+	}
+	return cerr
+}
+
 // submitApply 提交一张开卡单。写入 pending 后发送，按 §6.2 初判；结果写在返回的单据里。
 func (s *Service) submitApply(ctx context.Context, p applyParams) (*Order, error) {
 	if p.AmountCents < 0 {
@@ -353,6 +367,9 @@ func (s *Service) submitApply(ctx context.Context, p applyParams) (*Order, error
 	o := &Order{Kind: KindApply, CardHolderID: p.HolderID, ProductID: p.ProductID, AmountCents: p.AmountCents,
 		Currency: p.Currency, RequestedBy: p.By}
 	if err := s.insertPending(ctx, o); err != nil {
+		return nil, err
+	}
+	if err := s.abortIfCanceled(ctx, o.OutOrderNo); err != nil {
 		return nil, err
 	}
 	res, err := c.ApplyCard(ctx, marswallex.ApplyCardRequest{
@@ -400,6 +417,9 @@ func (s *Service) submitTransfer(ctx context.Context, kind, cardID string, amoun
 	if err := s.insertPending(ctx, o); err != nil {
 		return nil, err
 	}
+	if err := s.abortIfCanceled(ctx, o.OutOrderNo); err != nil {
+		return nil, err
+	}
 	req := marswallex.CardTransferRequest{OutOrderNo: o.OutOrderNo, CardID: cardID, Currency: currency, Amount: amount}
 	var res *marswallex.CardBalanceTransaction
 	if kind == KindRecharge {
@@ -431,6 +451,9 @@ func (s *Service) submitStatus(ctx context.Context, cardID, target, by string) (
 	}
 	o := &Order{Kind: KindStatus, CardID: cardID, TargetStatus: target, RequestedBy: by}
 	if err := s.insertPending(ctx, o); err != nil {
+		return nil, err
+	}
+	if err := s.abortIfCanceled(ctx, o.OutOrderNo); err != nil {
 		return nil, err
 	}
 	_, err = c.UpdateCardStatus(ctx, marswallex.UpdateCardStatusRequest{CardID: cardID, CardStatus: target})

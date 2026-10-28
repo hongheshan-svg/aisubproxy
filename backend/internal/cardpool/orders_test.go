@@ -164,6 +164,46 @@ func TestSubmitClientErrorLeavesNoRow(t *testing.T) {
 	}
 }
 
+// canceledAfterInsertCtx 模拟取消恰好落在「写入 pending 之后、发送之前」：Done 为 nil，写库照常进行；Err 已是 Canceled。
+type canceledAfterInsertCtx struct{ context.Context }
+
+func (canceledAfterInsertCtx) Done() <-chan struct{} { return nil }
+func (canceledAfterInsertCtx) Err() error            { return context.Canceled }
+
+// 写入 pending 后发现 ctx 已取消：请求确定没有发出，单据记为 not_sent（终态），返回 ctx 的错误。
+func TestSubmitCanceledBeforeSendIsNotSent(t *testing.T) {
+	s, mw, clock, _ := newTestService(t)
+	insertCard(t, Card{CardID: "c1", ProductID: "p1"})
+	insertCard(t, Card{CardID: "c2", ProductID: "p1"})
+	mw.On("POST", pathApply, mwtest.OK(`{"transaction_id":"T1"}`))
+	mw.On("POST", pathRecharge, mwtest.OK(`{"transaction_id":"T2","status":"APPLY"}`))
+	mw.On("PUT", pathStatus, mwtest.OK(`{}`))
+	ctx := canceledAfterInsertCtx{context.Background()}
+
+	_, errA := s.submitApply(ctx, testApplyParams(clock))
+	_, errT := s.submitTransfer(ctx, KindRecharge, "c1", 100, "USD", "admin")
+	_, errS := s.submitStatus(ctx, "c2", "REVOKED", "admin")
+	for name, err := range map[string]error{"开卡": errA, "转入": errT, "改状态": errS} {
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("%s: 应返回 ctx 错误, got %v", name, err)
+		}
+	}
+	for _, p := range [][2]string{{"POST", pathApply}, {"POST", pathRecharge}, {"PUT", pathStatus}} {
+		if n := len(mw.Requests(p[0], p[1])); n != 0 {
+			t.Fatalf("%s %s 不应发出, got %d", p[0], p[1], n)
+		}
+	}
+	orders, _, err := s.ListOrders(context.Background(), OrderFilter{})
+	if err != nil || len(orders) != 3 {
+		t.Fatalf("应留下 3 张单据: %d %v", len(orders), err)
+	}
+	for _, o := range orders {
+		if o.State != StateNotSent || o.FinishedAt == nil || o.FirstSentAt != nil || o.EverUnknown {
+			t.Fatalf("应为 not_sent: %+v", o)
+		}
+	}
+}
+
 func TestApplyRequestBody(t *testing.T) {
 	s, mw, clock, _ := newTestService(t)
 	mw.On("POST", pathApply, mwtest.OK(`{"out_order_no":"x","transaction_id":"T1"}`))

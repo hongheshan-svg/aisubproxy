@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -447,7 +448,12 @@ func AdminCardPoolPutPolicy(c *gin.Context) {
 			poolFail(c, err)
 			return
 		}
-		poolAudit(c, "policy", "updated")
+		// 审计记保存后的完整策略（只有产品、持卡人 ID 与数值参数，没有密钥）
+		detail, err := json.Marshal(p)
+		if err != nil {
+			detail = []byte("updated")
+		}
+		poolAudit(c, "policy", string(detail))
 		c.JSON(http.StatusOK, p)
 	})(c)
 }

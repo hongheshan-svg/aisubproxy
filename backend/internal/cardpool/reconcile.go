@@ -37,12 +37,10 @@ func scanOrders(rows *sql.Rows) ([]Order, error) {
 //  3. unknown 满 30 分钟 → needs_review 并告警；
 //  4. processing 满 24 小时告警一次。
 //
-// 取不到客户端时直接返回错误，本轮什么都不做。
+// 只有第 2 步要调接口。取不到客户端时照样执行 1、3、4（只读写本地库），并在有未定论单据或待回收卡时
+// 每个北京日告警一次（key clientdown）；客户端不可用本身不作为错误返回（由告警与 maintainRound 的就绪日志反映）。
 func (s *Service) reconcileOrdersOnce(ctx context.Context) error {
-	c, err := s.opts.Client()
-	if err != nil {
-		return err
-	}
+	c, cerr := s.opts.Client()
 	if err := s.markStalePending(ctx); err != nil {
 		return err
 	}
@@ -52,10 +50,34 @@ func (s *Service) reconcileOrdersOnce(ctx context.Context) error {
 			firstErr = err
 		}
 	}
-	keep(s.checkDueOrders(ctx, c))
+	if cerr == nil {
+		keep(s.checkDueOrders(ctx, c))
+	} else {
+		keep(s.alertClientDown(ctx, cerr))
+	}
 	keep(s.escalateUnknown(ctx))
 	keep(s.alertStaleProcessing(ctx))
 	return firstErr
+}
+
+// alertClientDown 在取不到客户端、且有未定论单据或待回收（releasing / used）卡时告警，每个北京日一次（key clientdown）。
+// cerr 为客户端配置错误，不含密钥。
+func (s *Service) alertClientDown(ctx context.Context, cerr error) error {
+	var orders, cards int
+	if err := db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM mw_card_orders WHERE state IN (?, ?, ?, ?)`,
+		StatePending, StateProcessing, StateUnknown, StateNeedsReview).Scan(&orders); err != nil {
+		return err
+	}
+	if err := db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM mw_cards WHERE pool_state IN (?, ?)`,
+		PoolReleasing, PoolUsed).Scan(&cards); err != nil {
+		return err
+	}
+	if orders == 0 && cards == 0 {
+		return nil
+	}
+	s.alert("clientdown", fmt.Sprintf("MarsWallex 客户端不可用：%s，有 %d 张未定论单据 / %d 张待回收卡，无法查单与回收",
+		truncate(cerr.Error(), 200), orders, cards))
+	return nil
 }
 
 // markStalePending 把创建超过 2 分钟仍为 pending 的单据转为 unknown，按创建时间计 30 分钟。
@@ -104,7 +126,7 @@ func (s *Service) checkDueOrders(ctx context.Context, c *marswallex.Client) erro
 }
 
 // checkOrder 查一次单：attempts++，next_check_at = now + backoff(attempts-1)；有定论就定论。
-// 改状态单查到卡状态与目标不一致、且单据仍为 unknown 时，用同一张单据重发。资金单从不重发。
+// 改状态单查到卡的确定状态（ACTIVE / REVOKED / CANCELED）与目标不一致、且单据仍为 unknown 时，用同一张单据重发。资金单从不重发。
 func (s *Service) checkOrder(ctx context.Context, c *marswallex.Client, o *Order) error {
 	r, mismatch, qerr := s.queryOrder(ctx, c, o)
 	if qerr != nil {
@@ -127,7 +149,8 @@ func (s *Service) checkOrder(ctx context.Context, c *marswallex.Client, o *Order
 }
 
 // queryOrder 查一次单。返回的 r.State 为空表示没有定论（查单出错、查不到、状态不认识都算）。
-// mismatch 只对改状态单有意义：查到了卡，但状态还不是目标状态。
+// mismatch 只对改状态单有意义：查到了卡，平台状态是确定的 ACTIVE / REVOKED / CANCELED 之一，但不是目标状态。
+// 注销中（INCANCELED）、空或不认识的状态既不定论也不重发，继续查单（30 分钟后照常转人工）。
 func (s *Service) queryOrder(ctx context.Context, c *marswallex.Client, o *Order) (r queryResult, mismatch bool, err error) {
 	switch o.Kind {
 	case KindApply:
@@ -147,10 +170,11 @@ func (s *Service) queryOrder(ctx context.Context, c *marswallex.Client, o *Order
 		if err != nil {
 			return queryResult{}, false, err
 		}
-		if normStatus(d.Status) == o.TargetStatus {
+		st := normStatus(d.Status)
+		if st == o.TargetStatus {
 			return queryResult{State: StateSuccess}, false, nil
 		}
-		return queryResult{}, true, nil
+		return queryResult{}, cardStatusTargets[st], nil
 	}
 	return queryResult{}, false, fmt.Errorf("未知的单据类型 %q", o.Kind)
 }

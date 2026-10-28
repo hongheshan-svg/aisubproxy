@@ -24,7 +24,7 @@ func (s *Service) Kick() {
 }
 
 // Start 启动三个后台协程，ctx 结束时全部退出：
-//   - 每 5 秒：对账 → 释放到期租约 → 回收 → 清除过期验证码；
+//   - 每 5 秒：释放到期租约 → 清除过期验证码 → 处理有效期不足的可用卡 → 对账 → 回收；
 //   - 每 60 秒或收到补卡通知：补卡；
 //   - 收到 Kick 或每 10 秒：处理 Webhook 事件（启动时先处理一轮积压）。
 //
@@ -60,37 +60,39 @@ func (s *Service) runLoop(ctx context.Context, every time.Duration, kick <-chan 
 	}
 }
 
-// maintainRound：对账 → 释放到期租约 → 回收 → 清除过期验证码。对账与回收要调接口，未配置时跳过。
+// maintainRound：先做只读写本地库的步骤（释放到期租约、清除过期验证码），平台变慢也不会拖延它们；
+// 再对账（取不到客户端时只做本地的超时升级并告警，见 reconcileOrdersOnce），最后回收（要调接口，取不到客户端时跳过）。
 func (s *Service) maintainRound(ctx context.Context, lg *loopLog) {
-	_, cerr := s.opts.Client()
-	if cerr != nil {
-		lg.check("MarsWallex 未就绪，跳过对账与回收", cerr)
-	}
-	steps := []struct {
-		name     string
-		needsAPI bool
-		run      func(context.Context) error
+	local := []struct {
+		name string
+		run  func(context.Context) error
 	}{
-		{"对账", true, s.reconcileOrdersOnce},
-		{"释放到期租约", false, s.expireLeasesOnce},
-		{"回收", true, s.advanceCardsOnce},
-		{"清除过期验证码", false, s.purgeOTPsOnce},
+		{"释放到期租约", s.expireLeasesOnce},
+		{"清除过期验证码", s.purgeOTPsOnce},
 	}
-	for _, st := range steps {
+	for _, st := range local {
 		if ctx.Err() != nil {
 			return
 		}
-		if st.needsAPI && cerr != nil {
-			continue
-		}
 		lg.check(st.name, st.run(ctx))
 	}
+	if ctx.Err() != nil {
+		return
+	}
+	_, cerr := s.opts.Client()
+	lg.readiness("查单与回收", cerr)
+	lg.check("对账", s.reconcileOrdersOnce(ctx))
+	if cerr != nil || ctx.Err() != nil {
+		return
+	}
+	lg.check("回收", s.advanceCardsOnce(ctx))
 }
 
 // replenishRound 补卡一轮；未配置时跳过。
 func (s *Service) replenishRound(ctx context.Context, lg *loopLog) {
-	if _, err := s.opts.Client(); err != nil {
-		lg.check("MarsWallex 未就绪，跳过补卡", err)
+	_, err := s.opts.Client()
+	lg.readiness("补卡", err)
+	if err != nil {
 		return
 	}
 	lg.check("补卡", s.replenishOnce(ctx))
@@ -107,8 +109,21 @@ func (s *Service) eventsRound(ctx context.Context, lg *loopLog) {
 
 // loopLog 记录后台循环的错误；同一循环里相同的错误 10 分钟内只记一次，避免未配置时刷屏。只在所属协程里使用。
 type loopLog struct {
-	now  func() time.Time
-	last map[string]time.Time
+	now      func() time.Time
+	last     map[string]time.Time
+	notReady bool // 上一次检查时 MarsWallex 未就绪；初始视为就绪
+}
+
+// readiness 只在就绪状态变化时记日志：就绪 → 未就绪记一次（附原因），未就绪 → 就绪记一次。skipped 为未就绪时跳过的步骤。
+func (l *loopLog) readiness(skipped string, err error) {
+	switch {
+	case err != nil && !l.notReady:
+		l.notReady = true
+		log.Printf("[cardpool] MarsWallex 未就绪，跳过%s: %v", skipped, err)
+	case err == nil && l.notReady:
+		l.notReady = false
+		log.Printf("[cardpool] MarsWallex 已就绪，恢复%s", skipped)
+	}
 }
 
 func (l *loopLog) check(step string, err error) {

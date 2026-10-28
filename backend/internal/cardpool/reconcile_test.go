@@ -348,17 +348,136 @@ func TestReconcileQueryMapping(t *testing.T) {
 	}
 }
 
-func TestReconcileClientErrorDoesNothing(t *testing.T) {
-	s, _, clock, _ := newTestService(t)
-	o := insertOrder(t, Order{Kind: KindRecharge, CardID: "c1", AmountCents: 100, Currency: "USD"})
-	clock.Advance(time.Hour)
-	cfgErr := errors.New("未配置")
-	s.opts.Client = func() (*marswallex.Client, error) { return nil, cfgErr }
-	if err := s.reconcileOrdersOnce(context.Background()); !errors.Is(err, cfgErr) {
-		t.Fatalf("got %v", err)
+// 客户端不可用时只跳过查单：pending 照样转 unknown、unknown 满 30 分钟照样转人工并告警、processing 满 24 小时照样告警，
+// 并且每个北京日告警一次「客户端不可用」。
+func TestReconcileClientDownStillEscalates(t *testing.T) {
+	s, mw, clock, log := newTestService(t)
+	now := clock.Now().Unix()
+	stale := insertOrder(t, Order{Kind: KindRecharge, CardID: "c1", AmountCents: 100, Currency: "USD", CreatedAt: now - 3*60})
+	sent := now - unknownReviewSeconds - 60
+	unk := insertOrder(t, Order{Kind: KindWithdraw, CardID: "c2", AmountCents: 100, Currency: "USD", State: StateUnknown,
+		EverUnknown: true, FirstSentAt: &sent, NextCheckAt: &sent, CreatedAt: sent})
+	day := now - processingAlertSeconds - 60
+	proc := insertOrder(t, Order{Kind: KindApply, ProductID: "p1", State: StateProcessing, FirstSentAt: &day, NextCheckAt: &day, CreatedAt: day})
+	insertCard(t, Card{CardID: "r1", ProductID: "p1", PoolState: PoolReleasing})
+	insertCard(t, Card{CardID: "u1", ProductID: "p1", PoolState: PoolUsed})
+	s.opts.Client = func() (*marswallex.Client, error) { return nil, errors.New("MarsWallex 未配置") }
+
+	mustReconcile(t, s)
+
+	if got := mustGetOrder(t, stale.OutOrderNo); got.State != StateUnknown || !got.EverUnknown {
+		t.Fatalf("pending 超过 2 分钟应转 unknown: %+v", got)
 	}
-	if got := mustGetOrder(t, o.OutOrderNo); got.State != StatePending {
-		t.Fatalf("%+v", got)
+	if got := mustGetOrder(t, unk.OutOrderNo); got.State != StateNeedsReview {
+		t.Fatalf("unknown 满 30 分钟应转 needs_review: %+v", got)
+	}
+	if got := mustGetOrder(t, proc.OutOrderNo); !got.AlertedStale {
+		t.Fatalf("processing 满 24 小时应告警: %+v", got)
+	}
+	if n := alertsContaining(log, unk.OutOrderNo); n != 1 {
+		t.Fatalf("转人工应告警: %v", log.Texts())
+	}
+	if n := alertsContaining(log, proc.OutOrderNo); n != 1 {
+		t.Fatalf("processing 应告警: %v", log.Texts())
+	}
+	down := alertsContaining(log, "客户端不可用")
+	if down != 1 {
+		t.Fatalf("应告警客户端不可用一次: %v", log.Texts())
+	}
+	for _, txt := range log.Texts() {
+		if strings.Contains(txt, "客户端不可用") &&
+			(!strings.Contains(txt, "MarsWallex 未配置") || !strings.Contains(txt, "3 张未定论单据") || !strings.Contains(txt, "2 张待回收卡")) {
+			t.Fatalf("告警内容: %s", txt)
+		}
+	}
+	if n := len(mw.Requests("GET", pathTransferQ)) + len(mw.Requests("GET", pathApplyQuery)); n != 0 {
+		t.Fatalf("客户端不可用时不应查单: %d", n)
+	}
+
+	// 同一北京日不重复告警；次日再告警
+	clock.Advance(time.Minute)
+	mustReconcile(t, s)
+	if n := alertsContaining(log, "客户端不可用"); n != 1 {
+		t.Fatalf("同日不应重复告警: %v", log.Texts())
+	}
+	clock.Advance(24 * time.Hour)
+	mustReconcile(t, s)
+	if n := alertsContaining(log, "客户端不可用"); n != 2 {
+		t.Fatalf("次日应再告警: %v", log.Texts())
+	}
+}
+
+// 客户端不可用、但没有待处理的单据和卡时不告警。
+func TestReconcileClientDownNothingPendingNoAlert(t *testing.T) {
+	s, _, _, log := newTestService(t)
+	insertCard(t, Card{CardID: "a1", ProductID: "p1"})
+	insertOrder(t, Order{Kind: KindRecharge, CardID: "a1", AmountCents: 100, Currency: "USD", State: StateSuccess})
+	s.opts.Client = func() (*marswallex.Client, error) { return nil, errors.New("未配置") }
+	mustReconcile(t, s)
+	if log.Count() != 0 {
+		t.Fatalf("不应告警: %v", log.Texts())
+	}
+}
+
+// maintainRound 在客户端不可用时也要跑对账里的本地升级（两层都不能整轮跳过）。
+func TestMaintainRoundClientDownStillEscalates(t *testing.T) {
+	s, _, clock, log := newTestService(t)
+	now := clock.Now().Unix()
+	sent := now - unknownReviewSeconds
+	unk := insertOrder(t, Order{Kind: KindRecharge, CardID: "c1", AmountCents: 100, Currency: "USD", State: StateUnknown,
+		EverUnknown: true, FirstSentAt: &sent, NextCheckAt: &sent, CreatedAt: sent})
+	stale := insertOrder(t, Order{Kind: KindWithdraw, CardID: "c2", AmountCents: 100, Currency: "USD", CreatedAt: now - 3*60})
+	s.opts.Client = func() (*marswallex.Client, error) { return nil, errors.New("未配置") }
+
+	s.maintainRound(context.Background(), &loopLog{now: clock.Now, last: map[string]time.Time{}})
+
+	if got := mustGetOrder(t, unk.OutOrderNo); got.State != StateNeedsReview {
+		t.Fatalf("unknown 满 30 分钟应转 needs_review: %+v", got)
+	}
+	if got := mustGetOrder(t, stale.OutOrderNo); got.State != StateUnknown {
+		t.Fatalf("pending 超过 2 分钟应转 unknown: %+v", got)
+	}
+	if alertsContaining(log, unk.OutOrderNo) != 1 || alertsContaining(log, "客户端不可用") != 1 {
+		t.Fatalf("告警: %v", log.Texts())
+	}
+}
+
+// 目标 CANCELED、卡在注销中（INCANCELED）或状态为空、不认识：不定论、不重发，继续查；30 分钟后照常转人工。
+func TestStatusOrderInProgressOrUnknownStatusNoResend(t *testing.T) {
+	for _, tc := range []struct{ name, status string }{
+		{"注销中", "INCANCELED"},
+		{"空状态", ""},
+		{"不认识的状态", "WHATEVER"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s, mw, clock, _ := newTestService(t)
+			insertCard(t, Card{CardID: "c1", ProductID: "p1", PoolState: PoolUsed})
+			mw.On("PUT", pathStatus, mwtest.Unknown())
+			o, err := s.submitStatus(context.Background(), "c1", "CANCELED", "recycle")
+			if err != nil || o.State != StateUnknown {
+				t.Fatalf("%+v %v", o, err)
+			}
+			mw.On("GET", "/v1/card/detail/c1", mwtest.OK(`{"card_id":"c1","card_no":"","card_name":"x","status":"`+tc.status+`"}`))
+			t0 := clock.Now().Unix()
+			for clock.Now().Unix() < t0+unknownReviewSeconds-10 {
+				clock.Advance(10 * time.Second)
+				mustReconcile(t, s)
+				if got := mustGetOrder(t, o.OutOrderNo); got.State != StateUnknown {
+					t.Fatalf("t0+%d 应仍为 unknown: %+v", clock.Now().Unix()-t0, got)
+				}
+			}
+			if n := len(mw.Requests("PUT", pathStatus)); n != 1 {
+				t.Fatalf("不应重发, PUT 共 %d 次", n)
+			}
+			if n := len(mw.Requests("GET", "/v1/card/detail/c1")); n == 0 {
+				t.Fatal("期间应查卡")
+			}
+			clock.Advance(10 * time.Second)
+			mustReconcile(t, s)
+			if got := mustGetOrder(t, o.OutOrderNo); got.State != StateNeedsReview {
+				t.Fatalf("满 30 分钟应转人工: %+v", got)
+			}
+		})
 	}
 }
 

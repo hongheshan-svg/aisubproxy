@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"html"
 	"log"
 	"os"
 	"path"
@@ -55,7 +56,7 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	plansync.Start(ctx)
 
 	// 启动 MarsWallex 卡池（对账、回收、补卡、Webhook 事件处理）
-	pool := cardpool.New(cardpool.Options{Client: handler.MarsWallexClient, Alert: notify.SendText})
+	pool := cardpool.New(cardpool.Options{Client: handler.MarsWallexClient, Alert: cardPoolAlert(notify.SendText)})
 	handler.SetCardPool(pool)
 	pool.Start(ctx)
 
@@ -63,6 +64,16 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 		engine: engine,
 		cfg:    cfg,
 	}, nil
+}
+
+// cardPoolAlert 包装卡池告警：先写日志（Telegram 未配置时 SendText 静默返回，告警不能因此丢失），
+// 再 HTML 转义后发送。告警里有平台错误信息、商户名、持卡人备注等不受控文本，SendText 用 parse_mode=HTML，
+// 未转义的 < 或 & 会让 Telegram 拒收整条消息。告警文本不含卡号、CVV2、验证码。
+func cardPoolAlert(send func(string)) func(string) {
+	return func(text string) {
+		log.Printf("[cardpool] 告警: %s", text)
+		send(html.EscapeString(text))
+	}
 }
 
 // enforceJWTSecret 在 release 模式下拒绝使用空/默认密钥启动。

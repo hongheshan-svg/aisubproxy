@@ -226,12 +226,13 @@ func leaseLive(c *Card, now time.Time) bool {
 }
 
 // Fund 给租约中的卡提交一笔转入，提交后即返回；币种取卡币种，金额必须大于 0。
+// 发起方记为 lease:<持有方 OrderRef>（租用时写入的 lease_owner）；租约令牌是持有凭证，不写进单据。
 func (s *Service) Fund(ctx context.Context, l *Lease, amountCents int64) (*Order, error) {
 	c, err := s.leasedCard(ctx, l, true)
 	if err != nil {
 		return nil, err
 	}
-	return s.submitTransfer(ctx, KindRecharge, c.CardID, amountCents, c.Currency, "lease:"+l.Token)
+	return s.submitTransfer(ctx, KindRecharge, c.CardID, amountCents, c.Currency, "lease:"+c.LeaseOwner)
 }
 
 // markSensitive 在调接口之前记下本次租约已取卡号；只对仍持有该令牌的租用中的卡生效。

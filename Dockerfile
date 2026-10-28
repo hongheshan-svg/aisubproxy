@@ -30,7 +30,8 @@ ENV DB_PATH=/app/data/cdk_recharge.db \
     SERVER_PORT=8080 \
     SERVER_MODE=release \
     INSTALL_MODE=wizard \
-    TRUSTED_PROXIES=127.0.0.1,172.16.0.0/12
+    TRUSTED_PROXIES=127.0.0.1,172.16.0.0/12 \
+    CDK_DEPLOY_MODE=docker
 
 VOLUME ["/app/data"]
 EXPOSE 8080

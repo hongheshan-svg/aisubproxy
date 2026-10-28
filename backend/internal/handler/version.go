@@ -16,8 +16,8 @@ import (
 // 可由编译 ldflags 注入：-X github.com/tuzi/cdk-recharge-system/internal/handler.BuildVersion=x
 var BuildVersion = ""
 
-// 默认仓库：白标 CDK 门户公开仓
-const defaultGitHubRepo = "zovocard/zovo_card_cdk_auto"
+// 默认仓库：本项目（MarsWallex 版）的公开仓库。勿指回上游 zovocard，否则一键更新会装回上游版本。
+const defaultGitHubRepo = "hongheshan-svg/aisubproxy"
 
 var (
 	versionCacheMu   sync.Mutex
@@ -94,6 +94,7 @@ func AdminSystemVersion(c *gin.Context) {
 		"has_bundle":       hasBundle,
 		"update_enabled":   updateEnabled(),
 		"one_click_ready":  update && hasBundle && updateEnabled(),
+		"update_hint":      updateHint(),
 		"checked_at":       time.Now().UTC().Format(time.RFC3339),
 	}
 	if errMsg != "" {
@@ -137,7 +138,7 @@ func fetchGitHubLatest(repo string) (latest, releaseURL, tagsURL, source string,
 	client := &http.Client{Timeout: 8 * time.Second}
 
 	// 1) releases/latest
-	req, _ := http.NewRequest(http.MethodGet, "https://api.github.com/repos/"+repo+"/releases/latest", nil)
+	req, _ := http.NewRequest(http.MethodGet, githubAPIBase+"/repos/"+repo+"/releases/latest", nil)
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", "cdk-recharge-system-version-check")
 	if tok := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); tok != "" {
@@ -178,7 +179,7 @@ func fetchGitHubLatest(repo string) (latest, releaseURL, tagsURL, source string,
 	}
 
 	// 2) fallback: tags（无 assets，hasBundle=false，不可一键更新）
-	req2, _ := http.NewRequest(http.MethodGet, "https://api.github.com/repos/"+repo+"/tags?per_page=1", nil)
+	req2, _ := http.NewRequest(http.MethodGet, githubAPIBase+"/repos/"+repo+"/tags?per_page=1", nil)
 	req2.Header.Set("Accept", "application/vnd.github+json")
 	req2.Header.Set("User-Agent", "cdk-recharge-system-version-check")
 	if tok := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); tok != "" {

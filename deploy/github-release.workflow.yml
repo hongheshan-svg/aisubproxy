@@ -1,5 +1,7 @@
-# Tag 推送 v* 时自动构建 linux/amd64 发布包并挂到 GitHub Release，
-# 供管理后台「一键更新」下载（无需生产机装 Go/Node）。
+# Tag 推送 v* 时自动构建 linux/amd64 发布包、用 ed25519 签名并挂到 GitHub Release，
+# 供管理后台「一键更新」与 deploy/install.sh 下载（无需生产机装 Go/Node）。
+# 签名私钥在仓库 Secret RELEASE_SIGNING_KEY（PEM）；公钥在 deploy/release-signing.pub.pem，
+# 并内置于程序（internal/handler/selfupdate.go）。缺少 Secret 时拒绝发布未签名的包。
 name: release
 
 on:
@@ -42,8 +44,7 @@ jobs:
         working-directory: backend
         run: |
           mkdir -p ../dist
-          go build -trimpath -ldflags="-s -w -X github.com/tuzi/cdk-recharge-system/internal/handler.BuildVersion=${{ steps.ver.outputs.version }}" \
-            -o ../dist/cdk-recharge ./cmd/server
+          bash ../scripts/build-linux-backend.sh "$GITHUB_WORKSPACE/dist/cdk-recharge" "${{ steps.ver.outputs.version }}"
 
       - name: Build frontend
         working-directory: frontend
@@ -61,6 +62,24 @@ jobs:
           sha256sum "cdk-bundle-linux-amd64.tgz" | tee "cdk-bundle-linux-amd64.tgz.sha256"
           ls -lh cdk-bundle-linux-amd64.tgz*
 
+      - name: Sign bundle
+        env:
+          RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
+        run: |
+          if [ -z "$RELEASE_SIGNING_KEY" ]; then
+            echo "缺少 RELEASE_SIGNING_KEY secret，拒绝发布未签名的包" >&2
+            exit 1
+          fi
+          umask 077
+          printf '%s\n' "$RELEASE_SIGNING_KEY" > "$RUNNER_TEMP/release-key.pem"
+          openssl pkeyutl -sign -inkey "$RUNNER_TEMP/release-key.pem" -rawin \
+            -in cdk-bundle-linux-amd64.tgz -out "$RUNNER_TEMP/bundle.sig"
+          rm -f "$RUNNER_TEMP/release-key.pem"
+          # 用仓库里的公钥立即验一遍，防止 Secret 与内置公钥不是一对
+          openssl pkeyutl -verify -pubin -inkey deploy/release-signing.pub.pem -rawin \
+            -in cdk-bundle-linux-amd64.tgz -sigfile "$RUNNER_TEMP/bundle.sig"
+          base64 -w0 "$RUNNER_TEMP/bundle.sig" > cdk-bundle-linux-amd64.tgz.sig
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -70,4 +89,5 @@ jobs:
           files: |
             cdk-bundle-linux-amd64.tgz
             cdk-bundle-linux-amd64.tgz.sha256
+            cdk-bundle-linux-amd64.tgz.sig
             VERSION

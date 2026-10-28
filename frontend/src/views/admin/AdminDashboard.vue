@@ -49,11 +49,12 @@
           <div class="flex items-start justify-between gap-3">
             <div>
               <h2 class="text-xl font-semibold text-ink">版本更新</h2>
-              <p class="text-xs text-muted mt-1">GitHub 预编译包 · 一键无痕热更</p>
+              <p class="text-xs text-muted mt-1">GitHub 预编译包 · 签名校验 · 自动备份 · 一键无痕热更</p>
             </div>
             <el-button size="small" :loading="versionLoading" @click="loadVersion(true)">检查更新</el-button>
           </div>
           <div v-if="versionError" class="text-sm" style="color: var(--err)">{{ versionError }}</div>
+          <div v-if="versionInfo.update_hint" class="text-xs" style="color: var(--warn)">{{ versionInfo.update_hint }}</div>
           <div class="space-y-2 text-sm">
             <div class="flex justify-between gap-2">
               <span class="text-muted">当前版本</span>

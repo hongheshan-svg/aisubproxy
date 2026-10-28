@@ -54,6 +54,9 @@ func getUpdateState() updateState {
 }
 
 func updateEnabled() bool {
+	if inContainer() {
+		return false
+	}
 	v := strings.TrimSpace(strings.ToLower(os.Getenv("UPDATE_ENABLED")))
 	if v == "0" || v == "false" || v == "no" || v == "off" {
 		return false
@@ -87,14 +90,15 @@ func webDir() string {
 func AdminSystemUpdateStatus(c *gin.Context) {
 	st := getUpdateState()
 	c.JSON(http.StatusOK, gin.H{
-		"enabled":    updateEnabled(),
-		"running":    st.Phase != "idle" && st.Phase != "done" && st.Phase != "failed",
-		"state":      st,
-		"current":    resolveLocalVersion(),
-		"install":    installRoot(),
-		"goos":       runtime.GOOS,
-		"goarch":     runtime.GOARCH,
-		"can_update": updateEnabled() && runtime.GOOS == "linux",
+		"enabled":     updateEnabled(),
+		"running":     st.Phase != "idle" && st.Phase != "done" && st.Phase != "failed",
+		"state":       st,
+		"current":     resolveLocalVersion(),
+		"install":     installRoot(),
+		"goos":        runtime.GOOS,
+		"goarch":      runtime.GOARCH,
+		"can_update":  updateEnabled() && runtime.GOOS == "linux",
+		"update_hint": updateHint(),
 	})
 }
 
@@ -102,6 +106,10 @@ func AdminSystemUpdateStatus(c *gin.Context) {
 // body: { "target": "1.2.0" | "latest", "confirm": true }
 // 在线下载 GitHub Release 预编译包 → 校验 → 热替换 web+二进制 → re-exec（亚秒级重载，不碰 app.env/data）
 func AdminSystemUpdate(c *gin.Context) {
+	if inContainer() {
+		c.JSON(http.StatusForbidden, gin.H{"error": containerUpdateHint})
+		return
+	}
 	if !updateEnabled() {
 		c.JSON(http.StatusForbidden, gin.H{"error": "UPDATE_ENABLED=0，未开启一键更新"})
 		return
@@ -176,7 +184,7 @@ func runSeamlessUpdate(target, username string) {
 		s.Progress = 5
 	})
 
-	assetURL, version, shaURL, err := resolveReleaseBundle(target)
+	assetURL, version, shaURL, sigURL, err := resolveReleaseBundle(target)
 	if err != nil {
 		failUpdate(err.Error())
 		return
@@ -232,6 +240,14 @@ func runSeamlessUpdate(target, username string) {
 		failUpdate("sha256 校验失败，已中止更新: " + err.Error())
 		return
 	}
+	if sigURL == "" {
+		failUpdate("缺少签名文件 cdk-bundle-linux-amd64.tgz.sig，已中止更新（只安装本项目签名的发布包）")
+		return
+	}
+	if err := verifyBundleSignatureFile(tgzPath, sigURL); err != nil {
+		failUpdate("签名校验失败，已中止更新: " + err.Error())
+		return
+	}
 
 	setUpdateState(func(s *updateState) {
 		s.Phase = "staging"
@@ -252,6 +268,10 @@ func runSeamlessUpdate(target, username string) {
 		failUpdate(err.Error())
 		return
 	}
+	if err := preflightBinary(binSrc, version); err != nil {
+		failUpdate("新程序自检失败，已中止更新: " + err.Error())
+		return
+	}
 
 	setUpdateState(func(s *updateState) {
 		s.Phase = "applying"
@@ -261,14 +281,7 @@ func runSeamlessUpdate(target, username string) {
 	// 备份
 	bak := filepath.Join(updDir, "backup-"+time.Now().Format("20060102-150405"))
 	_ = os.MkdirAll(bak, 0o755)
-	binDst := filepath.Join(root, "cdk-recharge")
-	if exe, err := os.Executable(); err == nil {
-		if p, e2 := filepath.EvalSymlinks(exe); e2 == nil {
-			binDst = p
-		} else {
-			binDst = exe
-		}
-	}
+	binDst := selfBinaryPath()
 	// 备份旧二进制
 	if _, err := os.Stat(binDst); err == nil {
 		_ = copyFile(binDst, filepath.Join(bak, "cdk-recharge"))
@@ -277,6 +290,14 @@ func runSeamlessUpdate(target, username string) {
 	wd := webDir()
 	if st, err := os.Stat(wd); err == nil && st.IsDir() {
 		_ = copyDir(wd, filepath.Join(bak, "web"))
+	}
+	// 备份版本号与数据库（数据库备份失败则中止：没有可回退的数据就不升级）
+	if _, err := os.Stat(filepath.Join(root, "VERSION")); err == nil {
+		_ = copyFile(filepath.Join(root, "VERSION"), filepath.Join(bak, "VERSION"))
+	}
+	if err := backupDatabase(filepath.Join(bak, "cdk_recharge.db")); err != nil {
+		failUpdate("备份数据库失败，已中止更新: " + err.Error())
+		return
 	}
 
 	// 热替换 web：先写到 web.next，再原子改名（不删 data/app.env）
@@ -340,11 +361,13 @@ func runSeamlessUpdate(target, username string) {
 		s.FinishedAt = time.Now().UTC().Format(time.RFC3339)
 	})
 
+	pruneBackups(updDir, maxUpdateBackups)
+
 	// 延迟 re-exec，让状态接口还能被读一次
 	go func() {
 		time.Sleep(400 * time.Millisecond)
 		// 优先同进程 re-exec（PID 不变，systemd 无感，亚秒恢复）
-		if err := reexecBinary(binDst); err != nil {
+		if err := reexecFn(binDst); err != nil {
 			// 回退 systemctl restart
 			_ = trySystemctlRestart()
 			// 若仍失败，标记 failed（进程若还活着）
@@ -392,14 +415,14 @@ func trySystemctlRestart() error {
 	return cmd.Start()
 }
 
-func resolveReleaseBundle(target string) (assetURL, version, shaURL string, err error) {
+func resolveReleaseBundle(target string) (assetURL, version, shaURL, sigURL string, err error) {
 	repo := githubRepo()
 	client := &http.Client{Timeout: 30 * time.Second}
 	var apiURL string
 	if target == "latest" {
-		apiURL = "https://api.github.com/repos/" + repo + "/releases/latest"
+		apiURL = githubAPIBase + "/repos/" + repo + "/releases/latest"
 	} else {
-		apiURL = "https://api.github.com/repos/" + repo + "/releases/tags/v" + strings.TrimPrefix(target, "v")
+		apiURL = githubAPIBase + "/repos/" + repo + "/releases/tags/v" + strings.TrimPrefix(target, "v")
 	}
 	req, _ := http.NewRequest(http.MethodGet, apiURL, nil)
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -409,7 +432,7 @@ func resolveReleaseBundle(target string) (assetURL, version, shaURL string, err 
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", "", err
 	}
 	defer resp.Body.Close()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
@@ -418,7 +441,7 @@ func resolveReleaseBundle(target string) (assetURL, version, shaURL string, err 
 		if len(msg) > 200 {
 			msg = msg[:200] + "…"
 		}
-		return "", "", "", fmt.Errorf("GitHub release HTTP %d: %s", resp.StatusCode, msg)
+		return "", "", "", "", fmt.Errorf("GitHub release HTTP %d: %s", resp.StatusCode, msg)
 	}
 	var rel struct {
 		TagName string `json:"tag_name"`
@@ -429,11 +452,11 @@ func resolveReleaseBundle(target string) (assetURL, version, shaURL string, err 
 		} `json:"assets"`
 	}
 	if err := json.Unmarshal(raw, &rel); err != nil {
-		return "", "", "", err
+		return "", "", "", "", err
 	}
 	version = strings.TrimPrefix(strings.TrimSpace(rel.TagName), "v")
 	if version == "" {
-		return "", "", "", fmt.Errorf("release 无 tag_name")
+		return "", "", "", "", fmt.Errorf("release 无 tag_name")
 	}
 
 	// 优先架构匹配包
@@ -463,13 +486,15 @@ func resolveReleaseBundle(target string) (assetURL, version, shaURL string, err 
 				for _, a2 := range rel.Assets {
 					if strings.EqualFold(a2.Name, want+".sha256") {
 						shaURL = a2.BrowserDownloadURL
-						break
+					}
+					if strings.EqualFold(a2.Name, want+".sig") {
+						sigURL = a2.BrowserDownloadURL
 					}
 				}
 				if shaURL == "" && len(shaCandidates) == 1 {
 					shaURL = shaCandidates[0]
 				}
-				return a.BrowserDownloadURL, version, shaURL, nil
+				return a.BrowserDownloadURL, version, shaURL, sigURL, nil
 			}
 		}
 	}
@@ -477,10 +502,19 @@ func resolveReleaseBundle(target string) (assetURL, version, shaURL string, err 
 	for _, a := range rel.Assets {
 		n := strings.ToLower(a.Name)
 		if strings.Contains(n, "cdk-bundle") && (strings.HasSuffix(n, ".tgz") || strings.HasSuffix(n, ".tar.gz")) {
-			return a.BrowserDownloadURL, version, "", nil
+			// 同名的 .sha256 / .sig 一并带上，后续校验仍然强制
+			for _, a2 := range rel.Assets {
+				if strings.EqualFold(a2.Name, a.Name+".sha256") {
+					shaURL = a2.BrowserDownloadURL
+				}
+				if strings.EqualFold(a2.Name, a.Name+".sig") {
+					sigURL = a2.BrowserDownloadURL
+				}
+			}
+			return a.BrowserDownloadURL, version, shaURL, sigURL, nil
 		}
 	}
-	return "", "", "", fmt.Errorf("Release v%s 未找到预编译包 cdk-bundle-linux-amd64.tgz。请先用 git tag 触发 CI 发布，或手动上传 bundle 到 Release", version)
+	return "", "", "", "", fmt.Errorf("Release v%s 未找到预编译包 cdk-bundle-linux-amd64.tgz。请先用 git tag 触发 CI 发布，或手动上传 bundle 到 Release", version)
 }
 
 func downloadFile(url, dest string, progress func(done, total int64)) error {

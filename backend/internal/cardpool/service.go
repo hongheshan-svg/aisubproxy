@@ -81,6 +81,8 @@ type Service struct {
 	// 为 nil 时由事件消费循环回退到 handleEvent
 	eventHandler func(context.Context, *marswallex.WebhookEvent) (string, error)
 
+	loops sync.WaitGroup // Start 启动的后台协程
+
 	alertMu   sync.Mutex
 	alertSent map[string]int64 // key → 最后发送时所在的北京日起点（Unix 秒）
 }

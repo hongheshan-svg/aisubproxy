@@ -527,3 +527,49 @@ func TestFrozenCardThrottledNotReprocessed(t *testing.T) {
 		t.Fatalf("限流期间不应重发: %d", n)
 	}
 }
+
+// 维护循环：有效期不足一个月的可用卡转 used（退役原因「即将过期」），之后按 used 流程清零、冻结、注销；
+// 有效期无法识别的可用卡停用（原因「有效期无法识别」），不自动注销。各告警一次（每卡每天）。
+func TestRetireExpiringAndBadExpiryAvailableCards(t *testing.T) {
+	s, _, clock, log := newTestService(t)
+	ctx := context.Background()
+	insertCard(t, Card{CardID: "ok", ProductID: "p1", Expiry: "1126"})       // 2026-12-01 失效，还剩一个月以上
+	insertCard(t, Card{CardID: "expiring", ProductID: "p1", Expiry: "1026"}) // 2026-11-01 失效
+	insertCard(t, Card{CardID: "expired", ProductID: "p1", Expiry: "0926"})
+	insertCard(t, Card{CardID: "malformed", ProductID: "p1", Expiry: "13/26"})
+	insertCard(t, Card{CardID: "empty", ProductID: "p1", Expiry: " "})
+	insertCard(t, Card{CardID: "leased", ProductID: "p1", Expiry: "1026", PoolState: PoolLeased, LeaseToken: "t"})
+	for i := 0; i < 2; i++ {
+		if err := s.retireExpiringOnce(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now := clock.Now().Unix()
+	for _, id := range []string{"expiring", "expired"} {
+		c := mustGetCard(t, id)
+		if c.PoolState != PoolUsed || c.RetireReason != "即将过期" || i64(c.NextActionAt) != now {
+			t.Fatalf("%s: %+v", id, c)
+		}
+		if alertsContaining(log, "卡 "+id+" ") != 1 {
+			t.Fatalf("%s 应告警一次: %v", id, log.Texts())
+		}
+	}
+	for _, id := range []string{"malformed", "empty"} {
+		c := mustGetCard(t, id)
+		if c.PoolState != PoolDisabled || c.DisabledReason != "有效期无法识别" || c.RetireReason != "" {
+			t.Fatalf("%s: %+v", id, c)
+		}
+		if alertsContaining(log, "卡 "+id+" ") != 1 {
+			t.Fatalf("%s 应告警一次: %v", id, log.Texts())
+		}
+	}
+	if c := mustGetCard(t, "ok"); c.PoolState != PoolAvailable {
+		t.Fatalf("%+v", c)
+	}
+	if c := mustGetCard(t, "leased"); c.PoolState != PoolLeased {
+		t.Fatalf("租用中的卡不动: %+v", c)
+	}
+	if log.Count() != 4 {
+		t.Fatalf("告警: %v", log.Texts())
+	}
+}

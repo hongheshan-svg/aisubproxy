@@ -68,6 +68,7 @@ func setPoolState(t *testing.T, cardID, state string) {
 func TestAcquirePriorityAndOrder(t *testing.T) {
 	s, _, clock, _ := newTestService(t)
 	setPlans(t, map[string][]string{"gpt": {"p1", "p2"}})
+	savePolicy(t, func(p *Policy) { p.MaxUsesPerCard = 3 }) // use_count 1 的卡还没用满
 	now := clock.Now().Unix()
 	insertCard(t, Card{CardID: "p2-old", ProductID: "p2", CreatedAt: now - 5000})
 	insertCard(t, Card{CardID: "p1-u0", ProductID: "p1", CreatedAt: now - 3000})
@@ -156,10 +157,29 @@ func TestAcquireSkipsSuspendedExcludedExpiringAndBadHolder(t *testing.T) {
 	}
 }
 
+// 选卡要求未用满次数（调低上限后旧卡不能再被选中）且没有退役原因。
+func TestAcquireSkipsUsedUpAndRetiring(t *testing.T) {
+	s, _, clock, _ := newTestService(t)
+	setPlans(t, map[string][]string{"gpt": {"p1"}})
+	savePolicy(t, func(p *Policy) { p.MaxUsesPerCard = 2 })
+	now := clock.Now().Unix()
+	// 不合格的卡 use_count 更大、入池更早，若过滤失效会先被选中
+	insertCard(t, Card{CardID: "used-up", ProductID: "p1", UseCount: 2, CreatedAt: now - 9000})
+	insertCard(t, Card{CardID: "retiring", ProductID: "p1", UseCount: 1, RetireReason: "健康度", CreatedAt: now - 8000})
+	insertCard(t, Card{CardID: "ok", ProductID: "p1", CreatedAt: now - 1000})
+	if l := mustAcquire(t, s, AcquireRequest{PlanKey: "gpt", OrderRef: "o"}); l.CardID != "ok" {
+		t.Fatalf("应选未用满且无退役原因的卡: %s", l.CardID)
+	}
+	if _, err := s.Acquire(context.Background(), AcquireRequest{PlanKey: "gpt", OrderRef: "o2"}); !errors.Is(err, ErrNoCard) {
+		t.Fatalf("其余卡不合格: %v", err)
+	}
+}
+
 // 排在前面的 21 张卡有效期都不合格（超过一批 20 张），后面那张合格的卡仍要能选到。
 func TestAcquireKeepsFetchingPastIneligibleBatch(t *testing.T) {
 	s, _, clock, _ := newTestService(t)
 	setPlans(t, map[string][]string{"gpt": {"p1"}})
+	savePolicy(t, func(p *Policy) { p.MaxUsesPerCard = 2 }) // use_count 1 的卡还没用满
 	now := clock.Now().Unix()
 	for i := 0; i < 21; i++ {
 		expiry := "1026" // 不足一个月
@@ -483,9 +503,12 @@ func TestReleaseTransitions(t *testing.T) {
 		}
 	}
 
-	// retire_reason 非空：use_count 为 0 也转 used
-	insertCard(t, Card{CardID: "d", ProductID: "p1", RetireReason: "健康度"})
+	// 租用期间被标记退役（如健康度判定）：use_count 为 0 也转 used
+	insertCard(t, Card{CardID: "d", ProductID: "p1"})
 	l = mustAcquire(t, s, AcquireRequest{PlanKey: "gpt"})
+	if _, err := db.DB.Exec(`UPDATE mw_cards SET retire_reason = '健康度' WHERE card_id = 'd'`); err != nil {
+		t.Fatal(err)
+	}
 	if err := s.Release(ctx, l, abort); err != nil {
 		t.Fatal(err)
 	}

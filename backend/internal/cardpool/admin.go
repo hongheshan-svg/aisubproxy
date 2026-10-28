@@ -231,7 +231,7 @@ func (s *Service) RefreshCard(ctx context.Context, cardID string) (*Card, error)
 
 // ---------- 卡：开卡 ----------
 
-// ApplyCards 手动开卡 count 张。遇到第一张失败或未发出的单据，或第一次提交出错就停止，
+// ApplyCards 手动开卡 count 张。遇到第一张失败、未发出或结果未知（含待人工核对）的单据，或第一次提交出错就停止，
 // 返回已创建的单据（和错误，如有）。与自动补卡共用 applyMu 串行；手动开卡不受每日上限限制，但计入当天数量。
 func (s *Service) ApplyCards(ctx context.Context, productID, holderID string, count int, by string) ([]Order, error) {
 	productID, holderID = strings.TrimSpace(productID), strings.TrimSpace(holderID)
@@ -281,7 +281,7 @@ func (s *Service) ApplyCards(ctx context.Context, productID, holderID string, co
 			return out, err
 		}
 		out = append(out, *o)
-		if o.State == StateFailed || o.State == StateNotSent {
+		if applyStops(o.State) {
 			break
 		}
 	}
@@ -314,7 +314,7 @@ func (s *Service) DisableCard(ctx context.Context, cardID, reason, by string) er
 	return badRequest("只有可用状态的卡才能停用")
 }
 
-// EnableCard 启用已停用的卡：先同步平台，要求余额均为 0、未用满次数、平台状态 ACTIVE。
+// EnableCard 启用已停用的卡：没有退役原因；先同步平台，要求余额均为 0、未用满次数、平台状态 ACTIVE。
 func (s *Service) EnableCard(ctx context.Context, cardID, by string) error {
 	card, err := getCard(ctx, cardID)
 	if err != nil {
@@ -322,6 +322,9 @@ func (s *Service) EnableCard(ctx context.Context, cardID, by string) error {
 	}
 	if card.PoolState != PoolDisabled {
 		return badRequest("只有已停用的卡才能启用")
+	}
+	if card.RetireReason != "" {
+		return badRequest("卡已标记退役（" + card.RetireReason + "），不能启用")
 	}
 	card, err = s.RefreshCard(ctx, cardID)
 	if err != nil {
@@ -676,9 +679,8 @@ func (s *Service) Overview(ctx context.Context) (*Overview, error) {
 			rows.Close()
 			return nil, err
 		}
-		if st, ok := stocks[id]; ok {
-			st.OpenedToday = n
-		}
+		// 今天只有开卡单、还没有卡也没有目标数的产品同样列出
+		get(id).OpenedToday = n
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()

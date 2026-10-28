@@ -3,6 +3,7 @@ package cardpool
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -153,6 +154,53 @@ func TestApplyCardsStopsOnFailure(t *testing.T) {
 	orders, err := s.ApplyCards(ctx, "p1", "h1", 3, "admin")
 	if err != nil || len(orders) != 1 || orders[0].State != StateFailed {
 		t.Fatalf("%v %+v", err, orders)
+	}
+}
+
+// 手动开卡遇到结果未知的单据同样停止：平台故障时它可能已经开出了卡。
+func TestApplyCardsStopsOnUnknown(t *testing.T) {
+	ctx := context.Background()
+	s, mw, _, _ := newTestService(t)
+	insertHolder(t, "h1", "APPROVED")
+	mw.On("GET", pathProducts, mwtest.OK(productsJSON))
+	mw.On("POST", pathApply, mwtest.Unknown())
+	orders, err := s.ApplyCards(ctx, "p1", "h1", 3, "admin")
+	if err != nil || len(orders) != 1 || orders[0].State != StateUnknown {
+		t.Fatalf("%v %+v", err, orders)
+	}
+	if n := len(mw.Requests("POST", pathApply)); n != 1 {
+		t.Fatalf("POST %d 次", n)
+	}
+}
+
+// 有退役原因的卡不能启用，错误信息里带上原因。
+func TestEnableRefusesRetireReason(t *testing.T) {
+	ctx := context.Background()
+	s, mw, _, _ := newTestService(t)
+	insertCard(t, Card{CardID: "D", ProductID: "p1", PoolState: PoolDisabled, RetireReason: "健康度"})
+	mw.On("GET", "/v1/card/detail/D",
+		mwtest.OK(`{"card_id":"D","card_no":"4111111111111111","status":"ACTIVE","available_balance":"0.00","freeze_balance":"0.00"}`))
+	err := s.EnableCard(ctx, "D", "admin")
+	if !errors.Is(err, ErrBadRequest) || !strings.Contains(err.Error(), "健康度") {
+		t.Fatalf("应拒绝并说明原因: %v", err)
+	}
+	if c := mustGetCard(t, "D"); c.PoolState != PoolDisabled {
+		t.Fatalf("%+v", c)
+	}
+}
+
+// 概览包含今天只有开卡单、还没有卡也没有目标数的产品。
+func TestOverviewIncludesProductsWithOnlyApplyOrders(t *testing.T) {
+	ctx := context.Background()
+	s, mw, _, _ := newTestService(t)
+	insertOrder(t, Order{Kind: KindApply, ProductID: "p9", State: StateProcessing})
+	mw.On("GET", pathAccounts, mwtest.Reply{Body: `{"count":"1","data":[{"account_no":"X","balance_list":[]}]}`})
+	ov, err := s.Overview(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ov.Products) != 1 || ov.Products[0].ProductID != "p9" || ov.Products[0].OpenedToday != 1 {
+		t.Fatalf("%+v", ov.Products)
 	}
 }
 

@@ -517,11 +517,19 @@ func TestStatusSuccessSideEffects(t *testing.T) {
 		t.Fatalf("%+v", c)
 	}
 
-	// 非 used 的卡只更新平台状态
+	// 管理员冻结可用的卡：停用（原因「管理员冻结」），不记冻结时间
 	if _, err := s.submitStatus(ctx, "c3", "REVOKED", "admin"); err != nil {
 		t.Fatal(err)
 	}
-	if c := mustGetCard(t, "c3"); c.PlatformStatus != "REVOKED" || c.FrozenAt != nil || c.CancelAfter != nil || c.PoolState != PoolAvailable {
+	if c := mustGetCard(t, "c3"); c.PlatformStatus != "REVOKED" || c.FrozenAt != nil || c.CancelAfter != nil ||
+		c.PoolState != PoolDisabled || c.DisabledReason != "管理员冻结" {
+		t.Fatalf("%+v", c)
+	}
+	// 解冻成功不自动启用，由管理员「启用」
+	if _, err := s.submitStatus(ctx, "c3", "ACTIVE", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if c := mustGetCard(t, "c3"); c.PlatformStatus != "ACTIVE" || c.PoolState != PoolDisabled || c.DisabledReason != "管理员冻结" {
 		t.Fatalf("%+v", c)
 	}
 

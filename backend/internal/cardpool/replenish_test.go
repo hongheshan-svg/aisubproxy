@@ -200,3 +200,48 @@ func TestReplenishZeroDailyLimitDoesNothing(t *testing.T) {
 		t.Fatalf("alerts=%d", log.Count())
 	}
 }
+
+// 缺口只算选卡能选中的可用卡（平台 ACTIVE、持卡人正常、有效期还剩一个月以上、未用满、没有退役原因），
+// 加上清零中的卡和进行中的开卡单。
+func TestReplenishGapCountsOnlySelectableCards(t *testing.T) {
+	s, mw, _, _ := newTestService(t)
+	insertHolder(t, "h1", "APPROVED")
+	insertHolder(t, "h-sus", "SUSPENDED")
+	setTargets(t, 5, 10, "h1")
+	insertCard(t, Card{CardID: "ok", ProductID: "p1"})
+	insertCard(t, Card{CardID: "releasing", ProductID: "p1", PoolState: PoolReleasing})
+	insertOrder(t, Order{Kind: KindApply, ProductID: "p1", State: StateProcessing})
+	// 以下可用卡选卡永远选不中，不计入
+	insertCard(t, Card{CardID: "holder-suspended", ProductID: "p1", CardHolderID: "h-sus"})
+	insertCard(t, Card{CardID: "revoked", ProductID: "p1", PlatformStatus: "REVOKED"})
+	insertCard(t, Card{CardID: "used-up", ProductID: "p1", UseCount: 1})
+	insertCard(t, Card{CardID: "retiring", ProductID: "p1", RetireReason: "健康度"})
+	insertCard(t, Card{CardID: "expiring", ProductID: "p1", Expiry: "1026"})
+	insertCard(t, Card{CardID: "malformed", ProductID: "p1", Expiry: "13/26"})
+	mw.On("GET", pathProducts, mwtest.OK(productsJSON))
+	mw.On("POST", pathApply, mwtest.OK(`{"transaction_id":"T1"}`))
+	if err := s.replenishOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(mw.Requests("POST", pathApply)); n != 2 {
+		t.Fatalf("缺口应为 5 - 2 张卡 - 1 张在途单 = 2, 实际开卡 %d", n)
+	}
+}
+
+// 平台故障时结果未知的开卡单可能已经开出了卡（并扣费）：本轮停止该产品继续开卡并告警。
+func TestReplenishStopsOnUnknown(t *testing.T) {
+	s, mw, _, log := newTestService(t)
+	insertHolder(t, "h1", "APPROVED")
+	setTargets(t, 3, 10, "h1")
+	mw.On("GET", pathProducts, mwtest.OK(productsJSON))
+	mw.On("POST", pathApply, mwtest.Unknown())
+	if err := s.replenishOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(mw.Requests("POST", pathApply)); n != 1 {
+		t.Fatalf("结果未知后应停止, POST %d 次", n)
+	}
+	if alertsContaining(log, "p1") != 1 || alertsContaining(log, "unknown") != 1 {
+		t.Fatalf("应告警一次: %v", log.Texts())
+	}
+}

@@ -10,18 +10,51 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/marswallex"
 )
 
-// replenishGap 返回产品的缺口：目标数 − (available/releasing 卡数 + 在途开卡单数)。
-func replenishGap(ctx context.Context, productID string, target int) (int, error) {
-	var cards, orders int
-	if err := db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM mw_cards WHERE product_id = ? AND pool_state IN (?, ?)`,
-		productID, PoolAvailable, PoolReleasing).Scan(&cards); err != nil {
+// replenishGap 返回产品的缺口：目标数 −（选卡能选中的 available 卡数 + releasing 卡数 + 在途开卡单数）。
+// 「能选中」与 pickCandidates 共用 selectableWhere 与 expiryEligible：选卡永远选不中的可用卡（持卡人被停、平台冻结、
+// 用满、待退役、有效期不足或无法识别）不能占着缺口。
+func (s *Service) replenishGap(ctx context.Context, productID string, target, maxUses int) (int, error) {
+	rows, err := db.DB.QueryContext(ctx, `SELECT c.expiry`+selectableFrom+` WHERE c.product_id = ? AND`+selectableWhere,
+		append([]any{productID}, selectableArgs(maxUses)...)...)
+	if err != nil {
+		return 0, err
+	}
+	now := s.now()
+	selectable := 0
+	for rows.Next() {
+		var expiry string
+		if err := rows.Scan(&expiry); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		if expiryEligible(expiry, now) {
+			selectable++
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return 0, err
+	}
+	var releasing, orders int
+	if err := db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM mw_cards WHERE product_id = ? AND pool_state = ?`,
+		productID, PoolReleasing).Scan(&releasing); err != nil {
 		return 0, err
 	}
 	if err := db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM mw_card_orders WHERE kind = ? AND product_id = ? AND state IN (?, ?, ?, ?)`,
 		KindApply, productID, StatePending, StateProcessing, StateUnknown, StateNeedsReview).Scan(&orders); err != nil {
 		return 0, err
 	}
-	return target - cards - orders, nil
+	return target - selectable - releasing - orders, nil
+}
+
+// applyStops 判断开卡单的初判结果是否要停止本批开卡：失败、未发出，或结果未知、待人工核对——
+// 平台故障期间结果未知的开卡单可能已经开出了卡并扣费，不能接着开。
+func applyStops(state string) bool {
+	switch state {
+	case StateFailed, StateNotSent, StateUnknown, StateNeedsReview:
+		return true
+	}
+	return false
 }
 
 // todayApplyCount 返回产品自北京今日零点起的开卡单数（任何状态）。
@@ -70,7 +103,7 @@ func (s *Service) replenishOnce(ctx context.Context) error {
 	fetched := false
 	for _, pid := range ids {
 		tgt := pol.ProductTargets[pid]
-		gap, err := replenishGap(ctx, pid, tgt.Target)
+		gap, err := s.replenishGap(ctx, pid, tgt.Target, pol.MaxUsesPerCard)
 		if err != nil {
 			return err
 		}
@@ -124,8 +157,9 @@ func (s *Service) replenishOnce(ctx context.Context) error {
 				s.alert("applyfail:"+pid, fmt.Sprintf("自动补卡：产品 %s 开卡出错：%v", pid, err))
 				break
 			}
-			if o.State == StateFailed || o.State == StateNotSent {
-				s.alert("applyfail:"+pid, fmt.Sprintf("自动补卡：产品 %s 开卡失败（%s）：%s", pid, o.State, o.LastError))
+			if applyStops(o.State) {
+				s.alert("applyfail:"+pid, fmt.Sprintf("自动补卡：产品 %s 的开卡单 %s 为 %s，本轮停止该产品开卡：%s",
+					pid, o.OutOrderNo, o.State, truncate(o.LastError, 200)))
 				break
 			}
 		}

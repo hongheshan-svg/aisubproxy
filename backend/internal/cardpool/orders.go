@@ -218,9 +218,15 @@ func terminalEffects(ctx context.Context, tx *sql.Tx, o *Order, now int64, cance
 			_, err := tx.ExecContext(ctx, `UPDATE mw_cards SET pool_state = ? WHERE card_id = ?`, PoolRetired, o.CardID)
 			return err
 		case "REVOKED":
-			_, err := tx.ExecContext(ctx, `UPDATE mw_cards SET frozen_at = ?, cancel_after = ?
+			// 回收流程冻结 used 的卡：记冻结时间与注销时间
+			if _, err := tx.ExecContext(ctx, `UPDATE mw_cards SET frozen_at = ?, cancel_after = ?
 				WHERE card_id = ? AND pool_state = ? AND frozen_at IS NULL`,
-				now, now+int64(cancelAfterDays)*86400, o.CardID, PoolUsed)
+				now, now+int64(cancelAfterDays)*86400, o.CardID, PoolUsed); err != nil {
+				return err
+			}
+			// 管理员冻结可用的卡：停用，不再参与选卡与补卡计数；解冻成功不自动启用，由管理员「启用」
+			_, err := tx.ExecContext(ctx, `UPDATE mw_cards SET pool_state = ?, disabled_reason = ? WHERE card_id = ? AND pool_state = ?`,
+				PoolDisabled, "管理员冻结", o.CardID, PoolAvailable)
 			return err
 		}
 	}

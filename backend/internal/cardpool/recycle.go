@@ -307,3 +307,66 @@ func (s *Service) moveCard(ctx context.Context, cardID, from, to, reason string)
 	}
 	return n == 1, nil
 }
+
+// retireExpiringOnce 处理有效期不足或无法识别的可用卡（只读写本地库，条件更新）：
+//   - 有效期还剩不到一个月（含已过期）：转 used，退役原因「即将过期」，随后按 used 流程清零、冻结、注销，补卡补上缺口；
+//   - 有效期无法识别：停用（原因「有效期无法识别」），不自动注销，由管理员核对。
+//
+// 各自告警（key expiring:<卡> / badexpiry:<卡>，每卡每天一次）。租用中等其他状态的卡不动。
+func (s *Service) retireExpiringOnce(ctx context.Context) error {
+	rows, err := db.DB.QueryContext(ctx, `SELECT card_id, expiry FROM mw_cards WHERE pool_state = ? ORDER BY card_id`, PoolAvailable)
+	if err != nil {
+		return err
+	}
+	type avail struct{ cardID, expiry string }
+	var list []avail
+	for rows.Next() {
+		var a avail
+		if err := rows.Scan(&a.cardID, &a.expiry); err != nil {
+			rows.Close()
+			return err
+		}
+		list = append(list, a)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	now := s.now()
+	var firstErr error
+	keep := func(err error) {
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	for _, a := range list {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if expiryEligible(a.expiry, now) {
+			continue
+		}
+		if _, ok := expiryEnd(a.expiry); !ok {
+			moved, err := s.moveCard(ctx, a.cardID, PoolAvailable, PoolDisabled, "有效期无法识别")
+			keep(err)
+			if moved {
+				s.alert("badexpiry:"+a.cardID, fmt.Sprintf("卡 %s 的有效期 %q 无法识别，已从卡池停用（原因：有效期无法识别），请到 MarsWallex 后台核对",
+					a.cardID, truncate(a.expiry, 20)))
+			}
+			continue
+		}
+		res, err := db.DB.ExecContext(ctx, `UPDATE mw_cards SET pool_state = ?,
+			retire_reason = CASE WHEN retire_reason = '' THEN ? ELSE retire_reason END, next_action_at = ?, updated_at = ?
+			WHERE card_id = ? AND pool_state = ?`,
+			PoolUsed, "即将过期", now.Unix(), now.Unix(), a.cardID, PoolAvailable)
+		if err != nil {
+			keep(err)
+			continue
+		}
+		if n, _ := res.RowsAffected(); n == 1 {
+			s.alert("expiring:"+a.cardID, fmt.Sprintf("卡 %s 有效期 %s 已不足一个月，已转为已用（退役原因：即将过期），将清零、冻结后注销",
+				a.cardID, a.expiry))
+		}
+	}
+	return firstErr
+}

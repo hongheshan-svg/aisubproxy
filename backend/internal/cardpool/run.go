@@ -60,7 +60,7 @@ func (s *Service) runLoop(ctx context.Context, every time.Duration, kick <-chan 
 	}
 }
 
-// maintainRound：先做只读写本地库的步骤（释放到期租约、清除过期验证码），平台变慢也不会拖延它们；
+// maintainRound：先做只读写本地库的步骤（释放到期租约、清除过期验证码、处理有效期不足的可用卡），平台变慢也不会拖延它们；
 // 再对账（取不到客户端时只做本地的超时升级并告警，见 reconcileOrdersOnce），最后回收（要调接口，取不到客户端时跳过）。
 func (s *Service) maintainRound(ctx context.Context, lg *loopLog) {
 	local := []struct {
@@ -69,6 +69,7 @@ func (s *Service) maintainRound(ctx context.Context, lg *loopLog) {
 	}{
 		{"释放到期租约", s.expireLeasesOnce},
 		{"清除过期验证码", s.purgeOTPsOnce},
+		{"处理有效期不足的可用卡", s.retireExpiringOnce},
 	}
 	for _, st := range local {
 		if ctx.Err() != nil {

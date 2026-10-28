@@ -62,6 +62,24 @@ func expiryEnd(mmyy string) (time.Time, bool) {
 	return time.Date(2000+year, time.Month(month)+1, 1, 0, 0, 0, 0, time.UTC), true
 }
 
+// selectableFrom 与 selectableWhere 是选卡和补卡缺口共用的「能被选中」条件（有效期除外）：
+// available、平台状态 ACTIVE、没有退役原因、未用满使用次数、持卡人状态不是 DISABLED / SUSPENDED（未指定持卡人的不检查）。
+// selectableWhere 的参数依次为 PoolAvailable 与使用次数上限（见 selectableArgs）。
+// 有效期是 MMyy，不便在 SQL 里比较，另用 expiryEligible 在 Go 里判断。
+const (
+	selectableFrom  = ` FROM mw_cards c LEFT JOIN mw_cardholders h ON h.card_holder_id = c.card_holder_id`
+	selectableWhere = ` c.pool_state = ? AND c.platform_status = 'ACTIVE' AND c.retire_reason = '' AND c.use_count < ?
+		AND (c.card_holder_id = '' OR UPPER(COALESCE(h.status, '')) NOT IN ('DISABLED', 'SUSPENDED'))`
+)
+
+func selectableArgs(maxUses int) []any { return []any{PoolAvailable, maxUses} }
+
+// expiryEligible 判断有效期是否还剩一个月以上（失效时刻晚于 now 往后一个月）；格式不对算不合格。
+func expiryEligible(mmyy string, now time.Time) bool {
+	end, ok := expiryEnd(mmyy)
+	return ok && end.After(now.UTC().AddDate(0, 1, 0))
+}
+
 // kickReplenish 非阻塞地请求一次补卡检查；已有待处理的请求时合并。
 func (s *Service) kickReplenish() {
 	select {
@@ -77,15 +95,13 @@ type candidate struct {
 	createdAt                           int64
 }
 
-// pickCandidates 查询某产品下可选的卡，一批最多 20 张，按 use_count 降序、入池时间升序、card_id 升序。
+// pickCandidates 查询某产品下可选的卡（selectableWhere），一批最多 20 张，按 use_count 降序、入池时间升序、card_id 升序。
 // after 非空时只取排在它之后的卡（键集分页，不受并发抢卡导致的行变化影响）。
-// 有效期在 Go 里另行过滤。查询结果读完即关闭，避免占用连接时再执行抢卡语句。
-func pickCandidates(ctx context.Context, productID string, exclude []string, after *candidate) ([]candidate, error) {
-	q := `SELECT c.card_id, c.product_id, c.currency, c.expiry, c.use_count, c.created_at FROM mw_cards c
-		LEFT JOIN mw_cardholders h ON h.card_holder_id = c.card_holder_id
-		WHERE c.product_id = ? AND c.pool_state = ? AND c.platform_status = 'ACTIVE'
-		AND (c.card_holder_id = '' OR UPPER(COALESCE(h.status, '')) NOT IN ('DISABLED', 'SUSPENDED'))`
-	args := []any{productID, PoolAvailable}
+// 有效期在 Go 里另行过滤（expiryEligible）。查询结果读完即关闭，避免占用连接时再执行抢卡语句。
+func pickCandidates(ctx context.Context, productID string, maxUses int, exclude []string, after *candidate) ([]candidate, error) {
+	q := `SELECT c.card_id, c.product_id, c.currency, c.expiry, c.use_count, c.created_at` + selectableFrom +
+		` WHERE c.product_id = ? AND` + selectableWhere
+	args := append([]any{productID}, selectableArgs(maxUses)...)
 	if len(exclude) > 0 {
 		q += ` AND c.card_id NOT IN (` + placeholders(len(exclude)) + `)`
 		for _, id := range exclude {
@@ -146,7 +162,6 @@ func (s *Service) Acquire(ctx context.Context, req AcquireRequest) (*Lease, erro
 		return nil, err
 	}
 	now := s.now()
-	notAfter := now.UTC().AddDate(0, 1, 0)
 	expiresAt := now.Add(time.Duration(pol.LeaseMinutes) * time.Minute)
 
 	suspended := 0
@@ -162,13 +177,12 @@ func (s *Service) Acquire(ctx context.Context, req AcquireRequest) (*Lease, erro
 		// 分批取候选，直到抢到或该产品没有更多候选：一整批有效期不合格的卡不能挡住后面的卡
 		var after *candidate
 		for {
-			cands, err := pickCandidates(ctx, productID, req.ExcludeCardIDs, after)
+			cands, err := pickCandidates(ctx, productID, pol.MaxUsesPerCard, req.ExcludeCardIDs, after)
 			if err != nil {
 				return nil, err
 			}
 			for _, c := range cands {
-				end, ok := expiryEnd(c.expiry)
-				if !ok || !end.After(notAfter) {
+				if !expiryEligible(c.expiry, now) {
 					continue
 				}
 				got, err := s.grabCard(ctx, c.cardID, token, req.OrderRef, expiresAt.Unix())

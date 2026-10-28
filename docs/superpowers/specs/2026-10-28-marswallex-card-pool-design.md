@@ -64,7 +64,7 @@
 | `mw_cards` | 卡池，卡的唯一记录来源（平台没有卡列表接口） | `card_id`（主键）、`card_holder_id`、`product_id`、卡组、国家、币种、后四位、有效期 `MMyy`、平台状态、可用余额、冻结余额、余额同步时间、来源（`opened` / `imported`）、`pool_state`、租约（令牌、持有方 `OrderRef`、到期时间、`lease_sensitive` 本次租约是否取过卡号）、`use_count`（已用次数）、`last_sensitive_at`、`retire_reason`（非空则释放时直接退役）、`frozen_at`、`cancel_after`、`next_action_at`（回收下一步时间）、停用原因、入池时间。启用与停用只用 `pool_state` 表达，不另设开关 |
 | `mw_card_orders` | 所有写操作的本地单据 | `out_order_no`（唯一）、`kind`（`apply` / `recharge` / `withdraw` / `status`）、`card_id`（开卡单成功前为空）、`card_holder_id`、`product_id`、金额、币种、目标状态、`state`、平台订单号、`ever_unknown`、尝试次数、`next_check_at`、`first_sent_at`、最后错误、发起方（管理员用户名或租约令牌）、备注、创建与定论时间 |
 | `mw_card_transactions` | 授权与结算交易 | `transaction_id`（主键，重复推送覆盖更新）、`kind`（`AUTH` / `AUTH_REVERSAL` / `SETTLE` / `REFUND`）、`card_id`、状态、拒绝原因、交易金额与币种、账单金额与币种（只用于展示，按平台原字符串保存，避免三位小数币种丢精度）、商户名、关联交易号、发生时间 |
-| `mw_3ds_otps` | 3DS 验证码 | `card_id`、`otp_sealed`（secretbox 加密，AAD 为 `mw_3ds_otp`）、商户名、金额、币种、收到时间、取用时间 |
+| `mw_3ds_otps` | 3DS 验证码 | `card_id`、`otp_sealed`（secretbox 加密，AAD 为 `mw_3ds_otp`）、商户名、金额、币种、收到时间、取用时间、来源事件 `event_id`（唯一） |
 | `mw_card_outcomes` | 健康度依据 | `card_id`、`product_id`、`plan_key`、`order_ref`、规范化邮箱（小写去空格，空记为 `unknown`）、结果、错误码、时间 |
 | `mw_product_health` | 「卡产品 × 套餐」停用状态 | `product_id`、`plan_key`、停用时间、原因、恢复时间、恢复人 |
 
@@ -79,9 +79,9 @@
 | `releasing` | 已释放、还没用满，正在清零，清零后回到 `available` |
 | `used` | 已用满次数，等待清零、冻结、注销 |
 | `retired` | 已注销 |
-| `disabled` | 停用（管理员手动，或平台风控、异常交易触发），不参与选卡。管理员只能停用 `available` 的卡：租用中的卡会打断订单，清零中和已用完的卡要继续自动回收 |
+| `disabled` | 停用（管理员手动，或平台风控、异常交易触发，或管理员冻结了可用的卡、可用的卡有效期无法识别），不参与选卡。管理员只能停用 `available` 的卡：租用中的卡会打断订单，清零中和已用完的卡要继续自动回收 |
 
-流转：`available` →（租用）→ `leased` →（释放或租约到期）→ 本次租约取过卡号则 `use_count + 1`；`use_count` 达到使用次数上限则 `used`，否则 `releasing` → 清零后回 `available`。`used` → 清零、冻结 → 到 `cancel_after` 后注销 → `retired`。管理员可把任何未注销的卡设为 `disabled`，或从 `disabled` 恢复为 `available`（仅当余额为 0、`use_count` 未达上限）。开卡单提交后、平台给出 `card_id` 之前，卡只存在于单据里，不在 `mw_cards`。
+流转：`available` →（租用）→ `leased` →（释放或租约到期）→ 本次租约取过卡号则 `use_count + 1`；`use_count` 达到使用次数上限则 `used`，否则 `releasing` → 清零后回 `available`。`used` → 清零、冻结 → 到 `cancel_after` 后注销 → `retired`。管理员可把任何未注销的卡设为 `disabled`，或从 `disabled` 恢复为 `available`（仅当余额为 0、`use_count` 未达上限、没有 `retire_reason`）。管理员冻结 `available` 的卡（改状态单 `REVOKED` 成功）后转为 `disabled`（停用原因「管理员冻结」）；解冻成功不自动启用，由管理员「启用」。对账协程每轮检查 `available` 的卡：有效期不足一个月（含已过期）转为 `used`（`retire_reason` 为「即将过期」，随后清零、冻结、注销，补卡补上缺口）；有效期无法识别转为 `disabled`（停用原因「有效期无法识别」，不自动注销）；都告警。开卡单提交后、平台给出 `card_id` 之前，卡只存在于单据里，不在 `mw_cards`。
 
 ### 4.2 策略配置 `mw_cardpool_policy`（`site_settings` 中的 JSON）
 
@@ -135,7 +135,8 @@
 - `unknown` 的单据查单查不到、或查单本身出错时继续查；到 `first_sent_at` 之后满 30 分钟仍无定论，改为 `needs_review`，并发告警。
 - `processing` 满 24 小时发告警，之后继续查单。
 - **资金单（开卡、转入、转出）任何情况下都不自动重发**：规范没写卡转入、卡转出的单号是否防重，重发可能重复扣款。`needs_review` 由人工到 MarsWallex 后台核对后，在我们后台选择「确认失败」（必须填备注）或「再查一次」。
-- 改状态单在结果未知时查卡详情：已经是目标状态就记为成功，否则用同一张单据重发（设置状态可以重复执行）。注销不传 `account_no`，余额回到默认主钱包。
+- 改状态单在结果未知时查卡详情：已经是目标状态就记为成功；是 `ACTIVE` / `REVOKED` / `CANCELED` 中的另一个，就用同一张单据重发（设置状态可以重复执行）；注销中（`INCANCELED`）、空或不认识的状态既不定论也不重发，继续查单（30 分钟转人工照常）。注销不传 `account_no`，余额回到默认主钱包。
+- 取不到 MarsWallex 客户端（未配置等）时只跳过查单：`pending` 转 `unknown`、转 `needs_review`、`processing` 24 小时告警照常执行；有未定论单据或待回收卡时每天告警一次。
 
 ### 6.4 租约与回收
 
@@ -149,8 +150,8 @@
 
 ### 6.5 补卡
 
-- 对账协程每 60 秒检查一次。对每个配置了目标数的卡产品：缺口 = 目标可用数 −（`available` 与 `releasing` 卡数 + 进行中的开卡单数）。进行中的开卡单指状态为 `pending`、`processing`、`unknown`、`needs_review` 的开卡单。
-- 缺口大于 0、且今天（北京时间）的开卡单数小于每日上限时，按缺口逐张提交开卡单，持卡人轮流使用。失败的开卡单也计入当天的数量。
+- 对账协程每 60 秒检查一次。对每个配置了目标数的卡产品：缺口 = 目标可用数 −（选卡能选中的 `available` 卡数 + `releasing` 卡数 + 进行中的开卡单数）。「能选中」与 §7.1 第 2 步的条件相同（不含 `ExcludeCardIDs`），选卡永远选不中的可用卡不占缺口。进行中的开卡单指状态为 `pending`、`processing`、`unknown`、`needs_review` 的开卡单。
+- 缺口大于 0、且今天（北京时间）的开卡单数小于每日上限时，按缺口逐张提交开卡单，持卡人轮流使用。失败的开卡单也计入当天的数量。某张开卡单失败、未发出或结果未知（含待人工核对）时，本轮停止该产品继续开卡并告警：平台故障时结果未知的开卡单可能已经开出了卡。手动批量开卡同样停止。
 - 到达每日上限时，每天只发一次告警。没有 `APPROVED` 的持卡人时，跳过补卡并告警。
 - 开卡请求：`amount` 取策略里的开卡金额，`currency` 取卡产品币种，`expiry_date` 取开卡月份往后推有效期月数的 `MMyy`，`fee_deduct_type` 不传。
 - 开卡金额大于 0 时，开卡成功后先清零，再置为 `available`。
@@ -160,7 +161,7 @@
 ### 7.1 选卡
 
 1. 取 `PlanKey` 对应的卡产品优先级；未配置就用「默认」列表。`PlanKey` 先沿用现有的套餐键，子项目 3 建立套餐注册表后再对接。
-2. 按优先级逐个看卡产品，跳过 `mw_product_health` 中处于停用状态的「产品 × 套餐」。在一个产品里选卡，条件是：`available`、平台状态 `ACTIVE`、不在 `ExcludeCardIDs` 中、有效期还剩一个月以上、持卡人状态不是 `DISABLED` 或 `SUSPENDED`（导入时未指定持卡人的卡不检查）。排序：先用 `use_count` 大的（尽快用满退役，减少同时在外的卡号），再按入池时间先后。
+2. 按优先级逐个看卡产品，跳过 `mw_product_health` 中处于停用状态的「产品 × 套餐」。在一个产品里选卡，条件是：`available`、平台状态 `ACTIVE`、`use_count` 小于使用次数上限（调低上限后旧卡不再被选中）、`retire_reason` 为空、不在 `ExcludeCardIDs` 中、有效期还剩一个月以上、持卡人状态不是 `DISABLED` 或 `SUSPENDED`（导入时未指定持卡人的卡不检查）。排序：先用 `use_count` 大的（尽快用满退役，减少同时在外的卡号），再按入池时间先后。
 3. 按 §6.4 抢卡，抢到就返回租约，抢不到换下一张。
 4. 全部产品都没卡时，返回 `ErrNoCard`，原因为「无可用卡」或「全部产品已停用」；同时立即触发一次补卡检查，并发告警。
 
@@ -186,9 +187,9 @@
 | `CARD_STATUS_CHANGED` | 更新平台状态。不是我们发起的冻结或注销：`available` 的卡转为 `disabled`；`leased` 的卡告警；`CANCELED` 记为 `retired` |
 | `CARDHOLDER_STATUS_CHANGE` | 只更新已导入的持卡人；不再是 `APPROVED` 时告警 |
 | `AUTH_EVENT`、`SETTLE_EVENT` | 写入交易表，`pending` 不当作终态；卡不在卡池里也记录。**`available` 且 `use_count = 0` 的卡出现授权（卡号从未交出过）**：卡转为 `disabled` 并告警。`AUTH_EVENT` 原文里的 `otp` 字段同样改为 `***` |
-| `CARD_3DS_OTP` | 按 §5 加密入库并抹掉原文里的验证码 |
+| `CARD_3DS_OTP` | 按 §5 加密入库并抹掉原文里的验证码。收到时间取事件自己的 `received_at`（不是处理时间，重试或积压的旧验证码不能满足较新的 `WaitOTP(since)`），收到已满 30 分钟的不保存（备注「验证码已过期」）。按事件去重：同一事件重复处理只存一条，不同事件即使验证码相同也各存一条 |
 | `ACCOUNT_STATUS_CHANGED`、`CONVERSION_RESULT`、`TRANSFER_RESULT` | 标记已处理 |
-| 未知 topic、子项目 1 存档的无法解析事件 | 标记已处理，备注原因 |
+| 未知 topic、子项目 1 存档的无法解析事件 | 标记已处理，备注原因。无法解析的原文也尽力抹除验证码，抹除失败时在备注里记下 |
 
 ## 9. 后台接口与页面
 

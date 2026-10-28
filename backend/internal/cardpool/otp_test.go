@@ -341,3 +341,83 @@ func TestRedactOTP(t *testing.T) {
 		t.Fatal("非 JSON 应报错")
 	}
 }
+
+// 验证码的收到时间取 Webhook 事件自己的收到时间，不取处理时间：重试或积压后才处理的旧验证码不能满足较新的 WaitOTP(since)。
+func TestOTPReceivedAtIsEventTime(t *testing.T) {
+	s, _, clock, _ := newTestService(t)
+	t0 := clock.Now()
+	id := enqueueEvent(t, marswallex.TopicCard3DSOTP, otpData("c1", "111111"))
+	clock.Advance(5 * time.Minute) // 处理晚于收到
+	mustProcessEvents(t, s)
+	mustBeProcessed(t, id, "验证码已加密保存")
+	rows := otpRows(t, "c1")
+	if len(rows) != 1 || rows[0].receivedAt != t0.Unix() {
+		t.Fatalf("received_at 应为事件收到时间 %d: %+v", t0.Unix(), rows)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	if otp, err := s.WaitOTP(ctx, "c1", t0.Add(time.Minute)); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("早于新挑战的验证码不应取到: %q, %v", otp, err)
+	}
+}
+
+// 事件收到已满 30 分钟才处理：不保存（备注「验证码已过期」），原文照样抹掉。
+func TestOTPEventOlderThan30MinNotStored(t *testing.T) {
+	s, _, clock, _ := newTestService(t)
+	id := enqueueEvent(t, marswallex.TopicCard3DSOTP, otpData("c1", "123456"))
+	clock.Advance(30 * time.Minute)
+	mustProcessEvents(t, s)
+	e := mustBeProcessed(t, id, "验证码已过期")
+	mustBeRedacted(t, e, "123456")
+	if rows := otpRows(t, "c1"); len(rows) != 0 {
+		t.Fatalf("过期的验证码不应保存: %+v", rows)
+	}
+}
+
+// 按事件去重：两条不同事件即使验证码相同也各存一条；同一事件处理两次（写入后来不及标记已处理就崩溃）只存一条。
+func TestOTPDedupeByEvent(t *testing.T) {
+	s, _, _, _ := newTestService(t)
+	enqueueEvent(t, marswallex.TopicCard3DSOTP, otpData("c1", "123456"))
+	enqueueEvent(t, marswallex.TopicCard3DSOTP, otpData("c1", "123456"))
+	if n := mustProcessEvents(t, s); n != 2 {
+		t.Fatalf("处理了 %d 条", n)
+	}
+	if rows := otpRows(t, "c1"); len(rows) != 2 {
+		t.Fatalf("两条事件应各存一条: %+v", rows)
+	}
+
+	id := enqueueEvent(t, marswallex.TopicCard3DSOTP, otpData("c2", "654321"))
+	raw := getEvent(t, id).payload
+	mustProcessEvents(t, s)
+	// 模拟崩溃：验证码已写入，但没来得及标记已处理、抹掉原文
+	if _, err := db.DB.Exec(`UPDATE marswallex_webhook_events SET processed_at = NULL, process_note = '', payload = ? WHERE id = ?`, raw, id); err != nil {
+		t.Fatal(err)
+	}
+	mustProcessEvents(t, s)
+	e := mustBeProcessed(t, id, "重复")
+	mustBeRedacted(t, e, "654321")
+	if rows := otpRows(t, "c2"); len(rows) != 1 {
+		t.Fatalf("同一事件只应存一条: %+v", rows)
+	}
+}
+
+// 整条无法解析的事件也尽力抹掉原文里的验证码；抹不掉时仍标记已处理，并在备注里记下抹除失败。
+func TestUnparseableEventBestEffortRedact(t *testing.T) {
+	s, _, _, _ := newTestService(t)
+	e1 := enqueueRaw(t, "raw-1", "", `{"topic":123,"message_id":"raw-1","data":{"card_id":"c1","otp":"123456"}}`)
+	e2 := enqueueRaw(t, "raw-2", "", `garbage otp=654321`)
+	if n := mustProcessEvents(t, s); n != 2 {
+		t.Fatalf("处理了 %d 条", n)
+	}
+	ev1 := mustBeProcessed(t, e1, "无法解析")
+	if strings.Contains(ev1.payload, "123456") || !strings.Contains(ev1.payload, `"otp":"***"`) {
+		t.Fatalf("应抹掉验证码: %s", ev1.payload)
+	}
+	ev2 := mustBeProcessed(t, e2, "无法解析")
+	if !strings.Contains(ev2.note, "抹除验证码失败") {
+		t.Fatalf("抹除失败应记入备注: %+v", ev2)
+	}
+	if n := countRows(t, `SELECT COUNT(*) FROM mw_3ds_otps`); n != 0 {
+		t.Fatalf("不应写入验证码: %d", n)
+	}
+}

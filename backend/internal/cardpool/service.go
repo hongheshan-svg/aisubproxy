@@ -79,7 +79,7 @@ type Service struct {
 	kickReplenishCh chan struct{}
 
 	// 为 nil 时由事件消费循环回退到 handleEvent
-	eventHandler func(context.Context, *marswallex.WebhookEvent) (string, error)
+	eventHandler func(context.Context, *queuedEvent, *marswallex.WebhookEvent) (string, error)
 
 	loops sync.WaitGroup // Start 启动的后台协程
 

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/marswallex"
@@ -67,15 +68,16 @@ func scrubOTP(s, otp string) string {
 }
 
 type queuedEvent struct {
-	id       int64
-	payload  string
-	attempts int
+	id         int64
+	payload    string
+	attempts   int
+	receivedAt int64 // 事件收到（入库）的时间，Unix 秒；无法识别时为零值时间的秒数（远早于现在）
 }
 
 // processEventsOnce 按 id 升序处理一轮到期的未处理事件（每轮最多 100 条），返回本轮处理的条数。
 // 单条事件处理出错只记在该事件上（退避重试），不影响后续事件；返回的错误只表示读写事件表失败或 ctx 已结束。
 func (s *Service) processEventsOnce(ctx context.Context) (int, error) {
-	rows, err := db.DB.QueryContext(ctx, `SELECT id, payload, process_attempts FROM marswallex_webhook_events
+	rows, err := db.DB.QueryContext(ctx, `SELECT id, payload, process_attempts, received_at FROM marswallex_webhook_events
 		WHERE processed_at IS NULL AND process_attempts < ? AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
 		ORDER BY id LIMIT ?`, eventMaxAttempts, s.now().Unix(), eventBatch)
 	if err != nil {
@@ -84,10 +86,12 @@ func (s *Service) processEventsOnce(ctx context.Context) (int, error) {
 	var list []queuedEvent
 	for rows.Next() {
 		var e queuedEvent
-		if err := rows.Scan(&e.id, &e.payload, &e.attempts); err != nil {
+		var received time.Time // DATETIME（UTC）
+		if err := rows.Scan(&e.id, &e.payload, &e.attempts, &received); err != nil {
 			rows.Close()
 			return 0, err
 		}
+		e.receivedAt = received.Unix()
 		list = append(list, e)
 	}
 	rows.Close()
@@ -113,13 +117,13 @@ func (s *Service) processEventsOnce(ctx context.Context) (int, error) {
 }
 
 // processEvent 处理一条事件并记录结果。
-func (s *Service) processEvent(ctx context.Context, handler func(context.Context, *marswallex.WebhookEvent) (string, error), e *queuedEvent) error {
+func (s *Service) processEvent(ctx context.Context, handler func(context.Context, *queuedEvent, *marswallex.WebhookEvent) (string, error), e *queuedEvent) error {
 	ev, err := marswallex.DecodeWebhookPayload([]byte(e.payload))
 	if err != nil {
 		log.Printf("[cardpool] Webhook 事件 #%d 无法解析，标记为已处理", e.id)
 		return s.finishEvent(ctx, e, nil, "无法解析", "")
 	}
-	note, herr := handler(ctx, ev)
+	note, herr := handler(ctx, e, ev)
 	if cerr := ctx.Err(); cerr != nil {
 		// 中途被取消：不记结果、不计失败次数，下次整条重新处理
 		return cerr
@@ -143,24 +147,41 @@ func (s *Service) processEvent(ctx context.Context, handler func(context.Context
 	return s.failEvent(ctx, e, ev, scrubOTP(herr.Error(), otp))
 }
 
-// redactedPayload 返回抹掉验证码后的原文；不需要或没有改动时返回 false。
-func redactedPayload(e *queuedEvent, ev *marswallex.WebhookEvent) (string, bool) {
-	if ev == nil || !otpTopic(ev.Topic) {
-		return "", false
+// redactFailedNote 为抹除验证码失败时追加到备注或错误里的说明。
+const redactFailedNote = "抹除验证码失败"
+
+// redactedPayload 返回抹掉验证码后的原文；不需要或没有改动时 ok 为 false。
+// ev 为 nil（整条原文无法解析，不知道 topic）时也尽力抹一次；原文不是 JSON 对象等情况返回错误。
+func redactedPayload(e *queuedEvent, ev *marswallex.WebhookEvent) (string, bool, error) {
+	if ev != nil && !otpTopic(ev.Topic) {
+		return "", false, nil
 	}
 	out, changed, err := redactOTP(e.payload)
 	if err != nil {
 		log.Printf("[cardpool] Webhook 事件 #%d 抹除验证码失败: %v", e.id, err)
-		return "", false
+		return "", false, err
 	}
-	return out, changed
+	return out, changed, nil
 }
 
-// finishEvent 标记事件已处理：写 processed_at、process_note，process_error 为空则清空；带验证码的 topic 同时抹掉原文里的验证码。
+// joinNote 把 extra 接在 note 后面（中文分号分隔）。
+func joinNote(note, extra string) string {
+	if note == "" {
+		return extra
+	}
+	return note + "；" + extra
+}
+
+// finishEvent 标记事件已处理：写 processed_at、process_note，process_error 为空则清空；带验证码的 topic（以及无法解析的整条原文）
+// 同时抹掉原文里的验证码。抹除失败时事件照样标记已处理，并在备注里记下「抹除验证码失败」。
 func (s *Service) finishEvent(ctx context.Context, e *queuedEvent, ev *marswallex.WebhookEvent, note, procErr string) error {
+	p, ok, rerr := redactedPayload(e, ev)
+	if rerr != nil {
+		note = joinNote(note, redactFailedNote)
+	}
 	set := "processed_at = ?, process_note = ?, process_error = ?, next_attempt_at = NULL"
 	args := []any{s.now().UTC(), note, sql.NullString{String: procErr, Valid: procErr != ""}}
-	if p, ok := redactedPayload(e, ev); ok {
+	if ok {
 		set += ", payload = ?"
 		args = append(args, p)
 	}
@@ -176,14 +197,21 @@ func (s *Service) finishEvent(ctx context.Context, e *queuedEvent, ev *marswalle
 func (s *Service) failEvent(ctx context.Context, e *queuedEvent, ev *marswallex.WebhookEvent, msg string) error {
 	attempts := e.attempts + 1
 	now := s.now().Unix()
+	stop := attempts >= eventMaxAttempts
+	var payload string
+	redact := false
+	if stop {
+		p, ok, rerr := redactedPayload(e, ev)
+		if rerr != nil {
+			msg = joinNote(msg, redactFailedNote)
+		}
+		payload, redact = p, ok
+	}
 	set := "process_attempts = ?, process_error = ?, next_attempt_at = ?"
 	args := []any{attempts, msg, now + secs(backoff(attempts-1))}
-	stop := attempts >= eventMaxAttempts
-	if stop {
-		if p, ok := redactedPayload(e, ev); ok {
-			set += ", payload = ?"
-			args = append(args, p)
-		}
+	if redact {
+		set += ", payload = ?"
+		args = append(args, payload)
 	}
 	// process_attempts 条件防止覆盖处理期间被「重新处理」重置的计数
 	args = append(args, e.id, e.attempts)
@@ -222,7 +250,8 @@ func (s *Service) Reprocess(ctx context.Context, eventID int64, by string) error
 
 // handleEvent 按 topic 处理一条事件，返回写入 process_note 的备注。所有处理都可重复执行。
 // 返回包装 errEventData 的错误表示数据无法解析，*finalEventError 表示不再重试，其他错误按退避重试。
-func (s *Service) handleEvent(ctx context.Context, ev *marswallex.WebhookEvent) (string, error) {
+// e 为事件表里的这一行（id、收到时间），验证码按它去重并取它的收到时间。
+func (s *Service) handleEvent(ctx context.Context, e *queuedEvent, ev *marswallex.WebhookEvent) (string, error) {
 	switch ev.Topic {
 	case marswallex.TopicCardApplyResult:
 		return s.onApplyResult(ctx, ev)
@@ -237,7 +266,7 @@ func (s *Service) handleEvent(ctx context.Context, ev *marswallex.WebhookEvent) 
 	case marswallex.TopicSettleEvent:
 		return s.onSettleEvent(ctx, ev)
 	case marswallex.TopicCard3DSOTP:
-		return s.onOTPEvent(ctx, ev)
+		return s.onOTPEvent(ctx, e, ev)
 	case marswallex.TopicAccountStatusChanged, marswallex.TopicConversionResult, marswallex.TopicTransferResult:
 		return "本子项目不处理", nil
 	}

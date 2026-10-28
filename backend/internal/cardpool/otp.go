@@ -33,8 +33,10 @@ type OTPView struct {
 }
 
 // onOTPEvent 把 3DS 验证码加密写入 mw_3ds_otps。原文里的验证码由 processEventsOnce 在标记已处理时抹掉。
+// 收到时间取事件自己的收到时间（e.receivedAt），不取处理时间：重试或积压后才处理的旧验证码不能满足较新的 WaitOTP(since)；
+// 收到已满 30 分钟的不保存。按事件去重（event_id 唯一）：同一事件重复处理只存一条，不同事件即使验证码相同也各存一条。
 // 已抹除（***）的不写入；主密钥缺失或无效时不重试（抹掉后重试也无法恢复）。验证码不得出现在日志、备注与错误里。
-func (s *Service) onOTPEvent(ctx context.Context, ev *marswallex.WebhookEvent) (string, error) {
+func (s *Service) onOTPEvent(ctx context.Context, e *queuedEvent, ev *marswallex.WebhookEvent) (string, error) {
 	var d marswallex.Card3DSOTPData
 	if err := decodeEventData(ev, &d); err != nil {
 		return "", err
@@ -46,6 +48,9 @@ func (s *Service) onOTPEvent(ctx context.Context, ev *marswallex.WebhookEvent) (
 	if cardID == "" || otp == "" {
 		return "", dataError("缺少 card_id 或 otp")
 	}
+	if e.receivedAt <= s.now().Unix()-otpTTLSeconds {
+		return "验证码已过期，未保存", nil
+	}
 	key, err := secretbox.LoadKey()
 	if err != nil {
 		msg := "主密钥缺失，验证码未保存"
@@ -55,53 +60,24 @@ func (s *Service) onOTPEvent(ctx context.Context, ev *marswallex.WebhookEvent) (
 		s.alert("otpkey", "MarsWallex 3DS 验证码无法保存："+msg+"，请检查 APP_MASTER_KEY")
 		return "", &finalEventError{msg: msg}
 	}
-	now := s.now().Unix()
-	dup, err := otpStored(ctx, key, cardID, otp, now)
-	if err != nil {
-		return "", err
-	}
-	if dup {
-		// 重复推送，或上次写入后没来得及标记已处理
-		return "验证码已保存（重复推送）", nil
-	}
 	sealed, err := secretbox.Seal(key, otpAAD, otp)
 	if err != nil {
 		return "", fmt.Errorf("加密验证码失败: %w", err)
 	}
-	if _, err := db.DB.ExecContext(ctx, `INSERT INTO mw_3ds_otps (card_id, otp_sealed, merchant_name, amount, currency, received_at)
-		VALUES (?, ?, ?, ?, ?, ?)`, cardID, sealed, d.MerchantName, d.TransactionAmount, d.TransactionCurrency, now); err != nil {
+	res, err := db.DB.ExecContext(ctx, `INSERT INTO mw_3ds_otps (card_id, otp_sealed, merchant_name, amount, currency, received_at, event_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(event_id) DO NOTHING`,
+		cardID, sealed, d.MerchantName, d.TransactionAmount, d.TransactionCurrency, e.receivedAt, e.id)
+	if err != nil {
 		return "", err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return "", err
+	} else if n == 0 {
+		// 同一事件上次已写入，但没来得及标记已处理
+		return "验证码已保存（重复处理）", nil
 	}
 	log.Printf("[cardpool] 卡 %s 收到 3DS 验证码，已加密保存", cardID)
 	return "验证码已加密保存", nil
-}
-
-// otpStored 判断同一张卡未过期、未取用的验证码里是否已有相同的一条。
-func otpStored(ctx context.Context, key []byte, cardID, otp string, now int64) (bool, error) {
-	rows, err := db.DB.QueryContext(ctx, `SELECT otp_sealed FROM mw_3ds_otps
-		WHERE card_id = ? AND otp_sealed != '' AND received_at > ?`, cardID, now-otpTTLSeconds)
-	if err != nil {
-		return false, err
-	}
-	var sealed []string
-	for rows.Next() {
-		var v string
-		if err := rows.Scan(&v); err != nil {
-			rows.Close()
-			return false, err
-		}
-		sealed = append(sealed, v)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return false, err
-	}
-	for _, v := range sealed {
-		if got, err := secretbox.Open(key, otpAAD, v); err == nil && got == otp {
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 // WaitOTP 每秒查一次该卡在 since 之后收到、未过期且未取用的最新验证码；取到后清除密文并记下取用时间。

@@ -25,7 +25,7 @@ func enqueueEvent(t *testing.T, topic, data string) int64 {
 	return enqueueRaw(t, msgID, topic, payload)
 }
 
-// enqueueRaw 按原文入库一条事件，返回事件 id。
+// enqueueRaw 按原文入库一条事件，收到时间（received_at）取测试时钟当前时刻，返回事件 id。
 func enqueueRaw(t *testing.T, msgID, topic, payload string) int64 {
 	t.Helper()
 	ok, err := db.InsertMarsWallexWebhookEvent(msgID, topic, payload)
@@ -34,6 +34,11 @@ func enqueueRaw(t *testing.T, msgID, topic, payload string) int64 {
 	}
 	var id int64
 	if err := db.DB.QueryRow(`SELECT id FROM marswallex_webhook_events WHERE message_id = ?`, msgID).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	// 与 CURRENT_TIMESTAMP 的写法一致（UTC，精确到秒）
+	if _, err := db.DB.Exec(`UPDATE marswallex_webhook_events SET received_at = ? WHERE id = ?`,
+		testNow().UTC().Format("2006-01-02 15:04:05"), id); err != nil {
 		t.Fatal(err)
 	}
 	return id
@@ -454,7 +459,7 @@ func TestUnknownTopicAndUnparseable(t *testing.T) {
 func TestEventRetryBackoffAndStop(t *testing.T) {
 	s, _, clock, alerts := newTestService(t)
 	var calls int
-	s.eventHandler = func(_ context.Context, ev *marswallex.WebhookEvent) (string, error) {
+	s.eventHandler = func(_ context.Context, _ *queuedEvent, ev *marswallex.WebhookEvent) (string, error) {
 		calls++
 		if ev.Topic == marswallex.TopicCard3DSOTP {
 			return "", errors.New("boom 123456") // 错误里带了验证码：写入前要抹掉

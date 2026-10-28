@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"database/sql"
+	"strings"
 	"testing"
 
 	"github.com/tuzi/cdk-recharge-system/internal/db"
@@ -107,5 +108,64 @@ func TestListWebhookEventsIncludesProcessFields(t *testing.T) {
 	e := evs[0]
 	if e.ProcessAttempts != 3 || e.NextAttemptAt == nil || *e.NextAttemptAt != 1234 || e.ProcessNote != "重试中" {
 		t.Fatalf("%+v", e)
+	}
+}
+
+// 未处理事件的部分索引（兜底扫描用）。
+func TestWebhookUnprocessedPartialIndex(t *testing.T) {
+	dbtest.Open(t)
+	var sqlText string
+	if err := db.DB.QueryRow(`SELECT sql FROM sqlite_master WHERE type='index' AND name='idx_mw_webhook_unprocessed'`).Scan(&sqlText); err != nil {
+		t.Fatalf("索引不存在: %v", err)
+	}
+	if !strings.Contains(sqlText, "processed_at IS NULL") {
+		t.Fatalf("应为部分索引: %s", sqlText)
+	}
+}
+
+// 验证码表按事件去重：event_id 唯一（NULL 不受限）；旧库（没有 event_id 列）迁移时补列。
+func TestOTPEventIDColumnAndUniqueIndex(t *testing.T) {
+	c, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetMaxOpenConns(1)
+	old := db.DB
+	db.DB = c
+	t.Cleanup(func() { db.DB = old; c.Close() })
+	if err := db.MigrateMarsWallex(); err != nil {
+		t.Fatal(err)
+	}
+	// 旧版表结构
+	if _, err := db.DB.Exec(`CREATE TABLE mw_3ds_otps (
+	id INTEGER PRIMARY KEY AUTOINCREMENT, card_id TEXT NOT NULL,
+	otp_sealed TEXT NOT NULL DEFAULT '', merchant_name TEXT NOT NULL DEFAULT '',
+	amount TEXT NOT NULL DEFAULT '', currency TEXT NOT NULL DEFAULT '',
+	received_at INTEGER NOT NULL, consumed_at INTEGER)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.DB.Exec(`INSERT INTO mw_3ds_otps (card_id, received_at) VALUES ('c0', 1)`); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := db.MigrateCardPool(); err != nil {
+			t.Fatalf("第 %d 次迁移: %v", i+1, err)
+		}
+	}
+	ins := func(ev any) error {
+		_, err := db.DB.Exec(`INSERT INTO mw_3ds_otps (card_id, received_at, event_id) VALUES ('c1', 1, ?)`, ev)
+		return err
+	}
+	if err := ins(7); err != nil {
+		t.Fatal(err)
+	}
+	if err := ins(7); err == nil {
+		t.Fatal("同一事件不应写入两条")
+	}
+	if err := ins(nil); err != nil {
+		t.Fatalf("event_id 为 NULL 不受唯一约束: %v", err)
+	}
+	if err := ins(nil); err != nil {
+		t.Fatalf("event_id 为 NULL 不受唯一约束: %v", err)
 	}
 }

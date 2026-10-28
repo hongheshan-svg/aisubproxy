@@ -1,6 +1,6 @@
 package db
 
-// MigrateCardPool 创建卡池相关表，并给 Webhook 事件表补处理字段。可重复执行。
+// MigrateCardPool 创建卡池相关表与索引，并给 Webhook 事件表补处理字段、给验证码表补来源事件列。可重复执行。
 func MigrateCardPool() error {
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS mw_cardholders (
@@ -55,7 +55,7 @@ func MigrateCardPool() error {
 	id INTEGER PRIMARY KEY AUTOINCREMENT, card_id TEXT NOT NULL,
 	otp_sealed TEXT NOT NULL DEFAULT '', merchant_name TEXT NOT NULL DEFAULT '',
 	amount TEXT NOT NULL DEFAULT '', currency TEXT NOT NULL DEFAULT '',
-	received_at INTEGER NOT NULL, consumed_at INTEGER
+	received_at INTEGER NOT NULL, consumed_at INTEGER, event_id INTEGER
 )`,
 		`CREATE INDEX IF NOT EXISTS idx_mw_otp_card ON mw_3ds_otps(card_id, received_at)`,
 		`CREATE TABLE IF NOT EXISTS mw_card_outcomes (
@@ -77,21 +77,34 @@ func MigrateCardPool() error {
 			return err
 		}
 	}
-	// Webhook 事件表补处理字段（仅在列缺失时添加）
-	cols := []struct{ name, ddl string }{
-		{"process_attempts", "INTEGER NOT NULL DEFAULT 0"},
-		{"next_attempt_at", "INTEGER"},
-		{"process_note", "TEXT NOT NULL DEFAULT ''"},
+	// 补列（仅在列缺失时添加）：Webhook 事件表的处理字段；验证码表的来源事件（旧库建表时没有）
+	cols := []struct{ table, name, ddl string }{
+		{"marswallex_webhook_events", "process_attempts", "INTEGER NOT NULL DEFAULT 0"},
+		{"marswallex_webhook_events", "next_attempt_at", "INTEGER"},
+		{"marswallex_webhook_events", "process_note", "TEXT NOT NULL DEFAULT ''"},
+		{"mw_3ds_otps", "event_id", "INTEGER"},
 	}
 	for _, c := range cols {
 		var n int
-		if err := DB.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('marswallex_webhook_events') WHERE name=?`, c.name).Scan(&n); err != nil {
+		if err := DB.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name=?`, c.table, c.name).Scan(&n); err != nil {
 			return err
 		}
 		if n > 0 {
 			continue
 		}
-		if _, err := DB.Exec(`ALTER TABLE marswallex_webhook_events ADD COLUMN ` + c.name + ` ` + c.ddl); err != nil {
+		if _, err := DB.Exec(`ALTER TABLE ` + c.table + ` ADD COLUMN ` + c.name + ` ` + c.ddl); err != nil {
+			return err
+		}
+	}
+	// 依赖补出来的列，放在补列之后
+	idx := []string{
+		// 验证码按 Webhook 事件去重：同一事件重复处理只存一条；event_id 为 NULL 不受限
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_mw_otp_event ON mw_3ds_otps(event_id)`,
+		// 兜底扫描只看未处理的事件
+		`CREATE INDEX IF NOT EXISTS idx_mw_webhook_unprocessed ON marswallex_webhook_events(id) WHERE processed_at IS NULL`,
+	}
+	for _, s := range idx {
+		if _, err := DB.Exec(s); err != nil {
 			return err
 		}
 	}

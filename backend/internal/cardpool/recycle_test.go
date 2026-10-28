@@ -135,7 +135,8 @@ func TestUsedFlowSweepFreezeCancel(t *testing.T) {
 	insertCard(t, Card{CardID: "c1", ProductID: "p1", PoolState: PoolUsed, UseCount: 1, NextActionAt: ptr(clock.Now().Unix())})
 	mw.On("GET", detailPath("c1"),
 		mwtest.OK(detailJSON("c1", "2.00", "0.50", "ACTIVE")),
-		mwtest.OK(detailJSON("c1", "0.00", "0.50", "ACTIVE")))
+		mwtest.OK(detailJSON("c1", "0.00", "0.50", "ACTIVE")),
+		mwtest.OK(detailJSON("c1", "0.00", "0.50", "REVOKED")))
 	mw.On("POST", pathWithdraw, mwtest.OK(`{"status":"APPLY"}`))
 	mw.On("PUT", pathStatus, mwtest.OK(`{"card_id":"c1","status":"PROCESSING"}`))
 
@@ -178,7 +179,7 @@ func TestUsedFlowSweepFreezeCancel(t *testing.T) {
 		t.Fatalf("未到 cancel_after 不应注销: %d", n)
 	}
 	if n := len(mw.Requests("GET", detailPath("c1"))); n != 2 {
-		t.Fatalf("冻结后不再刷新: %d", n)
+		t.Fatalf("等待注销期间不刷新: %d", n)
 	}
 
 	// 4. 到时间：注销 → retired
@@ -193,6 +194,9 @@ func TestUsedFlowSweepFreezeCancel(t *testing.T) {
 	}
 	if c := mustGetCard(t, "c1"); c.PoolState != PoolRetired || c.PlatformStatus != "CANCELED" {
 		t.Fatalf("注销后应 retired: %+v", c)
+	}
+	if n := len(mw.Requests("GET", detailPath("c1"))); n != 3 {
+		t.Fatalf("注销前应刷新一次: %d", n)
 	}
 	clock.Advance(time.Hour)
 	mustAdvance(t, s)
@@ -403,5 +407,123 @@ func TestRecycleRefreshErrorRetriesInOneMinute(t *testing.T) {
 	mustAdvance(t, s)
 	if c := mustGetCard(t, "c1"); c.PoolState != PoolAvailable {
 		t.Fatalf("%+v", c)
+	}
+}
+
+// 平台上已是 REVOKED 的 used 卡：不再尝试转出（冻结的卡可能不让转出），直接记冻结，等注销把余额退回主钱包。
+func TestUsedRevokedOnPlatformSkipsSweep(t *testing.T) {
+	s, mw, clock, _ := newTestService(t)
+	insertCard(t, Card{CardID: "c1", ProductID: "p1", PoolState: PoolUsed, UseCount: 1})
+	mw.On("GET", detailPath("c1"), mwtest.OK(detailJSON("c1", "3.00", "0.00", "REVOKED")))
+
+	now := clock.Now().Unix()
+	mustAdvance(t, s)
+	if n := len(mw.Requests("POST", pathWithdraw)); n != 0 {
+		t.Fatalf("已冻结的卡不应转出: %d", n)
+	}
+	if n := countOrders(t); n != 0 {
+		t.Fatalf("不应建单: %d", n)
+	}
+	c := mustGetCard(t, "c1")
+	if c.PoolState != PoolUsed || c.AvailableCents != 300 || i64(c.FrozenAt) != now ||
+		i64(c.CancelAfter) != now+7*86400 || i64(c.NextActionAt) != now+7*86400 {
+		t.Fatalf("应直接记冻结: %+v", c)
+	}
+}
+
+// 已冻结、到了 cancel_after 的卡：注销前先刷新；平台已注销就直接退役，刷新出错 1 分钟后再试。
+func TestFrozenCardRefreshesBeforeCancel(t *testing.T) {
+	ctx := context.Background()
+	s, mw, clock, _ := newTestService(t)
+	now := clock.Now().Unix()
+	insertCard(t, Card{CardID: "c1", ProductID: "p1", PoolState: PoolUsed, PlatformStatus: "REVOKED",
+		FrozenAt: ptr(now - 86400), CancelAfter: ptr(now)})
+	mw.On("GET", detailPath("c1"), mwtest.OK(detailJSON("c1", "0.00", "0.00", "CANCELED")))
+
+	mustAdvance(t, s)
+	if c := mustGetCard(t, "c1"); c.PoolState != PoolRetired || c.PlatformStatus != "CANCELED" {
+		t.Fatalf("平台已注销应直接退役: %+v", c)
+	}
+	if n := len(mw.Requests("PUT", pathStatus)); n != 0 || countOrders(t) != 0 {
+		t.Fatalf("不应提交注销: PUT %d, orders %d", n, countOrders(t))
+	}
+
+	insertCard(t, Card{CardID: "c2", ProductID: "p1", PoolState: PoolUsed, PlatformStatus: "REVOKED",
+		FrozenAt: ptr(now - 86400), CancelAfter: ptr(now)})
+	mw.On("GET", detailPath("c2"), mwtest.Unknown(), mwtest.OK(detailJSON("c2", "0.00", "0.00", "REVOKED")))
+	mw.On("PUT", pathStatus, mwtest.OK(`{"card_id":"c2","status":"PROCESSING"}`))
+	_ = s.advanceCardsOnce(ctx)
+	if c := mustGetCard(t, "c2"); c.PoolState != PoolUsed || i64(c.NextActionAt) != now+60 {
+		t.Fatalf("刷新出错应 1 分钟后再试: %+v", c)
+	}
+	if n := len(mw.Requests("PUT", pathStatus)); n != 0 {
+		t.Fatalf("刷新出错不应提交注销: %d", n)
+	}
+	clock.Advance(59 * time.Second)
+	mustAdvance(t, s)
+	if n := len(mw.Requests("GET", detailPath("c2"))); n != 1 {
+		t.Fatalf("1 分钟内不应再刷新: %d", n)
+	}
+	clock.Advance(time.Second)
+	mustAdvance(t, s)
+	puts := mw.Requests("PUT", pathStatus)
+	if len(puts) != 1 || reqBody(t, puts[0])["card_id"] != "c2" || reqBody(t, puts[0])["card_status"] != "CANCELED" {
+		t.Fatalf("应提交注销: %d", len(puts))
+	}
+	if c := mustGetCard(t, "c2"); c.PoolState != PoolRetired {
+		t.Fatalf("%+v", c)
+	}
+}
+
+// 已冻结、到了 cancel_after、但上一张注销单刚失败而被限流的卡：next_action_at 未到之前不再选中，不发任何请求。
+func TestFrozenCardThrottledNotReprocessed(t *testing.T) {
+	s, mw, clock, al := newTestService(t)
+	now := clock.Now().Unix()
+	insertCard(t, Card{CardID: "c1", ProductID: "p1", PoolState: PoolUsed, PlatformStatus: "REVOKED",
+		FrozenAt: ptr(now - 86400), CancelAfter: ptr(now - 3600), NextActionAt: ptr(now + 300)})
+	insertOrder(t, Order{Kind: KindStatus, CardID: "c1", TargetStatus: "CANCELED", State: StateFailed,
+		LastError: "rejected", FinishedAt: ptr(now - 300)})
+
+	// 未编排任何接口：被选中就会发请求而导致测试失败
+	for clock.Now().Unix() < now+295 {
+		clock.Advance(5 * time.Second)
+		mustAdvance(t, s)
+	}
+	if c := mustGetCard(t, "c1"); c.PoolState != PoolUsed || i64(c.NextActionAt) != now+300 || c.UpdatedAt != now {
+		t.Fatalf("限流期间不应处理: %+v", c)
+	}
+	if al.Count() != 0 {
+		t.Fatalf("限流期间不应被重新选中: %v", al.Texts())
+	}
+
+	// 到点：刷新后重新提交注销
+	mw.On("GET", detailPath("c1"), mwtest.OK(detailJSON("c1", "0.00", "0.00", "REVOKED")))
+	mw.On("PUT", pathStatus, mwtest.Rejected(400, "BAD"))
+	setUnix(clock, now+300)
+	mustAdvance(t, s)
+	if n := len(mw.Requests("PUT", pathStatus)); n != 1 {
+		t.Fatalf("到点应重试注销: %d", n)
+	}
+	o := lastOrder(t, s, "c1")
+	if o.State != StateFailed || o.TargetStatus != "CANCELED" {
+		t.Fatalf("%+v", o)
+	}
+	c := mustGetCard(t, "c1")
+	if c.PoolState != PoolUsed || i64(c.NextActionAt) != i64(o.FinishedAt)+600 {
+		t.Fatalf("再次失败应限流 10 分钟: %+v", c)
+	}
+	if al.Count() != 1 || !strings.Contains(al.Texts()[0], "c1") {
+		t.Fatalf("应告警: %v", al.Texts())
+	}
+	// 再次限流期间：不刷新、不重发
+	for clock.Now().Unix() < now+895 {
+		clock.Advance(5 * time.Second)
+		mustAdvance(t, s)
+	}
+	if n := len(mw.Requests("GET", detailPath("c1"))); n != 1 {
+		t.Fatalf("限流期间不应刷新: %d", n)
+	}
+	if n := len(mw.Requests("PUT", pathStatus)); n != 1 {
+		t.Fatalf("限流期间不应重发: %d", n)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -151,6 +152,35 @@ func TestAcquireSkipsSuspendedExcludedExpiringAndBadHolder(t *testing.T) {
 	setPlans(t, map[string][]string{"claude": {"p1"}})
 	if l := mustAcquire(t, s, AcquireRequest{PlanKey: "claude"}); l.CardID != "p1-good" {
 		t.Fatalf("p1×claude 未停用: %s", l.CardID)
+	}
+}
+
+// 排在前面的 21 张卡有效期都不合格（超过一批 20 张），后面那张合格的卡仍要能选到。
+func TestAcquireKeepsFetchingPastIneligibleBatch(t *testing.T) {
+	s, _, clock, _ := newTestService(t)
+	setPlans(t, map[string][]string{"gpt": {"p1"}})
+	now := clock.Now().Unix()
+	for i := 0; i < 21; i++ {
+		expiry := "1026" // 不足一个月
+		if i%2 == 1 {
+			expiry = "13/26" // 格式不对
+		}
+		// bad-19、bad-20 与 good 的 use_count、created_at 相同：第一批正好止于 bad-19，下一批只能靠 card_id 接上
+		insertCard(t, Card{CardID: fmt.Sprintf("bad-%02d", i), ProductID: "p1", Expiry: expiry, UseCount: 1, CreatedAt: now - 10000 + int64(min(i, 19))})
+	}
+	insertCard(t, Card{CardID: "good", ProductID: "p1", UseCount: 1, CreatedAt: now - 10000 + 19})
+
+	// 下一批分别只能经由 created_at 更晚、use_count 更小接上
+	insertCard(t, Card{CardID: "later", ProductID: "p1", UseCount: 1, CreatedAt: now - 10000 + 100})
+	insertCard(t, Card{CardID: "lower", ProductID: "p1", UseCount: 0, CreatedAt: now - 20000})
+
+	for _, want := range []string{"good", "later", "lower"} {
+		if l := mustAcquire(t, s, AcquireRequest{PlanKey: "gpt"}); l.CardID != want {
+			t.Fatalf("应越过整批不合格的卡选到 %s: %s", want, l.CardID)
+		}
+	}
+	if _, err := s.Acquire(context.Background(), AcquireRequest{PlanKey: "gpt"}); !errors.Is(err, ErrNoCard) {
+		t.Fatalf("其余都不合格: %v", err)
 	}
 }
 

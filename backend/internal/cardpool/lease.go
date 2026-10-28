@@ -15,7 +15,7 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/marswallex"
 )
 
-// 每个产品每次选卡最多看的候选卡数。
+// 选卡时每批查询的候选卡数；一批都不合格或都没抢到时接着查下一批。
 const acquireCandidates = 20
 
 // AcquireRequest 为选卡请求。ExcludeCardIDs 供同一订单换卡重试时排除已试过的卡。
@@ -70,13 +70,18 @@ func (s *Service) kickReplenish() {
 	}
 }
 
-// candidate 为选卡候选。
-type candidate struct{ cardID, productID, currency, expiry string }
+// candidate 为选卡候选；useCount、createdAt 与 cardID 一起作为分批查询的游标。
+type candidate struct {
+	cardID, productID, currency, expiry string
+	useCount                            int
+	createdAt                           int64
+}
 
-// pickCandidates 查询某产品下可选的卡（最多 20 张），按 use_count 降序、入池时间升序。
+// pickCandidates 查询某产品下可选的卡，一批最多 20 张，按 use_count 降序、入池时间升序、card_id 升序。
+// after 非空时只取排在它之后的卡（键集分页，不受并发抢卡导致的行变化影响）。
 // 有效期在 Go 里另行过滤。查询结果读完即关闭，避免占用连接时再执行抢卡语句。
-func pickCandidates(ctx context.Context, productID string, exclude []string) ([]candidate, error) {
-	q := `SELECT c.card_id, c.product_id, c.currency, c.expiry FROM mw_cards c
+func pickCandidates(ctx context.Context, productID string, exclude []string, after *candidate) ([]candidate, error) {
+	q := `SELECT c.card_id, c.product_id, c.currency, c.expiry, c.use_count, c.created_at FROM mw_cards c
 		LEFT JOIN mw_cardholders h ON h.card_holder_id = c.card_holder_id
 		WHERE c.product_id = ? AND c.pool_state = ? AND c.platform_status = 'ACTIVE'
 		AND (c.card_holder_id = '' OR UPPER(COALESCE(h.status, '')) NOT IN ('DISABLED', 'SUSPENDED'))`
@@ -86,6 +91,10 @@ func pickCandidates(ctx context.Context, productID string, exclude []string) ([]
 		for _, id := range exclude {
 			args = append(args, id)
 		}
+	}
+	if after != nil {
+		q += ` AND (c.use_count < ? OR (c.use_count = ? AND (c.created_at > ? OR (c.created_at = ? AND c.card_id > ?))))`
+		args = append(args, after.useCount, after.useCount, after.createdAt, after.createdAt, after.cardID)
 	}
 	q += ` ORDER BY c.use_count DESC, c.created_at ASC, c.card_id ASC LIMIT ?`
 	args = append(args, acquireCandidates)
@@ -97,7 +106,7 @@ func pickCandidates(ctx context.Context, productID string, exclude []string) ([]
 	var out []candidate
 	for rows.Next() {
 		var c candidate
-		if err := rows.Scan(&c.cardID, &c.productID, &c.currency, &c.expiry); err != nil {
+		if err := rows.Scan(&c.cardID, &c.productID, &c.currency, &c.expiry, &c.useCount, &c.createdAt); err != nil {
 			return nil, err
 		}
 		out = append(out, c)
@@ -150,26 +159,34 @@ func (s *Service) Acquire(ctx context.Context, req AcquireRequest) (*Lease, erro
 			suspended++
 			continue
 		}
-		cands, err := pickCandidates(ctx, productID, req.ExcludeCardIDs)
-		if err != nil {
-			return nil, err
-		}
-		for _, c := range cands {
-			end, ok := expiryEnd(c.expiry)
-			if !ok || !end.After(notAfter) {
-				continue
-			}
-			got, err := s.grabCard(ctx, c.cardID, token, req.OrderRef, expiresAt.Unix())
+		// 分批取候选，直到抢到或该产品没有更多候选：一整批有效期不合格的卡不能挡住后面的卡
+		var after *candidate
+		for {
+			cands, err := pickCandidates(ctx, productID, req.ExcludeCardIDs, after)
 			if err != nil {
 				return nil, err
 			}
-			if got {
-				return &Lease{
-					Token: token, CardID: c.cardID, ProductID: c.productID, Currency: c.currency,
-					PlanKey: req.PlanKey, OrderRef: req.OrderRef, AccountEmail: req.AccountEmail,
-					ExpiresAt: time.Unix(expiresAt.Unix(), 0).UTC(),
-				}, nil
+			for _, c := range cands {
+				end, ok := expiryEnd(c.expiry)
+				if !ok || !end.After(notAfter) {
+					continue
+				}
+				got, err := s.grabCard(ctx, c.cardID, token, req.OrderRef, expiresAt.Unix())
+				if err != nil {
+					return nil, err
+				}
+				if got {
+					return &Lease{
+						Token: token, CardID: c.cardID, ProductID: c.productID, Currency: c.currency,
+						PlanKey: req.PlanKey, OrderRef: req.OrderRef, AccountEmail: req.AccountEmail,
+						ExpiresAt: time.Unix(expiresAt.Unix(), 0).UTC(),
+					}, nil
+				}
 			}
+			if len(cands) < acquireCandidates {
+				break
+			}
+			after = &cands[len(cands)-1]
 		}
 	}
 

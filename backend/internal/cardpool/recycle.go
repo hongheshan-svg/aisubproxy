@@ -22,20 +22,19 @@ var poolStateNames = map[string]string{
 	PoolUsed:      "清零、冻结、注销",
 }
 
-// advanceCardsOnce 推进一轮回收（§6.4），每轮最多 50 张：
-//   - 到期（next_action_at 为空或已到）的 releasing / used 卡；
-//   - 已冻结且到了 cancel_after 的 used 卡。
+// advanceCardsOnce 推进一轮回收（§6.4），每轮最多 50 张到期（next_action_at 为空或已到）的 releasing / used 卡。
+// 已冻结、等待注销的卡把 next_action_at 设为 cancel_after，到点即到期；被限流的卡（next_action_at = 失败时间 + 600）
+// 即使已过 cancel_after 也要等到 next_action_at 才再处理。
 //
 // 卡上有非终态单据（含 needs_review）时整张跳过，由单据定论把卡推回到期。
 // 单张卡出错不影响其他卡，返回第一个错误。
 func (s *Service) advanceCardsOnce(ctx context.Context) error {
 	now := s.now().Unix()
 	rows, err := db.DB.QueryContext(ctx, `SELECT `+cardCols+` FROM mw_cards c
-		WHERE ((c.pool_state IN (?, ?) AND (c.next_action_at IS NULL OR c.next_action_at <= ?))
-			OR (c.pool_state = ? AND c.frozen_at IS NOT NULL AND c.cancel_after <= ?))
+		WHERE c.pool_state IN (?, ?) AND (c.next_action_at IS NULL OR c.next_action_at <= ?)
 		AND NOT EXISTS (SELECT 1 FROM mw_card_orders o WHERE o.card_id = c.card_id AND o.state IN (?, ?, ?, ?))
 		ORDER BY COALESCE(c.next_action_at, 0), c.card_id LIMIT ?`,
-		PoolReleasing, PoolUsed, now, PoolUsed, now,
+		PoolReleasing, PoolUsed, now,
 		StatePending, StateProcessing, StateUnknown, StateNeedsReview, recycleBatch)
 	if err != nil {
 		return err
@@ -123,8 +122,8 @@ func (s *Service) advanceReleasing(ctx context.Context, c *Card) error {
 	return nil
 }
 
-// advanceUsed（未冻结）：刷新 → 平台已注销则退役 → 有可用余额就转出（冻结余额不用等）→
-// 平台已是 REVOKED 就直接记冻结时间，否则提交冻结单。
+// advanceUsed（未冻结）：刷新 → 平台已注销则退役 → 平台已是 REVOKED 就直接记冻结时间（不再尝试转出：
+// 冻结的卡可能不让转出，注销时余额会退回主钱包）→ 有可用余额就转出（冻结余额不用等）→ 否则提交冻结单。
 func (s *Service) advanceUsed(ctx context.Context, c *Card, pol Policy) error {
 	fresh, err := s.refreshForRecycle(ctx, c)
 	if err != nil || fresh == nil {
@@ -140,9 +139,6 @@ func (s *Service) advanceUsed(ctx context.Context, c *Card, pol Policy) error {
 		log.Printf("[cardpool] 卡 %s 已在平台注销，退役", c.CardID)
 		return nil
 	}
-	if fresh.AvailableCents > 0 {
-		return s.recycleWithdraw(ctx, fresh)
-	}
 	if fresh.PlatformStatus == "REVOKED" {
 		now := s.now().Unix()
 		cancelAfter := now + int64(pol.CancelAfterDays)*86400
@@ -151,15 +147,30 @@ func (s *Service) advanceUsed(ctx context.Context, c *Card, pol Policy) error {
 			now, cancelAfter, cancelAfter, now, c.CardID, PoolUsed)
 		return err
 	}
+	if fresh.AvailableCents > 0 {
+		return s.recycleWithdraw(ctx, fresh)
+	}
 	return s.recycleStatus(ctx, fresh, "REVOKED")
 }
 
-// advanceFrozen（已冻结的 used）：到 cancel_after 就提交注销单，否则等到 cancel_after。
+// advanceFrozen（已冻结的 used）：未到 cancel_after 就等到 cancel_after；到了先刷新（出错 1 分钟后再试），
+// 平台已注销则直接退役，否则提交注销单。
 func (s *Service) advanceFrozen(ctx context.Context, c *Card) error {
 	if c.CancelAfter != nil && s.now().Unix() < *c.CancelAfter {
 		return s.setNextAction(ctx, c.CardID, PoolUsed, c.CancelAfter)
 	}
-	return s.recycleStatus(ctx, c, "CANCELED")
+	fresh, err := s.refreshForRecycle(ctx, c)
+	if err != nil || fresh == nil {
+		return err
+	}
+	if fresh.PlatformStatus == "CANCELED" {
+		if _, err := s.moveCard(ctx, c.CardID, PoolUsed, PoolRetired, ""); err != nil {
+			return err
+		}
+		log.Printf("[cardpool] 卡 %s 已在平台注销，退役", c.CardID)
+		return nil
+	}
+	return s.recycleStatus(ctx, fresh, "CANCELED")
 }
 
 // refreshForRecycle 刷新卡详情。出错时 next_action_at = now + 60 并返回错误；

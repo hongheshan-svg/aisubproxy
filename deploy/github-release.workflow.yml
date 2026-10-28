@@ -2,6 +2,7 @@
 # 供管理后台「一键更新」与 deploy/install.sh 下载（无需生产机装 Go/Node）。
 # 签名私钥在仓库 Secret RELEASE_SIGNING_KEY（PEM）；公钥在 deploy/release-signing.pub.pem，
 # 并内置于程序（internal/handler/selfupdate.go）。缺少 Secret 时拒绝发布未签名的包。
+# 更新说明取自 CHANGELOG.md 中与标签同名的一节（scripts/release-notes.sh）；没有这一节时拒绝发布。
 name: release
 
 on:
@@ -39,6 +40,12 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VER" >> "$GITHUB_OUTPUT"
           echo "$VER" > VERSION
+
+      - name: Release notes
+        run: |
+          # 先于编译执行：CHANGELOG.md 没写这一版的说明就直接失败，不浪费构建时间
+          bash scripts/release-notes.sh "${{ steps.ver.outputs.tag }}" > "$RUNNER_TEMP/release-notes.md"
+          cat "$RUNNER_TEMP/release-notes.md"
 
       - name: Build backend
         working-directory: backend
@@ -85,6 +92,8 @@ jobs:
         with:
           tag_name: ${{ steps.ver.outputs.tag }}
           name: ${{ steps.ver.outputs.tag }}
+          # 正文为 CHANGELOG.md 中的这一版说明，GitHub 自动生成的提交对比附在其后
+          body_path: ${{ runner.temp }}/release-notes.md
           generate_release_notes: true
           files: |
             cdk-bundle-linux-amd64.tgz

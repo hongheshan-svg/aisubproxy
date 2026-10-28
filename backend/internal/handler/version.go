@@ -81,7 +81,7 @@ func AdminSystemVersion(c *gin.Context) {
 	}
 	versionCacheMu.Unlock()
 
-	latest, releaseURL, tagURL, source, hasBundle, errMsg := fetchGitHubLatest(repo)
+	latest, releaseURL, tagURL, source, hasBundle, notes, errMsg := fetchGitHubLatest(repo)
 	update := isRemoteNewer(local, latest)
 	body := gin.H{
 		"current":          local,
@@ -92,6 +92,7 @@ func AdminSystemVersion(c *gin.Context) {
 		"tags_url":         tagURL,
 		"source":           source,
 		"has_bundle":       hasBundle,
+		"release_notes":    notes,
 		"update_enabled":   updateEnabled(),
 		"one_click_ready":  update && hasBundle && updateEnabled(),
 		"update_hint":      updateHint(),
@@ -132,7 +133,7 @@ func strField(h gin.H, k string) string {
 	return ""
 }
 
-func fetchGitHubLatest(repo string) (latest, releaseURL, tagsURL, source string, hasBundle bool, errMsg string) {
+func fetchGitHubLatest(repo string) (latest, releaseURL, tagsURL, source string, hasBundle bool, notes, errMsg string) {
 	tagsURL = "https://github.com/" + repo + "/tags"
 	releaseURL = "https://github.com/" + repo + "/releases"
 	client := &http.Client{Timeout: 8 * time.Second}
@@ -151,6 +152,7 @@ func fetchGitHubLatest(repo string) (latest, releaseURL, tagsURL, source string,
 			var payload struct {
 				TagName string `json:"tag_name"`
 				HTMLURL string `json:"html_url"`
+				Body    string `json:"body"`
 				Assets  []struct {
 					Name string `json:"name"`
 				} `json:"assets"`
@@ -161,6 +163,7 @@ func fetchGitHubLatest(repo string) (latest, releaseURL, tagsURL, source string,
 					releaseURL = payload.HTMLURL
 				}
 				source = "release"
+				notes = truncateReleaseNotes(payload.Body)
 				for _, a := range payload.Assets {
 					n := strings.ToLower(a.Name)
 					if strings.Contains(n, "cdk-bundle") && (strings.HasSuffix(n, ".tgz") || strings.HasSuffix(n, ".tar.gz")) {
@@ -256,4 +259,15 @@ func atoiLeading(s string) int {
 		n = n*10 + int(ch-'0')
 	}
 	return n
+}
+
+// maxReleaseNotesRunes 为后台显示的更新说明上限，超出部分截断并提示去 Release 页面看。
+const maxReleaseNotesRunes = 20000
+
+func truncateReleaseNotes(s string) string {
+	r := []rune(s)
+	if len(r) <= maxReleaseNotesRunes {
+		return s
+	}
+	return string(r[:maxReleaseNotesRunes]) + "\n…（说明过长，完整内容见 Release 页面）"
 }

@@ -84,6 +84,20 @@
             </div>
           </div>
 
+          <!-- 更新说明：取自 GitHub Release（CHANGELOG.md 中这一版的小节），按纯文本显示 -->
+          <details
+            v-if="versionInfo.release_notes"
+            :key="versionInfo.latest"
+            :open="!!versionInfo.update_available"
+            class="rounded-xl p-3 text-sm"
+            style="background: var(--surface-2)"
+          >
+            <summary class="cursor-pointer text-ink font-semibold">
+              v{{ versionInfo.latest }} 更新说明
+            </summary>
+            <div class="mt-2 text-xs text-muted leading-relaxed" style="white-space: pre-wrap; max-height: 320px; overflow-y: auto">{{ releaseNotesText(versionInfo.release_notes) }}</div>
+          </details>
+
           <!-- 热更进度 -->
           <div v-if="updating || updatePhase" class="rounded-xl p-3 space-y-2" style="background: var(--surface-2)">
             <div class="flex justify-between text-xs text-muted">
@@ -192,6 +206,16 @@ const canOneClickUpdate = computed(() => {
   if (versionInfo.value.one_click_ready) return true
   return !!(versionInfo.value.has_bundle && versionInfo.value.latest && versionInfo.value.update_available)
 })
+
+// 把 Release 的 Markdown 简化成可读的纯文本：去掉标题井号、加粗与行内代码标记（不渲染 HTML）
+function releaseNotesText(md: string) {
+  return String(md || '')
+    .replace(/\r\n/g, '\n')
+    .replace(/^#{1,6}\s*/gm, '')
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/`([^`]+)`/g, '$1')
+    .trim()
+}
 
 function numOrDash(v: unknown) {
   if (v === null || v === undefined || v === '') return '—'

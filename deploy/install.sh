@@ -43,7 +43,7 @@ check_env() {
   fi
   local c
   for c in curl tar openssl sha256sum base64 grep sed awk; do
-    command -v "$c" >/dev/null || die "缺少命令 $c，请先安装"
+    command -v "$c" >/dev/null || die "缺少命令 ${c}，请先安装"
   done
   local major
   major="$(openssl version | awk '{print $2}' | cut -d. -f1)"
@@ -120,7 +120,7 @@ TRUSTED_PROXIES=127.0.0.1
 UPDATE_ENABLED=1
 EOF
   chmod 600 "$envf"
-  log "已生成 $envf（含随机 JWT_SECRET 与 APP_MASTER_KEY）"
+  log "已生成 ${envf}（含随机 JWT_SECRET 与 APP_MASTER_KEY）"
 }
 
 write_unit() {
@@ -210,9 +210,9 @@ main() {
   TMP_DIR="$(mktemp -d)"
   tmp="$TMP_DIR"
   trap 'rm -rf "${TMP_DIR:-}"' EXIT
-  log "查询发布（$REPO，${arg}）…"
+  log "查询发布（${REPO}，${arg}）…"
   ver="$(fetch_release "$arg" "$tmp")"
-  log "校验 v$ver（sha256、签名、自检）…"
+  log "校验 v${ver}（sha256、签名、自检）…"
   verify_and_extract "$tmp" "$ver"
 
   mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/updates"
@@ -238,10 +238,10 @@ main() {
   fi
 
   if [[ $upgrading -eq 1 ]]; then
-    log "已升级到 v$ver。"
+    log "已升级到 v${ver}。"
   else
     cat <<EOF
-==> 已安装 v$ver 到 $INSTALL_DIR（只监听 127.0.0.1:$PORT）。
+==> 已安装 v$ver 到 ${INSTALL_DIR}（只监听 127.0.0.1:${PORT}）。
 下一步：
   1. 配置 HTTPS 反代，例如 Caddy（/etc/caddy/Caddyfile）：
        your.domain.com {

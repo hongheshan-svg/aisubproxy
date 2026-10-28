@@ -9,12 +9,19 @@
 3. 生成 `.sha256`；
 4. 用 ed25519 私钥签名，生成 `.sig`。
 
+发版步骤：
+
+1. 在 `CHANGELOG.md` 最上面加一节 `## v1.5.1 - 日期`，按「新增 / 变更 / 升级注意」写这一版的更新说明。
+2. 改版本号、提交、打标签并推送：
+
 ```bash
 echo 1.5.1 > VERSION && git commit -am "release: v1.5.1"
 git tag v1.5.1 && git push origin master v1.5.1
 ```
 
-版本号以标签为准，`VERSION` 文件同步修改即可。
+- 版本号以标签为准，`VERSION` 文件同步修改即可。
+- CI 会用 `scripts/release-notes.sh` 取出 CHANGELOG 里与标签同名的那一节，作为 Release 正文（后面附 GitHub 自动生成的提交对比）。管理后台「版本更新」里显示的也是这段说明。
+- **CHANGELOG 里没有这一节时，CI 会在编译之前就失败，不会发布。** 推送标签前可以先在本地检查：`bash scripts/release-notes.sh v1.5.1`。
 
 ### 签名密钥
 

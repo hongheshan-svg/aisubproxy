@@ -136,12 +136,22 @@
         </el-table-column>
         <el-table-column prop="topic" label="Topic" min-width="140" />
         <el-table-column prop="message_id" label="消息 ID" min-width="200" />
-        <el-table-column label="处理状态" min-width="160">
+        <el-table-column label="处理状态" min-width="150">
           <template #default="{ row }">
-            <el-tag v-if="row.process_error" type="danger" size="small">失败</el-tag>
-            <el-tag v-else-if="row.processed_at" type="success" size="small">已处理</el-tag>
-            <el-tag v-else type="info" size="small">未处理</el-tag>
-            <span v-if="row.process_error" class="text-xs text-subtle ml-2">{{ row.process_error }}</span>
+            <el-tag v-if="row.processed_at" type="success" size="small">已处理</el-tag>
+            <el-tag v-else-if="row.process_error" type="danger" size="small">失败（已重试 {{ row.process_attempts || 0 }} 次）</el-tag>
+            <el-tag v-else type="info" size="small">待处理</el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column label="备注 / 错误" min-width="220">
+          <template #default="{ row }">
+            <div v-if="row.process_error" class="text-xs text-warn">{{ row.process_error }}</div>
+            <div v-if="row.process_note" class="text-xs text-subtle">{{ row.process_note }}</div>
+          </template>
+        </el-table-column>
+        <el-table-column label="操作" width="110">
+          <template #default="{ row }">
+            <el-button v-if="row.process_error" size="small" plain :loading="reprocessingId === row.id" @click="reprocess(row)">重新处理</el-button>
           </template>
         </el-table-column>
       </el-table>
@@ -188,6 +198,8 @@ interface WebhookEvent {
   received_at: string
   processed_at: string | null
   process_error?: string
+  process_attempts?: number
+  process_note?: string
 }
 
 const cfg = ref<Config | null>(null)
@@ -198,6 +210,7 @@ const testing = ref(false)
 const result = ref<TestResult | null>(null)
 const events = ref<WebhookEvent[]>([])
 const loadingEvents = ref(false)
+const reprocessingId = ref<number | string | null>(null)
 
 // 主密钥未就绪时只禁用、不提交密钥字段（API Token、私钥）；其余配置照常保存。
 const masterKeyReady = computed(() => !!cfg.value?.master_key_ready)
@@ -331,6 +344,22 @@ async function loadEvents() {
     events.value = d.events || []
   } finally {
     loadingEvents.value = false
+  }
+}
+
+async function reprocess(row: WebhookEvent) {
+  reprocessingId.value = row.id
+  try {
+    const r = await authFetch(`/api/v1/admin/marswallex/webhook-events/${encodeURIComponent(String(row.id))}/reprocess`, { method: 'POST' })
+    const d = await r.json().catch(() => ({}))
+    if (!r.ok) {
+      dialog.toast(d.error || '重新处理失败', 'err')
+      return
+    }
+    dialog.toast('已提交重新处理', 'ok')
+    await loadEvents()
+  } finally {
+    reprocessingId.value = null
   }
 }
 

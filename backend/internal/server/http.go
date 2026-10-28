@@ -10,9 +10,11 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tuzi/cdk-recharge-system/internal/cardpool"
 	"github.com/tuzi/cdk-recharge-system/internal/config"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/handler"
+	"github.com/tuzi/cdk-recharge-system/internal/notify"
 	"github.com/tuzi/cdk-recharge-system/internal/plansync"
 )
 
@@ -51,6 +53,11 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 
 	// 启动卡台产品状态后台同步（每3分钟）
 	plansync.Start(ctx)
+
+	// 启动 MarsWallex 卡池（对账、回收、补卡、Webhook 事件处理）
+	pool := cardpool.New(cardpool.Options{Client: handler.MarsWallexClient, Alert: notify.SendText})
+	handler.SetCardPool(pool)
+	pool.Start(ctx)
 
 	return &Server{
 		engine: engine,
@@ -191,6 +198,38 @@ func setupRoutes(r *gin.Engine) {
 			admin.PUT("/marswallex/config", handler.AdminPutMarsWallexConfig)
 			admin.POST("/marswallex/test", handler.AdminTestMarsWallex)
 			admin.GET("/marswallex/webhook-events", handler.AdminListMarsWallexWebhookEvents)
+			admin.POST("/marswallex/webhook-events/:id/reprocess", handler.AdminReprocessMarsWallexWebhookEvent)
+
+			// MarsWallex 卡池
+			admin.GET("/cardpool/overview", handler.AdminCardPoolOverview)
+			admin.GET("/cardpool/products", handler.AdminCardPoolProducts)
+			admin.GET("/cardpool/cardholders", handler.AdminCardPoolCardholders)
+			admin.POST("/cardpool/cardholders/import", handler.AdminCardPoolImportCardholder)
+			admin.POST("/cardpool/cardholders/:id/refresh", handler.AdminCardPoolRefreshCardholder)
+			admin.GET("/cardpool/cards", handler.AdminCardPoolCards)
+			admin.GET("/cardpool/cards/:id", handler.AdminCardPoolCardDetail)
+			admin.POST("/cardpool/cards/apply", handler.AdminCardPoolApplyCards)
+			admin.POST("/cardpool/cards/import", handler.AdminCardPoolImportCard)
+			admin.POST("/cardpool/cards/:id/refresh", handler.AdminCardPoolRefreshCard)
+			admin.POST("/cardpool/cards/:id/disable", handler.AdminCardPoolDisableCard)
+			admin.POST("/cardpool/cards/:id/enable", handler.AdminCardPoolEnableCard)
+			admin.POST("/cardpool/cards/:id/freeze", handler.AdminCardPoolFreezeCard)
+			admin.POST("/cardpool/cards/:id/unfreeze", handler.AdminCardPoolUnfreezeCard)
+			admin.POST("/cardpool/cards/:id/cancel", handler.AdminCardPoolCancelCard)
+			admin.POST("/cardpool/cards/:id/sweep", handler.AdminCardPoolSweepCard)
+			admin.POST("/cardpool/cards/:id/lease", handler.AdminCardPoolLeaseCard)
+			admin.POST("/cardpool/cards/:id/release", handler.AdminCardPoolReleaseCard)
+			admin.POST("/cardpool/cards/:id/fund", handler.AdminCardPoolFundCard)
+			admin.POST("/cardpool/cards/:id/sensitive", handler.AdminCardPoolSensitive)
+			admin.POST("/cardpool/cards/:id/otp", handler.AdminCardPoolOTP)
+			admin.GET("/cardpool/orders", handler.AdminCardPoolOrders)
+			admin.POST("/cardpool/orders/:no/recheck", handler.AdminCardPoolRecheck)
+			admin.POST("/cardpool/orders/:no/confirm-failed", handler.AdminCardPoolConfirmFailed)
+			admin.GET("/cardpool/transactions", handler.AdminCardPoolTransactions)
+			admin.GET("/cardpool/policy", handler.AdminCardPoolGetPolicy)
+			admin.PUT("/cardpool/policy", handler.AdminCardPoolPutPolicy)
+			admin.GET("/cardpool/health", handler.AdminCardPoolHealth)
+			admin.POST("/cardpool/health/resume", handler.AdminCardPoolResume)
 
 			// 卡台 Open API：实时价格 / 余额 / 发码 / 列码 / CDK 订单
 			admin.GET("/cardplatform/ping", handler.CardPlatformPing)

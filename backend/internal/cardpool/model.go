@@ -10,90 +10,90 @@ import (
 
 // Cardholder 对应 mw_cardholders。
 type Cardholder struct {
-	CardHolderID string
-	FirstName    string
-	LastName     string
-	CountryCode  string
-	Status       string
-	Remark       string
-	Note         string
-	SyncedAt     *int64
-	CreatedAt    int64
+	CardHolderID string `json:"card_holder_id"`
+	FirstName    string `json:"first_name"`
+	LastName     string `json:"last_name"`
+	CountryCode  string `json:"country_code"`
+	Status       string `json:"status"`
+	Remark       string `json:"remark"`
+	Note         string `json:"note"`
+	SyncedAt     *int64 `json:"synced_at"`
+	CreatedAt    int64  `json:"created_at"`
 }
 
 // Card 对应 mw_cards。
 type Card struct {
-	CardID          string
-	CardHolderID    string
-	ProductID       string
-	CardLabel       string
-	CardCountry     string
-	Currency        string
-	Last4           string
-	Expiry          string
-	PlatformStatus  string
-	AvailableCents  int64
-	FrozenCents     int64
-	BalanceSyncedAt *int64
-	Source          string
-	PoolState       string
-	LeaseToken      string
-	LeaseOwner      string
-	LeaseExpiresAt  *int64
-	LeaseSensitive  bool
-	UseCount        int
-	LastSensitiveAt *int64
-	RetireReason    string
-	DisabledReason  string
-	FrozenAt        *int64
-	CancelAfter     *int64
-	NextActionAt    *int64
-	CreatedAt       int64
-	UpdatedAt       int64
+	CardID          string `json:"card_id"`
+	CardHolderID    string `json:"card_holder_id"`
+	ProductID       string `json:"product_id"`
+	CardLabel       string `json:"card_label"`
+	CardCountry     string `json:"card_country"`
+	Currency        string `json:"currency"`
+	Last4           string `json:"last4"`
+	Expiry          string `json:"expiry"`
+	PlatformStatus  string `json:"platform_status"`
+	AvailableCents  int64  `json:"available_cents"`
+	FrozenCents     int64  `json:"frozen_cents"`
+	BalanceSyncedAt *int64 `json:"balance_synced_at"`
+	Source          string `json:"source"`
+	PoolState       string `json:"pool_state"`
+	LeaseToken      string `json:"-"`
+	LeaseOwner      string `json:"lease_owner"`
+	LeaseExpiresAt  *int64 `json:"lease_expires_at"`
+	LeaseSensitive  bool   `json:"lease_sensitive"`
+	UseCount        int    `json:"use_count"`
+	LastSensitiveAt *int64 `json:"last_sensitive_at"`
+	RetireReason    string `json:"retire_reason"`
+	DisabledReason  string `json:"disabled_reason"`
+	FrozenAt        *int64 `json:"frozen_at"`
+	CancelAfter     *int64 `json:"cancel_after"`
+	NextActionAt    *int64 `json:"next_action_at"`
+	CreatedAt       int64  `json:"created_at"`
+	UpdatedAt       int64  `json:"updated_at"`
 }
 
 // Order 对应 mw_card_orders。
 type Order struct {
-	ID            int64
-	OutOrderNo    string
-	Kind          string
-	CardID        string
-	CardHolderID  string
-	ProductID     string
-	AmountCents   int64
-	Currency      string
-	TargetStatus  string
-	State         string
-	PlatformTxnID string
-	EverUnknown   bool
-	Attempts      int
-	NextCheckAt   *int64
-	FirstSentAt   *int64
-	LastError     string
-	RequestedBy   string
-	Note          string
-	AlertedStale  bool
-	CreatedAt     int64
-	UpdatedAt     int64
-	FinishedAt    *int64
+	ID            int64  `json:"id"`
+	OutOrderNo    string `json:"out_order_no"`
+	Kind          string `json:"kind"`
+	CardID        string `json:"card_id"`
+	CardHolderID  string `json:"card_holder_id"`
+	ProductID     string `json:"product_id"`
+	AmountCents   int64  `json:"amount_cents"`
+	Currency      string `json:"currency"`
+	TargetStatus  string `json:"target_status"`
+	State         string `json:"state"`
+	PlatformTxnID string `json:"platform_txn_id"`
+	EverUnknown   bool   `json:"ever_unknown"`
+	Attempts      int    `json:"attempts"`
+	NextCheckAt   *int64 `json:"next_check_at"`
+	FirstSentAt   *int64 `json:"first_sent_at"`
+	LastError     string `json:"last_error"`
+	RequestedBy   string `json:"requested_by"`
+	Note          string `json:"note"`
+	AlertedStale  bool   `json:"alerted_stale"`
+	CreatedAt     int64  `json:"created_at"`
+	UpdatedAt     int64  `json:"updated_at"`
+	FinishedAt    *int64 `json:"finished_at"`
 }
 
 // Transaction 对应 mw_card_transactions；金额按平台原字符串保存，仅用于展示。
 type Transaction struct {
-	TransactionID       string
-	Kind                string
-	CardID              string
-	Status              string
-	DeclineReason       string
-	TxnAmount           string
-	TxnCurrency         string
-	BillingAmount       string
-	BillingCurrency     string
-	MerchantName        string
-	OriginTransactionID string
-	AuthTransactionID   string
-	OccurredAt          *int64
-	UpdatedAt           int64
+	TransactionID       string `json:"transaction_id"`
+	Kind                string `json:"kind"`
+	CardID              string `json:"card_id"`
+	Status              string `json:"status"`
+	DeclineReason       string `json:"decline_reason"`
+	TxnAmount           string `json:"txn_amount"`
+	TxnCurrency         string `json:"txn_currency"`
+	BillingAmount       string `json:"billing_amount"`
+	BillingCurrency     string `json:"billing_currency"`
+	MerchantName        string `json:"merchant_name"`
+	OriginTransactionID string `json:"origin_transaction_id"`
+	AuthTransactionID   string `json:"auth_transaction_id"`
+	OccurredAt          *int64 `json:"occurred_at"`
+	UpdatedAt           int64  `json:"updated_at"`
 }
 
 const cardholderCols = `card_holder_id, first_name, last_name, country_code, status, remark, note, synced_at, created_at`

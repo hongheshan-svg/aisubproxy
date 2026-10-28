@@ -37,6 +37,9 @@ func (s *Service) Start(ctx context.Context) {
 	s.Kick()
 }
 
+// Wait 阻塞到 Start 启动的后台协程全部退出；调用前须先取消传给 Start 的 ctx。
+func (s *Service) Wait() { s.loops.Wait() }
+
 // runLoop 在定时器到点或收到通知时执行一轮 round，直到 ctx 结束。kick 为 nil 时只按定时器执行。
 func (s *Service) runLoop(ctx context.Context, every time.Duration, kick <-chan struct{}, round func(context.Context, *loopLog)) {
 	defer s.loops.Done()

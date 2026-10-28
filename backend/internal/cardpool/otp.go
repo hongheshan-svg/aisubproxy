@@ -25,8 +25,11 @@ const (
 
 // OTPView 为管理员查看的验证码。
 type OTPView struct {
-	OTP, MerchantName, Amount, Currency string
-	ReceivedAt                          time.Time
+	OTP          string    `json:"otp"`
+	MerchantName string    `json:"merchant_name"`
+	Amount       string    `json:"amount"`
+	Currency     string    `json:"currency"`
+	ReceivedAt   time.Time `json:"received_at"`
 }
 
 // onOTPEvent 把 3DS 验证码加密写入 mw_3ds_otps。原文里的验证码由 processEventsOnce 在标记已处理时抹掉。

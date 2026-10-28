@@ -554,9 +554,9 @@ func (s *Service) ListTransactions(ctx context.Context, f TxnFilter) ([]Transact
 
 // CardDetailView 为卡详情：卡本身及最近 50 条单据与交易。
 type CardDetailView struct {
-	Card         Card
-	Orders       []Order
-	Transactions []Transaction
+	Card         Card          `json:"card"`
+	Orders       []Order       `json:"orders"`
+	Transactions []Transaction `json:"transactions"`
 }
 
 // CardDetail 返回卡详情。
@@ -580,17 +580,25 @@ func (s *Service) CardDetail(ctx context.Context, cardID string) (*CardDetailVie
 
 // ProductStock 为单个卡产品的库存与补卡进度。
 type ProductStock struct {
-	ProductID                                    string
-	Available, Leased, Releasing, Used, Disabled int
-	Target, DailyLimit, OpenedToday              int
+	ProductID   string `json:"product_id"`
+	Available   int    `json:"available"`
+	Leased      int    `json:"leased"`
+	Releasing   int    `json:"releasing"`
+	Used        int    `json:"used"`
+	Disabled    int    `json:"disabled"`
+	Target      int    `json:"target"`
+	DailyLimit  int    `json:"daily_limit"`
+	OpenedToday int    `json:"opened_today"`
 }
 
 // Overview 为后台概览。
 type Overview struct {
-	MainBalances                                 []marswallex.BalanceItem
-	BalanceError                                 string
-	Products                                     []ProductStock
-	NeedsReview, FailedEvents, SuspendedProducts int
+	MainBalances      []marswallex.BalanceItem `json:"main_balances"`
+	BalanceError      string                   `json:"balance_error"`
+	Products          []ProductStock           `json:"products"`
+	NeedsReview       int                      `json:"needs_review"`
+	FailedEvents      int                      `json:"failed_events"`
+	SuspendedProducts int                      `json:"suspended_products"`
 }
 
 // Overview 汇总主钱包余额、各产品库存与待处理事项。主钱包余额取不到时只写入 BalanceError。

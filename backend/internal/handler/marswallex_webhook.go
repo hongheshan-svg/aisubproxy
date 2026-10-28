@@ -59,10 +59,14 @@ func MarsWallexWebhook(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "请求体无效"})
 		return
 	}
-	if _, err := db.InsertMarsWallexWebhookEvent(messageID, topic, string(raw)); err != nil {
+	inserted, err := db.InsertMarsWallexWebhookEvent(messageID, topic, string(raw))
+	if err != nil {
 		log.Printf("marswallex webhook: store event failed: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存失败"})
 		return
+	}
+	if inserted && cardPool != nil {
+		cardPool.Kick()
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
@@ -84,6 +88,7 @@ func AdminListMarsWallexWebhookEvents(c *gin.Context) {
 		events = append(events, gin.H{
 			"id": e.ID, "message_id": e.MessageID, "topic": e.Topic,
 			"received_at": e.ReceivedAt, "processed_at": processed, "process_error": e.ProcessError,
+			"process_attempts": e.ProcessAttempts, "process_note": e.ProcessNote,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"events": events})

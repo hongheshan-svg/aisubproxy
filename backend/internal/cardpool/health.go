@@ -187,11 +187,15 @@ func (s *Service) ResumeProduct(ctx context.Context, productID, planKey, by stri
 
 // ProductHealth 为产品×套餐的健康度报告行。
 type ProductHealth struct {
-	ProductID, PlanKey                         string
-	Success24h, Failed24h, Success7d, Failed7d int
-	Suspended                                  bool
-	SuspendedAt                                *int64
-	Reason                                     string
+	ProductID   string `json:"product_id"`
+	PlanKey     string `json:"plan_key"`
+	Success24h  int    `json:"success_24h"`
+	Failed24h   int    `json:"failed_24h"`
+	Success7d   int    `json:"success_7d"`
+	Failed7d    int    `json:"failed_7d"`
+	Suspended   bool   `json:"suspended"`
+	SuspendedAt *int64 `json:"suspended_at"`
+	Reason      string `json:"reason"`
 }
 
 // HealthReport 汇总所有出现过的产品×套餐的 24 小时与 7 天成功失败数及停用状态。

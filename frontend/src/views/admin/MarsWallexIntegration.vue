@@ -151,7 +151,7 @@
         </el-table-column>
         <el-table-column label="操作" width="110">
           <template #default="{ row }">
-            <el-button v-if="row.process_error" size="small" plain :loading="reprocessingId === row.id" @click="reprocess(row)">重新处理</el-button>
+            <el-button v-if="row.process_error || row.process_note" size="small" plain :loading="reprocessingId === row.id" @click="reprocess(row)">重新处理</el-button>
           </template>
         </el-table-column>
       </el-table>

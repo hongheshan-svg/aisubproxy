@@ -102,15 +102,15 @@
                   </template>
                   <template v-if="isMine(row)">
                     <el-button size="small" type="primary" plain @click="fundCard(row)">注资</el-button>
-                    <el-button size="small" type="primary" plain @click="viewSensitive(row)">查看卡号</el-button>
-                    <el-button size="small" type="primary" plain @click="viewOtp(row)">查看验证码</el-button>
                     <el-button size="small" plain @click="releaseCard(row)">释放</el-button>
                   </template>
+                  <el-button v-if="canViewSensitive(row)" size="small" type="primary" plain @click="viewSensitive(row)">查看卡号</el-button>
+                  <el-button v-if="row.pool_state !== 'retired'" size="small" type="primary" plain @click="viewOtp(row)">查看验证码</el-button>
                   <el-button v-if="row.pool_state === 'disabled'" size="small" type="success" plain @click="enableCard(row)">启用</el-button>
                   <template v-if="row.pool_state !== 'retired'">
-                    <el-button size="small" plain @click="simpleAction(row, 'refresh', '已刷新')">刷新</el-button>
-                    <el-button size="small" plain @click="simpleAction(row, 'freeze', '已提交冻结')">冻结</el-button>
-                    <el-button size="small" plain @click="simpleAction(row, 'unfreeze', '已提交解冻')">解冻</el-button>
+                    <el-button size="small" plain @click="runCardAction(row, 'refresh', '已刷新')">刷新</el-button>
+                    <el-button size="small" plain @click="runOrderAction(row, 'freeze', '冻结')">冻结</el-button>
+                    <el-button size="small" plain @click="runOrderAction(row, 'unfreeze', '解冻')">解冻</el-button>
                     <el-button size="small" plain @click="sweepCard(row)">清零</el-button>
                     <el-button size="small" type="danger" plain @click="cancelCard(row)">注销</el-button>
                   </template>
@@ -619,6 +619,31 @@ function isMine(c: Card) {
   return c.pool_state === 'leased' && c.lease_owner === 'admin:' + auth.username
 }
 
+// 查看卡号：本人租用中的卡（计为本次租约已取卡号）；已用、停用、清零中的卡仅供排查，只查看、不改状态。
+// 可用的卡要先租用；别人租用中的卡不提供（会算到对方的租约上）。
+function canViewSensitive(c: Card) {
+  return isMine(c) || ['used', 'disabled', 'releasing'].includes(c.pool_state)
+}
+
+// 单据状态的提示文字：返回单据的操作按实际状态提示，不一律说「已提交」。
+const ORDER_STATE_TEXT: Record<string, { text: string; type: 'ok' | 'err' | 'warn' | 'info' }> = {
+  success: { text: '成功', type: 'ok' },
+  pending: { text: '处理中', type: 'info' },
+  processing: { text: '处理中', type: 'info' },
+  unknown: { text: '结果未知，系统会继续查单', type: 'warn' },
+  needs_review: { text: '待人工核对', type: 'warn' },
+  failed: { text: '失败', type: 'err' },
+  not_sent: { text: '未发出', type: 'err' },
+}
+function orderStateText(o: Order) {
+  const t = ORDER_STATE_TEXT[o.state]?.text || o.state
+  return o.last_error && ['failed', 'not_sent', 'unknown', 'needs_review'].includes(o.state) ? `${t}（${o.last_error}）` : t
+}
+function orderToast(what: string, o: Order) {
+  const type = ORDER_STATE_TEXT[o.state]?.type || 'info'
+  dialog.toast(`${what}：${orderStateText(o)}`, type, type === 'ok' || type === 'info' ? 2800 : 6000)
+}
+
 // ---------- 概览 ----------
 const overview = ref<Overview | null>(null)
 const ovLoading = ref(false)
@@ -649,8 +674,10 @@ function goPending(kind: 'orders' | 'events' | 'policy') {
 
 async function loadProducts() {
   const r = await api<{ items: Product[] }>('/products')
-  if (r.ok) products.value = r.data.items || []
-  else dialog.toast(errText(r, '加载产品失败'), 'warn')
+  if (r.ok) {
+    products.value = r.data.items || []
+    ensureTargetRows()
+  } else dialog.toast(errText(r, '加载产品失败'), 'warn')
 }
 
 // ---------- 卡 ----------
@@ -690,8 +717,16 @@ async function runCardAction(row: Card, action: string, ok: string, body?: unkno
   return true
 }
 
-function simpleAction(row: Card, action: string, ok: string) {
-  return runCardAction(row, action, ok)
+// 返回单据的动作（冻结、解冻、注销、清零、注资）：按返回单据的状态提示
+async function runOrderAction(row: Card, action: string, what: string, body?: unknown) {
+  const r = await api<Order>(`/cards/${encodeURIComponent(row.card_id)}/${action}`, 'POST', body)
+  if (!r.ok) {
+    dialog.toast(errText(r, '操作失败'), 'err')
+    return false
+  }
+  orderToast(what, r.data)
+  loadCards()
+  return true
 }
 
 async function leaseCard(row: Card) {
@@ -709,14 +744,18 @@ async function disableCard(row: Card) {
   await runCardAction(row, 'disable', '已停用', { reason: String(reason).trim() })
 }
 async function sweepCard(row: Card) {
-  await runCardAction(row, 'sweep', '已提交清零')
+  const ok = await dialog.confirm(`确认把卡 ${row.card_id}（后四位 ${row.last4}）上的可用余额全部转回主钱包？`, {
+    title: '清零', okText: '清零',
+  })
+  if (!ok) return
+  await runOrderAction(row, 'sweep', '清零')
 }
 async function cancelCard(row: Card) {
   const ok = await dialog.confirm(`确认注销卡 ${row.card_id}（后四位 ${row.last4}）？注销后不可恢复。`, {
     title: '注销', okText: '注销', danger: true,
   })
   if (!ok) return
-  await runCardAction(row, 'cancel', '已提交注销')
+  await runOrderAction(row, 'cancel', '注销')
 }
 
 async function fundCard(row: Card) {
@@ -728,7 +767,7 @@ async function fundCard(row: Card) {
   if (!/^\d+(\.\d{1,2})?$/.test(amount) || Number(amount) <= 0) {
     return dialog.toast('金额无效，须大于 0 且最多两位小数', 'err')
   }
-  await runCardAction(row, 'fund', '已提交注资', { amount })
+  await runOrderAction(row, 'fund', '注资', { amount })
 }
 
 // 敏感信息：只存在内存里，关闭弹窗即清空；不写日志、不进存储。
@@ -745,7 +784,8 @@ function clearOtp() {
 }
 
 async function viewSensitive(row: Card) {
-  const ok = await dialog.confirm(`将显示卡 ${row.card_id}（后四位 ${row.last4}）的完整卡号和 CVV2，此操作会被记录。继续？`, {
+  const note = row.pool_state === 'leased' ? '本次租用将计为已取卡号（使用次数 +1）。' : '仅供排查，不改变卡的状态。'
+  const ok = await dialog.confirm(`将显示卡 ${row.card_id}（后四位 ${row.last4}）的完整卡号和 CVV2，此操作会被记录。${note}继续？`, {
     title: '查看卡号', okText: '查看',
   })
   if (!ok) return
@@ -792,13 +832,14 @@ async function submitApply() {
     const r = await api<{ orders?: Order[]; created?: number }>('/cards/apply', 'POST', {
       product_id: applyForm.product_id, card_holder_id: applyForm.card_holder_id, count: applyForm.count,
     })
-    const orderNos = (r.data.orders || []).map((o) => o.out_order_no)
+    const created = r.data.orders || []
+    const lines = created.map((o) => `${o.out_order_no}　${orderStateText(o)}`).join('\n')
     if (!r.ok) {
-      if (orderNos.length) {
+      if (created.length) {
         // 部分已创建：必须让管理员看到，避免盲目重试多开卡。
         applyOpen.value = false
         await dialog.alert(
-          `开卡中途失败：${errText(r, '未知错误')}\n\n已创建 ${r.data.created ?? orderNos.length} 张，单号：\n${orderNos.join('\n')}\n\n请先到「单据」标签核对，不要直接重试。`,
+          `开卡中途失败：${errText(r, '未知错误')}\n\n已创建 ${r.data.created ?? created.length} 张：\n${lines}\n\n请先到「单据」标签核对，不要直接重试。`,
           { title: '部分开卡失败' },
         )
         loadCards()
@@ -808,7 +849,12 @@ async function submitApply() {
       return dialog.toast(errText(r, '开卡失败'), 'err')
     }
     applyOpen.value = false
-    await dialog.alert(`已创建 ${orderNos.length} 个开卡单：\n${orderNos.join('\n')}`, { title: '开卡已提交' })
+    // 中途有失败、未发出或结果未知的单据时后端会停止本批，不足申请数量
+    const allOk = created.every((o) => ['success', 'processing', 'pending'].includes(o.state))
+    const stopped = created.length < applyForm.count
+      ? `\n\n申请 ${applyForm.count} 张：最后一张单据失败、未发出或结果未知，本批已停止。结果未知的单据可能已开出卡，请先到「单据」标签核对，不要直接重试。`
+      : ''
+    await dialog.alert(`已创建 ${created.length} 个开卡单：\n${lines}${stopped}`, { title: allOk ? '开卡已提交' : '开卡结果' })
     loadCards()
     loadOrders()
   } finally {
@@ -914,9 +960,9 @@ function resetOrders() {
   loadOrders()
 }
 async function recheckOrder(row: Order) {
-  const r = await api(`/orders/${encodeURIComponent(row.out_order_no)}/recheck`, 'POST')
+  const r = await api<Order>(`/orders/${encodeURIComponent(row.out_order_no)}/recheck`, 'POST')
   if (!r.ok) return dialog.toast(errText(r, '查询失败'), 'err')
-  dialog.toast('已重新查询', 'ok')
+  orderToast('再查一次', r.data)
   loadOrders()
 }
 async function confirmFailed(row: Order) {
@@ -971,16 +1017,22 @@ const planKeys = computed(() => {
   return keys.sort((a, b) => (a === 'default' ? -1 : b === 'default' ? 1 : a.localeCompare(b)))
 })
 
-// 目标数表：覆盖全部已知产品，保存时只保留有值的
+// 目标数表：覆盖全部已知产品（缺的行由 ensureTargetRows 在加载时补上），保存时只保留有值的
 const targetRows = computed(() => {
   const p = policy.value
   if (!p) return []
   const ids = new Set<string>([...products.value.map((x) => x.product_id), ...Object.keys(p.product_targets)])
-  return [...ids].map((id) => {
-    if (!p.product_targets[id]) p.product_targets[id] = { target: 0, daily_limit: 0 }
-    return { id, target: p.product_targets[id] }
-  })
+  return [...ids].filter((id) => p.product_targets[id]).map((id) => ({ id, target: p.product_targets[id] }))
 })
+
+// 给每个已知产品补一行目标数（0/0），在加载策略或产品之后调用；computed 里不做改动
+function ensureTargetRows() {
+  const p = policy.value
+  if (!p) return
+  for (const x of products.value) {
+    if (!p.product_targets[x.product_id]) p.product_targets[x.product_id] = { target: 0, daily_limit: 0 }
+  }
+}
 
 async function loadPolicy() {
   policyError.value = ''
@@ -991,6 +1043,7 @@ async function loadPolicy() {
   p.product_targets = p.product_targets || {}
   p.holder_ids = p.holder_ids || []
   policy.value = p
+  ensureTargetRows()
   openAmountText.value = money(p.open_amount_cents)
 }
 

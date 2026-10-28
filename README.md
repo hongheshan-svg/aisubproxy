@@ -10,6 +10,51 @@
 | **官方频道** | [https://t.me/spacex_card_visa](https://t.me/spacex_card_visa) |
 | **官方群聊 2 群** | [https://t.me/spacex_card2](https://t.me/spacex_card2) |
 
+## 服务器安装与升级
+
+适用于 Linux x86_64 + systemd（如 Ubuntu 22.04 及以上），需要 root 权限。每个发布包都会经过三道检查，任何一步不通过都不会改动已安装的文件：
+- 校验 sha256；
+- 校验 ed25519 签名；
+- 先运行一次新程序，确认能启动。
+
+**首次安装**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hongheshan-svg/aisubproxy/master/deploy/install.sh | sudo bash
+```
+
+- 装在 `/opt/cdk-recharge`，注册为 systemd 服务 `cdk-recharge`。
+- 默认只监听 `127.0.0.1:9080`，需要用 Caddy 或 Nginx 反代 HTTPS。
+- 用 `journalctl -u cdk-recharge | grep 'Setup Token'` 查看首次安装令牌，再打开 `https://你的域名/ops/setup` 创建管理员。
+- 请备份 `/opt/cdk-recharge/app.env`。里面的 `APP_MASTER_KEY` 丢失后，已保存的 MarsWallex 密钥将无法解密。
+
+**升级**
+
+- 方式一：管理后台 →「总览」→「版本更新」→ 一键更新。
+- 方式二：命令行重新运行安装命令。会先备份当前版本，再升级到最新版，`app.env` 和数据都不会动。
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hongheshan-svg/aisubproxy/master/deploy/install.sh | sudo bash
+```
+
+升级或安装指定版本：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hongheshan-svg/aisubproxy/master/deploy/install.sh | sudo bash -s -- v1.5.0
+```
+
+**回滚**
+
+新版本起不来时，用这条命令恢复到上一个版本：
+
+```bash
+sudo /opt/cdk-recharge/cdk-recharge rollback && sudo systemctl restart cdk-recharge
+```
+
+每次升级前，程序、前端和数据库都会备份到 `/opt/cdk-recharge/updates/backup-*`，只保留最新 3 份。
+
+Docker 部署不支持在线升级（容器重建后会退回镜像里的版本），请拉取新代码后重建镜像。发布新版本的方法见 [deploy/README-release.md](deploy/README-release.md)。
+
 ## 主要特性
 
 ✨ **用户端**
@@ -234,7 +279,7 @@ docker-compose build
 ```
 
 ### 生产环境部署
-见 `docs/DEPLOYMENT.md`
+见上文「[服务器安装与升级](#服务器安装与升级)」；发布流程见 [deploy/README-release.md](deploy/README-release.md)。
 
 ## 常见问题
 

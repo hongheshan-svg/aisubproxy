@@ -35,26 +35,30 @@ func poolRoute(fn func(c *gin.Context, s *cardpool.Service)) gin.HandlerFunc {
 	}
 }
 
-// poolFail 把服务错误映射成 HTTP 响应。错误信息不含卡号、CVV2、验证码。
-func poolFail(c *gin.Context, err error) {
+// poolErrorBody 把服务错误映射成 HTTP 状态码与响应体。错误信息不含卡号、CVV2、验证码。
+func poolErrorBody(c *gin.Context, err error) (int, gin.H) {
 	var me *marswallex.Error
 	switch {
 	case errors.As(err, &me):
 		if me.Reason == marswallex.ReasonConfig {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
-			return
+			return http.StatusServiceUnavailable, gin.H{"error": err.Error()}
 		}
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error(), "outcome": me.Outcome.String()})
+		return http.StatusBadGateway, gin.H{"error": err.Error(), "outcome": me.Outcome.String()}
 	case errors.Is(err, cardpool.ErrBadRequest):
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return http.StatusBadRequest, gin.H{"error": err.Error()}
 	case errors.Is(err, cardpool.ErrNotFound):
-		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return http.StatusNotFound, gin.H{"error": err.Error()}
 	case errors.Is(err, cardpool.ErrCardBusy), errors.Is(err, cardpool.ErrLeaseInvalid), errors.Is(err, cardpool.ErrNoCard):
-		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
-	default:
-		log.Printf("cardpool api %s %s: %v", c.Request.Method, c.FullPath(), err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "操作失败"})
+		return http.StatusConflict, gin.H{"error": err.Error()}
 	}
+	log.Printf("cardpool api %s %s: %v", c.Request.Method, c.FullPath(), err)
+	return http.StatusInternalServerError, gin.H{"error": "操作失败"}
+}
+
+// poolFail 把服务错误映射成 HTTP 响应。
+func poolFail(c *gin.Context, err error) {
+	status, body := poolErrorBody(c, err)
+	c.JSON(status, body)
 }
 
 func poolAudit(c *gin.Context, action, detail string) {
@@ -189,6 +193,14 @@ func AdminCardPoolApplyCards(c *gin.Context) {
 				req.ProductID, req.CardHolderID, req.Count, len(orders)))
 		}
 		if err != nil {
+			if len(orders) > 0 {
+				// 已创建的单据必须让管理员看到，否则会误以为一张都没开而重试。
+				status, body := poolErrorBody(c, err)
+				body["orders"] = orders
+				body["created"] = len(orders)
+				c.JSON(status, body)
+				return
+			}
 			poolFail(c, err)
 			return
 		}

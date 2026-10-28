@@ -317,3 +317,48 @@ func TestReprocessEndpoint(t *testing.T) {
 		t.Errorf("audit %q", a)
 	}
 }
+
+func TestApplyCardsPartialFailureReturnsCreatedOrders(t *testing.T) {
+	c := mwSetup(t)
+	mw := mwtest.New(t)
+	calls := 0
+	// ApplyCards 取 1 次客户端，每张卡的 submitApply 各取 1 次：第 3 次（第二张卡）起报配置错误。
+	pool := cardpool.New(cardpool.Options{
+		Client: func() (*marswallex.Client, error) {
+			calls++
+			if calls >= 3 {
+				return nil, marsWallexConfigErr("未配置 apiToken")
+			}
+			return mw.Client(), nil
+		},
+		Alert: func(string) {},
+	})
+	SetCardPool(pool)
+	t.Cleanup(func() { SetCardPool(nil) })
+	if _, err := c.Exec(`INSERT INTO mw_cardholders (card_holder_id, first_name, last_name, country_code, status, remark, note, synced_at, created_at)
+		VALUES ('h1','A','B','US','APPROVED','','',1,1)`); err != nil {
+		t.Fatal(err)
+	}
+	mw.On("GET", "/v1/card/product", mwtest.OK(`[{"product_id":"p1","card_label":"VISA","card_country":"US","card_mode":"PREPAID","card_currency":"USD"}]`))
+	mw.On("POST", "/v2/card", mwtest.OK(`{"transaction_id":"T1"}`))
+
+	w := cpDo(AdminCardPoolApplyCards, "POST", "/x", "/x", `{"product_id":"p1","card_holder_id":"h1","count":3}`)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status %d %s", w.Code, w.Body.String())
+	}
+	m := mwJSON(t, w)
+	orders, _ := m["orders"].([]any)
+	if m["created"] != float64(1) || len(orders) != 1 || m["error"] == nil {
+		t.Fatalf("body %v", m)
+	}
+	var no string
+	if err := c.QueryRow(`SELECT out_order_no FROM mw_card_orders WHERE kind='apply'`).Scan(&no); err != nil {
+		t.Fatal(err)
+	}
+	if orders[0].(map[string]any)["out_order_no"] != no {
+		t.Errorf("order mismatch: %v vs %s", orders[0], no)
+	}
+	if a := cpAudit(t, c); !strings.Contains(a, "created=1") {
+		t.Errorf("audit %q", a)
+	}
+}

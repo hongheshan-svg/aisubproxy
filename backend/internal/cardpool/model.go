@@ -3,9 +3,11 @@ package cardpool
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 
 	"github.com/tuzi/cdk-recharge-system/internal/db"
+	"github.com/tuzi/cdk-recharge-system/internal/marswallex"
 )
 
 // Cardholder 对应 mw_cardholders。
@@ -17,8 +19,10 @@ type Cardholder struct {
 	Status       string `json:"status"`
 	Remark       string `json:"remark"`
 	Note         string `json:"note"`
-	SyncedAt     *int64 `json:"synced_at"`
-	CreatedAt    int64  `json:"created_at"`
+	// OutCardHolderID 为商户侧持卡人 ID（本系统新建或导入时从平台带回）
+	OutCardHolderID string `json:"out_card_holder_id"`
+	SyncedAt        *int64 `json:"synced_at"`
+	CreatedAt       int64  `json:"created_at"`
 }
 
 // Card 对应 mw_cards。
@@ -76,6 +80,11 @@ type Order struct {
 	CreatedAt     int64  `json:"created_at"`
 	UpdatedAt     int64  `json:"updated_at"`
 	FinishedAt    *int64 `json:"finished_at"`
+	// 兑换、钱包转账单专用；Detail 为平台成交结果 JSON 原文
+	BuyCurrency    string `json:"buy_currency"`
+	PayerAccountNo string `json:"payer_account_no"`
+	PayeeAccountNo string `json:"payee_account_no"`
+	Detail         string `json:"detail"`
 }
 
 // Transaction 对应 mw_card_transactions；金额按平台原字符串保存，仅用于展示。
@@ -96,7 +105,7 @@ type Transaction struct {
 	UpdatedAt           int64  `json:"updated_at"`
 }
 
-const cardholderCols = `card_holder_id, first_name, last_name, country_code, status, remark, note, synced_at, created_at`
+const cardholderCols = `card_holder_id, first_name, last_name, country_code, status, remark, note, synced_at, created_at, out_card_holder_id`
 
 const cardCols = `card_id, card_holder_id, product_id, card_label, card_country, currency, last4, expiry, platform_status,
 	available_cents, frozen_cents, balance_synced_at, source, pool_state, lease_token, lease_owner, lease_expires_at,
@@ -105,12 +114,12 @@ const cardCols = `card_id, card_holder_id, product_id, card_label, card_country,
 
 const orderCols = `id, out_order_no, kind, card_id, card_holder_id, product_id, amount_cents, currency, target_status,
 	state, platform_txn_id, ever_unknown, attempts, next_check_at, first_sent_at, last_error, requested_by, note,
-	alerted_stale, created_at, updated_at, finished_at`
+	alerted_stale, created_at, updated_at, finished_at, buy_currency, payer_account_no, payee_account_no, detail`
 
 type rowScanner interface{ Scan(dest ...any) error }
 
 func (h *Cardholder) scan(r rowScanner) error {
-	return r.Scan(&h.CardHolderID, &h.FirstName, &h.LastName, &h.CountryCode, &h.Status, &h.Remark, &h.Note, &h.SyncedAt, &h.CreatedAt)
+	return r.Scan(&h.CardHolderID, &h.FirstName, &h.LastName, &h.CountryCode, &h.Status, &h.Remark, &h.Note, &h.SyncedAt, &h.CreatedAt, &h.OutCardHolderID)
 }
 
 func (c *Card) scan(r rowScanner) error {
@@ -123,7 +132,8 @@ func (c *Card) scan(r rowScanner) error {
 func (o *Order) scan(r rowScanner) error {
 	return r.Scan(&o.ID, &o.OutOrderNo, &o.Kind, &o.CardID, &o.CardHolderID, &o.ProductID, &o.AmountCents, &o.Currency,
 		&o.TargetStatus, &o.State, &o.PlatformTxnID, &o.EverUnknown, &o.Attempts, &o.NextCheckAt, &o.FirstSentAt,
-		&o.LastError, &o.RequestedBy, &o.Note, &o.AlertedStale, &o.CreatedAt, &o.UpdatedAt, &o.FinishedAt)
+		&o.LastError, &o.RequestedBy, &o.Note, &o.AlertedStale, &o.CreatedAt, &o.UpdatedAt, &o.FinishedAt,
+		&o.BuyCurrency, &o.PayerAccountNo, &o.PayeeAccountNo, &o.Detail)
 }
 
 func getCard(ctx context.Context, cardID string) (*Card, error) {
@@ -160,4 +170,87 @@ func getCardholder(ctx context.Context, id string) (*Cardholder, error) {
 		return nil, err
 	}
 	return &h, nil
+}
+
+// Account 对应 mw_accounts；Balances 在库里为 JSON 文本，金额按平台原字符串保存。
+type Account struct {
+	AccountNo    string                   `json:"account_no"`
+	OutAccountNo string                   `json:"out_account_no"`
+	AccountName  string                   `json:"account_name"`
+	AccountType  string                   `json:"account_type"`
+	Purpose      string                   `json:"purpose"`
+	Status       string                   `json:"status"`
+	Balances     []marswallex.BalanceItem `json:"balances"`
+	Gone         bool                     `json:"gone"`
+	SyncedAt     *int64                   `json:"synced_at"`
+	CreatedAt    int64                    `json:"created_at"`
+}
+
+// 持卡人提交记录状态
+const (
+	SubmissionSubmitted = "submitted"
+	SubmissionUnknown   = "unknown"
+	SubmissionLinked    = "linked"
+	SubmissionAbandoned = "abandoned"
+)
+
+// Submission 对应 mw_cardholder_submissions；不含任何证件信息。
+type Submission struct {
+	OutCardHolderID string `json:"out_card_holder_id"`
+	FirstName       string `json:"first_name"`
+	LastName        string `json:"last_name"`
+	CountryCode     string `json:"country_code"`
+	State           string `json:"state"`
+	CardHolderID    string `json:"card_holder_id"`
+	LastError       string `json:"last_error"`
+	RequestedBy     string `json:"requested_by"`
+	CreatedAt       int64  `json:"created_at"`
+	UpdatedAt       int64  `json:"updated_at"`
+}
+
+const accountCols = `account_no, out_account_no, account_name, account_type, purpose, status, balances, gone, synced_at, created_at`
+
+const submissionCols = `out_card_holder_id, first_name, last_name, country_code, state, card_holder_id, last_error, requested_by, created_at, updated_at`
+
+func (a *Account) scan(r rowScanner) error {
+	var balances string
+	if err := r.Scan(&a.AccountNo, &a.OutAccountNo, &a.AccountName, &a.AccountType, &a.Purpose, &a.Status, &balances,
+		&a.Gone, &a.SyncedAt, &a.CreatedAt); err != nil {
+		return err
+	}
+	// 空串或非法 JSON 读成空切片
+	a.Balances = []marswallex.BalanceItem{}
+	if json.Unmarshal([]byte(balances), &a.Balances) != nil || a.Balances == nil {
+		a.Balances = []marswallex.BalanceItem{}
+	}
+	return nil
+}
+
+func (s *Submission) scan(r rowScanner) error {
+	return r.Scan(&s.OutCardHolderID, &s.FirstName, &s.LastName, &s.CountryCode, &s.State, &s.CardHolderID,
+		&s.LastError, &s.RequestedBy, &s.CreatedAt, &s.UpdatedAt)
+}
+
+func getAccount(ctx context.Context, accountNo string) (*Account, error) {
+	var a Account
+	err := a.scan(db.DB.QueryRowContext(ctx, `SELECT `+accountCols+` FROM mw_accounts WHERE account_no = ?`, accountNo))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &a, nil
+}
+
+func getSubmission(ctx context.Context, outID string) (*Submission, error) {
+	var s Submission
+	err := s.scan(db.DB.QueryRowContext(ctx, `SELECT `+submissionCols+` FROM mw_cardholder_submissions WHERE out_card_holder_id = ?`, outID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &s, nil
 }

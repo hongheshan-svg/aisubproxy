@@ -71,6 +71,21 @@ func MigrateCardPool() error {
 	resumed_at INTEGER, resumed_by TEXT NOT NULL DEFAULT '',
 	PRIMARY KEY (product_id, plan_key)
 )`,
+		// 钱包账户（主钱包、子账户、共享账户）
+		`CREATE TABLE IF NOT EXISTS mw_accounts (
+	account_no TEXT PRIMARY KEY, out_account_no TEXT NOT NULL DEFAULT '',
+	account_name TEXT NOT NULL DEFAULT '', account_type TEXT NOT NULL DEFAULT '',
+	purpose TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT '',
+	balances TEXT NOT NULL DEFAULT '', gone INTEGER NOT NULL DEFAULT 0,
+	synced_at INTEGER, created_at INTEGER NOT NULL
+)`,
+		// 持卡人创建请求的提交记录（不含任何证件信息）
+		`CREATE TABLE IF NOT EXISTS mw_cardholder_submissions (
+	out_card_holder_id TEXT PRIMARY KEY,
+	first_name TEXT NOT NULL DEFAULT '', last_name TEXT NOT NULL DEFAULT '', country_code TEXT NOT NULL DEFAULT '',
+	state TEXT NOT NULL, card_holder_id TEXT NOT NULL DEFAULT '', last_error TEXT NOT NULL DEFAULT '',
+	requested_by TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+)`,
 	}
 	for _, s := range stmts {
 		if _, err := DB.Exec(s); err != nil {
@@ -83,6 +98,11 @@ func MigrateCardPool() error {
 		{"marswallex_webhook_events", "next_attempt_at", "INTEGER"},
 		{"marswallex_webhook_events", "process_note", "TEXT NOT NULL DEFAULT ''"},
 		{"mw_3ds_otps", "event_id", "INTEGER"},
+		{"mw_card_orders", "buy_currency", "TEXT NOT NULL DEFAULT ''"},
+		{"mw_card_orders", "payer_account_no", "TEXT NOT NULL DEFAULT ''"},
+		{"mw_card_orders", "payee_account_no", "TEXT NOT NULL DEFAULT ''"},
+		{"mw_card_orders", "detail", "TEXT NOT NULL DEFAULT ''"},
+		{"mw_cardholders", "out_card_holder_id", "TEXT NOT NULL DEFAULT ''"},
 	}
 	for _, c := range cols {
 		var n int
@@ -98,6 +118,9 @@ func MigrateCardPool() error {
 	}
 	// 依赖补出来的列，放在补列之后
 	idx := []string{
+		// 兑换、钱包转账各自同一时刻最多一笔在途
+		`CREATE UNIQUE INDEX IF NOT EXISTS uq_mw_orders_wallet_inflight ON mw_card_orders(kind)
+	WHERE kind IN ('conversion','wallet_transfer') AND state IN ('pending','processing','unknown','needs_review')`,
 		// 验证码按 Webhook 事件去重：同一事件重复处理只存一条；event_id 为 NULL 不受限
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_mw_otp_event ON mw_3ds_otps(event_id)`,
 		// 兜底扫描只看未处理的事件

@@ -547,3 +547,61 @@ func TestStatusSuccessSideEffects(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+func TestInsertPendingWalletColumnsRoundTrip(t *testing.T) {
+	s, _, _, _ := newTestService(t)
+	o := &Order{Kind: KindConversion, AmountCents: 12345, Currency: "USD", BuyCurrency: "EUR",
+		PayerAccountNo: "A1", PayeeAccountNo: "A2", Note: "测试备注", RequestedBy: "admin"}
+	if err := s.insertPending(context.Background(), o); err != nil {
+		t.Fatal(err)
+	}
+	got := mustGetOrder(t, o.OutOrderNo)
+	if got.BuyCurrency != "EUR" || got.PayerAccountNo != "A1" || got.PayeeAccountNo != "A2" || got.Note != "测试备注" || got.Detail != "" {
+		t.Fatalf("读回不一致: %+v", got)
+	}
+}
+
+func TestInsertPendingWalletInflightReturnsErrInflight(t *testing.T) {
+	s, _, _, _ := newTestService(t)
+	if err := s.insertPending(context.Background(), &Order{Kind: KindConversion, Currency: "USD"}); err != nil {
+		t.Fatal(err)
+	}
+	err := s.insertPending(context.Background(), &Order{Kind: KindConversion, Currency: "USD"})
+	if !errors.Is(err, ErrInflight) {
+		t.Fatalf("err = %v", err)
+	}
+	if err := s.insertPending(context.Background(), &Order{Kind: KindWalletTransfer, Currency: "USD"}); err != nil {
+		t.Fatalf("钱包转账单不应受兑换单影响: %v", err)
+	}
+}
+
+func TestGetAccountAndSubmission(t *testing.T) {
+	newTestService(t)
+	ctx := context.Background()
+	if _, err := getAccount(ctx, "nope"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v", err)
+	}
+	if _, err := getSubmission(ctx, "nope"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v", err)
+	}
+	for no, bal := range map[string]string{"A1": `[{"currency":"USD","available_balance":"1.00","freeze_balance":"0"}]`, "A2": "", "A3": "{bad"} {
+		if _, err := db.DB.Exec(`INSERT INTO mw_accounts (account_no, balances, created_at) VALUES (?, ?, 1)`, no, bal); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, err := getAccount(ctx, "A1")
+	if err != nil || len(a.Balances) != 1 || a.Balances[0].AvailableBalance != "1.00" {
+		t.Fatalf("a=%+v err=%v", a, err)
+	}
+	for _, no := range []string{"A2", "A3"} {
+		if a, err := getAccount(ctx, no); err != nil || a.Balances == nil || len(a.Balances) != 0 {
+			t.Fatalf("%s: %+v err=%v", no, a, err)
+		}
+	}
+	if _, err := db.DB.Exec(`INSERT INTO mw_cardholder_submissions (out_card_holder_id, state, created_at, updated_at) VALUES ('CH1', ?, 1, 1)`, SubmissionUnknown); err != nil {
+		t.Fatal(err)
+	}
+	if s, err := getSubmission(ctx, "CH1"); err != nil || s.State != SubmissionUnknown {
+		t.Fatalf("s=%+v err=%v", s, err)
+	}
+}

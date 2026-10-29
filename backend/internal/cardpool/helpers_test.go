@@ -147,10 +147,10 @@ func insertOrder(t *testing.T, o Order) Order {
 	if o.OutOrderNo == "" {
 		o.OutOrderNo = newOutOrderNo(o.Kind, now)
 	}
-	res, err := db.DB.Exec(`INSERT INTO mw_card_orders (`+orderCols[len("id, "):]+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+	res, err := db.DB.Exec(`INSERT INTO mw_card_orders (`+orderCols[len("id, "):]+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		o.OutOrderNo, o.Kind, o.CardID, o.CardHolderID, o.ProductID, o.AmountCents, o.Currency, o.TargetStatus,
 		o.State, o.PlatformTxnID, o.EverUnknown, o.Attempts, o.NextCheckAt, o.FirstSentAt, o.LastError, o.RequestedBy, o.Note,
-		o.AlertedStale, o.CreatedAt, o.UpdatedAt, o.FinishedAt)
+		o.AlertedStale, o.CreatedAt, o.UpdatedAt, o.FinishedAt, o.BuyCurrency, o.PayerAccountNo, o.PayeeAccountNo, o.Detail)
 	if err != nil {
 		t.Fatal(err)
 	}

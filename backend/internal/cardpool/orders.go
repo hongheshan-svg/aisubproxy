@@ -60,6 +60,9 @@ var kindNames = map[string]string{
 	KindRecharge: "转入单",
 	KindWithdraw: "转出单",
 	KindStatus:   "改状态单",
+
+	KindConversion:     "兑换单",
+	KindWalletTransfer: "钱包转账单",
 }
 
 // describeOrder 返回用于告警与日志的单据描述（不含卡号）。
@@ -82,6 +85,18 @@ func describeOrder(o *Order) string {
 	}
 	if o.Kind == KindStatus {
 		parts = append(parts, "目标 "+o.TargetStatus)
+	}
+	if o.Kind == KindConversion || o.Kind == KindWalletTransfer {
+		if amt, err := marswallex.FormatAmount(o.AmountCents); err == nil {
+			a := "金额 " + amt + " " + o.Currency
+			if o.Kind == KindConversion && o.BuyCurrency != "" {
+				a += " → " + o.BuyCurrency
+			}
+			parts = append(parts, a)
+		}
+		if o.Kind == KindWalletTransfer {
+			parts = append(parts, o.PayerAccountNo+" → "+o.PayeeAccountNo)
+		}
 	}
 	if len(parts) == 0 {
 		return name + " " + o.OutOrderNo
@@ -242,6 +257,15 @@ func isInflightConflict(err error) bool {
 	return strings.Contains(se.Error(), "mw_card_orders.card_id")
 }
 
+// isWalletInflightConflict 判断 INSERT 是否撞上 uq_mw_orders_wallet_inflight（兑换、钱包转账已有在途单）。
+func isWalletInflightConflict(err error) bool {
+	var se sqlite3.Error
+	if !errors.As(err, &se) || se.ExtendedCode != sqlite3.ErrConstraintUnique {
+		return false
+	}
+	return strings.Contains(se.Error(), "mw_card_orders.kind")
+}
+
 // insertPending 写入一条 pending 单据，补全单号、状态、时间与自增 ID。
 func (s *Service) insertPending(ctx context.Context, o *Order) error {
 	now := s.now()
@@ -249,10 +273,14 @@ func (s *Service) insertPending(ctx context.Context, o *Order) error {
 	o.State = StatePending
 	o.CreatedAt, o.UpdatedAt = now.Unix(), now.Unix()
 	res, err := db.DB.ExecContext(ctx, `INSERT INTO mw_card_orders (out_order_no, kind, card_id, card_holder_id, product_id,
-		amount_cents, currency, target_status, state, requested_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		amount_cents, currency, target_status, state, requested_by, note, buy_currency, payer_account_no, payee_account_no,
+		created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		o.OutOrderNo, o.Kind, o.CardID, o.CardHolderID, o.ProductID, o.AmountCents, o.Currency, o.TargetStatus,
-		o.State, o.RequestedBy, o.CreatedAt, o.UpdatedAt)
+		o.State, o.RequestedBy, o.Note, o.BuyCurrency, o.PayerAccountNo, o.PayeeAccountNo, o.CreatedAt, o.UpdatedAt)
 	if err != nil {
+		if isWalletInflightConflict(err) {
+			return fmt.Errorf("%w: 已有在途的%s，请先处理", ErrInflight, kindNames[o.Kind])
+		}
 		if isInflightConflict(err) {
 			return fmt.Errorf("%w: 卡 %s 已有在途的转入或转出单", ErrCardBusy, o.CardID)
 		}

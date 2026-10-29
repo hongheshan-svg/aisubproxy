@@ -29,3 +29,13 @@ func TestOutOrderNoFormat(t *testing.T) {
 		}
 	}
 }
+
+func TestNewOutIDPrefixes(t *testing.T) {
+	now := time.Date(2026, 10, 28, 4, 0, 0, 0, time.UTC)
+	for _, p := range []string{"MC", "MT", "AC", "CH"} {
+		n := newOutID(p, now)
+		if len(n) != 22 || n[:2] != p || n[2:14] != "261028040000" {
+			t.Fatalf("%s: %q", p, n)
+		}
+	}
+}

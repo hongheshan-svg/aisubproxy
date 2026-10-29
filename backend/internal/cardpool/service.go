@@ -17,6 +17,7 @@ var (
 	ErrLeaseInvalid = errors.New("租约无效或已过期")
 	ErrCardBusy     = errors.New("卡正忙，有在途操作")
 	ErrBadRequest   = errors.New("请求参数不合法")
+	ErrInflight     = errors.New("已有在途单据")
 )
 
 // badRequestError 的 Error() 即消息本身，并可被 errors.Is(err, ErrBadRequest) 识别。
@@ -43,6 +44,9 @@ const (
 	KindRecharge = "recharge"
 	KindWithdraw = "withdraw"
 	KindStatus   = "status"
+
+	KindConversion     = "conversion"
+	KindWalletTransfer = "wallet_transfer"
 )
 
 // 单据状态

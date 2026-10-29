@@ -169,3 +169,81 @@ func TestOTPEventIDColumnAndUniqueIndex(t *testing.T) {
 		t.Fatalf("event_id 为 NULL 不受唯一约束: %v", err)
 	}
 }
+
+func TestMigrateCardPoolWalletIdempotent(t *testing.T) {
+	c, err := sql.Open("sqlite3", ":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetMaxOpenConns(1)
+	old := db.DB
+	db.DB = c
+	t.Cleanup(func() { db.DB = old; c.Close() })
+	if err := db.MigrateMarsWallex(); err != nil {
+		t.Fatal(err)
+	}
+	// 子项目 2 的旧表（无钱包列）与一条旧单据
+	for _, s := range []string{
+		`CREATE TABLE mw_cardholders (card_holder_id TEXT PRIMARY KEY, first_name TEXT NOT NULL DEFAULT '', last_name TEXT NOT NULL DEFAULT '',
+			country_code TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT '', remark TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
+			synced_at INTEGER, created_at INTEGER NOT NULL)`,
+		`CREATE TABLE mw_card_orders (id INTEGER PRIMARY KEY AUTOINCREMENT, out_order_no TEXT NOT NULL UNIQUE, kind TEXT NOT NULL,
+			card_id TEXT NOT NULL DEFAULT '', card_holder_id TEXT NOT NULL DEFAULT '', product_id TEXT NOT NULL DEFAULT '',
+			amount_cents INTEGER NOT NULL DEFAULT 0, currency TEXT NOT NULL DEFAULT '', target_status TEXT NOT NULL DEFAULT '',
+			state TEXT NOT NULL, platform_txn_id TEXT NOT NULL DEFAULT '', ever_unknown INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0,
+			next_check_at INTEGER, first_sent_at INTEGER, last_error TEXT NOT NULL DEFAULT '', requested_by TEXT NOT NULL DEFAULT '',
+			note TEXT NOT NULL DEFAULT '', alerted_stale INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, finished_at INTEGER)`,
+		`INSERT INTO mw_card_orders (out_order_no, kind, card_id, state, created_at, updated_at) VALUES ('old1', 'recharge', 'c1', 'success', 1, 1)`,
+		`INSERT INTO mw_cardholders (card_holder_id, created_at) VALUES ('h1', 1)`,
+	} {
+		if _, err := c.Exec(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		if err := db.MigrateCardPool(); err != nil {
+			t.Fatalf("第 %d 次迁移: %v", i+1, err)
+		}
+	}
+	var a, b, p, d, oh string
+	if err := c.QueryRow(`SELECT buy_currency, payer_account_no, payee_account_no, detail FROM mw_card_orders WHERE out_order_no='old1'`).
+		Scan(&a, &b, &p, &d); err != nil {
+		t.Fatal(err)
+	}
+	if a != "" || b != "" || p != "" || d != "" {
+		t.Fatalf("旧单据新列应为空串: %q %q %q %q", a, b, p, d)
+	}
+	if err := c.QueryRow(`SELECT out_card_holder_id FROM mw_cardholders WHERE card_holder_id='h1'`).Scan(&oh); err != nil || oh != "" {
+		t.Fatalf("out_card_holder_id=%q err=%v", oh, err)
+	}
+	var n int
+	if err := c.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name IN
+		('mw_accounts','mw_cardholder_submissions','uq_mw_orders_wallet_inflight')`).Scan(&n); err != nil || n != 3 {
+		t.Fatalf("新对象数量 = %d, err=%v", n, err)
+	}
+}
+
+func TestWalletInflightIndex(t *testing.T) {
+	dbtest.Open(t)
+	ins := func(no, kind, state string) error {
+		_, err := db.DB.Exec(`INSERT INTO mw_card_orders (out_order_no, kind, state, created_at, updated_at)
+			VALUES (?, ?, ?, 1, 1)`, no, kind, state)
+		return err
+	}
+	if err := ins("w1", "conversion", "unknown"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ins("w2", "conversion", "pending"); err == nil {
+		t.Fatal("在途兑换单应拒绝第二笔")
+	}
+	if err := ins("w3", "wallet_transfer", "pending"); err != nil {
+		t.Fatalf("钱包转账单应可插入: %v", err)
+	}
+	if _, err := db.DB.Exec(`UPDATE mw_card_orders SET state='success' WHERE out_order_no='w1'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := ins("w4", "conversion", "pending"); err != nil {
+		t.Fatalf("兑换单结束后应可再插: %v", err)
+	}
+}

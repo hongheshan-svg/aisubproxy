@@ -233,3 +233,66 @@ func (s *Service) onAccountStatusChanged(ctx context.Context, ev *marswallex.Web
 	}
 	return "账户 " + no + " 状态：" + strings.TrimSpace(d.AccountStatus), nil
 }
+
+// ReceivingAddresses 查询平台数币收款地址；平台返回 null 时给空切片。
+func (s *Service) ReceivingAddresses(ctx context.Context) ([]marswallex.ReceivingAddress, error) {
+	c, err := s.opts.Client()
+	if err != nil {
+		return nil, err
+	}
+	out, err := c.ListReceivingAddresses(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if out == nil {
+		out = []marswallex.ReceivingAddress{}
+	}
+	return out, nil
+}
+
+// SerialsQuery 为账户流水查询条件；Start/End 为 Unix 秒。
+type SerialsQuery struct {
+	AccountNo, Currency string
+	Start, End          int64
+	Page, PageSize      int
+}
+
+const maxSerialsSpan = 90 * 86400
+
+// AccountSerials 查询账户流水（只读透传）。账户号与币种必填，窗口最长 90 天。
+func (s *Service) AccountSerials(ctx context.Context, q SerialsQuery) ([]marswallex.AccountSerial, int, error) {
+	if strings.TrimSpace(q.AccountNo) == "" || strings.TrimSpace(q.Currency) == "" {
+		return nil, 0, badRequest("账户号与币种必填")
+	}
+	if q.End <= q.Start {
+		return nil, 0, badRequest("结束时间必须晚于开始时间")
+	}
+	if q.End-q.Start > maxSerialsSpan {
+		return nil, 0, badRequest("查询跨度不能超过 90 天")
+	}
+	if q.Page < 1 {
+		q.Page = 1
+	}
+	if q.PageSize < 1 {
+		q.PageSize = defaultPageSize
+	}
+	if q.PageSize > maxPageSize {
+		q.PageSize = maxPageSize
+	}
+	c, err := s.opts.Client()
+	if err != nil {
+		return nil, 0, err
+	}
+	p, err := c.ListAccountSerials(ctx, marswallex.AccountSerialsQuery{
+		PageNo: q.Page, PageSize: q.PageSize, AccountNo: q.AccountNo, Currency: q.Currency,
+		StartTime: q.Start, EndTime: q.End,
+	})
+	if err != nil {
+		return nil, 0, err
+	}
+	rows := p.Data
+	if rows == nil {
+		rows = []marswallex.AccountSerial{}
+	}
+	return rows, int(p.Count), nil
+}

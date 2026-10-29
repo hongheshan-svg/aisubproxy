@@ -261,3 +261,66 @@ func TestAccountStatusWebhook(t *testing.T) {
 		t.Fatal("标记清除后不应再同步")
 	}
 }
+
+func TestReceivingAddresses(t *testing.T) {
+	s, mw, _, _ := newTestService(t)
+	ctx := context.Background()
+	mw.On("GET", "/v1/receiving/receiving-address", mwtest.OK(`[
+		{"currencies":["USDT"],"address":"0xabc","chain_type":"ETH"},
+		{"currencies":["USDT","USDC"],"address":"Txyz","chain_type":"TRX"}]`))
+	got, err := s.ReceivingAddresses(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].Address != "0xabc" || got[1].ChainType != "TRX" || len(got[1].Currencies) != 2 {
+		t.Fatalf("地址 = %+v", got)
+	}
+	mw.On("GET", "/v1/receiving/receiving-address", mwtest.OK(`[]`))
+	got, err = s.ReceivingAddresses(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || len(got) != 0 {
+		t.Fatalf("空数据应返回空切片，得到 %#v", got)
+	}
+}
+
+func TestAccountSerialsValidation(t *testing.T) {
+	s, mw, clock, _ := newTestService(t)
+	ctx := context.Background()
+	start := clock.Now().Unix() - 3600
+	end := clock.Now().Unix()
+	bad := []SerialsQuery{
+		{Currency: "USD", Start: start, End: end},
+		{AccountNo: "A1", Start: start, End: end},
+		{AccountNo: "A1", Currency: "USD", Start: end, End: end},
+		{AccountNo: "A1", Currency: "USD", Start: end, End: start},
+		{AccountNo: "A1", Currency: "USD", Start: end - 90*86400 - 1, End: end},
+	}
+	for i, q := range bad {
+		if _, _, err := s.AccountSerials(ctx, q); !errors.Is(err, ErrBadRequest) {
+			t.Fatalf("用例 %d 应为 ErrBadRequest，得到 %v", i, err)
+		}
+	}
+	if n := len(mw.Requests("GET", "/v1/accounts/serials")); n != 0 {
+		t.Fatalf("校验失败不应请求平台，请求数 %d", n)
+	}
+	mw.On("GET", "/v1/accounts/serials", mwtest.Reply{Body: `{"count":"1","data":[{"serial_id":"S1","currency":"USD","amount":"1.00","flag_dc":"C","transaction_type":"X","create_time":1700000000}]}`})
+	rows, total, err := s.AccountSerials(ctx, SerialsQuery{AccountNo: "A1", Currency: "USD", Start: end - 90*86400, End: end, PageSize: 500})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(rows) != 1 || rows[0].SerialID != "S1" {
+		t.Fatalf("rows=%+v total=%d", rows, total)
+	}
+	reqs := mw.Requests("GET", "/v1/accounts/serials")
+	if len(reqs) != 1 {
+		t.Fatalf("请求数 = %d", len(reqs))
+	}
+	q := reqs[0].RawQuery
+	for _, want := range []string{"page_size=100", "page_no=1", fmt.Sprintf("start_time=%d", end-90*86400), fmt.Sprintf("end_time=%d", end), "account_no=A1", "currency=USD"} {
+		if !strings.Contains(q, want) {
+			t.Fatalf("查询串 %q 缺少 %s", q, want)
+		}
+	}
+}

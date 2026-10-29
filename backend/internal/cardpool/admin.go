@@ -708,3 +708,75 @@ func (s *Service) Overview(ctx context.Context) (*Overview, error) {
 	}
 	return ov, nil
 }
+
+// ---------- 卡转入转出明细 ----------
+
+const (
+	transferWindowDays = 90
+	transferPageSize   = 50
+	transferMaxPages   = 200 // 防止平台 count 异常时死循环
+)
+
+// CardTransferRow 为平台转入转出明细加上本地单据比对结果。
+type CardTransferRow struct {
+	marswallex.CardBalanceTransaction
+	Origin     string `json:"origin"`      // "local" / "external"
+	LocalState string `json:"local_state"` // 本地单据状态；external 为空
+	Mismatch   bool   `json:"mismatch"`
+}
+
+// CardTransfers 拉取卡近 90 天（不早于入池时间）的平台明细，并与本地单据比对：
+// 平台已成功而本地仍非成功态的标记为不一致。按 create_time 倒序。
+func (s *Service) CardTransfers(ctx context.Context, cardID string) ([]CardTransferRow, error) {
+	card, err := getCard(ctx, cardID)
+	if err != nil {
+		return nil, err
+	}
+	c, err := s.opts.Client()
+	if err != nil {
+		return nil, err
+	}
+	end := s.now().Unix()
+	start := end - transferWindowDays*86400
+	if card.CreatedAt > start {
+		start = card.CreatedAt
+	}
+	var all []marswallex.CardBalanceTransaction
+	for page := 1; page <= transferMaxPages; page++ {
+		p, err := c.ListCardBalanceTransactions(ctx, marswallex.CardBalanceTransactionsQuery{
+			PageNo: page, PageSize: transferPageSize, CardID: cardID, StartTime: start, EndTime: end,
+		})
+		if err != nil {
+			return nil, err
+		}
+		if len(p.Data) == 0 {
+			break
+		}
+		all = append(all, p.Data...)
+		if int64(len(all)) >= int64(p.Count) {
+			break
+		}
+	}
+	rows := make([]CardTransferRow, 0, len(all))
+	for _, t := range all {
+		row := CardTransferRow{CardBalanceTransaction: t, Origin: "external"}
+		if t.OutOrderNo != "" {
+			o, err := getOrder(ctx, t.OutOrderNo)
+			if err != nil && !errors.Is(err, ErrNotFound) {
+				return nil, err
+			}
+			if err == nil {
+				row.Origin, row.LocalState = "local", o.State
+				if t.Status == "SUCCESS" {
+					switch o.State {
+					case StateFailed, StateNotSent, StatePending, StateProcessing, StateUnknown, StateNeedsReview:
+						row.Mismatch = true
+					}
+				}
+			}
+		}
+		rows = append(rows, row)
+	}
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].CreateTime.Time.After(rows[j].CreateTime.Time) })
+	return rows, nil
+}

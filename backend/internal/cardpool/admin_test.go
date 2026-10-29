@@ -3,6 +3,7 @@ package cardpool
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -393,5 +394,77 @@ func TestOverviewCounts(t *testing.T) {
 	ov, err = s2.Overview(ctx)
 	if err != nil || ov.BalanceError == "" {
 		t.Fatalf("%v %+v", err, ov)
+	}
+}
+
+func TestCardTransfersMarks(t *testing.T) {
+	s, mw, clock, _ := newTestService(t)
+	ctx := context.Background()
+	now := clock.Now().Unix()
+	insertCard(t, Card{CardID: "C1", CreatedAt: now - 10*86400})
+	insertCard(t, Card{CardID: "OLD", CreatedAt: now - 200*86400})
+	ok := insertOrder(t, Order{Kind: KindRecharge, CardID: "C1", State: StateSuccess})
+	failed := insertOrder(t, Order{Kind: KindRecharge, CardID: "C1", State: StateFailed})
+	unk := insertOrder(t, Order{Kind: KindRecharge, CardID: "C1", State: StateUnknown})
+	item := func(no, status string, ts int64) string {
+		return fmt.Sprintf(`{"out_order_no":"%s","transaction_id":"T%s","card_id":"C1","currency":"USD","amount":"1.00","type":"IN","status":"%s","create_time":%d}`, no, no, status, ts)
+	}
+	items := []string{
+		item(ok.OutOrderNo, "SUCCESS", now-500),
+		item("EXT1", "SUCCESS", now-400),
+		item(failed.OutOrderNo, "SUCCESS", now-300),
+		item(unk.OutOrderNo, "SUCCESS", now-200),
+		item(ok.OutOrderNo+"x", "FAIL", now-100),
+	}
+	mw.On("GET", "/v1/card/balance-transactions", mwtest.Reply{Body: fmt.Sprintf(`{"count":"5","data":[%s]}`, strings.Join(items, ","))})
+	rows, err := s.CardTransfers(ctx, "C1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 5 {
+		t.Fatalf("行数 = %d", len(rows))
+	}
+	for i := 1; i < len(rows); i++ {
+		if rows[i-1].CreateTime.Unix() < rows[i].CreateTime.Unix() {
+			t.Fatal("应按 create_time 倒序")
+		}
+	}
+	by := map[string]CardTransferRow{}
+	for _, r := range rows {
+		by[r.OutOrderNo] = r
+	}
+	if r := by[ok.OutOrderNo]; r.Origin != "local" || r.LocalState != StateSuccess || r.Mismatch {
+		t.Fatalf("本地成功单 = %+v", r)
+	}
+	if r := by["EXT1"]; r.Origin != "external" || r.LocalState != "" || r.Mismatch {
+		t.Fatalf("外部单 = %+v", r)
+	}
+	if r := by[failed.OutOrderNo]; r.Origin != "local" || !r.Mismatch {
+		t.Fatalf("本地 failed 应 mismatch: %+v", r)
+	}
+	if r := by[unk.OutOrderNo]; !r.Mismatch {
+		t.Fatalf("本地 unknown 应 mismatch: %+v", r)
+	}
+	if r := by[ok.OutOrderNo+"x"]; r.Mismatch {
+		t.Fatalf("平台 FAIL 不应 mismatch: %+v", r)
+	}
+	reqs := mw.Requests("GET", "/v1/card/balance-transactions")
+	if q := reqs[0].RawQuery; !strings.Contains(q, fmt.Sprintf("start_time=%d", now-10*86400)) ||
+		!strings.Contains(q, fmt.Sprintf("end_time=%d", now)) || !strings.Contains(q, "page_size=50") {
+		t.Fatalf("查询串 = %s", q)
+	}
+
+	// 卡 200 天前入池：窗口起点钳到 now-90 天
+	mw.On("GET", "/v1/card/balance-transactions", mwtest.Reply{Body: `{"count":"0","data":[]}`})
+	if _, err := s.CardTransfers(ctx, "OLD"); err != nil {
+		t.Fatal(err)
+	}
+	reqs = mw.Requests("GET", "/v1/card/balance-transactions")
+	if q := reqs[len(reqs)-1].RawQuery; !strings.Contains(q, fmt.Sprintf("start_time=%d", now-90*86400)) {
+		t.Fatalf("查询串 = %s，期望 start_time = now-90 天", q)
+	}
+
+	if _, err := s.CardTransfers(ctx, "NOPE"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("卡不在池应 ErrNotFound，得到 %v", err)
 	}
 }

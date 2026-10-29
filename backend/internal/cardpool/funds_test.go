@@ -122,9 +122,59 @@ func TestConversionValidation(t *testing.T) {
 	}
 }
 
+func TestParseBalanceCents(t *testing.T) {
+	for s, want := range map[string]int64{
+		"100.123456": 10012, "0.009": 0, "100": 10000, "5.5": 550, "0.00": 0,
+		" 12.34 ": 1234, "007.10": 710, "999999999999.999": 99999999999999,
+	} {
+		if got, err := parseBalanceCents(s); err != nil || got != want {
+			t.Fatalf("parseBalanceCents(%q) = %d, %v，期望 %d", s, got, err, want)
+		}
+	}
+	for _, s := range []string{"", " ", "1,000.00", "-1.00", "+1.00", "1.", ".5", "abc", "1e3", "1.2.3", "１２", "1000000000000.00"} {
+		if got, err := parseBalanceCents(s); err == nil {
+			t.Fatalf("parseBalanceCents(%q) = %d，期望报错", s, got)
+		}
+	}
+}
+
+// 余额多于 2 位小数时向下取整到分：100.123456 可卖 100.12，不可卖 100.13。
+func TestFundsBalanceFloorsExtraDecimals(t *testing.T) {
+	s, mw, _, _ := newTestService(t)
+	ctx := context.Background()
+	mw.On("GET", pathAccounts, acctPage(
+		acctJSON("M1", "MAIN", "ACTIVE", "USDT", "100.123456"),
+		acctJSON("S1", "SUB_ACCOUNT", "ACTIVE")))
+	_, err := s.SubmitConversion(ctx, ConversionParams{SellCurrency: "USDT", BuyCurrency: "USD", SellCents: 10013, By: "admin"})
+	if !errors.Is(err, ErrBadRequest) || strings.Contains(err.Error(), "余额格式无法识别") {
+		t.Fatalf("兑换 100.13: err = %v，期望余额不足", err)
+	}
+	_, err = s.SubmitWalletTransfer(ctx, WalletTransferParams{PayerAccountNo: "M1", PayeeAccountNo: "S1",
+		Currency: "USDT", AmountCents: 10013, By: "admin"})
+	if !errors.Is(err, ErrBadRequest) || strings.Contains(err.Error(), "余额格式无法识别") {
+		t.Fatalf("转账 100.13: err = %v，期望余额不足", err)
+	}
+	mustNoFundsRequests(t, mw)
+
+	mw.On("POST", pathConversion, mwtest.OK(`{"transaction_id":"CV1"}`))
+	mw.On("POST", pathWalletTransfer, mwtest.OK(`{"order_no":"TO1","status":"PROCESSING"}`))
+	c, err := s.SubmitConversion(ctx, ConversionParams{SellCurrency: "USDT", BuyCurrency: "USD", SellCents: 10012, By: "admin"})
+	if err != nil || c.State != StateProcessing {
+		t.Fatalf("兑换 100.12: %+v %v", c, err)
+	}
+	if body := requestData(t, mw.Requests("POST", pathConversion)[0]); body["sell_amount"] != "100.12" {
+		t.Fatalf("请求体 = %v", body)
+	}
+	x, err := s.SubmitWalletTransfer(ctx, WalletTransferParams{PayerAccountNo: "M1", PayeeAccountNo: "S1",
+		Currency: "USDT", AmountCents: 10012, By: "admin"})
+	if err != nil || x.State != StateProcessing {
+		t.Fatalf("转账 100.12: %+v %v", x, err)
+	}
+}
+
 func TestFundsRejectUnparsableBalance(t *testing.T) {
 	ctx := context.Background()
-	for name, bal := range map[string]string{"千分位": "1,000.00", "空串": ""} {
+	for name, bal := range map[string]string{"千分位": "1,000.00", "空串": "", "负数": "-5.00", "科学计数": "1e3"} {
 		t.Run(name, func(t *testing.T) {
 			s, mw, _, _ := newTestService(t)
 			mw.On("GET", pathAccounts, acctPage(

@@ -519,6 +519,17 @@ func TestRecheckAndConfirmFailed(t *testing.T) {
 		t.Fatalf("%+v", c)
 	}
 
+	// 钱包转账单的备注保留，确认说明接在后面
+	o4 := insertOrder(t, Order{Kind: KindWalletTransfer, AmountCents: 100, Currency: "USD", PayerAccountNo: "M1",
+		PayeeAccountNo: "S1", Note: "备用金", State: StateNeedsReview, EverUnknown: true, FirstSentAt: &sent})
+	got, err = s.ConfirmFailed(ctx, o4.OutOrderNo, " 后台无此转账 ", "admin")
+	if err != nil || got.State != StateFailed || got.Note != "备用金；后台无此转账" {
+		t.Fatalf("%+v %v", got, err)
+	}
+	if got := mustGetOrder(t, o4.OutOrderNo); got.Note != "备用金；后台无此转账" {
+		t.Fatalf("%+v", got)
+	}
+
 	o3 := insertOrder(t, Order{Kind: KindRecharge, CardID: "c3", AmountCents: 100, Currency: "USD", State: StateProcessing})
 	if _, err := s.ConfirmFailed(ctx, o3.OutOrderNo, "x", "admin"); !errors.Is(err, ErrBadRequest) {
 		t.Fatalf("processing 不能确认失败, got %v", err)

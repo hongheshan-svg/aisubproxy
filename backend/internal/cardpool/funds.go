@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 
@@ -36,13 +37,33 @@ func normCurrency(s string) (string, error) {
 	return c, nil
 }
 
-// checkAvailable 检查账户该币种的可用余额不少于 cents。余额按平台原字符串解析，无法解析时拒绝。
+// balanceRe 为平台余额字符串：非负、不带符号与千分位，小数位数不限。
+var balanceRe = regexp.MustCompile(`^\d+(\.\d+)?$`)
+
+// parseBalanceCents 把平台余额字符串向下取整到分。下单金额只到 2 位小数，余额可以更多位（零头留在账户里）。
+// 空串、符号、千分位、非数字等报错；整数部分沿用 ParseAmount 的上限。
+func parseBalanceCents(s string) (int64, error) {
+	s = strings.TrimSpace(s)
+	if !balanceRe.MatchString(s) {
+		return 0, fmt.Errorf("余额格式非法: %q", s)
+	}
+	intPart, frac, _ := strings.Cut(s, ".")
+	if len(frac) > 2 {
+		frac = frac[:2]
+	}
+	if frac != "" {
+		intPart += "." + frac
+	}
+	return marswallex.ParseAmount(intPart)
+}
+
+// checkAvailable 检查账户该币种的可用余额（向下取整到分）不少于 cents。余额格式无法识别时拒绝。
 func checkAvailable(a *Account, who, currency string, cents int64) error {
 	for _, b := range a.Balances {
 		if normStatus(b.Currency) != currency {
 			continue
 		}
-		avail, err := marswallex.ParseAmount(strings.TrimSpace(b.AvailableBalance))
+		avail, err := parseBalanceCents(b.AvailableBalance)
 		if err != nil {
 			return badRequest(fmt.Sprintf("%s %s 的 %s 余额格式无法识别：%q", who, a.AccountNo, currency, b.AvailableBalance))
 		}

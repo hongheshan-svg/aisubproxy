@@ -588,7 +588,8 @@ func (s *Service) Recheck(ctx context.Context, outOrderNo string) (*Order, error
 	return s.finalize(ctx, outOrderNo, r, "recheck")
 }
 
-// ConfirmFailed 由管理员在 MarsWallex 后台核对后，把 needs_review 的单据确认为失败。备注必填。
+// ConfirmFailed 由管理员在 MarsWallex 后台核对后，把 needs_review 的单据确认为失败。备注必填，
+// 接在原有备注（如钱包转账备注）之后，不覆盖。
 func (s *Service) ConfirmFailed(ctx context.Context, outOrderNo, note, by string) (*Order, error) {
 	note = strings.TrimSpace(note)
 	if note == "" {
@@ -601,7 +602,8 @@ func (s *Service) ConfirmFailed(ctx context.Context, outOrderNo, note, by string
 	if o.State != StateNeedsReview {
 		return nil, badRequest("只有待人工核对的单据可以确认失败")
 	}
-	u := newOrderSet(StateFailed).set("note", note).set("finished_at", s.now().Unix())
+	// 原备注在插入后只由这里改写，且只有一次能从 needs_review 转出，读到的 o.Note 即为最新
+	u := newOrderSet(StateFailed).set("note", joinNote(o.Note, note)).set("finished_at", s.now().Unix())
 	got, applied, err := s.transition(ctx, outOrderNo, []string{StateNeedsReview}, u,
 		func(ctx context.Context, tx *sql.Tx, o *Order, now int64) error {
 			if o.CardID == "" {

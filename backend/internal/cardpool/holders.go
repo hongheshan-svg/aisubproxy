@@ -397,7 +397,8 @@ func (s *Service) SetCardholderStatus(ctx context.Context, id, status, by string
 	return s.refreshAfterChange(ctx, id, status)
 }
 
-// refreshAfterChange 在平台已接受变更后重新导入；失败只记日志，status 非空时直接写入本地，返回本地记录。
+// refreshAfterChange 在平台已接受变更后重新导入（导入时按 §7.5 告警）；失败只记日志，
+// status 非空时直接写入本地并同样按 §7.5 告警，返回本地记录。
 func (s *Service) refreshAfterChange(ctx context.Context, id, status string) (*Cardholder, error) {
 	h, err := s.RefreshCardholder(ctx, id)
 	if err == nil {
@@ -406,9 +407,14 @@ func (s *Service) refreshAfterChange(ctx context.Context, id, status string) (*C
 	log.Printf("[cardpool] 持卡人 %s 变更已提交，重新导入失败（%s），可稍后手动刷新", id, safeErr(err))
 	wctx := context.WithoutCancel(ctx)
 	if status != "" {
+		old, err := getCardholder(wctx, id)
+		if err != nil {
+			return nil, err
+		}
 		if _, err := db.DB.ExecContext(wctx, `UPDATE mw_cardholders SET status = ? WHERE card_holder_id = ?`, status, id); err != nil {
 			return nil, err
 		}
+		s.holderStatusChanged(id, old.Status, status, "")
 	}
 	return getCardholder(wctx, id)
 }
@@ -416,7 +422,8 @@ func (s *Service) refreshAfterChange(ctx context.Context, id, status string) (*C
 // ---------- 状态推送 ----------
 
 // linkHolderByEvent 处理本地没有的持卡人的状态推送：out_card_holder_id 匹配 submitted / unknown 提交记录时
-// 导入并关联，按 §7.5 告警（之前无状态）；否则备注「持卡人未导入」。
+// 导入并关联；推送本身就是状态变化通知，所以按之前无状态告警（如首次推送即 APPROVED 发通过通知）。
+// 不匹配时备注「持卡人未导入」。
 func (s *Service) linkHolderByEvent(ctx context.Context, id, outID string) (string, error) {
 	if outID == "" {
 		return "持卡人未导入", nil
@@ -436,11 +443,21 @@ func (s *Service) linkHolderByEvent(ctx context.Context, id, outID string) (stri
 		// 不带平台 message 进事件错误与日志
 		return "", fmt.Errorf("导入持卡人 %s 失败: %s", id, safeErr(err))
 	}
-	s.holderStatusAlert(id, "", h.Status, h.Remark)
+	s.holderStatusChanged(id, "", h.Status, h.Remark)
 	return "已关联提交记录 " + outID + "，持卡人状态 " + h.Status, nil
 }
 
-// holderStatusAlert 按 spec §7.5 处理持卡人状态变化的告警。
+// holderStatusChanged 是持卡人本地状态变化的唯一告警入口，推送、导入 / 刷新、启停回写都走这里：
+// 新状态为空或与旧状态相同不告警，否则按 spec §7.5 告警。key 按天去重，所以刷新与随后的推送不会重复发。
+func (s *Service) holderStatusChanged(id, old, status, remark string) {
+	old, status = normStatus(old), normStatus(status)
+	if status == "" || status == old {
+		return
+	}
+	s.holderStatusAlert(id, old, status, remark)
+}
+
+// holderStatusAlert 按 spec §7.5 处理持卡人状态变化的告警；只由 holderStatusChanged 调用。
 func (s *Service) holderStatusAlert(id, old, status, remark string) {
 	old, status, remark = normStatus(old), normStatus(status), strings.TrimSpace(remark)
 	switch status {

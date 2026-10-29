@@ -573,7 +573,7 @@ func (s *Service) tryExternalStatus(ctx context.Context, c *Card, status string)
 	return "平台状态更新为 " + status, true, nil
 }
 
-// onCardholderStatusChange 更新已导入的持卡人并按 spec §7.5 告警（通过通知 key holderok:<id>，其余 holder:<id>）。
+// onCardholderStatusChange 更新已导入的持卡人，状态有变化时按 spec §7.5 告警（通过通知 key holderok:<id>，其余 holder:<id>）。
 // 本地没有该持卡人时，out_card_holder_id 匹配 submitted / unknown 提交记录则导入并关联，否则只备注「持卡人未导入」。
 func (s *Service) onCardholderStatusChange(ctx context.Context, ev *marswallex.WebhookEvent) (string, error) {
 	var d marswallex.CardholderStatusChangeData
@@ -603,7 +603,7 @@ func (s *Service) onCardholderStatusChange(ctx context.Context, ev *marswallex.W
 	if n == 0 {
 		return "持卡人未导入", nil
 	}
-	s.holderStatusAlert(id, old.Status, status, d.Remark)
+	s.holderStatusChanged(id, old.Status, status, d.Remark)
 	return "持卡人状态更新为 " + status, nil
 }
 

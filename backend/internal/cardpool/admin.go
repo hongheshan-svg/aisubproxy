@@ -23,14 +23,14 @@ const (
 
 // ---------- 持卡人 ----------
 
-// ImportCardholder 从平台读取持卡人并写入；已存在则更新平台字段（备注 note 保留）。
-// 平台返回的 out_card_holder_id 一并写入，匹配 submitted / unknown 提交记录时标 linked。
+// ImportCardholder 从平台读取持卡人并写入；已存在则更新平台字段（备注 note 保留），状态有变化时按 §7.5 告警，
+// 首次导入不告警。平台返回的 out_card_holder_id 一并写入，匹配 submitted / unknown 提交记录时标 linked。
 func (s *Service) ImportCardholder(ctx context.Context, id, by string) (*Cardholder, error) {
 	return s.importCardholder(ctx, id, "")
 }
 
 // importCardholder 同 ImportCardholder；平台没有给出可信的 out_card_holder_id 时用 fallbackOutID（来自推送）。
-// 只取姓名、国家、状态、备注，其余资料不落地。
+// 只取姓名、国家、状态、备注，其余资料不落地。刷新、修改、启停后的重新导入都经过这里。
 func (s *Service) importCardholder(ctx context.Context, id, fallbackOutID string) (*Cardholder, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
@@ -58,6 +58,12 @@ func (s *Service) importCardholder(ctx context.Context, id, fallbackOutID string
 		return nil, err
 	}
 	defer tx.Rollback()
+	var oldStatus string
+	err = tx.QueryRowContext(ctx, `SELECT status FROM mw_cardholders WHERE card_holder_id = ?`, id).Scan(&oldStatus)
+	existed := err == nil
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return nil, err
+	}
 	// 平台没给商户侧 ID 时保留已有的
 	_, err = tx.ExecContext(ctx, `INSERT INTO mw_cardholders (card_holder_id, first_name, last_name, country_code, status, remark,
 		synced_at, created_at, out_card_holder_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -75,6 +81,9 @@ func (s *Service) importCardholder(ctx context.Context, id, fallbackOutID string
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
+	}
+	if existed {
+		s.holderStatusChanged(id, oldStatus, normStatus(d.Status), d.Remark)
 	}
 	return getCardholder(ctx, id)
 }

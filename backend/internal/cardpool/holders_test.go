@@ -529,7 +529,7 @@ func TestAbandonSubmission(t *testing.T) {
 
 func TestUpdateCardholder(t *testing.T) {
 	ctx := context.Background()
-	s, mw, _, _ := newTestService(t)
+	s, mw, _, alerts := newTestService(t)
 	if _, err := s.UpdateCardholder(ctx, "h1", validUSProfile(), "admin"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("未导入应 ErrNotFound: %v", err)
 	}
@@ -593,11 +593,71 @@ func TestUpdateCardholder(t *testing.T) {
 	if h.Status != "PENDING_REVIEW" || h.FirstName != "John" {
 		t.Fatalf("持卡人: %+v", h)
 	}
+	// §7.5：修改后刷新得到 APPROVED → PENDING_REVIEW，告警一次
+	if alerts.Count() != 1 || alertsContaining(alerts, "h1") != 1 || alertsContaining(alerts, "PENDING_REVIEW") != 1 {
+		t.Fatalf("修改后重新审核应告警一次: %v", alerts.Texts())
+	}
+	// 随后到达的同状态推送不再告警
+	e := holderStatusEvent(t, "h1", "", "PENDING_REVIEW", "")
+	mustProcessEvents(t, s)
+	mustBeProcessed(t, e, "")
+	if alerts.Count() != 1 {
+		t.Fatalf("推送不应重复告警: %v", alerts.Texts())
+	}
+}
+
+// 刷新与导入按 §7.5 告警：已在本地且状态有变化才告警，首次导入不告警。
+func TestRefreshCardholderAlerts(t *testing.T) {
+	ctx := context.Background()
+	s, mw, _, alerts := newTestService(t)
+	mw.On("GET", pathHolder, mwtest.OK(holderDetailJSON("h1", "", "APPROVED", "")))
+	if _, err := s.ImportCardholder(ctx, "h1", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if alerts.Count() != 0 {
+		t.Fatalf("首次导入不应告警: %v", alerts.Texts())
+	}
+	// 状态没变：不告警
+	if _, err := s.RefreshCardholder(ctx, "h1"); err != nil {
+		t.Fatal(err)
+	}
+	if alerts.Count() != 0 {
+		t.Fatalf("状态未变不应告警: %v", alerts.Texts())
+	}
+
+	insertHolder(t, "h2", "PENDING_REVIEW")
+	mw.On("GET", "/v1/cardholder/h2", mwtest.OK(holderDetailJSON("h2", "", "APPROVED", "")))
+	h, err := s.RefreshCardholder(ctx, "h2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.Status != "APPROVED" {
+		t.Fatalf("持卡人: %+v", h)
+	}
+	if got := alerts.Texts(); len(got) != 1 || !strings.Contains(got[0], "MarsWallex 持卡人 h2 已通过审核") {
+		t.Fatalf("手动刷新应发通过通知一次: %v", got)
+	}
+	// 随后到达的同状态推送不再通知
+	e := holderStatusEvent(t, "h2", "", "APPROVED", "")
+	mustProcessEvents(t, s)
+	mustBeProcessed(t, e, "")
+	if alerts.Count() != 1 {
+		t.Fatalf("推送不应重复通知: %v", alerts.Texts())
+	}
+
+	// 重复导入时被驳回：附原因告警
+	mw.On("GET", "/v1/cardholder/h2", mwtest.OK(holderDetailJSON("h2", "", "REJECTED", "照片模糊")))
+	if _, err := s.ImportCardholder(ctx, "h2", "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if got := alerts.Texts(); len(got) != 2 || !strings.Contains(got[1], "h2") || !strings.Contains(got[1], "照片模糊") {
+		t.Fatalf("驳回应告警: %v", got)
+	}
 }
 
 func TestSetCardholderStatus(t *testing.T) {
 	ctx := context.Background()
-	s, mw, _, _ := newTestService(t)
+	s, mw, _, alerts := newTestService(t)
 	insertHolder(t, "h1", "APPROVED")
 	if _, err := s.SetCardholderStatus(ctx, "h1", "REJECTED", "admin"); !errors.Is(err, ErrBadRequest) {
 		t.Fatalf("want ErrBadRequest, got %v", err)
@@ -622,8 +682,11 @@ func TestSetCardholderStatus(t *testing.T) {
 	if h.Status != "DISABLED" || len(mw.Requests("GET", pathHolder)) != 1 {
 		t.Fatalf("持卡人: %+v", h)
 	}
+	if got := alerts.Texts(); len(got) != 1 || !strings.Contains(got[0], "h1") || !strings.Contains(got[0], "DISABLED") {
+		t.Fatalf("禁用后应按 §7.5 告警一次: %v", got)
+	}
 
-	// 接口成功但刷新失败：本地仍写入目标状态
+	// 接口成功但刷新失败：本地仍写入目标状态，同样按 §7.5 通知
 	mw.On("PUT", pathHolderStatus, mwtest.OK(`{"card_holder_id":"h1","status":"APPROVED"}`))
 	mw.On("GET", pathHolder, mwtest.Unknown())
 	h, err = s.SetCardholderStatus(ctx, "h1", "approved", "admin")
@@ -632,6 +695,9 @@ func TestSetCardholderStatus(t *testing.T) {
 	}
 	if h.Status != "APPROVED" {
 		t.Fatalf("持卡人: %+v", h)
+	}
+	if got := alerts.Texts(); len(got) != 2 || !strings.Contains(got[1], "MarsWallex 持卡人 h1 已通过审核") {
+		t.Fatalf("启用后应发通过通知: %v", got)
 	}
 }
 
@@ -649,6 +715,7 @@ func TestHolderStatusAlerts(t *testing.T) {
 		{"驳回", "hr", "PENDING_REVIEW", "REJECTED", "证件照模糊", []string{"hr", "REJECTED", "证件照模糊"}},
 		{"暂停", "hs", "APPROVED", "SUSPENDED", "", []string{"hs", "SUSPENDED"}},
 		{"禁用", "hd", "APPROVED", "DISABLED", "", []string{"hd", "DISABLED"}},
+		{"状态未变的重复推送", "hz", "SUSPENDED", "SUSPENDED", "", nil},
 	}
 	for _, c := range cases {
 		insertHolder(t, c.id, c.old)

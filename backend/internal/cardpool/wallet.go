@@ -198,12 +198,13 @@ func (s *Service) SetSubAccountStatus(ctx context.Context, accountNo, status, re
 	if apiErr != nil {
 		return nil, apiErr
 	}
-	if syncErr != nil { // 接口成功但同步失败：先直接改本地状态
+	// 同步可能共享了更早开始、数据发生在变更之前的那一轮，所以接口成功后无条件写入新状态
+	if _, err := db.DB.ExecContext(context.WithoutCancel(ctx), `UPDATE mw_accounts SET status = ? WHERE account_no = ?`, status, accountNo); err != nil {
+		return nil, err
+	}
+	if syncErr != nil {
 		log.Printf("[cardpool] 子账户 %s 状态已变更，同步账户失败: %v", accountNo, syncErr)
 		s.markAccountsDirty()
-		if _, err := db.DB.ExecContext(ctx, `UPDATE mw_accounts SET status = ? WHERE account_no = ?`, status, accountNo); err != nil {
-			return nil, err
-		}
 	}
 	log.Printf("[cardpool] %s 将子账户 %s 置为 %s", by, accountNo, status)
 	return getAccount(ctx, accountNo)

@@ -22,7 +22,8 @@ type applyParams struct {
 }
 
 // queryResult 为查单或 Webhook 给出的结论。State: processing / success / failed；空表示没有定论。
-type queryResult struct{ State, CardID, TxnID, Reason string }
+// Detail 非空时写入单据 detail（兑换、钱包转账的成交结果）。
+type queryResult struct{ State, CardID, TxnID, Reason, Detail string }
 
 var backoffSteps = [...]time.Duration{10 * time.Second, 30 * time.Second, 60 * time.Second, 120 * time.Second}
 
@@ -64,6 +65,9 @@ var kindNames = map[string]string{
 	KindConversion:     "兑换单",
 	KindWalletTransfer: "钱包转账单",
 }
+
+// isWalletKind 判断是否兑换或钱包转账单（作用于钱包而不是卡）。
+func isWalletKind(kind string) bool { return kind == KindConversion || kind == KindWalletTransfer }
 
 // describeOrder 返回用于告警与日志的单据描述（不含卡号）。
 func describeOrder(o *Order) string {
@@ -190,6 +194,10 @@ func (s *Service) transition(ctx context.Context, no string, from []string, u *o
 		if err := tx.Commit(); err != nil {
 			return nil, false, err
 		}
+		// 兑换、钱包转账定论后钱包余额可能已变：提交成功后才标脏，不影响事务
+		if IsTerminal(o.State) && isWalletKind(o.Kind) {
+			s.markAccountsDirty()
+		}
 		return &o, true, nil
 	}
 
@@ -206,7 +214,7 @@ func (s *Service) transition(ctx context.Context, no string, from []string, u *o
 	return cur, false, nil
 }
 
-// terminalEffects 为单据进入终态时对卡的副作用。卡不存在不算错误。
+// terminalEffects 为单据进入终态时对卡的副作用。卡不存在不算错误。兑换、钱包转账单没有本地副作用。
 func terminalEffects(ctx context.Context, tx *sql.Tx, o *Order, now int64, cancelAfterDays int) error {
 	switch o.Kind {
 	case KindApply:
@@ -290,8 +298,8 @@ func (s *Service) insertPending(ctx context.Context, o *Order) error {
 	return err
 }
 
-// sendVerdict 为一次发送结果的初判。
-type sendVerdict struct{ state, txnID, lastErr string }
+// sendVerdict 为一次发送结果的初判；detail 非空时写入单据 detail。
+type sendVerdict struct{ state, txnID, lastErr, detail string }
 
 // classifySendErr 按 §6.2 把发送出错映射为单据状态；everUnknown 为该单据此前是否出现过结果未知。
 // 出现过未知的单据，被拒或未发出都不能说明此前那次没有执行，仍为 unknown。
@@ -344,6 +352,9 @@ func (s *Service) recordFirstSend(ctx context.Context, no string, v sendVerdict)
 	}
 	if v.lastErr != "" {
 		u.set("last_error", v.lastErr)
+	}
+	if v.detail != "" {
+		u.set("detail", v.detail)
 	}
 	if v.state != StateNotSent {
 		u.set("first_sent_at", now).set("attempts", 1)
@@ -517,6 +528,9 @@ func (s *Service) finalize(ctx context.Context, outOrderNo string, r queryResult
 	u := newOrderSet(state)
 	if r.TxnID != "" {
 		u.set("platform_txn_id", r.TxnID)
+	}
+	if r.Detail != "" {
+		u.set("detail", r.Detail)
 	}
 	var from []string
 	switch state {

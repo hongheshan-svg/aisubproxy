@@ -269,8 +269,10 @@ func (s *Service) handleEvent(ctx context.Context, e *queuedEvent, ev *marswalle
 		return s.onOTPEvent(ctx, e, ev)
 	case marswallex.TopicAccountStatusChanged:
 		return s.onAccountStatusChanged(ctx, ev)
-	case marswallex.TopicConversionResult, marswallex.TopicTransferResult:
-		return "本子项目不处理", nil
+	case marswallex.TopicConversionResult:
+		return s.onConversionResult(ctx, ev)
+	case marswallex.TopicTransferResult:
+		return s.onWalletTransferResult(ctx, ev)
 	}
 	return "未知 topic", nil
 }
@@ -379,6 +381,53 @@ func (s *Service) onTransferResult(ctx context.Context, ev *marswallex.WebhookEv
 		note += s.refreshBalanceNote(ctx, got.CardID)
 	}
 	return note, nil
+}
+
+// notOurOrderNote 为找不到对应单据（在网页后台发起的兑换、转账）时的备注。
+const notOurOrderNote = "非本系统单据"
+
+// onConversionResult 定论兑换单（按 out_order_no，没有则按 transaction_id 找单据），成交结果写入 detail。
+func (s *Service) onConversionResult(ctx context.Context, ev *marswallex.WebhookEvent) (string, error) {
+	var d marswallex.ConversionResultData
+	if err := decodeEventData(ev, &d); err != nil {
+		return "", err
+	}
+	o, err := findEventOrder(ctx, strings.TrimSpace(d.OutOrderNo), strings.TrimSpace(d.TransactionID), KindConversion)
+	if errors.Is(err, ErrNotFound) {
+		return notOurOrderNote, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return s.finalizeFundsEvent(ctx, o, d.Status, conversionQueryResult(&d))
+}
+
+// onWalletTransferResult 按 out_order_no 定论钱包转账单。
+func (s *Service) onWalletTransferResult(ctx context.Context, ev *marswallex.WebhookEvent) (string, error) {
+	var d marswallex.TransferResultData
+	if err := decodeEventData(ev, &d); err != nil {
+		return "", err
+	}
+	o, err := findEventOrder(ctx, strings.TrimSpace(d.OutOrderNo), "", KindWalletTransfer)
+	if errors.Is(err, ErrNotFound) {
+		return notOurOrderNote, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return s.finalizeFundsEvent(ctx, o, d.Status, walletTransferQueryResult(&d))
+}
+
+// finalizeFundsEvent 用推送给出的结论定论兑换或钱包转账单；状态不认识时只写备注。
+func (s *Service) finalizeFundsEvent(ctx context.Context, o *Order, status string, r queryResult) (string, error) {
+	if r.State == "" {
+		return fmt.Sprintf("单据 %s：无法识别的状态 %q", o.OutOrderNo, status), nil
+	}
+	got, err := s.finalize(ctx, o.OutOrderNo, r, "webhook")
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("单据 %s：%s", got.OutOrderNo, got.State), nil
 }
 
 // refreshBalanceNote 尽力刷新池中卡的详情与余额，返回追加到备注的说明；失败只写备注。

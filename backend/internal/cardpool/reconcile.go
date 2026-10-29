@@ -175,8 +175,62 @@ func (s *Service) queryOrder(ctx context.Context, c *marswallex.Client, o *Order
 			return queryResult{State: StateSuccess}, false, nil
 		}
 		return queryResult{}, cardStatusTargets[st], nil
+	case KindConversion:
+		d, err := c.GetConversion(ctx, o.OutOrderNo)
+		if err != nil {
+			return queryResult{}, false, err
+		}
+		return conversionQueryResult(d), false, nil
+	case KindWalletTransfer:
+		d, err := c.GetTransfer(ctx, marswallex.TransferRef{OutOrderNo: o.OutOrderNo})
+		if err != nil {
+			return queryResult{}, false, err
+		}
+		return walletTransferQueryResult(d), false, nil
 	}
 	return queryResult{}, false, fmt.Errorf("未知的单据类型 %q", o.Kind)
+}
+
+// fundsState 把兑换、钱包转账的平台状态映射为单据状态（兼容 FAIL / FAILED）；不认识的返回空。
+func fundsState(status string) string {
+	switch normStatus(status) {
+	case "PROCESSING":
+		return StateProcessing
+	case "SUCCESS":
+		return StateSuccess
+	case "FAIL", "FAILED":
+		return StateFailed
+	}
+	return ""
+}
+
+// conversionQueryResult 映射兑换单查单或推送结果；定论（成功、失败）时带上成交结果。状态不认识算没有定论。
+func conversionQueryResult(d *marswallex.ConversionDetail) queryResult {
+	st := fundsState(d.Status)
+	if st == "" {
+		return queryResult{}
+	}
+	r := queryResult{State: st, TxnID: d.TransactionID}
+	if st == StateFailed {
+		r.Reason = d.FailReason // 为空时 finalize 记「平台返回失败」
+	}
+	if st != StateProcessing {
+		r.Detail = conversionDetail(d)
+	}
+	return r
+}
+
+// walletTransferQueryResult 映射钱包转账查单或推送结果；带平台单号时写入 detail，没有则保留原 detail。
+func walletTransferQueryResult(d *marswallex.TransferDetail) queryResult {
+	st := fundsState(d.Status)
+	if st == "" {
+		return queryResult{}
+	}
+	r := queryResult{State: st, Detail: transferDetail(d.OrderNo)}
+	if st == StateFailed {
+		r.Reason = d.FailReason
+	}
+	return r
 }
 
 // applyQueryResult 映射开卡单查单结果；SUCCESS 但没有 card_id 算没有定论。

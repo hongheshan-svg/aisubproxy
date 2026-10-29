@@ -1,0 +1,234 @@
+package cardpool
+
+import (
+	"context"
+	"encoding/json"
+	"log"
+	"strings"
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/tuzi/cdk-recharge-system/internal/db"
+	"github.com/tuzi/cdk-recharge-system/internal/marswallex"
+)
+
+const (
+	accountSyncPageSize = 50
+	accountSyncMaxPages = 200 // 防止平台 count 异常时死循环
+	accountTypeMain     = "MAIN"
+	accountTypeSub      = "SUB_ACCOUNT"
+	accountActive       = "ACTIVE"
+	accountDisabled     = "DISABLED"
+)
+
+// SyncAccounts 拉取平台全部账户并整体写入本地：全部页成功后才在一个事务里 upsert，
+// 并把本次没出现的标 gone = 1；中途失败不改本地表。并发调用共享同一轮结果。
+func (s *Service) SyncAccounts(ctx context.Context) error {
+	gen := s.syncGen.Load()
+	s.syncMu.Lock()
+	defer s.syncMu.Unlock()
+	if s.syncGen.Load() != gen { // 等锁期间别人已同步成功
+		return nil
+	}
+	c, err := s.opts.Client()
+	if err != nil {
+		return err
+	}
+	var all []marswallex.Account
+	for page := 1; page <= accountSyncMaxPages; page++ {
+		p, err := c.ListAccounts(ctx, marswallex.ListAccountsQuery{PageNo: page, PageSize: accountSyncPageSize})
+		if err != nil {
+			return err
+		}
+		if len(p.Data) == 0 {
+			break
+		}
+		all = append(all, p.Data...)
+		if int64(len(all)) >= int64(p.Count) {
+			break
+		}
+	}
+
+	now := s.now().Unix()
+	tx, err := db.DB.BeginTx(context.WithoutCancel(ctx), nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`UPDATE mw_accounts SET gone = 1`); err != nil {
+		return err
+	}
+	for _, a := range all {
+		balances, err := json.Marshal(a.BalanceList)
+		if err != nil || a.BalanceList == nil {
+			balances = []byte("[]")
+		}
+		purpose := ""
+		if a.Purpose != nil {
+			purpose = *a.Purpose
+		}
+		created := now
+		if !a.CreateTime.IsZero() {
+			created = a.CreateTime.Unix()
+		}
+		if _, err := tx.Exec(`INSERT INTO mw_accounts (`+accountCols+`) VALUES (?, '', ?, ?, ?, ?, ?, 0, ?, ?)
+			ON CONFLICT(account_no) DO UPDATE SET account_name = excluded.account_name, account_type = excluded.account_type,
+			purpose = excluded.purpose, status = excluded.status, balances = excluded.balances, gone = 0, synced_at = excluded.synced_at`,
+			a.AccountNo, a.AccountName, a.AccountType, purpose, a.AccountStatus, string(balances), now, created); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.syncGen.Add(1)
+	return nil
+}
+
+// ListAccounts 读本地账户：未消失的在前，MAIN 在前，其余按创建时间。
+func (s *Service) ListAccounts(ctx context.Context) ([]Account, error) {
+	rows, err := db.DB.QueryContext(ctx, `SELECT `+accountCols+` FROM mw_accounts
+		ORDER BY gone, CASE account_type WHEN 'MAIN' THEN 0 ELSE 1 END, created_at, account_no`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	list := []Account{}
+	for rows.Next() {
+		var a Account
+		if err := a.scan(rows); err != nil {
+			return nil, err
+		}
+		list = append(list, a)
+	}
+	return list, rows.Err()
+}
+
+// markAccountsDirty 标记本地账户可能落后于平台，下一轮维护时同步。
+func (s *Service) markAccountsDirty() { s.accountsDirty.Store(true) }
+
+// syncAccountsIfDirty 在有标记时同步账户；成功后清除标记，失败保留。
+func (s *Service) syncAccountsIfDirty(ctx context.Context) error {
+	if !s.accountsDirty.Swap(false) {
+		return nil
+	}
+	if err := s.SyncAccounts(ctx); err != nil {
+		s.accountsDirty.Store(true)
+		return err
+	}
+	return nil
+}
+
+// CreateSubAccount 创建子账户。账户名去首尾空白后 1–50 字且不含空白字符。
+// 平台出错时原样返回（结果未知时由前端稍后刷新）。
+func (s *Service) CreateSubAccount(ctx context.Context, name, by string) (*Account, error) {
+	name = strings.TrimSpace(name)
+	if n := utf8.RuneCountInString(name); n < 1 || n > 50 {
+		return nil, badRequest("账户名需为 1–50 个字")
+	}
+	if strings.IndexFunc(name, unicode.IsSpace) >= 0 {
+		return nil, badRequest("账户名不能包含空白字符")
+	}
+	c, err := s.opts.Client()
+	if err != nil {
+		return nil, err
+	}
+	now := s.now()
+	out, err := c.CreateAccount(ctx, marswallex.CreateAccountRequest{AccountName: name, OutAccountNo: newOutID("AC", now)})
+	if err != nil {
+		return nil, err
+	}
+	status := out.Status
+	if status == "" {
+		status = accountActive
+	}
+	purpose := ""
+	if out.Purpose != nil {
+		purpose = *out.Purpose
+	}
+	created := now.Unix()
+	if !out.CreateTime.IsZero() {
+		created = out.CreateTime.Unix()
+	}
+	acctName := out.AccountName
+	if acctName == "" {
+		acctName = name
+	}
+	if _, err := db.DB.ExecContext(context.WithoutCancel(ctx), `INSERT INTO mw_accounts (`+accountCols+`) VALUES (?, ?, ?, ?, ?, ?, '[]', 0, ?, ?)
+		ON CONFLICT(account_no) DO UPDATE SET out_account_no = excluded.out_account_no, account_name = excluded.account_name,
+		status = excluded.status, gone = 0`,
+		out.AccountNo, out.OutAccountNo, acctName, accountTypeSub, purpose, status, now.Unix(), created); err != nil {
+		return nil, err
+	}
+	log.Printf("[cardpool] %s 创建子账户 %s", by, out.AccountNo)
+	return getAccount(ctx, out.AccountNo)
+}
+
+// isEmojiRune 判断是否 emoji（U+1F000–U+1FAFF、U+2600–U+27BF、U+FE0F）。
+func isEmojiRune(r rune) bool {
+	return (r >= 0x1F000 && r <= 0x1FAFF) || (r >= 0x2600 && r <= 0x27BF) || r == 0xFE0F
+}
+
+// SetSubAccountStatus 启用或停用子账户（不含 MAIN）。调用后无论成败都尝试同步，返回最新本地账户；
+// 接口出错时返回接口错误。
+func (s *Service) SetSubAccountStatus(ctx context.Context, accountNo, status, remark, by string) (*Account, error) {
+	if status != accountActive && status != accountDisabled {
+		return nil, badRequest("状态只能是 ACTIVE 或 DISABLED")
+	}
+	acct, err := getAccount(ctx, accountNo)
+	if err != nil {
+		return nil, err
+	}
+	if acct.AccountType == accountTypeMain {
+		return nil, badRequest("主钱包不能启停")
+	}
+	remark = strings.TrimSpace(remark)
+	if n := utf8.RuneCountInString(remark); n < 2 || n > 100 {
+		return nil, badRequest("原因需为 2–100 个字")
+	}
+	if strings.IndexFunc(remark, isEmojiRune) >= 0 {
+		return nil, badRequest("原因不能包含 emoji")
+	}
+	c, err := s.opts.Client()
+	if err != nil {
+		return nil, err
+	}
+	_, apiErr := c.UpdateAccountStatus(ctx, accountNo, marswallex.UpdateAccountStatusRequest{AccountStatus: status, Remark: remark})
+	syncErr := s.SyncAccounts(ctx)
+	if apiErr != nil {
+		return nil, apiErr
+	}
+	if syncErr != nil { // 接口成功但同步失败：先直接改本地状态
+		log.Printf("[cardpool] 子账户 %s 状态已变更，同步账户失败: %v", accountNo, syncErr)
+		s.markAccountsDirty()
+		if _, err := db.DB.ExecContext(ctx, `UPDATE mw_accounts SET status = ? WHERE account_no = ?`, status, accountNo); err != nil {
+			return nil, err
+		}
+	}
+	log.Printf("[cardpool] %s 将子账户 %s 置为 %s", by, accountNo, status)
+	return getAccount(ctx, accountNo)
+}
+
+// onAccountStatusChanged 按 account_no 更新本地账户状态；本地没有该账户时安排同步。
+func (s *Service) onAccountStatusChanged(ctx context.Context, ev *marswallex.WebhookEvent) (string, error) {
+	var d marswallex.AccountStatusChangedData
+	if err := decodeEventData(ev, &d); err != nil {
+		return "", err
+	}
+	no := strings.TrimSpace(d.AccountNo)
+	if no == "" {
+		return "", dataError("缺少 account_no")
+	}
+	res, err := db.DB.ExecContext(ctx, `UPDATE mw_accounts SET status = CASE WHEN ? = '' THEN status ELSE ? END,
+		out_account_no = CASE WHEN ? = '' THEN out_account_no ELSE ? END WHERE account_no = ?`,
+		strings.TrimSpace(d.AccountStatus), strings.TrimSpace(d.AccountStatus),
+		strings.TrimSpace(d.OutAccountNo), strings.TrimSpace(d.OutAccountNo), no)
+	if err != nil {
+		return "", err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		s.markAccountsDirty()
+		return "账户未同步，已安排同步", nil
+	}
+	return "账户 " + no + " 状态：" + strings.TrimSpace(d.AccountStatus), nil
+}

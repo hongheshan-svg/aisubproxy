@@ -267,7 +267,9 @@ func (s *Service) handleEvent(ctx context.Context, e *queuedEvent, ev *marswalle
 		return s.onSettleEvent(ctx, ev)
 	case marswallex.TopicCard3DSOTP:
 		return s.onOTPEvent(ctx, e, ev)
-	case marswallex.TopicAccountStatusChanged, marswallex.TopicConversionResult, marswallex.TopicTransferResult:
+	case marswallex.TopicAccountStatusChanged:
+		return s.onAccountStatusChanged(ctx, ev)
+	case marswallex.TopicConversionResult, marswallex.TopicTransferResult:
 		return "本子项目不处理", nil
 	}
 	return "未知 topic", nil

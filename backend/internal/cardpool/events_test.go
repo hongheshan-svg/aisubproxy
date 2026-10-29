@@ -439,7 +439,7 @@ func TestUnknownTopicAndUnparseable(t *testing.T) {
 		t.Fatalf("处理了 %d 条，期望 6", n)
 	}
 	mustBeProcessed(t, e1, "未知 topic")
-	mustBeProcessed(t, e2, "本子项目不处理")
+	mustBeProcessed(t, e2, "已安排同步") // 账户状态推送已有处理，未知账户安排同步
 	mustBeProcessed(t, e3, "本子项目不处理")
 	mustBeProcessed(t, e4, "本子项目不处理")
 	if e := mustBeProcessed(t, e5, "无法解析"); e.payload != "not json at all" {

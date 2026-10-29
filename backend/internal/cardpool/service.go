@@ -6,6 +6,7 @@ import (
 	"errors"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tuzi/cdk-recharge-system/internal/marswallex"
@@ -86,6 +87,10 @@ type Service struct {
 	eventHandler func(context.Context, *queuedEvent, *marswallex.WebhookEvent) (string, error)
 
 	loops sync.WaitGroup // Start 启动的后台协程
+
+	syncMu        sync.Mutex    // 账户同步串行
+	syncGen       atomic.Uint64 // 每次同步成功 +1，等锁的调用据此共享结果
+	accountsDirty atomic.Bool   // 本地账户可能落后于平台
 
 	alertMu   sync.Mutex
 	alertSent map[string]int64 // key → 最后发送时所在的北京日起点（Unix 秒）

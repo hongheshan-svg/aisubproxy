@@ -336,8 +336,9 @@ func TestCardholderStatusChangeEvent(t *testing.T) {
 	mustBeProcessed(t, e1, "")
 	mustBeProcessed(t, e2, "")
 	mustBeProcessed(t, e3, "未导入")
-	if alerts.Count() != 1 || alertsContaining(alerts, "h1") != 1 {
-		t.Fatalf("应只对 h1 告警一次: %v", alerts.Texts())
+	// §7.5：h1 变为 DISABLED 告警；h2 由未通过变为 APPROVED 发通过通知；未导入的 h9 不告警
+	if alerts.Count() != 2 || alertsContaining(alerts, "h1") != 1 || alertsContaining(alerts, "持卡人 h2 已通过审核") != 1 {
+		t.Fatalf("应对 h1 告警、对 h2 发通过通知各一次: %v", alerts.Texts())
 	}
 }
 

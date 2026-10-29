@@ -24,7 +24,14 @@ const (
 // ---------- 持卡人 ----------
 
 // ImportCardholder 从平台读取持卡人并写入；已存在则更新平台字段（备注 note 保留）。
+// 平台返回的 out_card_holder_id 一并写入，匹配 submitted / unknown 提交记录时标 linked。
 func (s *Service) ImportCardholder(ctx context.Context, id, by string) (*Cardholder, error) {
+	return s.importCardholder(ctx, id, "")
+}
+
+// importCardholder 同 ImportCardholder；平台没有给出可信的 out_card_holder_id 时用 fallbackOutID（来自推送）。
+// 只取姓名、国家、状态、备注，其余资料不落地。
+func (s *Service) importCardholder(ctx context.Context, id, fallbackOutID string) (*Cardholder, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return nil, badRequest("持卡人 ID 不能为空")
@@ -37,14 +44,36 @@ func (s *Service) ImportCardholder(ctx context.Context, id, by string) (*Cardhol
 	if err != nil {
 		return nil, err
 	}
+	// 以请求的 ID 为准；平台返回的 ID 若不同则不信任，也不信任其商户侧 ID
+	outID := strings.TrimSpace(d.OutCardHolderID)
+	if got := strings.TrimSpace(d.CardHolderID); got != "" && got != id {
+		outID = ""
+	}
+	if outID == "" {
+		outID = fallbackOutID
+	}
 	now := s.now().Unix()
-	// 以请求的 ID 为准；平台返回的 ID 若不同则不信任
-	_, err = db.DB.ExecContext(ctx, `INSERT INTO mw_cardholders (card_holder_id, first_name, last_name, country_code, status, remark, synced_at, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(card_holder_id) DO UPDATE SET first_name = excluded.first_name, last_name = excluded.last_name,
-		country_code = excluded.country_code, status = excluded.status, remark = excluded.remark, synced_at = excluded.synced_at`,
-		id, d.FirstName, d.LastName, d.CountryCode, normStatus(d.Status), d.Remark, now, now)
+	tx, err := db.DB.BeginTx(ctx, nil)
 	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	// 平台没给商户侧 ID 时保留已有的
+	_, err = tx.ExecContext(ctx, `INSERT INTO mw_cardholders (card_holder_id, first_name, last_name, country_code, status, remark,
+		synced_at, created_at, out_card_holder_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(card_holder_id) DO UPDATE SET first_name = excluded.first_name, last_name = excluded.last_name,
+		country_code = excluded.country_code, status = excluded.status, remark = excluded.remark, synced_at = excluded.synced_at,
+		out_card_holder_id = CASE WHEN excluded.out_card_holder_id <> '' THEN excluded.out_card_holder_id ELSE out_card_holder_id END`,
+		id, d.FirstName, d.LastName, d.CountryCode, normStatus(d.Status), d.Remark, now, now, outID)
+	if err != nil {
+		return nil, err
+	}
+	if outID != "" {
+		if _, err := tx.ExecContext(ctx, linkSubmissionStmt, id, now, outID); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return getCardholder(ctx, id)

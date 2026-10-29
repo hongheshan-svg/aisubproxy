@@ -573,7 +573,8 @@ func (s *Service) tryExternalStatus(ctx context.Context, c *Card, status string)
 	return "平台状态更新为 " + status, true, nil
 }
 
-// onCardholderStatusChange 只更新已导入的持卡人；新状态不是 APPROVED 时告警（key holder:<id>）。
+// onCardholderStatusChange 更新已导入的持卡人并按 spec §7.5 告警（通过通知 key holderok:<id>，其余 holder:<id>）。
+// 本地没有该持卡人时，out_card_holder_id 匹配 submitted / unknown 提交记录则导入并关联，否则只备注「持卡人未导入」。
 func (s *Service) onCardholderStatusChange(ctx context.Context, ev *marswallex.WebhookEvent) (string, error) {
 	var d marswallex.CardholderStatusChangeData
 	if err := decodeEventData(ev, &d); err != nil {
@@ -582,6 +583,13 @@ func (s *Service) onCardholderStatusChange(ctx context.Context, ev *marswallex.W
 	id, status := strings.TrimSpace(d.CardHolderID), normStatus(d.Status)
 	if id == "" || status == "" {
 		return "", dataError("缺少 card_holder_id 或 status")
+	}
+	old, err := getCardholder(ctx, id)
+	if errors.Is(err, ErrNotFound) {
+		return s.linkHolderByEvent(ctx, id, strings.TrimSpace(d.OutCardHolderID))
+	}
+	if err != nil {
+		return "", err
 	}
 	res, err := db.DB.ExecContext(ctx, `UPDATE mw_cardholders SET status = ?, remark = ?, synced_at = ? WHERE card_holder_id = ?`,
 		status, d.Remark, s.now().Unix(), id)
@@ -595,13 +603,7 @@ func (s *Service) onCardholderStatusChange(ctx context.Context, ev *marswallex.W
 	if n == 0 {
 		return "持卡人未导入", nil
 	}
-	if status != "APPROVED" {
-		msg := fmt.Sprintf("MarsWallex 持卡人 %s 状态变为 %s，自动补卡将跳过该持卡人", id, status)
-		if r := strings.TrimSpace(d.Remark); r != "" {
-			msg += "。平台备注：" + truncate(r, 200)
-		}
-		s.alert("holder:"+id, msg)
-	}
+	s.holderStatusAlert(id, old.Status, status, d.Remark)
 	return "持卡人状态更新为 " + status, nil
 }
 

@@ -208,8 +208,8 @@
               <template #default="{ row }">{{ fmtTs(row.create_time) }}</template>
             </el-table-column>
           </el-table>
-          <el-pagination class="mt-3" layout="total, prev, pager, next" :total="ser.total" :page-size="SER_PAGE_SIZE"
-            v-model:current-page="ser.page" @current-change="querySerials" />
+          <el-pagination class="mt-3" :layout="ser.total < 0 ? 'prev, pager, next' : 'total, prev, pager, next'"
+            :total="serPagerTotal" :page-size="SER_PAGE_SIZE" v-model:current-page="ser.page" @current-change="querySerials" />
         </el-tab-pane>
       </el-tabs>
     </div>
@@ -233,7 +233,8 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { dialog } from '../../lib/dialog'
 import { copyToClipboard } from '../../lib/clipboard'
 import {
-  errText, FLAG_LABEL, fmtTs, hasEmoji, isUncertain, TXN_LABEL, kindLabel, money, parseAmountCents, poolApi,
+  errText, FLAG_LABEL, fmtTs, hasEmoji, isUncertain, TXN_LABEL, kindLabel, ledgerPagerTotal, mainSellCurrencies, money,
+  parseAmountCents, poolApi, submitOutcome,
 } from '../../lib/cardpool'
 
 interface Balance { currency: string; available_balance: string; freeze_balance: string }
@@ -424,28 +425,20 @@ async function confirmFailed(row: Order, list: OrderList) {
   loadOrders(list)
 }
 
-/** 提交资金单后的统一结果处理；返回是否已成功受理。 */
+/** 提交资金单后的统一结果处理（按返回单据的状态提示，见 submitOutcome）；返回是否清空表单。 */
 function afterSubmit(r: { ok: boolean; status: number; data: any }, list: OrderList, what: string): boolean {
-  if (isUncertain(r)) {
-    dialog.toast(r.status === 0 ? '网络异常，结果未知，请先查看下方单据，切勿重复提交' : `${what}结果未知，已记录单据，请在下方列表查看并重查，切勿重复提交`, 'warn', 8000)
-    loadOrders(list)
-    return false
-  }
-  if (!r.ok) {
-    dialog.toast(errText(r, `${what}失败`), 'err')
-    return false
-  }
-  dialog.toast(`${what}已提交：${r.data?.state || ''}`, 'ok')
+  const o = submitOutcome(r, what)
+  if (o.kind === 'ok') dialog.toast(o.message, 'ok')
+  else if (o.kind === 'uncertain') dialog.toast(o.message, 'warn', 8000)
+  else dialog.toast(o.message, 'err', 6000)
   loadOrders(list)
-  return true
+  return o.clearForm
 }
 
 // ---------- 兑换 ----------
 const mainAccount = computed(() => accounts.value.find((a) => a.account_type === 'MAIN' && !a.gone))
-const mainCurrencies = computed(() => {
-  const cs = (mainAccount.value?.balances || []).map((b) => b.currency)
-  return cs.includes('USDT') ? cs : ['USDT', ...cs]
-})
+// 平台按币种各有一个主钱包：卖出币种取全部主钱包的余额币种
+const mainCurrencies = computed(() => mainSellCurrencies(accounts.value))
 const conv = reactive({ sell_currency: 'USDT', sell_amount: '', buy_currency: 'USD' })
 const convSubmitting = ref(false)
 
@@ -550,6 +543,9 @@ const serEndMax = computed(() => {
   return cap < today ? cap : today
 })
 
+// 平台未给总数时 total 为 -1：本页满页才允许下一页
+const serPagerTotal = computed(() => ledgerPagerTotal(ser.total, ser.page, SER_PAGE_SIZE, ser.items.length))
+
 function onSerAccountChange() { ser.currency = '' }
 
 async function querySerials(page = 1) {
@@ -572,7 +568,7 @@ async function querySerials(page = 1) {
     if (unmounted) return
     if (!r.ok) return dialog.toast(errText(r, '查询流水失败'), 'err')
     ser.items = r.data.items || []
-    ser.total = r.data.total || 0
+    ser.total = typeof r.data.total === 'number' ? r.data.total : 0
   } finally {
     ser.loading = false
   }

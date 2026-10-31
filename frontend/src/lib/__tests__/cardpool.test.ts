@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canAbandonSubmission, submissionLabel, submissionTagType, emptyCardholderForm, toCardholderPayload, validateCardholderForm, FLAG_LABEL, hasEmoji, isUncertain, isUnknownOutcome, kindLabel, parseAmountCents } from '../cardpool'
+import { canAbandonSubmission, submissionLabel, submissionTagType, emptyCardholderForm, toCardholderPayload, validateCardholderForm, FLAG_LABEL, fmtTs, hasEmoji, isUncertain, isUnknownOutcome, kindLabel, ledgerPagerTotal, mainSellCurrencies, orderStateText, parseAmountCents, submitOutcome } from '../cardpool'
 
 describe('cardpool lib', () => {
   it('parseAmountCents', () => {
@@ -109,5 +109,79 @@ describe('cardpool lib', () => {
     expect(submissionLabel({ state: 'abandoned' })).toBe('已放弃')
     expect(submissionTagType({ state: 'abandoned' })).toBe('info')
     expect(canAbandonSubmission({ state: 'abandoned' })).toBe(false)
+  })
+
+  it('fmtTs: 空、0 与负数（零值时间）显示 —', () => {
+    expect(fmtTs(null)).toBe('—')
+    expect(fmtTs(0)).toBe('—')
+    expect(fmtTs(-62135596800)).toBe('—')
+    expect(fmtTs(1700000000)).not.toBe('—')
+  })
+
+  it('orderStateText', () => {
+    expect(orderStateText({ state: 'success', last_error: '' })).toBe('成功')
+    expect(orderStateText({ state: 'failed', last_error: '余额不足' })).toBe('失败（余额不足）')
+    expect(orderStateText({ state: 'processing', last_error: 'x' })).toBe('处理中')
+    expect(orderStateText({ state: 'weird' })).toBe('weird')
+  })
+
+  it('submitOutcome: 资金单提交结果跟随单据状态', () => {
+    const ok200 = (state: string, last_error = '') => submitOutcome({ ok: true, status: 200, data: { state, last_error } }, '兑换')
+    for (const st of ['processing', 'success']) {
+      const o = ok200(st)
+      expect(o.kind).toBe('ok')
+      expect(o.clearForm).toBe(true)
+      expect(o.message).toContain('兑换已提交')
+    }
+    for (const st of ['unknown', 'needs_review']) {
+      const o = ok200(st)
+      expect(o.kind).toBe('uncertain')
+      expect(o.clearForm).toBe(false)
+      expect(o.message).toContain('结果未知，切勿重复提交，请查看下方单据')
+    }
+    for (const st of ['failed', 'not_sent']) {
+      const o = ok200(st, '平台返回 FAIL')
+      expect(o.kind).toBe('failed')
+      expect(o.clearForm).toBe(false)
+      expect(o.message).toContain('平台返回 FAIL')
+    }
+    // 502 只来自发送前的账户同步：没有建单
+    const sync = submitOutcome({ ok: false, status: 502, data: { error: '同步超时', outcome: 'unknown' } }, '兑换')
+    expect(sync).toEqual({ kind: 'not_submitted', clearForm: false, message: '未提交：同步超时' })
+    // 网络异常：结果未知
+    const net = submitOutcome({ ok: false, status: 0, data: { error: '网络错误' } }, '转账')
+    expect(net.kind).toBe('uncertain')
+    expect(net.clearForm).toBe(false)
+    expect(net.message).toContain('切勿重复提交')
+    // 500 可能是发出后本地记录失败：按结果未知
+    expect(submitOutcome({ ok: false, status: 500, data: { error: '操作失败' } }, '兑换').kind).toBe('uncertain')
+    // 校验失败、已有在途单：明确未执行
+    for (const status of [400, 409]) {
+      const o = submitOutcome({ ok: false, status, data: { error: 'E' + status } }, '转账')
+      expect(o).toEqual({ kind: 'failed', clearForm: false, message: 'E' + status })
+    }
+  })
+
+  it('ledgerPagerTotal: 总数未知时满页才有下一页', () => {
+    expect(ledgerPagerTotal(41, 3, 20, 1)).toBe(41)
+    expect(ledgerPagerTotal(-1, 1, 20, 20)).toBe(21) // 满页 → 可翻到第 2 页
+    expect(ledgerPagerTotal(-1, 2, 20, 20)).toBe(41) // 第 2 页满页 → 可翻到第 3 页
+    expect(ledgerPagerTotal(-1, 2, 20, 7)).toBe(27) // 短页 → 本页即最后一页
+    expect(ledgerPagerTotal(-1, 1, 20, 0)).toBe(0)
+    expect(ledgerPagerTotal(-1, 2, 20, 0)).toBe(21) // 翻到空页：停在第 2 页，不再有下一页
+    const pages = (t: number) => Math.max(1, Math.ceil(t / 20))
+    expect(pages(ledgerPagerTotal(-1, 2, 20, 20))).toBe(3)
+    expect(pages(ledgerPagerTotal(-1, 2, 20, 7))).toBe(2)
+    expect(pages(ledgerPagerTotal(-1, 2, 20, 0))).toBe(2)
+  })
+
+  it('mainSellCurrencies: 汇总全部未消失主钱包的币种', () => {
+    const acct = (account_type: string, gone: boolean, ...cs: string[]) => ({
+      account_type, gone, balances: cs.map((currency) => ({ currency })),
+    })
+    expect(mainSellCurrencies([acct('MAIN', false, 'USD'), acct('MAIN', false, 'USDT'), acct('SUB_ACCOUNT', false, 'HKD')]))
+      .toEqual(['USD', 'USDT'])
+    expect(mainSellCurrencies([acct('MAIN', false, 'USD'), acct('MAIN', true, 'EUR')])).toEqual(['USDT', 'USD'])
+    expect(mainSellCurrencies([{ account_type: 'MAIN', gone: false, balances: null }])).toEqual(['USDT'])
   })
 })

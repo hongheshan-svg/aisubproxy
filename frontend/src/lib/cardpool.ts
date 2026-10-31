@@ -1,5 +1,6 @@
 // 卡池 / 钱包后台页面的公共函数。
 import { authFetch } from './api'
+import { dialog } from './dialog'
 
 export interface Resp<T = any> { ok: boolean; status: number; data: T }
 
@@ -45,9 +46,84 @@ export function money(cents?: number | null): string {
   return ((cents || 0) / 100).toFixed(2)
 }
 
+/** Unix 秒转本地时间；空、0 与负数（后端零值时间序列化为负数）显示 —。 */
 export function fmtTs(ts?: number | null): string {
-  if (!ts) return '—'
+  if (!ts || ts <= 0) return '—'
   return new Date(ts * 1000).toLocaleString()
+}
+
+// ---------- 单据状态提示 ----------
+
+export interface OrderLike { state: string; last_error?: string }
+
+// 单据状态的提示文字：返回单据的操作按实际状态提示，不一律说「已提交」。
+export const ORDER_STATE_TEXT: Record<string, { text: string; type: 'ok' | 'err' | 'warn' | 'info' }> = {
+  success: { text: '成功', type: 'ok' },
+  pending: { text: '处理中', type: 'info' },
+  processing: { text: '处理中', type: 'info' },
+  unknown: { text: '结果未知，系统会继续查单', type: 'warn' },
+  needs_review: { text: '待人工核对', type: 'warn' },
+  failed: { text: '失败', type: 'err' },
+  not_sent: { text: '未发出', type: 'err' },
+}
+
+export function orderStateText(o: OrderLike): string {
+  const t = ORDER_STATE_TEXT[o.state]?.text || o.state
+  return o.last_error && ['failed', 'not_sent', 'unknown', 'needs_review'].includes(o.state) ? `${t}（${o.last_error}）` : t
+}
+
+export function orderToast(what: string, o: OrderLike) {
+  const type = ORDER_STATE_TEXT[o.state]?.type || 'info'
+  dialog.toast(`${what}：${orderStateText(o)}`, type, type === 'ok' || type === 'info' ? 2800 : 6000)
+}
+
+export interface SubmitOutcome { kind: 'ok' | 'uncertain' | 'failed' | 'not_submitted'; clearForm: boolean; message: string }
+
+/**
+ * 兑换 / 钱包转账提交结果：200 按返回单据的状态判断；502 只来自发送前的账户同步（没有建单）；
+ * 网络异常（status 0）与 500（可能已发出后本地记录失败）按结果未知；其余 4xx / 503 为明确未执行。
+ * 只有处理中 / 成功才清空表单。
+ */
+export function submitOutcome(r: Resp, what: string): SubmitOutcome {
+  const uncertain = (message: string): SubmitOutcome => ({ kind: 'uncertain', clearForm: false, message })
+  if (r.status === 0) return uncertain('网络异常，结果未知，切勿重复提交，请查看下方单据')
+  if (r.ok) {
+    const o: OrderLike = r.data || { state: '' }
+    switch (o.state) {
+      case 'processing': case 'success':
+        return { kind: 'ok', clearForm: true, message: `${what}已提交：${ORDER_STATE_TEXT[o.state].text}` }
+      case 'failed': case 'not_sent':
+        return { kind: 'failed', clearForm: false, message: `${what}${orderStateText(o)}` }
+      default: // unknown / needs_review 及其他意外状态
+        return uncertain(`${what}结果未知，切勿重复提交，请查看下方单据`)
+    }
+  }
+  if (r.status === 502) return { kind: 'not_submitted', clearForm: false, message: `未提交：${errText(r, '账户同步失败')}` }
+  if (r.status === 500) return uncertain(`${what}结果未知，切勿重复提交，请查看下方单据`)
+  return { kind: 'failed', clearForm: false, message: errText(r, `${what}失败`) }
+}
+
+/**
+ * 流水分页器用的总数：平台未给总数（total < 0）时，本页满页就多算一条以便翻到下一页，短页即最后一页；
+ * 翻到的页为空时也保留这一页（否则分页器会把页码收回并自动重查前一页）。
+ */
+export function ledgerPagerTotal(total: number, page: number, pageSize: number, rows: number): number {
+  if (total >= 0) return total
+  const before = (page - 1) * pageSize
+  if (rows === 0) return page > 1 ? before + 1 : 0
+  return before + rows + (rows >= pageSize ? 1 : 0)
+}
+
+interface AccountLike { account_type: string; gone: boolean; balances: { currency: string }[] | null }
+
+/** 兑换可卖出的币种：全部未消失主钱包（平台按币种各有一个）的余额币种去重，总带上 USDT。 */
+export function mainSellCurrencies(accounts: AccountLike[]): string[] {
+  const cs: string[] = []
+  for (const a of accounts) {
+    if (a.account_type !== 'MAIN' || a.gone) continue
+    for (const b of a.balances || []) if (!cs.includes(b.currency)) cs.push(b.currency)
+  }
+  return cs.includes('USDT') ? cs : ['USDT', ...cs]
 }
 
 export const ORDER_KINDS: { value: string; label: string }[] = [

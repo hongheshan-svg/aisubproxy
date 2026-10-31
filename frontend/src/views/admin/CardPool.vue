@@ -559,7 +559,7 @@ import { useRouter } from 'vue-router'
 import CardholderForm from './components/CardholderForm.vue'
 import {
   ORDER_KINDS, canAbandonSubmission, errText, submissionLabel, submissionTagType, fmtTs, isUncertain, kindLabel, money, poolApi as api,
-  type CardholderFormValue,
+  orderStateText, orderToast, type CardholderFormValue,
 } from '../../lib/cardpool'
 import { dialog } from '../../lib/dialog'
 import { useAuthStore } from '../../stores/auth'
@@ -670,25 +670,6 @@ function isMine(c: Card) {
 // 可用的卡要先租用；别人租用中的卡不提供（会算到对方的租约上）。
 function canViewSensitive(c: Card) {
   return isMine(c) || ['used', 'disabled', 'releasing'].includes(c.pool_state)
-}
-
-// 单据状态的提示文字：返回单据的操作按实际状态提示，不一律说「已提交」。
-const ORDER_STATE_TEXT: Record<string, { text: string; type: 'ok' | 'err' | 'warn' | 'info' }> = {
-  success: { text: '成功', type: 'ok' },
-  pending: { text: '处理中', type: 'info' },
-  processing: { text: '处理中', type: 'info' },
-  unknown: { text: '结果未知，系统会继续查单', type: 'warn' },
-  needs_review: { text: '待人工核对', type: 'warn' },
-  failed: { text: '失败', type: 'err' },
-  not_sent: { text: '未发出', type: 'err' },
-}
-function orderStateText(o: Order) {
-  const t = ORDER_STATE_TEXT[o.state]?.text || o.state
-  return o.last_error && ['failed', 'not_sent', 'unknown', 'needs_review'].includes(o.state) ? `${t}（${o.last_error}）` : t
-}
-function orderToast(what: string, o: Order) {
-  const type = ORDER_STATE_TEXT[o.state]?.type || 'info'
-  dialog.toast(`${what}：${orderStateText(o)}`, type, type === 'ok' || type === 'info' ? 2800 : 6000)
 }
 
 // ---------- 概览 ----------

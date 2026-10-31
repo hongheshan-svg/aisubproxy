@@ -283,7 +283,15 @@ func TestHolderEndpointsNoPIIInAuditOrLogs(t *testing.T) {
 	}
 
 	audit := cpAudit(t, c)
-	for _, want := range []string{"cardpool.holder_create out_card_holder_id=CH", "card_holder_id=h2", "cardpool.holder_update card_holder_id=h1"} {
+	// 查资料成功才写审计，内容只有持卡人 ID（被拒的那次不写）
+	if n := mwCount(t, c, `SELECT COUNT(*) FROM admin_audit_logs WHERE action='cardpool.holder_profile'`); n != 1 {
+		t.Errorf("holder_profile audit rows = %d", n)
+	}
+	if n := mwCount(t, c, `SELECT COUNT(*) FROM admin_audit_logs WHERE action='cardpool.holder_profile' AND detail='card_holder_id=h1'`); n != 1 {
+		t.Errorf("holder_profile audit detail: %q", audit)
+	}
+	for _, want := range []string{"cardpool.holder_create out_card_holder_id=CH", "card_holder_id=h2", "cardpool.holder_update card_holder_id=h1",
+		"cardpool.holder_profile card_holder_id=h1"} {
 		if !strings.Contains(audit, want) {
 			t.Errorf("audit missing %q: %q", want, audit)
 		}

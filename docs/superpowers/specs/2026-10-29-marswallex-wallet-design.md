@@ -1,7 +1,7 @@
 # MarsWallex 钱包、持卡人管理与交易补拉设计（子项目 2b）
 
 - 日期：2026-10-29
-- 状态：已确认设计，待写实现计划
+- 状态：已实现，待生产验收
 - 前置：子项目 1 `docs/superpowers/specs/2026-10-27-marswallex-access-layer-design.md`、子项目 2 `docs/superpowers/specs/2026-10-28-marswallex-card-pool-design.md`（均已合并到 master）
 - 参考：`docs/marswallex-openapi-zh.md`（2026-10-29 重新下载官方规范比对，内容与仓库存档一致）
 

@@ -134,6 +134,36 @@
             <el-input v-model="importHolderId" placeholder="持卡人 ID" style="width: 260px" class="mono" />
             <el-button type="primary" size="small" :loading="holderImporting" @click="importHolder">按 ID 导入</el-button>
             <el-button size="small" :loading="holdersLoading" @click="loadHolders">刷新列表</el-button>
+            <el-button type="primary" size="small" @click="openCreateHolder">新建持卡人</el-button>
+          </div>
+
+          <div class="mb-4">
+            <div class="flex items-center gap-2 mb-1">
+              <span class="text-sm font-semibold text-ink">提交记录</span>
+              <el-button size="small" text :loading="subsLoading" @click="loadSubmissions">刷新</el-button>
+            </div>
+            <el-table :data="submissions" size="small" border empty-text="暂无提交记录" v-loading="subsLoading">
+              <el-table-column prop="out_card_holder_id" label="提交编号" min-width="190" show-overflow-tooltip />
+              <el-table-column label="姓名" min-width="130">
+                <template #default="{ row }">{{ row.first_name }} {{ row.last_name }}</template>
+              </el-table-column>
+              <el-table-column prop="country_code" label="国家" width="70" />
+              <el-table-column label="状态" width="110">
+                <template #default="{ row }">
+                  <el-tag size="small" :type="subTagType(row.state)">{{ SUB_STATE_LABEL[row.state] || row.state }}</el-tag>
+                </template>
+              </el-table-column>
+              <el-table-column prop="card_holder_id" label="持卡人 ID" min-width="170" show-overflow-tooltip />
+              <el-table-column prop="last_error" label="错误" min-width="140" show-overflow-tooltip />
+              <el-table-column label="提交时间" min-width="150">
+                <template #default="{ row }">{{ fmtTs(row.created_at) }}</template>
+              </el-table-column>
+              <el-table-column label="操作" width="80">
+                <template #default="{ row }">
+                  <el-button v-if="row.state === 'unknown'" size="small" type="danger" plain @click="abandonSubmission(row)">放弃</el-button>
+                </template>
+              </el-table-column>
+            </el-table>
           </div>
           <el-table :data="holders" size="small" border empty-text="暂无持卡人" v-loading="holdersLoading">
             <el-table-column prop="card_holder_id" label="持卡人 ID" min-width="190" show-overflow-tooltip />
@@ -146,9 +176,12 @@
             <el-table-column label="同步时间" min-width="150">
               <template #default="{ row }">{{ fmtTs(row.synced_at) }}</template>
             </el-table-column>
-            <el-table-column label="操作" width="90">
+            <el-table-column label="操作" width="230">
               <template #default="{ row }">
                 <el-button size="small" plain @click="refreshHolder(row)">刷新</el-button>
+                <el-button size="small" plain @click="openEditHolder(row)">修改</el-button>
+                <el-button v-if="row.status === 'APPROVED'" size="small" type="danger" plain @click="setHolderStatus(row, 'DISABLED')">停用</el-button>
+                <el-button v-else-if="row.status === 'DISABLED'" size="small" plain @click="setHolderStatus(row, 'APPROVED')">启用</el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -209,6 +242,23 @@
           <div class="flex flex-wrap items-center gap-2 mb-3">
             <el-input v-model="txnFilter.card_id" clearable placeholder="按 card_id 筛选" style="width: 260px" class="mono" @change="resetTxns" />
             <el-button size="small" :loading="txnsLoading" @click="loadTxns">刷新</el-button>
+            <el-dropdown trigger="click" :disabled="backfilling" @command="runBackfill">
+              <el-button size="small" type="primary" :loading="backfilling">立即补拉</el-button>
+              <template #dropdown>
+                <el-dropdown-menu>
+                  <el-dropdown-item :command="1">补拉 1 天</el-dropdown-item>
+                  <el-dropdown-item :command="3">补拉 3 天</el-dropdown-item>
+                  <el-dropdown-item :command="7">补拉 7 天</el-dropdown-item>
+                </el-dropdown-menu>
+              </template>
+            </el-dropdown>
+          </div>
+          <div v-if="backfill" class="text-sm text-muted mb-3 space-y-1">
+            <div>
+              已补拉到：{{ fmtTs(backfill.cursor) }}　上次运行：{{ fmtTs(backfill.last_run_at) }}　新增 {{ backfill.last_added ?? 0 }} 条
+            </div>
+            <div v-if="backfill.last_error" class="text-warn">上次错误：{{ backfill.last_error }}</div>
+            <div v-if="backfilling">补拉进行中，可能需要一段时间，请勿重复点击……</div>
           </div>
           <el-table :data="txns" size="small" border empty-text="暂无交易" v-loading="txnsLoading">
             <el-table-column prop="transaction_id" label="交易 ID" min-width="190" show-overflow-tooltip />
@@ -415,7 +465,7 @@
     </el-dialog>
 
     <!-- 卡详情 -->
-    <el-drawer v-model="detailOpen" :title="`卡详情 ${detail?.card.card_id || ''}`" size="720px" @closed="detail = null">
+    <el-drawer v-model="detailOpen" :title="`卡详情 ${detail?.card.card_id || ''}`" size="720px" @closed="detail = null; balTxns = []">
       <div v-if="detail" class="space-y-4">
         <el-descriptions :column="2" size="small" border>
           <el-descriptions-item label="产品">{{ productLabel(detail.card.product_id) }}</el-descriptions-item>
@@ -440,6 +490,27 @@
           </el-table>
         </div>
         <div>
+          <div class="text-sm font-semibold text-ink mb-1">平台转入转出明细</div>
+          <p v-if="balTxnsError" class="text-sm text-warn mb-1">{{ balTxnsError }}</p>
+          <p v-if="balTxns.some((x) => x.mismatch)" class="field-error">与本地单据不一致，请到『单据』中重查</p>
+          <el-table :data="balTxns" size="small" border empty-text="暂无明细" v-loading="balTxnsLoading"
+            :row-class-name="({ row }: { row: BalTxn }) => (row.mismatch ? 'mismatch-row' : '')">
+            <el-table-column label="来源" width="80">
+              <template #default="{ row }">{{ row.origin === 'external' ? '外部' : '本系统' }}</template>
+            </el-table-column>
+            <el-table-column label="类型" width="80">
+              <template #default="{ row }">{{ row.type === 'CHARGE' ? '转入' : row.type === 'WITHDRAW' ? '转出' : row.type }}</template>
+            </el-table-column>
+            <el-table-column label="金额" min-width="110">
+              <template #default="{ row }">{{ row.amount }} {{ row.currency }}</template>
+            </el-table-column>
+            <el-table-column prop="status" label="状态" width="90" />
+            <el-table-column label="时间" min-width="150">
+              <template #default="{ row }">{{ fmtTs(row.create_time) }}</template>
+            </el-table-column>
+          </el-table>
+        </div>
+        <div>
           <div class="text-sm font-semibold text-ink mb-1">交易</div>
           <el-table :data="detail.transactions" size="small" border empty-text="暂无交易">
             <el-table-column prop="transaction_id" label="交易 ID" min-width="160" show-overflow-tooltip />
@@ -450,6 +521,13 @@
         </div>
       </div>
     </el-drawer>
+
+    <!-- 持卡人资料表单：关闭即销毁并清空，不落任何浏览器存储 -->
+    <el-dialog v-model="holderFormOpen" :title="holderFormMode === 'edit' ? '修改持卡人' : '新建持卡人'" width="760px"
+      destroy-on-close :close-on-click-modal="false" @closed="holderInitial = undefined">
+      <CardholderForm v-if="holderFormOpen" :mode="holderFormMode" :initial="holderInitial" :submitting="holderSubmitting"
+        @submitted="submitHolder" @cancel="holderFormOpen = false" />
+    </el-dialog>
 
     <!-- 卡号弹窗：关闭即清空 -->
     <el-dialog v-model="sensitiveOpen" title="完整卡号" width="440px" destroy-on-close :close-on-click-modal="false" @closed="clearSensitive">
@@ -478,7 +556,11 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { authFetch } from '../../lib/api'
+import CardholderForm from './components/CardholderForm.vue'
+import {
+  ORDER_KINDS, errText, fmtTs, isUncertain, kindLabel, money, poolApi as api,
+  type CardholderFormValue,
+} from '../../lib/cardpool'
 import { dialog } from '../../lib/dialog'
 import { useAuthStore } from '../../stores/auth'
 
@@ -541,44 +623,12 @@ const POOL_STATES = [
   { value: 'retired', label: '已注销' }, { value: 'disabled', label: '停用' },
 ]
 const ORDER_STATES = ['pending', 'processing', 'unknown', 'needs_review', 'success', 'failed', 'not_sent']
-const ORDER_KINDS = [
-  { value: 'apply', label: '开卡' }, { value: 'recharge', label: '转入' },
-  { value: 'withdraw', label: '转出' }, { value: 'status', label: '改状态' },
-]
 
 const router = useRouter()
 const auth = useAuthStore()
 const tab = ref('overview')
 
 // ---------- 通用 ----------
-interface Resp<T = any> { ok: boolean; status: number; data: T }
-
-async function api<T = any>(path: string, method = 'GET', body?: unknown): Promise<Resp<T>> {
-  try {
-    const r = await authFetch('/api/v1/admin/cardpool' + path, {
-      method,
-      body: body === undefined ? undefined : JSON.stringify(body),
-    })
-    const data = await r.json().catch(() => ({}))
-    return { ok: r.ok, status: r.status, data }
-  } catch {
-    return { ok: false, status: 0, data: { error: '网络错误' } as any }
-  }
-}
-
-function errText(r: Resp, fallback: string) {
-  return (r.data && r.data.error) || fallback
-}
-
-function money(cents: number | null | undefined) {
-  return ((cents || 0) / 100).toFixed(2)
-}
-
-function fmtTs(ts: number | null | undefined) {
-  if (!ts) return '—'
-  return new Date(ts * 1000).toLocaleString()
-}
-
 function fmtIso(s: string) {
   const d = new Date(s)
   return isNaN(d.getTime()) ? s : d.toLocaleString()
@@ -586,9 +636,6 @@ function fmtIso(s: string) {
 
 function poolStateLabel(s: string) {
   return POOL_STATES.find((x) => x.value === s)?.label || s
-}
-function kindLabel(k: string) {
-  return ORDER_KINDS.find((x) => x.value === k)?.label || k
 }
 function stateTagType(s: string) {
   switch (s) {
@@ -891,11 +938,35 @@ async function submitImportCard() {
 // 详情
 const detail = ref<{ card: Card; orders: Order[]; transactions: Txn[] } | null>(null)
 const detailOpen = ref(false)
+interface BalTxn {
+  out_order_no: string; transaction_id: string; card_id: string; currency: string; amount: string
+  type: string; status: string; create_time: number; origin: string; local_state: string; mismatch: boolean
+}
+const balTxns = ref<BalTxn[]>([])
+const balTxnsLoading = ref(false)
+const balTxnsError = ref('')
 async function openDetail(row: Card) {
   const r = await api(`/cards/${encodeURIComponent(row.card_id)}`)
   if (!r.ok) return dialog.toast(errText(r, '加载详情失败'), 'err')
   detail.value = r.data
   detailOpen.value = true
+  loadBalTxns(row.card_id)
+}
+async function loadBalTxns(cardId: string) {
+  balTxns.value = []
+  balTxnsError.value = ''
+  balTxnsLoading.value = true
+  try {
+    const r = await api<{ items: BalTxn[] }>(`/cards/${encodeURIComponent(cardId)}/balance-transactions`)
+    if (detail.value?.card.card_id !== cardId) return // 抽屉已关或换了卡
+    if (!r.ok) {
+      balTxnsError.value = errText(r, '加载平台转入转出明细失败')
+      return
+    }
+    balTxns.value = r.data.items || []
+  } finally {
+    balTxnsLoading.value = false
+  }
 }
 
 // ---------- 持卡人 ----------
@@ -932,6 +1003,118 @@ async function refreshHolder(row: Holder) {
   const r = await api(`/cardholders/${encodeURIComponent(row.card_holder_id)}/refresh`, 'POST')
   if (!r.ok) return dialog.toast(errText(r, '刷新失败'), 'err')
   dialog.toast('已刷新', 'ok')
+  loadHolders()
+}
+
+// 持卡人新建 / 修改
+const SUB_STATE_LABEL: Record<string, string> = { submitted: '已提交', unknown: '结果未知', abandoned: '已放弃' }
+function subTagType(s: string) {
+  return s === 'submitted' ? 'success' : s === 'unknown' ? 'warning' : 'info'
+}
+interface Submission {
+  out_card_holder_id: string; first_name: string; last_name: string; country_code: string
+  state: string; card_holder_id: string; last_error: string; requested_by: string; created_at: number; updated_at: number
+}
+const submissions = ref<Submission[]>([])
+const subsLoading = ref(false)
+async function loadSubmissions() {
+  subsLoading.value = true
+  try {
+    const r = await api<{ items: Submission[] }>('/cardholder-submissions')
+    if (!r.ok) return dialog.toast(errText(r, '加载提交记录失败'), 'err')
+    submissions.value = r.data.items || []
+  } finally {
+    subsLoading.value = false
+  }
+}
+async function abandonSubmission(row: Submission) {
+  const ok = await dialog.confirm(
+    `放弃提交 ${row.out_card_holder_id}？\n放弃后该记录不再等待审核推送自动关联；如平台实际已创建，请用「按 ID 导入」。`,
+    { title: '放弃提交', okText: '放弃' },
+  )
+  if (!ok) return
+  const r = await api(`/cardholder-submissions/${encodeURIComponent(row.out_card_holder_id)}/abandon`, 'POST')
+  if (!r.ok) return dialog.toast(errText(r, '操作失败'), 'err')
+  dialog.toast('已放弃', 'ok')
+  loadSubmissions()
+}
+
+const holderFormOpen = ref(false)
+const holderFormMode = ref<'create' | 'edit'>('create')
+const holderInitial = ref<CardholderFormValue | undefined>(undefined)
+const holderSubmitting = ref(false)
+const editingHolderId = ref('')
+
+function openCreateHolder() {
+  holderFormMode.value = 'create'
+  holderInitial.value = undefined
+  editingHolderId.value = ''
+  holderFormOpen.value = true
+}
+async function openEditHolder(row: Holder) {
+  // 完整资料只放在表单内存里，对话框关闭即清空；不缓存、不打日志。
+  const r = await api(`/cardholders/${encodeURIComponent(row.card_holder_id)}/profile`)
+  if (!r.ok) return dialog.toast(errText(r, '加载持卡人资料失败'), 'err')
+  const d = r.data || {}
+  const addr = (a: any) => ({
+    country: a?.country || '', state: a?.state || '', city: a?.city || '', address: a?.address || '', post_code: a?.post_code || '',
+  })
+  const res = addr(d.residential_address)
+  const bil = addr(d.billing_address)
+  holderInitial.value = {
+    first_name: d.first_name || '', last_name: d.last_name || '',
+    chinese_first_name: d.chinese_first_name || '', chinese_last_name: d.chinese_last_name || '',
+    date_of_birth: d.date_of_birth || '', zone_number: d.zone_number || '', mobile: d.mobile || '', email: d.email || '',
+    country_code: d.country_code || '', id_type: d.id_type || 'PASSPORT', id_no: d.id_no || '',
+    id_period_begin: d.id_period_begin || '', id_period_end: d.id_period_end || '',
+    id_photo_file_ids: Array.isArray(d.id_photo_file_ids) ? [...d.id_photo_file_ids] : [],
+    residential_address: res, billing_address: bil,
+    billing_same: JSON.stringify(res) === JSON.stringify(bil), ssn: d.ssn || '',
+  }
+  holderFormMode.value = 'edit'
+  editingHolderId.value = row.card_holder_id
+  holderFormOpen.value = true
+}
+async function submitHolder(payload: Record<string, unknown>) {
+  if (holderSubmitting.value) return
+  holderSubmitting.value = true
+  try {
+    if (holderFormMode.value === 'edit') {
+      const r = await api(`/cardholders/${encodeURIComponent(editingHolderId.value)}`, 'PUT', payload)
+      if (isUncertain(r)) {
+        dialog.toast('结果未知：请稍后刷新持卡人列表确认，不要立即重复提交', 'warn')
+        return
+      }
+      if (!r.ok) return dialog.toast(errText(r, '修改失败'), 'err')
+      holderFormOpen.value = false
+      dialog.toast('已提交修改', 'ok')
+      loadHolders()
+      return
+    }
+    const r = await api('/cardholders', 'POST', payload)
+    if (r.status === 202 || isUncertain(r)) {
+      holderFormOpen.value = false
+      dialog.toast('结果未知；审核推送到达或手动导入后会自动关联', 'warn')
+      loadSubmissions()
+      return
+    }
+    if (!r.ok) return dialog.toast(errText(r, '新建失败'), 'err')
+    holderFormOpen.value = false
+    dialog.toast('已提交，审核通过后需在『策略』中手动加入补卡持卡人', 'ok')
+    loadSubmissions()
+    loadHolders()
+  } finally {
+    holderSubmitting.value = false
+  }
+}
+async function setHolderStatus(row: Holder, status: 'APPROVED' | 'DISABLED') {
+  const word = status === 'DISABLED' ? '停用' : '启用'
+  const ok = await dialog.confirm(`${word}持卡人 ${row.card_holder_id}？`, { title: word, okText: word })
+  if (!ok) return
+  const r = await api(`/cardholders/${encodeURIComponent(row.card_holder_id)}/status`, 'POST', { status })
+  if (isUncertain(r)) return dialog.toast('结果未知：请稍后刷新持卡人列表确认', 'warn')
+  if (!r.ok) return dialog.toast(errText(r, `${word}失败`), 'err')
+  dialog.toast(`已${word}`, 'ok')
   loadHolders()
 }
 
@@ -1001,6 +1184,31 @@ async function loadTxns() {
 function resetTxns() {
   txnFilter.page = 1
   loadTxns()
+}
+
+interface Backfill { cursor: number | null; last_run_at: number | null; last_added: number | null; last_error: string }
+const backfill = ref<Backfill | null>(null)
+const backfilling = ref(false)
+async function loadBackfill() {
+  const r = await api<Backfill>('/backfill')
+  if (r.ok) backfill.value = r.data
+}
+async function runBackfill(days: number) {
+  if (backfilling.value) return
+  backfilling.value = true
+  try {
+    const r = await api<Backfill>('/backfill', 'POST', { days })
+    if (!r.ok) {
+      dialog.toast(r.status === 0 ? '网络异常，补拉结果未知，请稍后刷新查看' : errText(r, '补拉失败'), r.status === 0 ? 'warn' : 'err')
+      loadBackfill()
+      return
+    }
+    backfill.value = r.data
+    dialog.toast(`补拉完成，新增 ${r.data.last_added ?? 0} 条`, 'ok')
+    loadTxns()
+  } finally {
+    backfilling.value = false
+  }
 }
 
 // ---------- 策略与健康度 ----------
@@ -1119,9 +1327,9 @@ async function resumeProduct(row: Health) {
 watch(tab, (t) => {
   if (t === 'overview') loadOverview()
   else if (t === 'cards') loadCards()
-  else if (t === 'holders') loadHolders()
+  else if (t === 'holders') { loadHolders(); loadSubmissions() }
   else if (t === 'orders') loadOrders()
-  else if (t === 'txns') loadTxns()
+  else if (t === 'txns') { loadTxns(); loadBackfill() }
   else if (t === 'policy') {
     if (!holders.value.length) loadHolders()
     loadPolicy()
@@ -1143,6 +1351,10 @@ onBeforeUnmount(() => {
 <style scoped>
 .text-warn {
   color: #d97706;
+}
+:deep(.mismatch-row td) {
+  background: rgba(220, 38, 38, 0.12) !important;
+  color: #dc2626;
 }
 .field-error {
   margin-bottom: 8px;

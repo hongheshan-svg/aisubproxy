@@ -28,6 +28,7 @@ import { ElSwitch } from 'element-plus/es/components/switch/index.mjs'
 import { ElTabPane, ElTabs } from 'element-plus/es/components/tabs/index.mjs'
 import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.mjs'
 import { ElTag } from 'element-plus/es/components/tag/index.mjs'
+import { ElUpload } from 'element-plus/es/components/upload/index.mjs'
 import { vLoading } from 'element-plus/es/components/loading/index.mjs'
 import {
   ArrowDown, Bell, Box, Brush, Coin, CreditCard, Document, Key, Link, List, Odometer, Wallet,
@@ -70,6 +71,7 @@ import 'element-plus/theme-chalk/el-table.css'
 import 'element-plus/theme-chalk/el-table-column.css'
 import 'element-plus/theme-chalk/el-tabs.css'
 import 'element-plus/theme-chalk/el-tag.css'
+import 'element-plus/theme-chalk/el-upload.css'
 import 'element-plus/theme-chalk/el-tooltip.css'
 import 'element-plus/theme-chalk/dark/css-vars.css'
 
@@ -77,7 +79,7 @@ const components = [
   ElAlert, ElButton, ElButtonGroup, ElCard, ElCheckbox, ElDescriptions, ElDescriptionsItem,
   ElDialog, ElDrawer, ElDropdown, ElDropdownItem, ElDropdownMenu, ElEmpty, ElForm, ElFormItem,
   ElIcon, ElInput, ElInputNumber, ElOption, ElPagination, ElPopover, ElRadioButton, ElRadioGroup,
-  ElResult, ElSelect, ElSwitch, ElTabPane, ElTable, ElTableColumn, ElTabs, ElTag,
+  ElResult, ElSelect, ElSwitch, ElTabPane, ElTable, ElTableColumn, ElTabs, ElTag, ElUpload,
 ]
 
 // 管理端导航按名字引用图标（<component :is="'Odometer'" />），所以按原名全局注册。

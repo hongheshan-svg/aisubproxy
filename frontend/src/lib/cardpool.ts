@@ -75,3 +75,142 @@ export function parseAmountCents(s: string): number | null {
 export function hasEmoji(s: string): boolean {
   return /\p{Extended_Pictographic}/u.test(s)
 }
+
+// ---------- 持卡人资料表单（规则与后端 validateProfile 一致） ----------
+
+export interface AddressValue { country: string; state: string; city: string; address: string; post_code: string }
+
+export interface CardholderFormValue {
+  first_name: string
+  last_name: string
+  chinese_first_name: string
+  chinese_last_name: string
+  date_of_birth: string
+  zone_number: string
+  mobile: string
+  email: string
+  country_code: string
+  id_type: string
+  id_no: string
+  id_period_begin: string
+  id_period_end: string
+  id_photo_file_ids: string[]
+  residential_address: AddressValue
+  billing_address: AddressValue
+  billing_same: boolean
+  ssn: string
+}
+
+function emptyAddress(): AddressValue {
+  return { country: '', state: '', city: '', address: '', post_code: '' }
+}
+
+export function emptyCardholderForm(): CardholderFormValue {
+  return {
+    first_name: '', last_name: '', chinese_first_name: '', chinese_last_name: '',
+    date_of_birth: '', zone_number: '', mobile: '', email: '', country_code: '',
+    id_type: 'PASSPORT', id_no: '', id_period_begin: '', id_period_end: '',
+    id_photo_file_ids: [], residential_address: emptyAddress(), billing_address: emptyAddress(),
+    billing_same: true, ssn: '',
+  }
+}
+
+function runeLen(s: string, lo: number, hi: number): boolean {
+  const n = Array.from(s).length
+  return n >= lo && n <= hi
+}
+
+function asciiName(s: string): boolean {
+  return s.length >= 1 && s.length <= 32 && /^[\x20-\x7e]+$/.test(s)
+}
+
+function validDate(s: string): boolean {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s)
+  if (!m) return false
+  const y = Number(m[1]), mo = Number(m[2]), d = Number(m[3])
+  if (y < 1 || mo < 1 || mo > 12 || d < 1) return false
+  return d <= new Date(Date.UTC(y, mo, 0)).getUTCDate()
+}
+
+function validEmail(s: string): boolean {
+  return runeLen(s, 1, 100) && /^[^\s<>@,;:"()[\]\\]+@[^\s<>@,;:"()[\]\\]+\.[^\s<>@,;:"()[\]\\]+$/.test(s)
+}
+
+const COUNTRY_RE = /^[A-Z]{2}$/
+const SSN_RE = /^\d{3}-\d{2}-\d{4}$/
+
+function cleanZone(z: string): string {
+  return z.trim().replace(/^\+/, '')
+}
+
+function addressErrors(label: string, a: AddressValue): string[] {
+  const t = (s: string) => (s || '').trim()
+  const out: string[] = []
+  if (!COUNTRY_RE.test(t(a.country).toUpperCase())) out.push(`${label}国家码须为两位字母`)
+  if (!runeLen(t(a.state), 1, 64)) out.push(`${label}州/省须为 1–64 个字`)
+  if (!runeLen(t(a.city), 1, 64)) out.push(`${label}城市须为 1–64 个字`)
+  if (!runeLen(t(a.address), 1, 256)) out.push(`${label}详细地址须为 1–256 个字`)
+  if (!runeLen(t(a.post_code), 1, 10)) out.push(`${label}邮编须为 1–10 个字`)
+  return out
+}
+
+/** 返回中文错误列表（空数组即通过）。today 为管理员本地日期 YYYY-MM-DD。 */
+export function validateCardholderForm(f: CardholderFormValue, today: string): string[] {
+  const t = (s: string) => (s || '').trim()
+  const errs: string[] = []
+  const cc = t(f.country_code).toUpperCase()
+  if (!asciiName(t(f.first_name))) errs.push('英文名须为 1–32 个可打印 ASCII 字符')
+  if (!asciiName(t(f.last_name))) errs.push('英文姓须为 1–32 个可打印 ASCII 字符')
+  if (!runeLen(t(f.chinese_first_name), 0, 32)) errs.push('中文名不能超过 32 个字')
+  if (!runeLen(t(f.chinese_last_name), 0, 32)) errs.push('中文姓不能超过 32 个字')
+  const dob = t(f.date_of_birth)
+  if (!(validDate(dob) && dob < today)) errs.push('出生日期须为 YYYY-MM-DD 且早于今天')
+  if (!/^\d{1,10}$/.test(cleanZone(f.zone_number))) errs.push('手机区号须为 1–10 位数字')
+  if (!runeLen(t(f.mobile), 1, 50)) errs.push('手机号须为 1–50 个字')
+  if (!validEmail(t(f.email))) errs.push('邮箱须为不超过 100 个字的邮箱地址（不含姓名）')
+  if (!COUNTRY_RE.test(cc)) errs.push('国籍国家码须为两位字母')
+  if (!['PASSPORT', 'IDCARD', 'OTHER_CERTIFICATE'].includes(t(f.id_type))) errs.push('证件类型不合法')
+  if (!runeLen(t(f.id_no), 1, 64)) errs.push('证件号须为 1–64 个字')
+  const b = t(f.id_period_begin), e = t(f.id_period_end)
+  if (!(validDate(b) && b <= today)) errs.push('证件生效日须为 YYYY-MM-DD 且不晚于今天')
+  if (!(validDate(e) && e > today)) errs.push('证件到期日须为 YYYY-MM-DD 且晚于今天（长期有效填 9999-12-31）')
+  if (validDate(b) && validDate(e) && b > e) errs.push('证件生效日不能晚于到期日')
+  const ids = f.id_photo_file_ids || []
+  if (ids.length < 1 || ids.length > 2 || ids.some((x) => !t(x))) errs.push('证件照须上传 1–2 张')
+  errs.push(...addressErrors('居住地址', f.residential_address))
+  if (!f.billing_same) errs.push(...addressErrors('账单地址', f.billing_address))
+  if (cc === 'US' && !SSN_RE.test(t(f.ssn))) errs.push('国籍为 US 时 SSN 必填，格式为 ###-##-####')
+  return errs
+}
+
+function trimAddr(a: AddressValue): AddressValue {
+  const t = (s: string) => (s || '').trim()
+  return { country: t(a.country).toUpperCase(), state: t(a.state), city: t(a.city), address: t(a.address), post_code: t(a.post_code) }
+}
+
+/** 转成提交给后端的 JSON：billing_same 时复制居住地址；非 US 不带 ssn；国家码大写。 */
+export function toCardholderPayload(f: CardholderFormValue): Record<string, unknown> {
+  const t = (s: string) => (s || '').trim()
+  const cc = t(f.country_code).toUpperCase()
+  const residential = trimAddr(f.residential_address)
+  const p: Record<string, unknown> = {
+    first_name: t(f.first_name),
+    last_name: t(f.last_name),
+    chinese_first_name: t(f.chinese_first_name),
+    chinese_last_name: t(f.chinese_last_name),
+    date_of_birth: t(f.date_of_birth),
+    zone_number: cleanZone(f.zone_number),
+    mobile: t(f.mobile),
+    email: t(f.email),
+    country_code: cc,
+    id_type: t(f.id_type),
+    id_no: t(f.id_no),
+    id_period_begin: t(f.id_period_begin),
+    id_period_end: t(f.id_period_end),
+    id_photo_file_ids: (f.id_photo_file_ids || []).map(t),
+    residential_address: residential,
+    billing_address: f.billing_same ? { ...residential } : trimAddr(f.billing_address),
+  }
+  if (cc === 'US') p.ssn = t(f.ssn)
+  return p
+}

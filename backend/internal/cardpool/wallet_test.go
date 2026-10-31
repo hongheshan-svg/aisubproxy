@@ -100,8 +100,8 @@ func TestSyncAccountsRefusesZeroAccounts(t *testing.T) {
 	}
 	for _, body := range []string{`{"count":"0","data":[]}`, `{"count":"0","data":null}`, `{"count":"0"}`} {
 		mw.On("GET", "/v1/accounts/page", mwtest.Reply{Body: body})
-		if err := s.SyncAccounts(ctx); err == nil {
-			t.Fatalf("%s: 零账户应返回错误", body)
+		if err := s.SyncAccounts(ctx); !errors.Is(err, ErrNoAccounts) {
+			t.Fatalf("%s: err = %v，期望 ErrNoAccounts", body, err)
 		}
 		if n := countRows(t, `SELECT COUNT(*) FROM mw_accounts WHERE gone = 0`); n != 2 {
 			t.Fatalf("%s: 未消失的账户 = %d，期望 2（本地不应改动）", body, n)

@@ -771,3 +771,26 @@ func TestWalletWebhooks(t *testing.T) {
 		t.Fatalf("不应告警: %v", alerts.Texts())
 	}
 }
+
+// 平台一个账户都不返回时，兑换与转账都在建单前失败：返回 ErrNoAccounts，不写单据、不下单。
+func TestFundsZeroAccountsNotSubmitted(t *testing.T) {
+	s, mw, _, _ := newTestService(t)
+	ctx := context.Background()
+	mw.On("GET", "/v1/accounts/page", mwtest.Reply{Body: `{"count":"0","data":[]}`})
+
+	_, err := s.SubmitConversion(ctx, ConversionParams{SellCurrency: "USDT", BuyCurrency: "USD", SellCents: 100, By: "admin"})
+	if !errors.Is(err, ErrNoAccounts) {
+		t.Fatalf("兑换 err = %v，期望 ErrNoAccounts", err)
+	}
+	_, err = s.SubmitWalletTransfer(ctx, WalletTransferParams{PayerAccountNo: "M1", PayeeAccountNo: "S1",
+		Currency: "USD", AmountCents: 100, By: "admin"})
+	if !errors.Is(err, ErrNoAccounts) {
+		t.Fatalf("转账 err = %v，期望 ErrNoAccounts", err)
+	}
+	if n := countRows(t, `SELECT COUNT(*) FROM mw_card_orders`); n != 0 {
+		t.Fatalf("单据数 = %d，期望 0", n)
+	}
+	if n := len(mw.Requests("POST", "/v1/conversion")) + len(mw.Requests("POST", "/v1/transfer")); n != 0 {
+		t.Fatalf("下单请求数 = %d，期望 0", n)
+	}
+}

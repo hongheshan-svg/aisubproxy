@@ -3,7 +3,6 @@ package cardpool
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"log"
 	"strings"
 	"unicode"
@@ -51,7 +50,8 @@ func (s *Service) SyncAccounts(ctx context.Context) error {
 	}
 	// 商户至少有主钱包：平台一个账户都不返回按异常处理，不把本地账户全部标为消失
 	if len(all) == 0 {
-		return errors.New("平台未返回任何账户，本次同步不写入")
+		log.Printf("[cardpool] 同步账户：平台未返回任何账户，本次不写入")
+		return ErrNoAccounts
 	}
 
 	now := s.now().Unix()

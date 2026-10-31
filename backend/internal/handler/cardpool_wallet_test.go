@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/tuzi/cdk-recharge-system/internal/cardpool"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -346,5 +347,19 @@ func TestWalletAccountAndTransferEndpoints(t *testing.T) {
 		if !strings.Contains(a, want) {
 			t.Errorf("audit missing %q: %q", want, a)
 		}
+	}
+}
+
+// 零账户属于发送前失败：映射为 502 且不带 outcome，前端据此显示「未提交」而不是「结果未知」。
+func TestNoAccountsMapsTo502WithoutOutcome(t *testing.T) {
+	status, body := poolErrorStatus(fmt.Errorf("同步账户: %w", cardpool.ErrNoAccounts))
+	if status != http.StatusBadGateway {
+		t.Fatalf("status = %d，期望 502", status)
+	}
+	if _, ok := body["outcome"]; ok {
+		t.Fatalf("body 不应带 outcome: %v", body)
+	}
+	if msg, _ := body["error"].(string); !strings.Contains(msg, "未返回任何账户") {
+		t.Fatalf("error = %q", msg)
 	}
 }

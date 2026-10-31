@@ -19,6 +19,8 @@ var (
 	ErrCardBusy     = errors.New("卡正忙，有在途操作")
 	ErrBadRequest   = errors.New("请求参数不合法")
 	ErrInflight     = errors.New("已有在途单据")
+	// ErrNoAccounts：平台一个账户都没返回（商户至少有主钱包），发生在建单前，请求未提交
+	ErrNoAccounts = errors.New("平台未返回任何账户，本次未提交，请稍后刷新账户再试")
 	// ErrHolderAccepted：平台已受理新建持卡人，但本地写入失败
 	ErrHolderAccepted = errors.New("平台已受理，请勿重复提交；稍后刷新或在提交记录中查看")
 )

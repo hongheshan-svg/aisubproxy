@@ -30,7 +30,7 @@ import { ElTable, ElTableColumn } from 'element-plus/es/components/table/index.m
 import { ElTag } from 'element-plus/es/components/tag/index.mjs'
 import { vLoading } from 'element-plus/es/components/loading/index.mjs'
 import {
-  ArrowDown, Bell, Box, Brush, CreditCard, Document, Key, Link, List, Odometer, Wallet,
+  ArrowDown, Bell, Box, Brush, Coin, CreditCard, Document, Key, Link, List, Odometer, Wallet,
 } from '@element-plus/icons-vue'
 
 import 'element-plus/theme-chalk/base.css'
@@ -81,7 +81,7 @@ const components = [
 ]
 
 // 管理端导航按名字引用图标（<component :is="'Odometer'" />），所以按原名全局注册。
-const icons = { ArrowDown, Bell, Box, Brush, CreditCard, Document, Key, Link, List, Odometer, Wallet }
+const icons = { ArrowDown, Bell, Box, Brush, Coin, CreditCard, Document, Key, Link, List, Odometer, Wallet }
 
 export function installElement(app: App) {
   // 用 app.component 按名注册，不用 app.use：子组件（ElRadioGroup/ElTableColumn/ElDropdownItem…）

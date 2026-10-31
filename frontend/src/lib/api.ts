@@ -75,7 +75,8 @@ export const authFetch = async (input: RequestInfo | URL, init: RequestInit = {}
     if (csrf) headers.set('X-CSRF-Token', csrf)
   }
 
-  if (init.body && !headers.has('Content-Type')) {
+  // FormData 必须由浏览器自动带 multipart boundary，不能手设 Content-Type
+  if (init.body && !(init.body instanceof FormData) && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
   }
 

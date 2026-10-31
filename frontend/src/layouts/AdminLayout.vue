@@ -104,6 +104,7 @@ const navItems = [
   { path: '/ops/integration', label: '卡台接入', icon: 'Link' },
   { path: '/ops/marswallex', label: 'MarsWallex', icon: 'Wallet' },
   { path: '/ops/cardpool', label: '卡池', icon: 'Box' },
+  { path: '/ops/marswallex-wallet', label: 'MarsWallex 钱包', icon: 'Coin' },
   { path: '/ops/card-selection', label: '选卡配置', icon: 'CreditCard' },
   { path: '/ops/webhooks', label: 'Webhook', icon: 'Bell' },
   { path: '/ops/appearance', label: '外观', icon: 'Brush' },
@@ -116,7 +117,7 @@ const currentTitle = computed(() => {
 })
 
 function isActive(p: string) {
-  return p === '/ops' ? route.path === '/ops' : route.path.startsWith(p)
+  return p === '/ops' ? route.path === '/ops' : route.path === p || route.path.startsWith(p + '/')
 }
 async function doLogout() {
   await serverLogout()

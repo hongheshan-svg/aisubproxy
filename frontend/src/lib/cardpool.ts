@@ -214,3 +214,25 @@ export function toCardholderPayload(f: CardholderFormValue): Record<string, unkn
   if (cc === 'US') p.ssn = t(f.ssn)
   return p
 }
+
+// ---------- 持卡人提交记录 ----------
+
+export interface SubmissionLike { state: string; card_holder_id?: string }
+
+/** 已提交但没拿到持卡人 ID（如进程中断）的记录结果未知，不能当成功展示。 */
+export function submissionLabel(s: SubmissionLike): string {
+  if (s.state === 'unknown') return '结果未知'
+  if (s.state === 'abandoned') return '已放弃'
+  if (s.state === 'submitted') return s.card_holder_id ? '已提交' : '提交中断，结果未知'
+  return s.state
+}
+
+export function submissionTagType(s: SubmissionLike): 'success' | 'warning' | 'info' {
+  if (s.state === 'submitted') return s.card_holder_id ? 'success' : 'warning'
+  if (s.state === 'unknown') return 'warning'
+  return 'info'
+}
+
+export function canAbandonSubmission(s: SubmissionLike): boolean {
+  return s.state === 'unknown' || (s.state === 'submitted' && !s.card_holder_id)
+}

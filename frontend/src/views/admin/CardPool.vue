@@ -150,7 +150,7 @@
               <el-table-column prop="country_code" label="国家" width="70" />
               <el-table-column label="状态" width="110">
                 <template #default="{ row }">
-                  <el-tag size="small" :type="subTagType(row.state)">{{ SUB_STATE_LABEL[row.state] || row.state }}</el-tag>
+                  <el-tag size="small" :type="submissionTagType(row)">{{ submissionLabel(row) }}</el-tag>
                 </template>
               </el-table-column>
               <el-table-column prop="card_holder_id" label="持卡人 ID" min-width="170" show-overflow-tooltip />
@@ -160,7 +160,7 @@
               </el-table-column>
               <el-table-column label="操作" width="80">
                 <template #default="{ row }">
-                  <el-button v-if="row.state === 'unknown'" size="small" type="danger" plain @click="abandonSubmission(row)">放弃</el-button>
+                  <el-button v-if="canAbandonSubmission(row)" size="small" type="danger" plain @click="abandonSubmission(row)">放弃</el-button>
                 </template>
               </el-table-column>
             </el-table>
@@ -558,7 +558,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import CardholderForm from './components/CardholderForm.vue'
 import {
-  ORDER_KINDS, errText, fmtTs, isUncertain, kindLabel, money, poolApi as api,
+  ORDER_KINDS, canAbandonSubmission, errText, submissionLabel, submissionTagType, fmtTs, isUncertain, kindLabel, money, poolApi as api,
   type CardholderFormValue,
 } from '../../lib/cardpool'
 import { dialog } from '../../lib/dialog'
@@ -1007,10 +1007,6 @@ async function refreshHolder(row: Holder) {
 }
 
 // 持卡人新建 / 修改
-const SUB_STATE_LABEL: Record<string, string> = { submitted: '已提交', unknown: '结果未知', abandoned: '已放弃' }
-function subTagType(s: string) {
-  return s === 'submitted' ? 'success' : s === 'unknown' ? 'warning' : 'info'
-}
 interface Submission {
   out_card_holder_id: string; first_name: string; last_name: string; country_code: string
   state: string; card_holder_id: string; last_error: string; requested_by: string; created_at: number; updated_at: number

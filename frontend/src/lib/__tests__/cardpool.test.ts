@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { emptyCardholderForm, toCardholderPayload, validateCardholderForm, FLAG_LABEL, hasEmoji, isUncertain, isUnknownOutcome, kindLabel, parseAmountCents } from '../cardpool'
+import { canAbandonSubmission, submissionLabel, submissionTagType, emptyCardholderForm, toCardholderPayload, validateCardholderForm, FLAG_LABEL, hasEmoji, isUncertain, isUnknownOutcome, kindLabel, parseAmountCents } from '../cardpool'
 
 describe('cardpool lib', () => {
   it('parseAmountCents', () => {
@@ -93,5 +93,21 @@ describe('cardpool lib', () => {
     expect(u.ssn).toBe('123-45-6789')
     const z = validUS(); z.zone_number = '+86'
     expect(toCardholderPayload(z).zone_number).toBe('86')
+  })
+
+  it('submission label / tag / abandon', () => {
+    const broken = { state: 'submitted', card_holder_id: '' }
+    expect(submissionLabel(broken)).toBe('提交中断，结果未知')
+    expect(submissionTagType(broken)).toBe('warning')
+    expect(canAbandonSubmission(broken)).toBe(true)
+    const ok = { state: 'submitted', card_holder_id: 'h1' }
+    expect(submissionLabel(ok)).toBe('已提交')
+    expect(submissionTagType(ok)).toBe('success')
+    expect(canAbandonSubmission(ok)).toBe(false)
+    expect(submissionLabel({ state: 'unknown' })).toBe('结果未知')
+    expect(canAbandonSubmission({ state: 'unknown' })).toBe(true)
+    expect(submissionLabel({ state: 'abandoned' })).toBe('已放弃')
+    expect(submissionTagType({ state: 'abandoned' })).toBe('info')
+    expect(canAbandonSubmission({ state: 'abandoned' })).toBe(false)
   })
 })

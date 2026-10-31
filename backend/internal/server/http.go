@@ -241,6 +241,26 @@ func setupRoutes(r *gin.Engine) {
 			admin.PUT("/cardpool/policy", handler.AdminCardPoolPutPolicy)
 			admin.GET("/cardpool/health", handler.AdminCardPoolHealth)
 			admin.POST("/cardpool/health/resume", handler.AdminCardPoolResume)
+			// MarsWallex 钱包：账户、收款地址、流水、兑换、钱包转账
+			admin.GET("/cardpool/wallet/accounts", handler.AdminCardPoolAccounts)
+			admin.POST("/cardpool/wallet/accounts", handler.AdminCardPoolCreateAccount)
+			admin.POST("/cardpool/wallet/accounts/:no/status", handler.AdminCardPoolAccountStatus)
+			admin.GET("/cardpool/wallet/receiving-addresses", handler.AdminCardPoolReceivingAddresses)
+			admin.GET("/cardpool/wallet/serials", handler.AdminCardPoolSerials)
+			admin.POST("/cardpool/wallet/conversions", handler.AdminCardPoolConversion)
+			admin.POST("/cardpool/wallet/transfers", handler.AdminCardPoolWalletTransfer)
+			// 持卡人新建、修改、启停与提交记录（资料不落地、不记日志）
+			admin.POST("/cardpool/cardholders/photos", handler.AdminCardPoolUploadPhoto)
+			admin.POST("/cardpool/cardholders", handler.AdminCardPoolCreateCardholder)
+			admin.GET("/cardpool/cardholders/:id/profile", handler.AdminCardPoolCardholderProfile)
+			admin.PUT("/cardpool/cardholders/:id", handler.AdminCardPoolUpdateCardholder)
+			admin.POST("/cardpool/cardholders/:id/status", handler.AdminCardPoolCardholderStatus)
+			admin.GET("/cardpool/cardholder-submissions", handler.AdminCardPoolSubmissions)
+			admin.POST("/cardpool/cardholder-submissions/:out_id/abandon", handler.AdminCardPoolAbandonSubmission)
+			// 交易补拉与卡转入转出明细
+			admin.GET("/cardpool/backfill", handler.AdminCardPoolBackfillStatus)
+			admin.POST("/cardpool/backfill", handler.AdminCardPoolBackfill)
+			admin.GET("/cardpool/cards/:id/balance-transactions", handler.AdminCardPoolCardTransfers)
 
 			// 卡台 Open API：实时价格 / 余额 / 发码 / 列码 / CDK 订单
 			admin.GET("/cardplatform/ping", handler.CardPlatformPing)

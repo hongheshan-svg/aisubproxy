@@ -36,8 +36,8 @@ func poolRoute(fn func(c *gin.Context, s *cardpool.Service)) gin.HandlerFunc {
 	}
 }
 
-// poolErrorBody 把服务错误映射成 HTTP 状态码与响应体。错误信息不含卡号、CVV2、验证码。
-func poolErrorBody(c *gin.Context, err error) (int, gin.H) {
+// poolErrorStatus 把服务错误映射成 HTTP 状态码与响应体，不写日志。未识别的错误为 500「操作失败」。
+func poolErrorStatus(err error) (int, gin.H) {
 	var me *marswallex.Error
 	switch {
 	case errors.As(err, &me):
@@ -49,11 +49,20 @@ func poolErrorBody(c *gin.Context, err error) (int, gin.H) {
 		return http.StatusBadRequest, gin.H{"error": err.Error()}
 	case errors.Is(err, cardpool.ErrNotFound):
 		return http.StatusNotFound, gin.H{"error": err.Error()}
-	case errors.Is(err, cardpool.ErrCardBusy), errors.Is(err, cardpool.ErrLeaseInvalid), errors.Is(err, cardpool.ErrNoCard):
+	case errors.Is(err, cardpool.ErrCardBusy), errors.Is(err, cardpool.ErrLeaseInvalid), errors.Is(err, cardpool.ErrNoCard),
+		errors.Is(err, cardpool.ErrInflight):
 		return http.StatusConflict, gin.H{"error": err.Error()}
 	}
-	log.Printf("cardpool api %s %s: %v", c.Request.Method, c.FullPath(), err)
 	return http.StatusInternalServerError, gin.H{"error": "操作失败"}
+}
+
+// poolErrorBody 把服务错误映射成 HTTP 状态码与响应体，内部错误写日志。错误信息不含卡号、CVV2、验证码。
+func poolErrorBody(c *gin.Context, err error) (int, gin.H) {
+	status, body := poolErrorStatus(err)
+	if status == http.StatusInternalServerError {
+		log.Printf("cardpool api %s %s: %v", c.Request.Method, c.FullPath(), err)
+	}
+	return status, body
 }
 
 // poolFail 把服务错误映射成 HTTP 响应。
@@ -85,6 +94,17 @@ func pageParams(c *gin.Context) (int, int) {
 	page, _ := strconv.Atoi(c.Query("page"))
 	size, _ := strconv.Atoi(c.Query("page_size"))
 	return page, size
+}
+
+// parsePoolAmount 把字符串金额（^\d{1,12}(\.\d{1,2})?$，见 marswallex.ParseAmount）换算为分，须大于 0；
+// 不合法时回 400 并返回 false。
+func parsePoolAmount(c *gin.Context, s string) (int64, bool) {
+	cents, err := marswallex.ParseAmount(strings.TrimSpace(s))
+	if err != nil || cents <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "金额无效，须为大于 0 且最多两位小数的数字"})
+		return 0, false
+	}
+	return cents, true
 }
 
 // bindPoolJSON 解析请求体；失败回 400。
@@ -314,9 +334,8 @@ func AdminCardPoolFundCard(c *gin.Context) {
 		if !bindPoolJSON(c, &req) {
 			return
 		}
-		cents, err := marswallex.ParseAmount(strings.TrimSpace(req.Amount))
-		if err != nil || cents <= 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "金额无效，须为大于 0 且最多两位小数的数字"})
+		cents, ok := parsePoolAmount(c, req.Amount)
+		if !ok {
 			return
 		}
 		id := c.Param("id")

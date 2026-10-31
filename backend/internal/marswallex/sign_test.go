@@ -154,3 +154,28 @@ func TestParseKeysToleratesCRLFAndWhitespace(t *testing.T) {
 		t.Errorf("public: %v", err)
 	}
 }
+
+// 生成的私钥是 2048 位 RSA、PKCS#8 PEM，能被 ParsePrivateKey 读出；每次生成都不同。
+func TestGeneratePrivateKeyPEM(t *testing.T) {
+	a, err := GeneratePrivateKeyPEM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(a, "-----BEGIN PRIVATE KEY-----") {
+		t.Fatalf("应为 PKCS#8 PEM，得到 %.40q", a)
+	}
+	k, err := ParsePrivateKey(a)
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	if k.N.BitLen() != 2048 {
+		t.Fatalf("位数 = %d，期望 2048", k.N.BitLen())
+	}
+	b, err := GeneratePrivateKeyPEM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a == b {
+		t.Fatal("两次生成的私钥相同")
+	}
+}

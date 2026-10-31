@@ -181,3 +181,16 @@ func Fingerprint(pub *rsa.PublicKey) string {
 	sum := sha256.Sum256(der)
 	return hex.EncodeToString(sum[:])
 }
+
+// GeneratePrivateKeyPEM 生成 2048 位 RSA 私钥，返回 PKCS#8 PEM。
+func GeneratePrivateKeyPEM() (string, error) {
+	k, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return "", fmt.Errorf("marswallex: 生成私钥失败: %w", err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(k)
+	if err != nil {
+		return "", fmt.Errorf("marswallex: 编码私钥失败: %w", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})), nil
+}

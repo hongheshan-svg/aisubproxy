@@ -54,6 +54,12 @@
             :placeholder="secretPlaceholder(cfg?.private_key_set, '粘贴私钥 PEM')"
           />
           <p v-if="cfg?.private_key_error" class="field-error">{{ cfg.private_key_error }}</p>
+          <div class="flex flex-wrap items-center gap-2 mt-2">
+            <el-button size="small" :loading="generating" :disabled="!masterKeyReady" @click="generateKeypair">
+              {{ cfg?.private_key_set ? '重新生成密钥对' : '生成密钥对' }}
+            </el-button>
+            <span class="text-xs text-subtle">在服务器内生成，私钥加密保存在本服务器、不会显示也不能下载</span>
+          </div>
         </el-form-item>
         <el-form-item label="平台公钥（PEM）">
           <el-input
@@ -71,6 +77,9 @@
         <div class="text-xs uppercase tracking-wide text-muted">我们的公钥（提供给 MarsWallex）</div>
         <pre class="pem mono">{{ cfg.public_key_pem || '（尚未生成）' }}</pre>
         <el-button v-if="cfg.public_key_pem" size="small" @click="copyText(cfg.public_key_pem)">复制</el-button>
+        <div v-if="cfg.public_key_pem" class="text-xs text-subtle">
+          把这段公钥粘贴到 MarsWallex「成为开发者」弹窗的 RSA 公钥一栏；以后重新生成密钥对，也要回到平台更新这里的公钥。
+        </div>
         <div class="text-xs text-subtle">
           我们的公钥指纹：<code class="mono">{{ cfg.public_key_fingerprint || '—' }}</code>
         </div>
@@ -206,6 +215,7 @@ const cfg = ref<Config | null>(null)
 const form = reactive({ base_url: '', developer_id: '' })
 const secrets = reactive({ api_token: '', private_key: '', platform_public_key: '' })
 const saving = ref(false)
+const generating = ref(false)
 const testing = ref(false)
 const result = ref<TestResult | null>(null)
 const events = ref<WebhookEvent[]>([])
@@ -314,6 +324,35 @@ async function save() {
     await loadConfig()
   } finally {
     saving.value = false
+  }
+}
+
+// 在服务器内生成密钥对。已有私钥时先确认：换私钥后必须到 MarsWallex 平台更新公钥。
+// 只刷新密钥展示（cfg），不覆盖表单里尚未保存的地址与 Developer ID。
+async function generateKeypair() {
+  const replace = !!cfg.value?.private_key_set
+  if (replace) {
+    const ok = await dialog.confirm(
+      '已有私钥。重新生成后，必须到 MarsWallex 平台把公钥更新为新的，否则所有请求都会被拒。确定重新生成？',
+      { title: '重新生成密钥对', okText: '重新生成', danger: true },
+    )
+    if (!ok) return
+  }
+  generating.value = true
+  try {
+    const r = await authFetch('/api/v1/admin/marswallex/keypair', { method: 'POST', body: JSON.stringify({ replace }) })
+    const d = await r.json().catch(() => ({}))
+    if (!r.ok) {
+      dialog.toast(d.error || '生成失败', 'err')
+      return
+    }
+    cfg.value = d
+    secrets.private_key = ''
+    // 密钥已变，旧的测试结果不再代表当前配置。
+    result.value = null
+    dialog.toast('已生成，请复制下方公钥', 'ok')
+  } finally {
+    generating.value = false
   }
 }
 

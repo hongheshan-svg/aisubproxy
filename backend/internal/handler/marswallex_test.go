@@ -531,3 +531,80 @@ func TestMarsWallexListWebhookEvents(t *testing.T) {
 		t.Errorf("%v %v", first, second)
 	}
 }
+
+func mwGenKeypair(body string) *httptest.ResponseRecorder {
+	return mwDo(AdminGenerateMarsWallexKeypair, "POST", "/x", body, nil)
+}
+
+// 首次生成：私钥加密存库且可解密，响应只带公钥与指纹，审计只记指纹。
+func TestMarsWallexGenerateKeypairFirstTime(t *testing.T) {
+	c := mwSetup(t)
+	w := mwGenKeypair(``)
+	if w.Code != 200 {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "PRIVATE KEY") {
+		t.Fatalf("响应泄露私钥: %s", w.Body.String())
+	}
+	m := mwJSON(t, w)
+	pubPEM, _ := m["public_key_pem"].(string)
+	fp, _ := m["public_key_fingerprint"].(string)
+	if m["private_key_set"] != true || !strings.Contains(pubPEM, "BEGIN PUBLIC KEY") || fp == "" {
+		t.Fatalf("响应 %v", m)
+	}
+	var raw string
+	if err := c.QueryRow(`SELECT value FROM site_settings WHERE key='marswallex_private_key'`).Scan(&raw); err != nil || !strings.HasPrefix(raw, "v1:") {
+		t.Fatalf("私钥未加密存库: %.20q %v", raw, err)
+	}
+	pemText, err := db.GetSecretSetting(db.SettingMarsWallexPrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	priv, err := marswallex.ParsePrivateKey(pemText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if marswallex.Fingerprint(&priv.PublicKey) != fp {
+		t.Fatal("存库私钥与返回的公钥指纹不一致")
+	}
+	var detail string
+	if err := c.QueryRow(`SELECT detail FROM admin_audit_logs WHERE action='generate_marswallex_keypair'`).Scan(&detail); err != nil {
+		t.Fatalf("缺少审计: %v", err)
+	}
+	if !strings.Contains(detail, fp) || strings.Contains(detail, "PRIVATE") {
+		t.Fatalf("审计内容 %q", detail)
+	}
+}
+
+// 已有私钥时不确认则拒绝且原私钥不变；确认 replace 后换成新的一对。
+func TestMarsWallexGenerateKeypairRequiresReplace(t *testing.T) {
+	mwSetup(t)
+	first := mwJSON(t, mwGenKeypair(``))["public_key_fingerprint"]
+	w := mwGenKeypair(`{"replace":false}`)
+	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "更新公钥") {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	if got := mwJSON(t, mwDo(AdminGetMarsWallexConfig, "GET", "/x", "", nil))["public_key_fingerprint"]; got != first {
+		t.Fatalf("未确认却换了私钥: %v → %v", first, got)
+	}
+	r := mwGenKeypair(`{"replace":true}`)
+	if r.Code != 200 {
+		t.Fatalf("%d %s", r.Code, r.Body.String())
+	}
+	if second := mwJSON(t, r)["public_key_fingerprint"]; second == first || second == "" {
+		t.Fatalf("重新生成后指纹 %v（原 %v）", second, first)
+	}
+}
+
+// 没有主密钥时拒绝生成，不写入任何私钥。
+func TestMarsWallexGenerateKeypairWithoutMasterKey(t *testing.T) {
+	c := mwSetup(t)
+	t.Setenv("APP_MASTER_KEY", "")
+	w := mwGenKeypair(``)
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "APP_MASTER_KEY") {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	if n := mwCount(t, c, `SELECT COUNT(*) FROM site_settings WHERE key='marswallex_private_key'`); n != 0 {
+		t.Fatalf("不应写入私钥，行数 %d", n)
+	}
+}

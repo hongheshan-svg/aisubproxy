@@ -333,3 +333,49 @@ func AdminTestMarsWallex(c *gin.Context) {
 	resp["accounts"] = accounts
 	c.JSON(http.StatusOK, resp)
 }
+
+// AdminGenerateMarsWallexKeypair 在服务器内生成我们的 RSA 密钥对：私钥加密存库、不出服务器，响应只带公钥与指纹。
+// 已有私钥时必须传 {"replace": true}，因为换私钥后要到 MarsWallex 平台更新公钥，否则请求会被拒。
+func AdminGenerateMarsWallexKeypair(c *gin.Context) {
+	var req struct {
+		Replace bool `json:"replace"`
+	}
+	if c.Request.ContentLength != 0 {
+		if err := c.ShouldBindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "请求格式错误"})
+			return
+		}
+	}
+	if _, err := secretbox.LoadKey(); err != nil {
+		msg := "服务器的 APP_MASTER_KEY 格式不正确，无法保存私钥"
+		if errors.Is(err, secretbox.ErrNoMasterKey) {
+			msg = "服务器未配置 APP_MASTER_KEY，无法保存私钥"
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
+		return
+	}
+	replaced := marsWallexSetting(db.SettingMarsWallexPrivateKey) != ""
+	if replaced && !req.Replace {
+		c.JSON(http.StatusConflict, gin.H{"error": "已有私钥。重新生成后必须到 MarsWallex 平台更新公钥，否则所有请求都会被拒；确认后再重新生成"})
+		return
+	}
+	pemText, err := marswallex.GeneratePrivateKeyPEM()
+	if err != nil {
+		log.Printf("marswallex keypair: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "生成私钥失败"})
+		return
+	}
+	priv, err := marswallex.ParsePrivateKey(pemText)
+	if err != nil {
+		log.Printf("marswallex keypair: parse generated key: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "生成私钥失败"})
+		return
+	}
+	if err := db.SetSecretSetting(db.SettingMarsWallexPrivateKey, pemText); err != nil {
+		log.Printf("marswallex keypair: save: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存失败"})
+		return
+	}
+	auditAdmin(c, "generate_marswallex_keypair", fmt.Sprintf("fingerprint=%s replaced=%t", marswallex.Fingerprint(&priv.PublicKey), replaced))
+	c.JSON(http.StatusOK, marsWallexConfigView(c))
+}

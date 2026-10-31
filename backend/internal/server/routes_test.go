@@ -45,3 +45,16 @@ func TestCardPoolWalletRoutesRegistered(t *testing.T) {
 		}
 	}
 }
+
+func TestMarsWallexKeypairRouteRegistered(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Setenv("WEB_DIR", "")
+	r := gin.New()
+	setupRoutes(r)
+	for _, rt := range r.Routes() {
+		if rt.Method == "POST" && rt.Path == "/api/v1/admin/marswallex/keypair" {
+			return
+		}
+	}
+	t.Fatal("route missing: POST /api/v1/admin/marswallex/keypair")
+}

@@ -208,6 +208,7 @@ func setupRoutes(r *gin.Engine) {
 			admin.GET("/marswallex/config", handler.AdminGetMarsWallexConfig)
 			admin.PUT("/marswallex/config", handler.AdminPutMarsWallexConfig)
 			admin.POST("/marswallex/test", handler.AdminTestMarsWallex)
+			admin.POST("/marswallex/keypair", handler.AdminGenerateMarsWallexKeypair)
 			admin.GET("/marswallex/webhook-events", handler.AdminListMarsWallexWebhookEvents)
 			admin.POST("/marswallex/webhook-events/:id/reprocess", handler.AdminReprocessMarsWallexWebhookEvent)
 

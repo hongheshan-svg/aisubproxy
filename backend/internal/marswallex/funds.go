@@ -82,9 +82,9 @@ type TransferDetail struct {
 	CreateTime     Timestamp `json:"create_time"`
 }
 
-// ListReceivingAddresses 查询数币收款地址。
+// ListReceivingAddresses 查询数币收款地址；data 缺失或为 null 时返回空列表。
 func (c *Client) ListReceivingAddresses(ctx context.Context) ([]ReceivingAddress, error) {
-	var out []ReceivingAddress
+	var out receivingAddresses
 	if err := c.call(ctx, http.MethodGet, "/v1/receiving/receiving-address", "", nil, &out); err != nil {
 		return nil, err
 	}

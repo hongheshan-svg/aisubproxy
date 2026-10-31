@@ -376,9 +376,20 @@ type wholeBody interface{ wholeBody() }
 
 func (*Page[T]) wholeBody() {}
 
-// decodeSuccess 把 200 响应解析到 out。out 非 nil 时（单对象与 *Page 都一样）响应顶层必须带
-// data 字段且不为 null，否则视为无法解析——宁可归未知，也不把空结果当成功
-// （如 200 + {"code":"SYSTEM_ERROR"} 或 {"data":null}）。
+// emptyData 标记「data 缺失或为 null 即空结果」的只读查询结果（R13）：分页响应与收款地址列表。
+type emptyData interface{ setEmpty() }
+
+func (p *Page[T]) setEmpty() { p.Data = []T{} }
+
+// receivingAddresses 为收款地址列表的解析目标，data 缺失或为 null 时为空列表。
+type receivingAddresses []ReceivingAddress
+
+func (a *receivingAddresses) setEmpty() { *a = receivingAddresses{} }
+
+// decodeSuccess 把 200 响应解析到 out。out 非 nil 时响应顶层必须带 data 字段且不为 null，
+// 否则视为无法解析——宁可归未知，也不把空结果当成功（如 200 + {"code":"SYSTEM_ERROR"} 或 {"data":null}）。
+// 例外（R13）：分页响应与收款地址列表（都是只读 GET）的 data 缺失或为 null 读作空结果，分页的 count 照常解析；
+// 但响应体须是不带错误码的 JSON 对象。
 func decodeSuccess(body []byte, out any) error {
 	// json.RawMessage 会原样收下 null，故 data 为 null 时得到的是 "null" 而不是 nil，需单独判断。
 	var env envelope[json.RawMessage]
@@ -389,7 +400,17 @@ func decodeSuccess(body []byte, out any) error {
 		return nil
 	}
 	if d := bytes.TrimSpace(env.Data); len(d) == 0 || string(d) == "null" {
-		return errors.New("marswallex: 响应缺少 data 或 data 为 null")
+		e, ok := out.(emptyData)
+		if !ok || !bytes.HasPrefix(bytes.TrimSpace(body), []byte("{")) || hasErrorCode(body) {
+			return errors.New("marswallex: 响应缺少 data 或 data 为 null")
+		}
+		if _, whole := out.(wholeBody); whole {
+			if err := json.Unmarshal(body, out); err != nil {
+				return err
+			}
+		}
+		e.setEmpty()
+		return nil
 	}
 	if _, ok := out.(wholeBody); ok {
 		return json.Unmarshal(body, out)

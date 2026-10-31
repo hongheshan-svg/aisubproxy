@@ -205,23 +205,25 @@ func TestCallUndecodableOKIsUnknown(t *testing.T) {
 	}
 }
 
-// 200 但顶层没有可用的 data（带错误码、只有 count、data 为 null）不能当成功：归未知。
+// 200 但顶层没有可用的 data 不能当成功：归未知。分页响应与收款地址列表除外（R13，见 TestCallOKPageWithoutDataIsEmpty）。
 func TestCallOKWithoutDataIsUnknown(t *testing.T) {
 	m, c := newMockPlatform(t)
 	page := func() any { return &Page[pingOut]{} }
 	single := func() any { return &pingOut{} }
+	slice := func() any { return &[]pingOut{} }
 	cases := []struct {
 		name string
 		body string
 		out  func() any
 	}{
 		{"分页带错误码", `{"code":"SYSTEM_ERROR","message":"x"}`, page},
-		{"分页只有 count", `{"count":"0"}`, page},
-		{"分页 data 为 null", `{"count":"0","data":null}`, page},
 		{"分页响应体为 null", `null`, page},
 		{"单对象 data 为 null", `{"data":null}`, single},
+		{"单对象缺 data", `{}`, single},
 		{"单对象带错误码", `{"code":"SYSTEM_ERROR","message":"x"}`, single},
 		{"单对象响应体为 null", `null`, single},
+		{"非分页列表 data 为 null", `{"data":null}`, slice},
+		{"非分页列表缺 data", `{}`, slice},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -233,12 +235,17 @@ func TestCallOKWithoutDataIsUnknown(t *testing.T) {
 		})
 	}
 
-	// 真实方法：分页查询与单对象查单同样不能把空结果当成功。
+	// 真实方法：带错误码的分页、收款地址与 data 为 null 的单对象查单同样不能把空结果当成功。
 	m.Reply = func(w http.ResponseWriter, r *http.Request) {
 		m.signedJSON(w, 200, `{"code":"SYSTEM_ERROR","message":"x"}`)
 	}
 	if p, err := c.ListCardBalanceTransactions(context.Background(), CardBalanceTransactionsQuery{PageNo: 1, PageSize: 10}); p != nil {
 		t.Errorf("ListCardBalanceTransactions 返回了结果: %+v", p)
+	} else {
+		asError(t, err, OutcomeUnknown, ReasonDecode)
+	}
+	if a, err := c.ListReceivingAddresses(context.Background()); a != nil {
+		t.Errorf("ListReceivingAddresses 返回了结果: %+v", a)
 	} else {
 		asError(t, err, OutcomeUnknown, ReasonDecode)
 	}
@@ -257,6 +264,44 @@ func TestCallOKWithoutDataIsUnknown(t *testing.T) {
 	m.Reply = func(w http.ResponseWriter, r *http.Request) { m.signedJSON(w, 200, `{"data":{}}`) }
 	if err := ping(c, &pingOut{}); err != nil {
 		t.Errorf("空对象: %v", err)
+	}
+}
+
+// R13：分页响应（只读 GET）的 data 缺失或为 null 读作空页，count 照常解析；收款地址列表同样读作空列表。
+func TestCallOKPageWithoutDataIsEmpty(t *testing.T) {
+	m, c := newMockPlatform(t)
+	cases := []struct {
+		body  string
+		count Count
+	}{
+		{`{"count":"0","data":null}`, 0},
+		{`{"count":"5","data":null}`, 5},
+		{`{"count":"0"}`, 0},
+		{`{}`, 0},
+	}
+	for _, tc := range cases {
+		m.Reply = func(w http.ResponseWriter, r *http.Request) { m.signedJSON(w, 200, tc.body) }
+		p := &Page[pingOut]{}
+		if err := ping(c, p); err != nil {
+			t.Fatalf("%s: %v", tc.body, err)
+		}
+		if p.Count != tc.count || p.Data == nil || len(p.Data) != 0 {
+			t.Fatalf("%s: got %#v", tc.body, p)
+		}
+	}
+
+	m.Reply = func(w http.ResponseWriter, r *http.Request) { m.signedJSON(w, 200, `{"count":"0","data":null}`) }
+	p, err := c.ListCardBalanceTransactions(context.Background(), CardBalanceTransactionsQuery{PageNo: 1, PageSize: 10})
+	if err != nil || p == nil || p.Data == nil || len(p.Data) != 0 {
+		t.Fatalf("ListCardBalanceTransactions: %#v %v", p, err)
+	}
+
+	for _, body := range []string{`{"data":null}`, `{}`} {
+		m.Reply = func(w http.ResponseWriter, r *http.Request) { m.signedJSON(w, 200, body) }
+		a, err := c.ListReceivingAddresses(context.Background())
+		if err != nil || a == nil || len(a) != 0 {
+			t.Fatalf("ListReceivingAddresses %s: %#v %v", body, a, err)
+		}
 	}
 }
 

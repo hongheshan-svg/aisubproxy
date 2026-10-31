@@ -52,6 +52,8 @@ func poolErrorStatus(err error) (int, gin.H) {
 	case errors.Is(err, cardpool.ErrCardBusy), errors.Is(err, cardpool.ErrLeaseInvalid), errors.Is(err, cardpool.ErrNoCard),
 		errors.Is(err, cardpool.ErrInflight):
 		return http.StatusConflict, gin.H{"error": err.Error()}
+	case errors.Is(err, cardpool.ErrHolderAccepted): // 文案不含资料值，原样给前端，免得管理员重复提交
+		return http.StatusInternalServerError, gin.H{"error": err.Error()}
 	}
 	return http.StatusInternalServerError, gin.H{"error": "操作失败"}
 }

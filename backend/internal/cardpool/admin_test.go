@@ -468,3 +468,71 @@ func TestCardTransfersMarks(t *testing.T) {
 		t.Fatalf("卡不在池应 ErrNotFound，得到 %v", err)
 	}
 }
+
+// 卡转入转出明细分页：与补拉 pullPages 同一规则（count > 0 时累计够数或空页停；count 缺失时只在空页或 200 页上限停）。
+func TestCardTransfersPaging(t *testing.T) {
+	const path = "/v1/card/balance-transactions"
+	seq := 0
+	items := func(n int) []string {
+		out := make([]string, n)
+		for i := range out {
+			seq++
+			out[i] = fmt.Sprintf(`{"transaction_id":"T%d","card_id":"C1","currency":"USD","amount":"1.00","type":"IN","status":"SUCCESS","create_time":%d}`, seq, 1700000000+seq)
+		}
+		return out
+	}
+	page := func(count string, n int) mwtest.Reply {
+		c := ""
+		if count != "" {
+			c = `"count":"` + count + `",`
+		}
+		return mwtest.Reply{Body: fmt.Sprintf(`{%s"data":[%s]}`, c, strings.Join(items(n), ","))}
+	}
+	cases := []struct {
+		name           string
+		replies        []mwtest.Reply
+		wantReqs, rows int
+	}{
+		{"有 count 多页", []mwtest.Reply{page("120", 50), page("120", 50), page("120", 20), page("120", 50)}, 3, 120},
+		{"count 缺失：50、3、空页", []mwtest.Reply{page("", 50), page("", 3), page("", 0)}, 3, 53},
+		{"第一页即为空", []mwtest.Reply{page("", 0)}, 1, 0},
+		{"一直满页到 200 页上限", []mwtest.Reply{page("", 50)}, 200, 200 * 50},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			s, mw, clock, _ := newTestService(t)
+			insertCard(t, Card{CardID: "C1", CreatedAt: clock.Now().Unix() - 86400})
+			mw.On("GET", path, c.replies...)
+			rows, err := s.CardTransfers(context.Background(), "C1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			reqs := mw.Requests("GET", path)
+			if len(reqs) != c.wantReqs || len(rows) != c.rows {
+				t.Fatalf("请求 %d 次、%d 行，期望 %d 次、%d 行", len(reqs), len(rows), c.wantReqs, c.rows)
+			}
+			if last := reqs[len(reqs)-1].RawQuery; !strings.Contains(last, fmt.Sprintf("page_no=%d", c.wantReqs)) {
+				t.Fatalf("最后一页查询串 = %s", last)
+			}
+		})
+	}
+}
+
+// 平台状态带空白或小写时同样按 SUCCESS 比对。
+func TestCardTransfersNormalizesStatus(t *testing.T) {
+	s, mw, clock, _ := newTestService(t)
+	ctx := context.Background()
+	now := clock.Now().Unix()
+	insertCard(t, Card{CardID: "C1", CreatedAt: now - 86400})
+	failed := insertOrder(t, Order{Kind: KindRecharge, CardID: "C1", State: StateFailed})
+	mw.On("GET", "/v1/card/balance-transactions", mwtest.Reply{Body: fmt.Sprintf(
+		`{"count":"1","data":[{"out_order_no":"%s","transaction_id":"T1","card_id":"C1","currency":"USD","amount":"1.00","type":"IN","status":" success ","create_time":%d}]}`,
+		failed.OutOrderNo, now-100)})
+	rows, err := s.CardTransfers(ctx, "C1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || !rows[0].Mismatch || rows[0].Origin != "local" {
+		t.Fatalf("\" success \" 应按 SUCCESS 比对出不一致: %+v", rows)
+	}
+}

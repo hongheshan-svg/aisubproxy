@@ -787,11 +787,9 @@ func (s *Service) CardTransfers(ctx context.Context, cardID string) ([]CardTrans
 		if err != nil {
 			return nil, err
 		}
-		if len(p.Data) == 0 {
-			break
-		}
+		// 与补拉 pullPages 同一规则：count 缺失（<= 0）时只在空页或页数上限处停
 		all = append(all, p.Data...)
-		if int64(len(all)) >= int64(p.Count) {
+		if len(p.Data) == 0 || (p.Count > 0 && int64(len(all)) >= int64(p.Count)) {
 			break
 		}
 	}
@@ -805,7 +803,7 @@ func (s *Service) CardTransfers(ctx context.Context, cardID string) ([]CardTrans
 			}
 			if err == nil {
 				row.Origin, row.LocalState = "local", o.State
-				if t.Status == "SUCCESS" {
+				if normStatus(t.Status) == "SUCCESS" {
 					switch o.State {
 					case StateFailed, StateNotSent, StatePending, StateProcessing, StateUnknown, StateNeedsReview:
 						row.Mismatch = true

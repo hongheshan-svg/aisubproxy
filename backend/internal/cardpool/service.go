@@ -19,6 +19,8 @@ var (
 	ErrCardBusy     = errors.New("卡正忙，有在途操作")
 	ErrBadRequest   = errors.New("请求参数不合法")
 	ErrInflight     = errors.New("已有在途单据")
+	// ErrHolderAccepted：平台已受理新建持卡人，但本地写入失败
+	ErrHolderAccepted = errors.New("平台已受理，请勿重复提交；稍后刷新或在提交记录中查看")
 )
 
 // badRequestError 的 Error() 即消息本身，并可被 errors.Is(err, ErrBadRequest) 识别。

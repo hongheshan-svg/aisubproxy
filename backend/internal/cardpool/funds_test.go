@@ -122,6 +122,39 @@ func TestConversionValidation(t *testing.T) {
 	}
 }
 
+// 平台按币种各有一个主钱包：兑换按卖出币种找持有该币种的主钱包校验余额；多个都持有时取可用余额最大的。
+func TestConversionPicksMainAccountBySellCurrency(t *testing.T) {
+	s, mw, _, _ := newTestService(t)
+	ctx := context.Background()
+	mw.On("GET", pathAccounts, acctPage(
+		acctJSON("M1", "MAIN", "ACTIVE", "USD", "50.00"),
+		acctJSON("M2", "MAIN", "ACTIVE", "USDT", "100.00"),
+		acctJSON("S1", "SUB_ACCOUNT", "ACTIVE", "USDT", "999.00")))
+	mw.On("POST", pathConversion, mwtest.OK(`{"transaction_id":"CV1"}`))
+	o, err := s.SubmitConversion(ctx, ConversionParams{SellCurrency: "USDT", BuyCurrency: "USD", SellCents: 10000, By: "admin"})
+	if err != nil || o.State != StateProcessing {
+		t.Fatalf("卖 USDT（只在 M2）: %+v %v", o, err)
+	}
+	if _, err := s.SubmitConversion(ctx, ConversionParams{SellCurrency: "USD", BuyCurrency: "USDT", SellCents: 5001, By: "admin"}); !errors.Is(err, ErrBadRequest) ||
+		!strings.Contains(err.Error(), "M1") {
+		t.Fatalf("卖 USD 50.01 应按 M1 判余额不足: %v", err)
+	}
+	if _, err := s.SubmitConversion(ctx, ConversionParams{SellCurrency: "HKD", BuyCurrency: "USD", SellCents: 100, By: "admin"}); !errors.Is(err, ErrBadRequest) {
+		t.Fatalf("没有主钱包持有 HKD 应拒绝: %v", err)
+	}
+
+	// 两个主钱包都持有 USDT：取可用余额大的（M3），格式无法识别的不选
+	s2, mw2, _, _ := newTestService(t)
+	mw2.On("GET", pathAccounts, acctPage(
+		acctJSON("M1", "MAIN", "ACTIVE", "USDT", "1,000.00"),
+		acctJSON("M2", "MAIN", "ACTIVE", "USDT", "10.00"),
+		acctJSON("M3", "MAIN", "ACTIVE", "USD", "1.00", "USDT", "300.00")))
+	mw2.On("POST", pathConversion, mwtest.OK(`{"transaction_id":"CV2"}`))
+	if o, err := s2.SubmitConversion(ctx, ConversionParams{SellCurrency: "USDT", BuyCurrency: "USD", SellCents: 20000, By: "admin"}); err != nil || o.State != StateProcessing {
+		t.Fatalf("应按 M3 的 300.00 校验: %+v %v", o, err)
+	}
+}
+
 func TestParseBalanceCents(t *testing.T) {
 	for s, want := range map[string]int64{
 		"100.123456": 10012, "0.009": 0, "100": 10000, "5.5": 550, "0.00": 0,
@@ -651,7 +684,12 @@ func TestConversionWebhookBeforeResponse(t *testing.T) {
 		t.Fatalf("推送应先定论: %+v", got)
 	}
 
-	r := <-done
+	var r result
+	select {
+	case r = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("兑换提交 5 秒内没有返回")
+	}
 	if r.err != nil {
 		t.Fatal(r.err)
 	}

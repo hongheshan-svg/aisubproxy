@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"mime/multipart"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tuzi/cdk-recharge-system/internal/cardpool"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/marswallex"
 	"github.com/tuzi/cdk-recharge-system/internal/marswallex/mwtest"
@@ -324,6 +326,11 @@ func TestHolderFailKeepsErrorTextOutOfLogs(t *testing.T) {
 	}
 	if logs := buf.String(); strings.Contains(logs, cpPIIIDNo) || !strings.Contains(logs, "cardpool api PUT /h/:id") {
 		t.Errorf("log %q", logs)
+	}
+	// 平台已受理但本地写入失败：提示原样返回（文案不含资料值）
+	w = run(fmt.Errorf("%w（持卡人 h1）", cardpool.ErrHolderAccepted))
+	if w.Code != http.StatusInternalServerError || !strings.Contains(mwJSON(t, w)["error"].(string), "平台已受理，请勿重复提交") {
+		t.Fatalf("accepted %d %s", w.Code, w.Body.String())
 	}
 	w = run(&marswallex.Error{Outcome: marswallex.OutcomeRejected, Reason: marswallex.ReasonStatus, HTTPStatus: 400, Code: "PARAM"})
 	if w.Code != http.StatusBadGateway || mwJSON(t, w)["outcome"] != "rejected" {

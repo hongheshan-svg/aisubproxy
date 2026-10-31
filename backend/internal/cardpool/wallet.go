@@ -3,6 +3,7 @@ package cardpool
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"strings"
 	"unicode"
@@ -22,7 +23,7 @@ const (
 )
 
 // SyncAccounts 拉取平台全部账户并整体写入本地：全部页成功后才在一个事务里 upsert，
-// 并把本次没出现的标 gone = 1；中途失败不改本地表。并发调用共享同一轮结果。
+// 并把本次没出现的标 gone = 1；中途失败或平台一个账户都不返回时不改本地表。并发调用共享同一轮结果。
 func (s *Service) SyncAccounts(ctx context.Context) error {
 	gen := s.syncGen.Load()
 	s.syncMu.Lock()
@@ -47,6 +48,10 @@ func (s *Service) SyncAccounts(ctx context.Context) error {
 		if int64(len(all)) >= int64(p.Count) {
 			break
 		}
+	}
+	// 商户至少有主钱包：平台一个账户都不返回按异常处理，不把本地账户全部标为消失
+	if len(all) == 0 {
+		return errors.New("平台未返回任何账户，本次同步不写入")
 	}
 
 	now := s.now().Unix()
@@ -259,7 +264,7 @@ type SerialsQuery struct {
 
 const maxSerialsSpan = 90 * 86400
 
-// AccountSerials 查询账户流水（只读透传）。账户号与币种必填，窗口最长 90 天。
+// AccountSerials 查询账户流水（只读透传）。账户号与币种必填，窗口最长 90 天；平台未给总数时 total 为 -1。
 func (s *Service) AccountSerials(ctx context.Context, q SerialsQuery) ([]marswallex.AccountSerial, int, error) {
 	if strings.TrimSpace(q.AccountNo) == "" || strings.TrimSpace(q.Currency) == "" {
 		return nil, 0, badRequest("账户号与币种必填")
@@ -294,5 +299,9 @@ func (s *Service) AccountSerials(ctx context.Context, q SerialsQuery) ([]marswal
 	if rows == nil {
 		rows = []marswallex.AccountSerial{}
 	}
-	return rows, int(p.Count), nil
+	total := int(p.Count)
+	if total <= 0 {
+		total = -1 // 平台未给总数：-1 表示未知，前端按本页是否满页判断有无下一页
+	}
+	return rows, total, nil
 }

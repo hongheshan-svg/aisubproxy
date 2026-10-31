@@ -2,7 +2,6 @@ package cardpool
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -76,18 +75,47 @@ func checkAvailable(a *Account, who, currency string, cents int64) error {
 	return badRequest(fmt.Sprintf("%s %s 没有 %s 余额", who, a.AccountNo, currency))
 }
 
-// mainAccount 返回本地未消失的主钱包；没有时返回 ErrNotFound。
-func mainAccount(ctx context.Context) (*Account, error) {
-	var a Account
-	err := a.scan(db.DB.QueryRowContext(ctx, `SELECT `+accountCols+` FROM mw_accounts
-		WHERE account_type = ? AND gone = 0 ORDER BY created_at, account_no LIMIT 1`, accountTypeMain))
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
-	}
+// mainAccountFor 返回兑换要校验的本地未消失主钱包：只有一个时就是它；平台按币种各有一个主钱包时，
+// 取持有 currency 的那个，多个都持有时取该币种可用余额最大的（余额格式无法识别的排在后面）；
+// 都不持有时返回第一个，由 checkAvailable 报没有该币种余额。没有主钱包时返回 ErrNotFound。
+func mainAccountFor(ctx context.Context, currency string) (*Account, error) {
+	rows, err := db.DB.QueryContext(ctx, `SELECT `+accountCols+` FROM mw_accounts
+		WHERE account_type = ? AND gone = 0 ORDER BY created_at, account_no`, accountTypeMain)
 	if err != nil {
 		return nil, err
 	}
-	return &a, nil
+	defer rows.Close()
+	var mains []Account
+	for rows.Next() {
+		var a Account
+		if err := a.scan(rows); err != nil {
+			return nil, err
+		}
+		mains = append(mains, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(mains) == 0 {
+		return nil, ErrNotFound
+	}
+	best, bestCents := 0, int64(-2) // -2：不持有；-1：持有但余额格式无法识别
+	for i, a := range mains {
+		for _, b := range a.Balances {
+			if normStatus(b.Currency) != currency {
+				continue
+			}
+			cents, err := parseBalanceCents(b.AvailableBalance)
+			if err != nil {
+				cents = -1
+			}
+			if cents > bestCents {
+				best, bestCents = i, cents
+			}
+			break
+		}
+	}
+	return &mains[best], nil
 }
 
 // SubmitConversion 提交一笔兑换（卖出 SellCurrency 买入 BuyCurrency，作用于主钱包）。
@@ -115,7 +143,7 @@ func (s *Service) SubmitConversion(ctx context.Context, p ConversionParams) (*Or
 	if err := s.SyncAccounts(ctx); err != nil {
 		return nil, err
 	}
-	mainAcct, err := mainAccount(ctx)
+	mainAcct, err := mainAccountFor(ctx, sell)
 	if errors.Is(err, ErrNotFound) {
 		return nil, badRequest("没有主钱包")
 	}

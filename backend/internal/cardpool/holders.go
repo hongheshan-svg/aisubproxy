@@ -245,7 +245,9 @@ func (s *Service) CreateCardholder(ctx context.Context, p marswallex.CardholderP
 	if err == nil {
 		if id := strings.TrimSpace(ref.CardHolderID); id != "" {
 			if err := s.saveCreatedHolder(wctx, outID, id, &p); err != nil {
-				return nil, err
+				// 平台已受理：提示勿重复提交；提交记录仍是 submitted，前端显示「提交中断，结果未知」
+				log.Printf("[cardpool] 新建持卡人 %s 平台已受理（%s），本地写入失败: %s", outID, id, scrubProfile(err.Error(), &p))
+				return nil, fmt.Errorf("%w（持卡人 %s）", ErrHolderAccepted, id)
 			}
 			log.Printf("[cardpool] 新建持卡人 %s 成功：%s", outID, id)
 			return getSubmission(wctx, outID)
@@ -474,7 +476,8 @@ func (s *Service) holderStatusAlert(id, old, status, remark string) {
 		if reason == "" {
 			reason = "平台未提供"
 		}
-		s.alert("holder:"+id, fmt.Sprintf("MarsWallex 持卡人 %s 审核被驳回（REJECTED），自动补卡将跳过该持卡人。驳回原因：%s", id, truncate(reason, 200)))
+		// 驳回单独去重，免得驳回原因被同一天更早的 holder: 告警吞掉
+		s.alert("holderrej:"+id, fmt.Sprintf("MarsWallex 持卡人 %s 审核被驳回（REJECTED），自动补卡将跳过该持卡人。驳回原因：%s", id, truncate(reason, 200)))
 	default:
 		msg := fmt.Sprintf("MarsWallex 持卡人 %s 状态变为 %s，自动补卡将跳过该持卡人", id, status)
 		if remark != "" {

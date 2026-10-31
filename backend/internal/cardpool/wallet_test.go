@@ -90,6 +90,25 @@ func TestSyncAccountsFailureKeepsLocal(t *testing.T) {
 	}
 }
 
+// 平台一个账户都不返回（商户至少有主钱包）时不提交：报错，本地账户不变（R13 后空 data 读作空页）。
+func TestSyncAccountsRefusesZeroAccounts(t *testing.T) {
+	s, mw, _, _ := newTestService(t)
+	ctx := context.Background()
+	mw.On("GET", "/v1/accounts/page", accountPage(2, 1, 2))
+	if err := s.SyncAccounts(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, body := range []string{`{"count":"0","data":[]}`, `{"count":"0","data":null}`, `{"count":"0"}`} {
+		mw.On("GET", "/v1/accounts/page", mwtest.Reply{Body: body})
+		if err := s.SyncAccounts(ctx); err == nil {
+			t.Fatalf("%s: 零账户应返回错误", body)
+		}
+		if n := countRows(t, `SELECT COUNT(*) FROM mw_accounts WHERE gone = 0`); n != 2 {
+			t.Fatalf("%s: 未消失的账户 = %d，期望 2（本地不应改动）", body, n)
+		}
+	}
+}
+
 func TestSyncAccountsConcurrentShare(t *testing.T) {
 	s, mw, _, _ := newTestService(t)
 	ctx := context.Background()
@@ -283,6 +302,11 @@ func TestReceivingAddresses(t *testing.T) {
 	if got == nil || len(got) != 0 {
 		t.Fatalf("空数据应返回空切片，得到 %#v", got)
 	}
+	// R13：data 为 null 同样读作空列表
+	mw.On("GET", "/v1/receiving/receiving-address", mwtest.Reply{Body: `{"data":null}`})
+	if got, err = s.ReceivingAddresses(ctx); err != nil || got == nil || len(got) != 0 {
+		t.Fatalf("data 为 null 应返回空切片: %#v %v", got, err)
+	}
 }
 
 func TestAccountSerialsValidation(t *testing.T) {
@@ -322,5 +346,25 @@ func TestAccountSerialsValidation(t *testing.T) {
 		if !strings.Contains(q, want) {
 			t.Fatalf("查询串 %q 缺少 %s", q, want)
 		}
+	}
+}
+
+// 平台不返回 count 时总数未知：total 报 -1，由前端按「本页满页才有下一页」翻页。
+func TestAccountSerialsUnknownTotal(t *testing.T) {
+	s, mw, clock, _ := newTestService(t)
+	ctx := context.Background()
+	end := clock.Now().Unix()
+	q := SerialsQuery{AccountNo: "A1", Currency: "USD", Start: end - 3600, End: end, PageSize: 20}
+	mw.On("GET", "/v1/accounts/serials", mwtest.Reply{Body: `{"data":[{"serial_id":"S1","currency":"USD","amount":"1.00","flag_dc":"CREDIT","transaction_type":"X","create_time":1700000000}]}`})
+	rows, total, err := s.AccountSerials(ctx, q)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != -1 || len(rows) != 1 {
+		t.Fatalf("count 缺失: rows=%d total=%d，期望 total=-1", len(rows), total)
+	}
+	mw.On("GET", "/v1/accounts/serials", mwtest.Reply{Body: `{"count":"7","data":[]}`})
+	if _, total, err = s.AccountSerials(ctx, q); err != nil || total != 7 {
+		t.Fatalf("有 count 时照常返回: total=%d err=%v", total, err)
 	}
 }

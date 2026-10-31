@@ -302,6 +302,35 @@ func TestCreateCardholderSuccess(t *testing.T) {
 	}
 }
 
+// 平台已返回 200 但本地写入失败：错误提示「平台已受理，请勿重复提交」，不带资料值；提交记录保留为 submitted。
+func TestCreateCardholderLocalWriteFailure(t *testing.T) {
+	ctx := context.Background()
+	s, mw, _, _ := newTestService(t)
+	if _, err := db.DB.Exec(`CREATE TRIGGER fail_holder BEFORE INSERT ON mw_cardholders BEGIN SELECT RAISE(ABORT, 'disk full'); END`); err != nil {
+		t.Fatal(err)
+	}
+	mw.On("POST", pathCreateHolder, mwtest.OK(`{"card_holder_id":"h1"}`))
+	sub, err := s.CreateCardholder(ctx, validUSProfile(), "admin")
+	if err == nil || sub != nil {
+		t.Fatalf("本地写入失败应返回错误: %+v %v", sub, err)
+	}
+	if !errors.Is(err, ErrHolderAccepted) || !strings.Contains(err.Error(), "平台已受理，请勿重复提交；稍后刷新或在提交记录中查看") {
+		t.Fatalf("错误信息 = %q", err.Error())
+	}
+	for _, v := range piiValues {
+		if strings.Contains(err.Error(), v) {
+			t.Fatalf("错误信息含资料值 %q: %q", v, err.Error())
+		}
+	}
+	reqs := mw.Requests("POST", pathCreateHolder)
+	if len(reqs) != 1 {
+		t.Fatalf("requests=%d", len(reqs))
+	}
+	if got := mustGetSubmission(t, requestOutID(t, reqs[0])); got.State != SubmissionSubmitted || got.CardHolderID != "" {
+		t.Fatalf("提交记录: %+v", got)
+	}
+}
+
 func TestCreateCardholderRejected(t *testing.T) {
 	ctx := context.Background()
 	s, mw, _, _ := newTestService(t)
@@ -752,6 +781,18 @@ func TestHolderStatusAlerts(t *testing.T) {
 	}
 	if got := alerts.Texts()[before:]; len(got) != 2 || !strings.Contains(got[0], "已通过审核") || !strings.Contains(got[1], "SUSPENDED") {
 		t.Fatalf("hy: %v", got)
+	}
+
+	// 驳回告警（holderrej:）单独去重：同一天先有过状态告警（holder:），驳回原因照样发出
+	insertHolder(t, "hj", "APPROVED")
+	before = alerts.Count()
+	holderStatusEvent(t, "hj", "", "PENDING_REVIEW", "")
+	mustProcessEvents(t, s)
+	holderStatusEvent(t, "hj", "", "REJECTED", "地址证明不清晰")
+	mustProcessEvents(t, s)
+	if got := alerts.Texts()[before:]; len(got) != 2 || !strings.Contains(got[0], "PENDING_REVIEW") ||
+		!strings.Contains(got[1], "REJECTED") || !strings.Contains(got[1], "地址证明不清晰") {
+		t.Fatalf("hj: %v", got)
 	}
 
 	// 推送关联提交记录时同样按表告警：首次推送即 APPROVED → 通知

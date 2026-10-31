@@ -26,6 +26,21 @@ export function isUnknownOutcome(r: Resp): boolean {
   return r.status === 502 && r.data?.outcome === 'unknown'
 }
 
+/** 结果不确定：网络异常（status 0）或平台明确返回 outcome=unknown。资金单此时绝不能让用户重试。 */
+export function isUncertain(r: Resp): boolean {
+  return r.status === 0 || isUnknownOutcome(r)
+}
+
+/** 账户流水收支方向（平台：DEBIT=出账，CREDIT=入账）。 */
+export const FLAG_LABEL: Record<string, string> = {
+  DEBIT: '出账', CREDIT: '入账', MAIN_TO_SUB_ACCOUNT: '主钱包转子账户', SUB_ACCOUNT_TO_MAIN: '子账户转主钱包',
+}
+
+export const TXN_LABEL: Record<string, string> = {
+  CONSUME: '消费', CHARGE: '充值', REFUND: '退款', EXCHANGE: '汇兑', REVERSE: '撤销',
+  FEE: '手续费', LIMIT_ADJUST: '限额调整', TRANSFER: '转账',
+}
+
 export function money(cents?: number | null): string {
   return ((cents || 0) / 100).toFixed(2)
 }

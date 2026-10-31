@@ -233,7 +233,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { dialog } from '../../lib/dialog'
 import { copyToClipboard } from '../../lib/clipboard'
 import {
-  errText, fmtTs, hasEmoji, isUnknownOutcome, kindLabel, money, parseAmountCents, poolApi,
+  errText, FLAG_LABEL, fmtTs, hasEmoji, isUncertain, TXN_LABEL, kindLabel, money, parseAmountCents, poolApi,
 } from '../../lib/cardpool'
 
 interface Balance { currency: string; available_balance: string; freeze_balance: string }
@@ -254,13 +254,6 @@ const SER_PAGE_SIZE = 20
 const TYPE_LABEL: Record<string, string> = { MAIN: '主钱包', SUB_ACCOUNT: '子账户' }
 const STATUS_LABEL: Record<string, string> = {
   ACTIVE: '启用', DISABLED: '停用', INITIALIZING: '初始化中', FAILED: '失败', REJECTED: '已拒绝',
-}
-const FLAG_LABEL: Record<string, string> = {
-  DEBIT: '入账', CREDIT: '出账', MAIN_TO_SUB_ACCOUNT: '主钱包转子账户', SUB_ACCOUNT_TO_MAIN: '子账户转主钱包',
-}
-const TXN_LABEL: Record<string, string> = {
-  CONSUME: '消费', CHARGE: '充值', REFUND: '退款', EXCHANGE: '汇兑', REVERSE: '撤销',
-  FEE: '手续费', LIMIT_ADJUST: '限额调整', TRANSFER: '转账',
 }
 
 const tab = ref('accounts')
@@ -344,7 +337,7 @@ async function submitCreate() {
   createSubmitting.value = true
   try {
     const r = await poolApi('/wallet/accounts', 'POST', { account_name: name })
-    if (isUnknownOutcome(r)) {
+    if (isUncertain(r)) {
       createOpen.value = false
       return scheduleConfirmRefresh()
     }
@@ -369,7 +362,7 @@ async function changeStatus(row: Account, target: 'ACTIVE' | 'DISABLED') {
   if (text.length < 2 || [...text].length > 100) return dialog.toast('原因需 2–100 字', 'warn')
   if (hasEmoji(text)) return dialog.toast('原因不能包含 emoji', 'warn')
   const r = await poolApi(`/wallet/accounts/${encodeURIComponent(row.account_no)}/status`, 'POST', { status: target, remark: text })
-  if (isUnknownOutcome(r)) return scheduleConfirmRefresh()
+  if (isUncertain(r)) return scheduleConfirmRefresh()
   if (!r.ok) return dialog.toast(errText(r, `${verb}失败`), 'err')
   dialog.toast(`已${verb}`, 'ok')
   loadAccounts()
@@ -433,8 +426,8 @@ async function confirmFailed(row: Order, list: OrderList) {
 
 /** 提交资金单后的统一结果处理；返回是否已成功受理。 */
 function afterSubmit(r: { ok: boolean; status: number; data: any }, list: OrderList, what: string): boolean {
-  if (isUnknownOutcome(r)) {
-    dialog.toast(`${what}结果未知，已记录单据，请在下方列表查看并重查，切勿重复提交`, 'warn', 8000)
+  if (isUncertain(r)) {
+    dialog.toast(r.status === 0 ? '网络异常，结果未知，请先查看下方单据，切勿重复提交' : `${what}结果未知，已记录单据，请在下方列表查看并重查，切勿重复提交`, 'warn', 8000)
     loadOrders(list)
     return false
   }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { hasEmoji, isUnknownOutcome, kindLabel, parseAmountCents } from '../cardpool'
+import { FLAG_LABEL, hasEmoji, isUncertain, isUnknownOutcome, kindLabel, parseAmountCents } from '../cardpool'
 
 describe('cardpool lib', () => {
   it('parseAmountCents', () => {
@@ -29,5 +29,18 @@ describe('cardpool lib', () => {
   it('hasEmoji', () => {
     expect(hasEmoji('停用😀')).toBe(true)
     expect(hasEmoji('停用原因')).toBe(false)
+  })
+
+  it('isUncertain', () => {
+    expect(isUncertain({ ok: false, status: 0, data: {} })).toBe(true)
+    expect(isUncertain({ ok: false, status: 502, data: { outcome: 'unknown' } })).toBe(true)
+    expect(isUncertain({ ok: false, status: 502, data: { outcome: 'rejected' } })).toBe(false)
+    expect(isUncertain({ ok: false, status: 409, data: {} })).toBe(false)
+    expect(isUncertain({ ok: true, status: 200, data: {} })).toBe(false)
+  })
+
+  it('FLAG_LABEL direction', () => {
+    expect(FLAG_LABEL.DEBIT).toBe('出账')
+    expect(FLAG_LABEL.CREDIT).toBe('入账')
   })
 })

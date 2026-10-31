@@ -339,6 +339,72 @@ func TestBackfillUnusedAuthRule(t *testing.T) {
 	}
 }
 
+// 规则只对新插入的授权执行：被规则停用的卡由管理员启用后，下一轮重叠窗口再拉到同一笔授权，不再停用、不再告警。
+func TestBackfillEnabledCardNotRedisabled(t *testing.T) {
+	s, mw, clock, alerts := newTestService(t)
+	ctx := context.Background()
+	now := clock.Now().Unix()
+	insertCard(t, Card{CardID: "c1", ProductID: "p1", CreatedAt: now - 2*daySec})
+	cursor := now - hourSec
+	setBackfillState(t, BackfillState{Cursor: &cursor})
+	mw.On("GET", pathAuthTxns, txnPage(1, authItem("A1", "c1", now-1800, "")))
+	mw.On("GET", pathSettleTxns, txnPage(0))
+	if err := s.backfillOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if c := mustGetCard(t, "c1"); c.PoolState != PoolDisabled {
+		t.Fatalf("c1 应先被规则停用: %+v", c)
+	}
+
+	mw.On("GET", detailPath("c1"), mwtest.OK(detailJSON("c1", "0.00", "0.00", "ACTIVE")))
+	if err := s.EnableCard(ctx, "c1", "admin"); err != nil {
+		t.Fatalf("EnableCard: %v", err)
+	}
+	clock.Advance(15 * time.Minute)
+	if err := s.backfillOnce(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(mw.Requests("GET", pathAuthTxns)); n != 2 {
+		t.Fatalf("第二轮应再拉到 A1: %d 次", n)
+	}
+	if c := mustGetCard(t, "c1"); c.PoolState != PoolAvailable {
+		t.Fatalf("启用后的卡不应因已记录的授权再被停用: %+v", c)
+	}
+	if alerts.Count() != 1 {
+		t.Fatalf("只应告警一次: %v", alerts.Texts())
+	}
+}
+
+// count 缺失（文档标为可选）：视为未知，翻页到空页或不满一页为止。
+func TestBackfillPagesWhenCountMissing(t *testing.T) {
+	s, mw, clock, _ := newTestService(t)
+	now := clock.Now().Unix()
+	cursor := now - hourSec
+	setBackfillState(t, BackfillState{Cursor: &cursor})
+	page := func(prefix string, n int) mwtest.Reply {
+		items := make([]string, n)
+		for i := range items {
+			items[i] = authItem(fmt.Sprintf("%s%03d", prefix, i), "", now-600, "")
+		}
+		return mwtest.Reply{Body: `{"data":[` + strings.Join(items, ",") + `]}`}
+	}
+	mw.On("GET", pathAuthTxns, page("P", 50), page("Q", 3))
+	mw.On("GET", pathSettleTxns, txnPage(0))
+	if err := s.backfillOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	reqs := mw.Requests("GET", pathAuthTxns)
+	if len(reqs) != 2 || qInt(t, reqs[1], "page_no") != 2 {
+		t.Fatalf("应拉第 1、2 页后停止: %d 次", len(reqs))
+	}
+	if n := countRows(t, `SELECT COUNT(*) FROM mw_card_transactions`); n != 53 {
+		t.Fatalf("应写入 53 条，实际 %d", n)
+	}
+	if st := mustBackfillState(t, s); st.LastAdded != 53 || !ptrEq(st.Cursor, now) {
+		t.Fatalf("状态: cursor=%s %+v", fmtPtr(st.Cursor), st)
+	}
+}
+
 // 平台 count 与实际不符：空页即停；一直满页时每段每个接口最多 200 页。
 func TestBackfillStopsOnShortOrEmptyPage(t *testing.T) {
 	fullPage := func(now int64) []string {

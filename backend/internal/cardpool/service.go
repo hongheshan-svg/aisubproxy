@@ -92,6 +92,8 @@ type Service struct {
 	syncGen       atomic.Uint64 // 每次同步成功 +1，等锁的调用据此共享结果
 	accountsDirty atomic.Bool   // 本地账户可能落后于平台
 
+	backfillMu sync.Mutex // 定时补拉与手动补拉串行
+
 	alertMu   sync.Mutex
 	alertSent map[string]int64 // key → 最后发送时所在的北京日起点（Unix 秒）
 }

@@ -23,17 +23,19 @@ func (s *Service) Kick() {
 	}
 }
 
-// Start 启动三个后台协程，ctx 结束时全部退出：
-//   - 每 5 秒：释放到期租约 → 清除过期验证码 → 处理有效期不足的可用卡 → 对账 → 回收；
+// Start 启动四个后台协程，ctx 结束时全部退出：
+//   - 每 5 秒：释放到期租约 → 清除过期验证码 → 处理有效期不足的可用卡 → 对账 → 同步账户 → 回收；
 //   - 每 60 秒或收到补卡通知：补卡；
-//   - 收到 Kick 或每 10 秒：处理 Webhook 事件（启动时先处理一轮积压）。
+//   - 收到 Kick 或每 10 秒：处理 Webhook 事件（启动时先处理一轮积压）；
+//   - 每 15 分钟：补拉授权与结算交易（与手动补拉串行）。
 //
 // 各步骤出错只记日志、不中断循环；取不到 MarsWallex 客户端（未配置）时，本轮跳过需要调接口的步骤。
 func (s *Service) Start(ctx context.Context) {
-	s.loops.Add(3)
+	s.loops.Add(4)
 	go s.runLoop(ctx, maintainInterval, nil, s.maintainRound)
 	go s.runLoop(ctx, replenishInterval, s.kickReplenishCh, s.replenishRound)
 	go s.runLoop(ctx, eventScanInterval, s.kickEvents, s.eventsRound)
+	go s.runLoop(ctx, backfillInterval, nil, s.backfillRound)
 	s.Kick()
 }
 
@@ -101,6 +103,16 @@ func (s *Service) replenishRound(ctx context.Context, lg *loopLog) {
 		return
 	}
 	lg.check("补卡", s.replenishOnce(ctx))
+}
+
+// backfillRound 补拉一轮交易；未配置时跳过，不改补拉状态。
+func (s *Service) backfillRound(ctx context.Context, lg *loopLog) {
+	_, err := s.opts.Client()
+	lg.readiness("交易补拉", err)
+	if err != nil {
+		return
+	}
+	lg.check("交易补拉", s.backfillOnce(ctx))
 }
 
 // eventsRound 处理一轮事件；取满一批说明可能还有积压，立即再来一轮。

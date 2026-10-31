@@ -616,32 +616,46 @@ func (s *Service) onAuthEvent(ctx context.Context, ev *marswallex.WebhookEvent) 
 	if strings.TrimSpace(d.TransactionID) == "" {
 		return "", dataError("缺少 transaction_id")
 	}
-	t := Transaction{
-		TransactionID: d.TransactionID, Kind: txnKind(d.TransactionType, "AUTH"), CardID: d.CardID,
-		Status: d.Status, DeclineReason: d.DeclineReason,
-		TxnAmount: d.TransactionAmount, TxnCurrency: d.TransactionCurrency,
-		BillingAmount: d.BillingAmount, BillingCurrency: d.BillingCurrency,
-		MerchantName: d.Merchant.MerchantName, OriginTransactionID: d.OriginTransactionID,
-		OccurredAt: unixOrNil(d.TransactionTime),
-	}
+	t := authTxn(d)
 	if err := s.upsertTxn(ctx, t); err != nil {
 		return "", err
 	}
-	if d.CardID == "" {
-		return "交易已记录", nil
-	}
-	res, err := db.DB.ExecContext(ctx, `UPDATE mw_cards SET pool_state = ?, disabled_reason = ?, updated_at = ?
-		WHERE card_id = ? AND pool_state = ? AND use_count = 0`,
-		PoolDisabled, "未交出卡号出现授权", s.now().Unix(), d.CardID, PoolAvailable)
+	disabled, err := s.disableIfUnusedAuth(ctx, t, false)
 	if err != nil {
 		return "", err
 	}
-	if n, _ := res.RowsAffected(); n == 1 {
-		s.alert("authunused:"+d.CardID, fmt.Sprintf("MarsWallex 卡 %s 从未交出卡号却出现授权（交易 %s，%s %s %s，商户 %s），已从卡池停用，请到 MarsWallex 后台核查",
-			d.CardID, d.TransactionID, t.Kind, d.TransactionAmount, d.TransactionCurrency, t.MerchantName))
+	if disabled {
 		return "交易已记录；卡未交出卡号出现授权，已停用", nil
 	}
 	return "交易已记录", nil
+}
+
+// disableIfUnusedAuth 是推送与补拉共用的「未交卡号出现授权」规则：available 且 use_count = 0 的卡停用并告警，返回是否停用。
+// afterCreatedOnly（补拉）还要求交易时间晚于卡的入池时间 created_at，交易时间缺失则不处理。
+func (s *Service) disableIfUnusedAuth(ctx context.Context, t Transaction, afterCreatedOnly bool) (bool, error) {
+	if t.CardID == "" {
+		return false, nil
+	}
+	q := `UPDATE mw_cards SET pool_state = ?, disabled_reason = ?, updated_at = ?
+		WHERE card_id = ? AND pool_state = ? AND use_count = 0`
+	args := []any{PoolDisabled, "未交出卡号出现授权", s.now().Unix(), t.CardID, PoolAvailable}
+	if afterCreatedOnly {
+		if t.OccurredAt == nil {
+			return false, nil
+		}
+		q += ` AND created_at < ?`
+		args = append(args, *t.OccurredAt)
+	}
+	res, err := db.DB.ExecContext(ctx, q, args...)
+	if err != nil {
+		return false, err
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return false, nil
+	}
+	s.alert("authunused:"+t.CardID, fmt.Sprintf("MarsWallex 卡 %s 从未交出卡号却出现授权（交易 %s，%s %s %s，商户 %s），已从卡池停用，请到 MarsWallex 后台核查",
+		t.CardID, t.TransactionID, t.Kind, t.TxnAmount, t.TxnCurrency, t.MerchantName))
+	return true, nil
 }
 
 // onSettleEvent 写入结算交易。
@@ -653,6 +667,26 @@ func (s *Service) onSettleEvent(ctx context.Context, ev *marswallex.WebhookEvent
 	if strings.TrimSpace(d.TransactionID) == "" {
 		return "", dataError("缺少 transaction_id")
 	}
+	if err := s.upsertTxn(ctx, settleTxn(d)); err != nil {
+		return "", err
+	}
+	return "交易已记录", nil
+}
+
+// authTxn 把授权交易转成本地记录（推送与补拉共用；验证码不入交易表）。
+func authTxn(d marswallex.AuthTransactionWebhook) Transaction {
+	return Transaction{
+		TransactionID: d.TransactionID, Kind: txnKind(d.TransactionType, "AUTH"), CardID: d.CardID,
+		Status: d.Status, DeclineReason: d.DeclineReason,
+		TxnAmount: d.TransactionAmount, TxnCurrency: d.TransactionCurrency,
+		BillingAmount: d.BillingAmount, BillingCurrency: d.BillingCurrency,
+		MerchantName: d.Merchant.MerchantName, OriginTransactionID: d.OriginTransactionID,
+		OccurredAt: unixOrNil(d.TransactionTime),
+	}
+}
+
+// settleTxn 把结算交易转成本地记录（推送与补拉共用）。
+func settleTxn(d marswallex.SettlementTransactionWebhook) Transaction {
 	t := Transaction{
 		TransactionID: d.TransactionID, Kind: txnKind(d.TransactionType, "SETTLE"), CardID: d.CardID,
 		Status: d.Status, TxnAmount: d.TransactionAmount, TxnCurrency: d.TransactionCurrency,
@@ -663,10 +697,7 @@ func (s *Service) onSettleEvent(ctx context.Context, ev *marswallex.WebhookEvent
 	if d.Merchant != nil {
 		t.MerchantName = d.Merchant.MerchantName
 	}
-	if err := s.upsertTxn(ctx, t); err != nil {
-		return "", err
-	}
-	return "交易已记录", nil
+	return t
 }
 
 // txnKind 取平台推送的交易类型，为空时用 def。

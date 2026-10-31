@@ -375,33 +375,48 @@ func TestBackfillEnabledCardNotRedisabled(t *testing.T) {
 	}
 }
 
-// count 缺失（文档标为可选）：视为未知，翻页到空页或不满一页为止。
+// count 缺失（文档标为可选）：视为未知，只在空页（或 200 页上限）停止；平台单页上限未确认，不满一页不算结束。
 func TestBackfillPagesWhenCountMissing(t *testing.T) {
-	s, mw, clock, _ := newTestService(t)
-	now := clock.Now().Unix()
-	cursor := now - hourSec
-	setBackfillState(t, BackfillState{Cursor: &cursor})
-	page := func(prefix string, n int) mwtest.Reply {
-		items := make([]string, n)
-		for i := range items {
-			items[i] = authItem(fmt.Sprintf("%s%03d", prefix, i), "", now-600, "")
-		}
-		return mwtest.Reply{Body: `{"data":[` + strings.Join(items, ",") + `]}`}
+	cases := []struct {
+		name  string
+		sizes []int // 各页条数，最后补一个空页
+		total int
+	}{
+		{"50 条一页", []int{50, 3}, 53},
+		{"平台每页最多 20 条", []int{20, 20, 5}, 45},
 	}
-	mw.On("GET", pathAuthTxns, page("P", 50), page("Q", 3))
-	mw.On("GET", pathSettleTxns, txnPage(0))
-	if err := s.backfillOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	reqs := mw.Requests("GET", pathAuthTxns)
-	if len(reqs) != 2 || qInt(t, reqs[1], "page_no") != 2 {
-		t.Fatalf("应拉第 1、2 页后停止: %d 次", len(reqs))
-	}
-	if n := countRows(t, `SELECT COUNT(*) FROM mw_card_transactions`); n != 53 {
-		t.Fatalf("应写入 53 条，实际 %d", n)
-	}
-	if st := mustBackfillState(t, s); st.LastAdded != 53 || !ptrEq(st.Cursor, now) {
-		t.Fatalf("状态: cursor=%s %+v", fmtPtr(st.Cursor), st)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, mw, clock, _ := newTestService(t)
+			now := clock.Now().Unix()
+			cursor := now - hourSec
+			setBackfillState(t, BackfillState{Cursor: &cursor})
+			var replies []mwtest.Reply
+			for p, n := range tc.sizes {
+				items := make([]string, n)
+				for i := range items {
+					items[i] = authItem(fmt.Sprintf("P%d-%03d", p, i), "", now-600, "")
+				}
+				replies = append(replies, mwtest.Reply{Body: `{"data":[` + strings.Join(items, ",") + `]}`})
+			}
+			replies = append(replies, mwtest.Reply{Body: `{"data":[]}`})
+			mw.On("GET", pathAuthTxns, replies...)
+			mw.On("GET", pathSettleTxns, txnPage(0))
+			if err := s.backfillOnce(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			pages := len(tc.sizes) + 1
+			reqs := mw.Requests("GET", pathAuthTxns)
+			if len(reqs) != pages || qInt(t, reqs[pages-1], "page_no") != int64(pages) {
+				t.Fatalf("应拉到第 %d 页（空页）后停止: %d 次", pages, len(reqs))
+			}
+			if n := countRows(t, `SELECT COUNT(*) FROM mw_card_transactions`); n != tc.total {
+				t.Fatalf("应写入 %d 条，实际 %d", tc.total, n)
+			}
+			if st := mustBackfillState(t, s); st.LastAdded != tc.total || !ptrEq(st.Cursor, now) {
+				t.Fatalf("状态: cursor=%s %+v", fmtPtr(st.Cursor), st)
+			}
+		})
 	}
 }
 

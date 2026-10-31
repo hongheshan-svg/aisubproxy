@@ -156,7 +156,8 @@ func (s *Service) pullSegment(ctx context.Context, c *marswallex.Client, a, b in
 }
 
 // pullPages 分页拉取 [a, b) 的交易，逐条交给 save（返回是否新增），返回新增条数。
-// 停在 data 为空、累计条数达到 count 或第 200 页；count 是可选字段，缺失（≤ 0）时视为未知，翻到不满一页为止。
+// 停在 data 为空、累计条数达到 count 或第 200 页。count 是可选字段，缺失（≤ 0）时视为未知，只在空页停止：
+// 平台单页实际上限未确认，不满一页不能当作结束。
 func pullPages[T any](ctx context.Context, list func(context.Context, marswallex.CardTransactionsQuery) (*marswallex.Page[T], error),
 	a, b int64, save func(T) (bool, error)) (int, error) {
 	added, got := 0, 0
@@ -175,12 +176,7 @@ func pullPages[T any](ctx context.Context, list func(context.Context, marswallex
 			}
 		}
 		got += len(p.Data)
-		switch {
-		case len(p.Data) == 0:
-			return added, nil
-		case p.Count > 0 && int64(got) >= int64(p.Count):
-			return added, nil
-		case p.Count <= 0 && len(p.Data) < backfillPageSize:
+		if len(p.Data) == 0 || (p.Count > 0 && int64(got) >= int64(p.Count)) {
 			return added, nil
 		}
 	}

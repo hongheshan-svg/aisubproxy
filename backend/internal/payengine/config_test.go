@@ -193,6 +193,9 @@ func TestProxiesWriteOnly(t *testing.T) {
 	if err == nil || strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "pw") {
 		t.Fatalf("协议非法应报错且不含原文: %v", err)
 	}
+	if err := SaveProxies(map[string]string{"PH": "socks5h://h:1080"}); err == nil {
+		t.Fatal("socks5h 应报错")
+	}
 	if err := SaveProxies(map[string]string{"XX": "http://a:1"}); err == nil {
 		t.Fatal("未知地区应报错")
 	}

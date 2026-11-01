@@ -253,13 +253,13 @@ func validProxy(addr string) bool {
 		return false
 	}
 	switch u.Scheme {
-	case "http", "https", "socks5", "socks5h":
+	case "http", "https", "socks5":
 		return true
 	}
 	return false
 }
 
-// SaveProxies 合并保存地区代理：空串保持不变，"-" 清除，其余须为 http/https/socks5(h) 地址。
+// SaveProxies 合并保存地区代理：空串保持不变，"-" 清除，其余须为 http/https/socks5 地址（与 chatgpt.New 一致）。
 // 错误消息不含代理地址。
 func SaveProxies(in map[string]string) error {
 	for r, v := range in {

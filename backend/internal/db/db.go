@@ -291,6 +291,9 @@ func createTables() error {
 	if err := MigrateCardPool(); err != nil {
 		return fmt.Errorf("migrate card pool: %w", err)
 	}
+	if err := MigratePay(); err != nil {
+		return fmt.Errorf("migrate pay: %w", err)
+	}
 	return nil
 }
 

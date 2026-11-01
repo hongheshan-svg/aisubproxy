@@ -93,8 +93,8 @@ func ParseAccessToken(raw string) (string, error) {
 	return v, nil
 }
 
-// parseSessionToken 从 session JSON 提取 sessionToken。
-func parseSessionToken(raw string) string {
+// ParseSessionToken 从 session JSON 提取 sessionToken。
+func ParseSessionToken(raw string) string {
 	v := strings.TrimSpace(raw)
 	if !strings.HasPrefix(v, "{") {
 		return ""
@@ -172,7 +172,7 @@ func firstString(vals ...interface{}) string {
 	return ""
 }
 
-func defaultAccount(data map[string]interface{}) map[string]interface{} {
+func DefaultAccount(data map[string]interface{}) map[string]interface{} {
 	accounts := asMap(data["accounts"])
 	if def := firstString(data["default_account"]); def != "" {
 		if a := asMap(accounts[def]); len(a) > 0 {
@@ -230,7 +230,7 @@ func Check(tokenInput string) (*Result, error) {
 
 	// accessToken 过期/无效：尝试用 sessionToken 刷新
 	if st == 401 || st == 403 {
-		sessionToken := parseSessionToken(tokenInput)
+		sessionToken := ParseSessionToken(tokenInput)
 		if sessionToken != "" {
 			if fresh, rerr := refreshAccessToken(sessionToken); rerr == nil && fresh != "" {
 				accessToken = fresh
@@ -250,7 +250,7 @@ func Check(tokenInput string) (*Result, error) {
 	if st != http.StatusOK {
 		return nil, fmt.Errorf("查询失败(token 可能已失效) HTTP %d", st)
 	}
-	account := defaultAccount(data)
+	account := DefaultAccount(data)
 	accountInfo := asMap(account["account"])
 	entitlement := asMap(account["entitlement"])
 	lastActive := asMap(account["last_active_subscription"])

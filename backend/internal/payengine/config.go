@@ -259,6 +259,12 @@ func validProxy(addr string) bool {
 	return false
 }
 
+// socks5WithAuth 判断是否为带账号密码的 socks5 地址（Chrome 不支持 SOCKS 认证）。
+func socks5WithAuth(addr string) bool {
+	u, err := url.Parse(addr)
+	return err == nil && u.Scheme == "socks5" && u.User != nil
+}
+
 // SaveProxies 合并保存地区代理：空串保持不变，"-" 清除，其余须为 http/https/socks5 地址（与 chatgpt.New 一致）。
 // 错误消息不含代理地址。
 func SaveProxies(in map[string]string) error {
@@ -268,6 +274,9 @@ func SaveProxies(in map[string]string) error {
 		}
 		if v != "" && v != "-" && !validProxy(v) {
 			return fmt.Errorf("%w: 地区 %s 的代理地址格式无效，须为 http、https 或 socks5 地址", ErrBadRequest, r)
+		}
+		if v != "" && v != "-" && socks5WithAuth(v) {
+			return fmt.Errorf("%w: 地区 %s 的 socks5 代理不支持账号密码，请改用 http 代理", ErrBadRequest, r)
 		}
 	}
 	cur, err := LoadProxies()

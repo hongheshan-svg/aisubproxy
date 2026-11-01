@@ -164,11 +164,11 @@ func TestConcurrencyRange(t *testing.T) {
 
 func TestProxiesWriteOnly(t *testing.T) {
 	dbtest.Open(t)
-	if err := SaveProxies(map[string]string{"PH": "socks5://u:p@h:1080"}); err == nil {
+	if err := SaveProxies(map[string]string{"PH": "http://u:p@h:8080"}); err == nil {
 		t.Fatal("无主密钥应报错")
 	}
 	dbtest.SetMasterKey(t)
-	if err := SaveProxies(map[string]string{"PH": "socks5://u:p@h:1080"}); err != nil {
+	if err := SaveProxies(map[string]string{"PH": "http://u:p@h:8080"}); err != nil {
 		t.Fatal(err)
 	}
 	st, err := ProxyStatus()
@@ -176,7 +176,7 @@ func TestProxiesWriteOnly(t *testing.T) {
 		t.Fatalf("状态错误: %v %v", err, st)
 	}
 	px, _ := LoadProxies()
-	if px["PH"] != "socks5://u:p@h:1080" {
+	if px["PH"] != "http://u:p@h:8080" {
 		t.Fatalf("原值错误: %v", px)
 	}
 	if err := SaveProxies(map[string]string{"PH": ""}); err != nil {
@@ -186,7 +186,7 @@ func TestProxiesWriteOnly(t *testing.T) {
 		t.Fatal("空串应保留原值")
 	}
 	raw, _ := db.GetSetting("pay_region_proxies")
-	if raw == "" || strings.Contains(raw, "socks5") {
+	if raw == "" || strings.Contains(raw, "u:p@h") {
 		t.Fatalf("库里应是密文: %q", raw)
 	}
 	err = SaveProxies(map[string]string{"PH": "ftp://secret:pw@x"})
@@ -195,6 +195,14 @@ func TestProxiesWriteOnly(t *testing.T) {
 	}
 	if err := SaveProxies(map[string]string{"PH": "socks5h://h:1080"}); err == nil {
 		t.Fatal("socks5h 应报错")
+	}
+	err = SaveProxies(map[string]string{"US": "socks5://user:pw@h:1080"})
+	if err == nil || !strings.Contains(err.Error(), "socks5 代理不支持账号密码，请改用 http 代理") ||
+		strings.Contains(err.Error(), "user") || strings.Contains(err.Error(), "pw") {
+		t.Fatalf("带账号密码的 socks5 应报错且不含原文: %v", err)
+	}
+	if err := SaveProxies(map[string]string{"US": "socks5://h:1080"}); err != nil {
+		t.Fatalf("不带账号密码的 socks5 应可保存: %v", err)
 	}
 	if err := SaveProxies(map[string]string{"XX": "http://a:1"}); err == nil {
 		t.Fatal("未知地区应报错")

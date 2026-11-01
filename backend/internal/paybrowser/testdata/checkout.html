@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Checkout</title>
+<style>
+  body { font-family: sans-serif; width: 960px; margin: 24px auto; }
+  iframe { border: 1px solid #ccc; width: 440px; height: 170px; }
+  label { display: block; margin: 8px 0; }
+</style>
+</head>
+<body>
+<!--
+  仿造的 ChatGPT / Stripe 支付页（测试用）。
+  金额与账单地址字段在主页面；卡号、有效期、CVC 在 card.html iframe 中。
+  字段 id 与 selectors.go 中各 Sel 列表的首选项一致。
+  金额在 500 毫秒后才渲染，模拟 Stripe 异步加载。
+-->
+<section id="summary">
+  <h1>ChatGPT Pro</h1>
+  <div id="total-row"><span>Total due today</span> </div>
+</section>
+
+<form id="payment-form" onsubmit="return false">
+  <iframe id="card-frame" name="card-frame" src="card.html" title="Secure card payment input frame"></iframe>
+  <label>Full name <input id="billingAddress-nameInput" name="name" autocomplete="billing name"></label>
+  <label>Country or region
+    <select id="billingAddress-countryInput" name="country" autocomplete="billing country">
+      <option value="PH">Philippines</option>
+      <option value="US">United States</option>
+      <option value="JP">Japan</option>
+      <option value="CL">Chile</option>
+      <option value="EG">Egypt</option>
+    </select>
+  </label>
+  <label>Address line 1 <input id="billingAddress-addressLine1Input" name="addressLine1" autocomplete="billing address-line1"></label>
+  <label>City <input id="billingAddress-localityInput" name="locality" autocomplete="billing address-level2"></label>
+  <label>State <input id="billingAddress-administrativeAreaInput" name="administrativeArea" autocomplete="billing address-level1"></label>
+  <label>ZIP <input id="billingAddress-postalCodeInput" name="postalCode" autocomplete="billing postal-code"></label>
+  <button type="submit" class="SubmitButton">Subscribe</button>
+</form>
+
+<script>
+  setTimeout(function () {
+    var amount = document.createElement('span')
+    amount.id = 'OrderDetails-TotalAmount'
+    amount.textContent = '₱1,120.00'
+    document.getElementById('total-row').appendChild(amount)
+  }, 500)
+</script>
+</body>
+</html>

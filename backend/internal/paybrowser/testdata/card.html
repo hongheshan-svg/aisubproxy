@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Card</title>
+<style>
+  body { font-family: sans-serif; margin: 8px; }
+  label { display: block; margin: 6px 0; }
+</style>
+</head>
+<body>
+<!-- 仿造的 Stripe 卡片 iframe（测试用）：字段 id 与 selectors.go 中 CardNumber、Expiry、CVC 的首选项一致。 -->
+<label>Card number <input id="payment-numberInput" name="number" autocomplete="cc-number" inputmode="numeric"></label>
+<label>Expiration date <input id="payment-expiryInput" name="expiry" autocomplete="cc-exp" inputmode="numeric"></label>
+<label>Security code <input id="payment-cvcInput" name="cvc" autocomplete="cc-csc" inputmode="numeric"></label>
+</body>
+</html>

@@ -11,3 +11,9 @@ func LoopbackProxy(o LaunchOptions) LaunchOptions {
 
 // ProfileDir 返回浏览器的临时用户目录。
 func ProfileDir(b *Browser) string { return b.dir }
+
+// ChromeIdentity 决定以哪个系统用户启动 Chrome。
+var ChromeIdentity = chromeIdentity
+
+// SocketAlive 判断 unix socket 是否有进程在监听。
+var SocketAlive = socketAlive

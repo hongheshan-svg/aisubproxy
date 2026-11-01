@@ -2,9 +2,13 @@ package paybrowser_test
 
 import (
 	"context"
+	"net"
 	"os"
+	"os/user"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -141,4 +145,98 @@ func TestCloseRemovesProfileDir(t *testing.T) {
 		t.Fatalf("Close 后临时目录仍在: %v", err)
 	}
 	b.Close()
+}
+
+func TestChromeIdentity(t *testing.T) {
+	found := func(name string) (*user.User, error) {
+		if name != "cdk-chrome" {
+			return nil, user.UnknownUserError(name)
+		}
+		return &user.User{Username: name, Uid: "990", Gid: "985"}, nil
+	}
+	missing := func(name string) (*user.User, error) { return nil, user.UnknownUserError(name) }
+	rootUID := func(name string) (*user.User, error) { return &user.User{Username: name, Uid: "0", Gid: "0"}, nil }
+
+	cases := []struct {
+		name     string
+		uid      int
+		lookup   func(string) (*user.User, error)
+		wantCred *syscall.Credential
+		wantErr  bool
+	}{
+		{"非 root 沿用当前用户", 501, missing, nil, false},
+		{"root 且有专用用户", 0, found, &syscall.Credential{Uid: 990, Gid: 985, Groups: []uint32{}}, false},
+		{"root 但专用用户不存在", 0, missing, nil, true},
+		{"root 且专用用户 uid 为 0", 0, rootUID, nil, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cred, noSandbox, err := paybrowser.ChromeIdentity(c.uid, c.lookup)
+			if noSandbox {
+				t.Fatal("任何情况下都不应加 --no-sandbox")
+			}
+			if c.wantErr {
+				if err == nil || !strings.Contains(err.Error(), paybrowser.InstallHint) || !strings.Contains(err.Error(), "cdk-chrome") {
+					t.Fatalf("err = %v，期望报错并含用户名与安装提示", err)
+				}
+				if cred != nil {
+					t.Fatalf("出错时不应返回凭据: %+v", cred)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("err = %v", err)
+			}
+			if !reflect.DeepEqual(cred, c.wantCred) {
+				t.Fatalf("cred = %+v，期望 %+v", cred, c.wantCred)
+			}
+		})
+	}
+}
+
+func TestSocketAlive(t *testing.T) {
+	// macOS 的 unix socket 路径上限约 104 字节，t.TempDir() 太长，改用 /tmp 下的短目录
+	dir, err := os.MkdirTemp("/tmp", "pb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+
+	live := filepath.Join(dir, "live")
+	ln, err := net.Listen("unix", live)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+	if !paybrowser.SocketAlive(live) {
+		t.Error("有进程在监听的 socket 应判为存活")
+	}
+
+	// 进程已退出但 socket 文件还在（例如 Xvfb 崩溃）
+	stale := filepath.Join(dir, "stale")
+	sl, err := net.ListenUnix("unix", &net.UnixAddr{Name: stale, Net: "unix"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sl.SetUnlinkOnClose(false)
+	sl.Close()
+	if _, err := os.Stat(stale); err != nil {
+		t.Fatalf("残留的 socket 文件应存在: %v", err)
+	}
+	if paybrowser.SocketAlive(stale) {
+		t.Error("没有进程监听的残留 socket 文件不应判为存活")
+	}
+
+	if paybrowser.SocketAlive(filepath.Join(dir, "missing")) {
+		t.Error("不存在的路径不应判为存活")
+	}
 }

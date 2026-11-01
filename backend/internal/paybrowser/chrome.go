@@ -105,6 +105,11 @@ func Launch(ctx context.Context, o LaunchOptions) (*Browser, error) {
 	if err != nil {
 		return nil, fmt.Errorf("创建 Chrome 临时目录失败: %w", err)
 	}
+	sandbox, err := sandboxOptions(dir)
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		return nil, err
+	}
 
 	opts := []chromedp.ExecAllocatorOption{
 		chromedp.ExecPath(bin),
@@ -115,8 +120,14 @@ func Launch(ctx context.Context, o LaunchOptions) (*Browser, error) {
 		chromedp.Flag("disable-blink-features", "AutomationControlled"),
 		// 不让 Chrome 自己的后台请求（更新检查等）占用代理
 		chromedp.Flag("disable-background-networking", true),
+		// 卡号框来自 js.stripe.com，与支付页跨站。关掉站点隔离，跨站 iframe 才与主页面同进程、
+		// 同一个 target，能按 frame 操作（chromedp 不接管独立进程的子 target）。
+		chromedp.Flag("disable-features", "site-per-process"),
+		chromedp.Flag("disable-site-isolation-trials", true),
+		chromedp.Flag("lang", "en-US"),
 		chromedp.WindowSize(1366, 900),
 	}
+	opts = append(opts, sandbox...)
 	if proxy != "" {
 		opts = append(opts, chromedp.ProxyServer(proxy))
 		if o.proxyLoopback {

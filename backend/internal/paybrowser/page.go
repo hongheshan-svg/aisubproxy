@@ -492,6 +492,7 @@ func (b *Browser) EnterOTP(ctx context.Context, otp string) error {
 	return b.do(ctx, func(ctx context.Context) error {
 		var box cdp.FrameID
 		var scope []frameRef
+		var btn *elem
 		in, err := b.waitFind(ctx, fieldWait, func(frames []frameRef) *elem {
 			c := b.find(ctx, frames, Sel.ChallengeFrame, false)
 			if c == nil {
@@ -502,10 +503,14 @@ func (b *Browser) EnterOTP(ctx context.Context, otp string) error {
 				return nil
 			}
 			box, scope = id, subtree(frames, id)
-			if e := b.find(ctx, scope, Sel.OTPInput, false); e != nil {
-				return e
+			e := b.find(ctx, scope, Sel.OTPInput, false)
+			if e == nil {
+				e = b.onlyTextInput(ctx, scope)
 			}
-			return b.onlyTextInput(ctx, scope)
+			if e != nil {
+				btn = b.otpSubmit(ctx, e, scope)
+			}
+			return e
 		})
 		if err != nil {
 			return err
@@ -522,29 +527,38 @@ func (b *Browser) EnterOTP(ctx context.Context, otp string) error {
 		if err := typeKeys(ctx, otp, keyDelay); err != nil {
 			return fmt.Errorf("键入验证码失败: %w", err)
 		}
+
+		// 键入前没有提交按钮的，键入后再找一次（有的页面填了验证码才出现）；仍没有就按回车
+		if btn == nil {
+			btn = b.otpSubmit(ctx, in, scope)
+		}
+		if btn == nil {
+			if err = focus(ctx, in); err == nil {
+				err = chromedp.KeyEvent(kb.Enter).Do(ctx)
+			}
+		} else {
+			err = click(ctx, btn)
+		}
+		if err != nil {
+			return fmt.Errorf("提交验证码失败: %w", err)
+		}
+		// 提交动作成功后才记为已答；失败时不记，WaitOutcome 仍把这个框报为待验证，可以重新填
 		b.mu.Lock()
 		if b.answered == nil {
 			b.answered = map[cdp.FrameID]bool{}
 		}
 		b.answered[box] = true
 		b.mu.Unlock()
-
-		// 提交按钮先在验证码框所在的 frame 里找，再在整个验证框里找；都没有就按回车
-		btn := b.find(ctx, []frameRef{in.frame}, Sel.OTPSubmit, false)
-		if btn == nil {
-			btn = b.find(ctx, scope, Sel.OTPSubmit, false)
-		}
-		if btn == nil {
-			if err := focus(ctx, in); err != nil {
-				return fmt.Errorf("提交验证码失败: %w", err)
-			}
-			return chromedp.KeyEvent(kb.Enter).Do(ctx)
-		}
-		if err := click(ctx, btn); err != nil {
-			return fmt.Errorf("提交验证码失败: %w", err)
-		}
 		return nil
 	})
+}
+
+// otpSubmit 找验证码的提交按钮：先在验证码框所在的 frame 里找，再在整个验证框里找。
+func (b *Browser) otpSubmit(ctx context.Context, in *elem, scope []frameRef) *elem {
+	if btn := b.find(ctx, []frameRef{in.frame}, Sel.OTPSubmit, false); btn != nil {
+		return btn
+	}
+	return b.find(ctx, scope, Sel.OTPSubmit, false)
 }
 
 // onlyTextInputJS 在本 frame 里找可见、可编辑的文本或数字输入框：恰好一个时返回它，多个返回 'many'，没有返回 null。

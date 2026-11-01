@@ -325,6 +325,27 @@ func TestWrongOTPDeclined(t *testing.T) {
 	waitOutcome(t, b, ctx, paybrowser.OutcomeDeclined)
 }
 
+func TestOTPRetryAfterFailedSubmitClick(t *testing.T) {
+	needChrome(t)
+	f := newFakeCheckout(t)
+	b, ctx := openCheckout(t, f, "mode=3ds&otpflaky=1", paybrowser.LaunchOptions{})
+	fillAndSubmit(t, b, ctx)
+	waitOutcome(t, b, ctx, paybrowser.OutcomeChallenge)
+
+	// 第一次：验证码键完时提交按钮消失，点击失败
+	if err := b.EnterOTP(ctx, "123456"); err == nil {
+		t.Fatal("提交按钮点击失败时 EnterOTP 应报错")
+	}
+	// 没提交成功就不算已答：同一个验证框仍报为待验证
+	waitOutcome(t, b, ctx, paybrowser.OutcomeChallenge)
+
+	time.Sleep(2 * time.Second) // 等验证页恢复提交按钮
+	if err := b.EnterOTP(ctx, "123456"); err != nil {
+		t.Fatalf("重新 EnterOTP: %v", err)
+	}
+	waitOutcome(t, b, ctx, paybrowser.OutcomeSuccess)
+}
+
 func TestSubmitTwiceRefused(t *testing.T) {
 	needChrome(t)
 	f := newFakeCheckout(t)

@@ -191,8 +191,8 @@ func (b *Browser) Fill(ctx context.Context, c Card, bl Billing) error {
 		{"卡号", Sel.CardNumber, c.Number, kindCard},
 		{"有效期", Sel.Expiry, c.ExpMonth + c.ExpYear, kindCard},
 		{"CVC", Sel.CVC, c.CVC, kindCard},
+		{"国家", Sel.Country, bl.Country, kindChoice}, // 地址字段里先选国家：改国家会重绘姓名与其余地址字段
 		{"姓名", Sel.Name, bl.Name, kindText},
-		{"国家", Sel.Country, bl.Country, kindChoice}, // 先选国家：改国家会重绘其余地址字段
 		{"街道地址", Sel.Line1, bl.Line1, kindText},
 		{"城市", Sel.City, bl.City, kindText},
 		{"州/省", Sel.State, bl.State, kindChoice},

@@ -17,6 +17,7 @@
   金额、账单地址、Link 邮箱与手机在主页面；卡号、有效期、CVC 在 card.html iframe 中，
   card.html 与 3DS 的 acs.html 由另一个服务（__CARD_ORIGIN__，与本页跨站）提供，同真实页面上的 js.stripe.com。
   字段 id 与 selectors.go 中各 Sel 列表的首选项一致。金额在 500 毫秒后才渲染，模拟 Stripe 异步加载。
+  同 Stripe 地址表单，改国家会重绘：姓名与其余地址字段被清空。
 
   查询参数：
     mode=success|decline|3ds  提交后的表现（默认 success）
@@ -88,6 +89,13 @@
       document.getElementById('new-card').style.display = ''
     })
   }
+
+  document.getElementById('billingAddress-countryInput').addEventListener('change', function () {
+    ['billingAddress-nameInput', 'billingAddress-addressLine1Input', 'billingAddress-localityInput',
+      'billingAddress-administrativeAreaInput', 'billingAddress-postalCodeInput'].forEach(function (id) {
+      document.getElementById(id).value = ''
+    })
+  })
 
   if (q.get('latepay') === '1') {
     var payButton = document.querySelector('.SubmitButton')

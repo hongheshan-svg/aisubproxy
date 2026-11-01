@@ -32,7 +32,7 @@ type payRecord struct {
 	Method, Number, Expiry, CVC            string
 	NumberKeys                             int
 	Name, Country, Line1, City, State, Zip string
-	Email, Phone                           string
+	Email, Phone, DecoyNumber              string
 }
 
 // fakeCheckout 是仿造的支付页：主页面由 main（127.0.0.1）提供，卡片 iframe 与 3DS 页由 card（localhost）提供。
@@ -41,9 +41,10 @@ type fakeCheckout struct {
 	main, card *httptest.Server
 	cardOrigin string
 
-	mu      sync.Mutex
-	session string
-	pays    []payRecord
+	mu          sync.Mutex
+	session     string
+	pays        []payRecord
+	decoyClicks atomic.Int32 // 卡片 iframe 里诱饵 submit 按钮被点击的次数
 }
 
 func newFakeCheckout(t *testing.T) *fakeCheckout {
@@ -51,9 +52,11 @@ func newFakeCheckout(t *testing.T) *fakeCheckout {
 	f := &fakeCheckout{}
 	files := http.FileServer(http.Dir("testdata"))
 	f.card = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/card.html", "/acs.html":
+		switch {
+		case r.URL.Path == "/card.html", r.URL.Path == "/acs.html":
 			files.ServeHTTP(w, r)
+		case r.URL.Path == "/decoy" && r.Method == http.MethodPost:
+			f.decoyClicks.Add(1)
 		default:
 			http.NotFound(w, r)
 		}
@@ -443,6 +446,32 @@ func TestFillRetypesRewrittenText(t *testing.T) {
 	waitOutcome(t, b, ctx, paybrowser.OutcomeSuccess)
 	if got := onlyPayment(t, f).City; got != testBilling.City {
 		t.Fatalf("城市 = %q，期望核对不符后逐字重打为 %q", got, testBilling.City)
+	}
+}
+
+func TestFindPrefersEarlierSelectorAcrossFrames(t *testing.T) {
+	needChrome(t)
+	f := newFakeCheckout(t)
+	// 主页面的 input[name="number"] 只命中卡号的第二个选择器，卡片 iframe 里的 #payment-numberInput 命中第一个
+	b, ctx := openCheckout(t, f, "decoy=1&mode=success", paybrowser.LaunchOptions{})
+	fillAndSubmit(t, b, ctx)
+	waitOutcome(t, b, ctx, paybrowser.OutcomeSuccess)
+	got := onlyPayment(t, f)
+	if got.Number != testCard.Number || got.DecoyNumber != "" {
+		t.Fatalf("卡号进了卡片 iframe：%v；主页面诱饵框为空：%v", got.Number == testCard.Number, got.DecoyNumber == "")
+	}
+}
+
+func TestSubmitClicksMainPayButton(t *testing.T) {
+	needChrome(t)
+	f := newFakeCheckout(t)
+	// 主页面支付按钮在填完后 1.5 秒才出现；卡片 iframe 里一直有个可见的 submit 按钮
+	b, ctx := openCheckout(t, f, "decoy=1&latepay=1&mode=success", paybrowser.LaunchOptions{})
+	fillAndSubmit(t, b, ctx)
+	waitOutcome(t, b, ctx, paybrowser.OutcomeSuccess)
+	onlyPayment(t, f)
+	if n := f.decoyClicks.Load(); n != 0 {
+		t.Fatalf("iframe 里的 submit 按钮被点了 %d 次，期望 0 次", n)
 	}
 }
 

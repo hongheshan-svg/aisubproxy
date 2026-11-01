@@ -1,7 +1,7 @@
 package paybrowser
 
 // Sel 集中存放支付页各元素的选择器。每项是按优先级排列的候选列表，依次尝试，
-// 查找范围为主页面与各级 iframe（含跨站 iframe，主页面优先），只认可见元素。
+// 查找范围为主页面与各级 iframe（含跨站 iframe），选择器顺序优先于 frame 顺序，只认可见元素。
 // 除 NewCardOption 外都是 CSS 选择器。
 //
 // 卡号到邮编、支付按钮、新增卡入口的初值取自原型 automation/fill-checkout.js；
@@ -12,7 +12,7 @@ var Sel = struct {
 	CardNumber, Expiry, CVC []string
 	// 账单地址字段（Stripe Address Element）；Country、State 可能是 select 也可能是 input
 	Name, Country, Line1, City, State, Zip []string
-	// PayButton 是提交支付的按钮
+	// PayButton 是提交支付的按钮（只在主页面找，不进 iframe）
 	PayButton []string
 	// Amount 是汇总区「今日应付」的总额元素
 	Amount []string

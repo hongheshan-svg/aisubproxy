@@ -384,7 +384,7 @@ func chooseOption(ctx context.Context, e *elem, f field) error {
 	return nil
 }
 
-// Submit 点击支付。必须先 Fill 成功；先记下「已提交」再点击，此后再调用返回 ErrAlreadySubmitted 且不点击。
+// Submit 点击主页面上的支付按钮。必须先 Fill 成功；先记下「已提交」再点击，此后再调用返回 ErrAlreadySubmitted 且不点击。
 func (b *Browser) Submit(ctx context.Context) error {
 	b.mu.Lock()
 	submitted, filled := b.submitted, b.filled
@@ -398,7 +398,8 @@ func (b *Browser) Submit(ctx context.Context) error {
 	return b.do(ctx, func(ctx context.Context) error {
 		seen := false
 		btn, err := b.waitFind(ctx, fieldWait, func(frames []frameRef) *elem {
-			e := b.find(ctx, frames, Sel.PayButton, false)
+			// 只在主页面找：主页面按钮暂时不可见时，绝不能点到某个 iframe 里的 submit 按钮，白白用掉唯一一次提交
+			e := b.find(ctx, frames[:1], Sel.PayButton, false)
 			if e == nil {
 				return nil
 			}

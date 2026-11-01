@@ -89,7 +89,7 @@ func (b *Browser) do(ctx context.Context, f func(ctx context.Context) error) err
 // releaseObjects 释放本包取得的页面对象句柄。轮询时每轮没找到就释放一次，免得长时间等待中越积越多。
 func releaseObjects(ctx context.Context) { _ = runtime.ReleaseObjectGroup(objectGroup).Do(ctx) }
 
-// frames 返回主页面与所有可见的各级 iframe（深度优先，主页面在前）。所在 iframe 元素不可见的子树整个跳过。
+// frames 返回主页面与所有可见的各级 iframe（深度优先），第一个总是主页面。所在 iframe 元素不可见的子树整个跳过。
 func (b *Browser) frames(ctx context.Context) ([]frameRef, error) {
 	tree, err := page.GetFrameTree().Do(ctx)
 	if err != nil {
@@ -187,14 +187,25 @@ func (b *Browser) evalElem(ctx context.Context, frames []frameRef, expr string) 
 	return nil
 }
 
-// find 在各 frame 中按 sels 顺序找第一个可见元素（frame 优先于选择器顺序）；找不到返回 nil。
+// find 按 sels 顺序逐个选择器在各 frame 中找第一个可见元素；找不到返回 nil。
+// 选择器顺序优先于 frame 顺序：不能让前面 frame 里只命中宽泛选择器的元素，压过后面 frame 里命中精确选择器的元素。
 func (b *Browser) find(ctx context.Context, frames []frameRef, sels []string, needText bool) *elem {
-	return b.evalElem(ctx, frames, fmt.Sprintf("%s(%s, %s, %t)", findJS, mustJSON(sels), visibleJS, needText))
+	for _, s := range sels {
+		if e := b.evalElem(ctx, frames, fmt.Sprintf("%s(%s, %s, %t)", findJS, mustJSON([]string{s}), visibleJS, needText)); e != nil {
+			return e
+		}
+	}
+	return nil
 }
 
-// findText 在各 frame 中按可见文字找可点击元素（NewCardOption 用）。
+// findText 按 needles 顺序逐条文字在各 frame 中找可点击元素（NewCardOption 用），同样文字顺序优先于 frame 顺序。
 func (b *Browser) findText(ctx context.Context, frames []frameRef, needles []string) *elem {
-	return b.evalElem(ctx, frames, fmt.Sprintf("%s(%s, %s)", findTextJS, mustJSON(needles), visibleJS))
+	for _, n := range needles {
+		if e := b.evalElem(ctx, frames, fmt.Sprintf("%s(%s, %s)", findTextJS, mustJSON([]string{n}), visibleJS)); e != nil {
+			return e
+		}
+	}
+	return nil
 }
 
 // poll 每 250 毫秒扫描一次 frame 并调用 step，直到 step 返回 true 或超过 limit（超时返回 false）。

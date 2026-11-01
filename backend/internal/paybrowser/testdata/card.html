@@ -12,14 +12,22 @@
 <!--
   仿造的 Stripe 卡片 iframe（测试用），由与支付页跨站的服务提供。
   字段 id 与 selectors.go 中 CardNumber、Expiry、CVC 的首选项一致。?nocvc=1 时没有 CVC 框。
+  ?decoy=1 时多一个可见的 submit 按钮，每次点击都 POST 到本服务的 /decoy 计数（支付不应点到它）。
   支付页发来 collect 消息时回传各字段的值，以及卡号框收到的真实按键次数（检验逐字键入）。
 -->
 <label>Card number <input id="payment-numberInput" name="number" autocomplete="cc-number" inputmode="numeric"></label>
 <label>Expiration date <input id="payment-expiryInput" name="expiry" autocomplete="cc-exp" inputmode="numeric"></label>
 <label id="cvc-row">Security code <input id="payment-cvcInput" name="cvc" autocomplete="cc-csc" inputmode="numeric"></label>
+<button type="submit" id="decoy-submit" style="display:none">Save card</button>
 <script>
-  if (new URLSearchParams(location.search).get('nocvc') === '1') {
+  var q = new URLSearchParams(location.search)
+  if (q.get('nocvc') === '1') {
     document.getElementById('cvc-row').remove()
+  }
+  if (q.get('decoy') === '1') {
+    var decoy = document.getElementById('decoy-submit')
+    decoy.style.display = ''
+    decoy.addEventListener('click', function () { fetch('/decoy', { method: 'POST' }) })
   }
   var numberKeys = 0
   document.getElementById('payment-numberInput').addEventListener('keydown', function (e) {

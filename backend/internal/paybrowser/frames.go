@@ -197,23 +197,32 @@ func (b *Browser) findText(ctx context.Context, frames []frameRef, needles []str
 	return b.evalElem(ctx, frames, fmt.Sprintf("%s(%s, %s)", findTextJS, mustJSON(needles), visibleJS))
 }
 
-// waitFind 每 250 毫秒扫描一次 frame 并调用 look，直到找到元素或超过 limit；超时返回 nil。
-func (b *Browser) waitFind(ctx context.Context, limit time.Duration, look func([]frameRef) *elem) (*elem, error) {
+// poll 每 250 毫秒扫描一次 frame 并调用 step，直到 step 返回 true 或超过 limit（超时返回 false）。
+// 至少扫描一次；每轮没成功就释放这一轮取得的对象句柄。
+func (b *Browser) poll(ctx context.Context, limit time.Duration, step func([]frameRef) bool) (bool, error) {
 	end := time.Now().Add(limit)
 	for {
-		if frames, err := b.frames(ctx); err == nil {
-			if e := look(frames); e != nil {
-				return e, nil
-			}
+		if frames, err := b.frames(ctx); err == nil && step(frames) {
+			return true, nil
 		}
 		releaseObjects(ctx)
 		if !time.Now().Before(end) {
-			return nil, nil
+			return false, nil
 		}
 		if err := sleep(ctx, pollInterval); err != nil {
-			return nil, err
+			return false, err
 		}
 	}
+}
+
+// waitFind 轮询直到 look 找到元素或超过 limit；超时返回 nil。
+func (b *Browser) waitFind(ctx context.Context, limit time.Duration, look func([]frameRef) *elem) (*elem, error) {
+	var found *elem
+	_, err := b.poll(ctx, limit, func(frames []frameRef) bool {
+		found = look(frames)
+		return found != nil
+	})
+	return found, err
 }
 
 // subtree 返回 frame id 及其各级子 frame。

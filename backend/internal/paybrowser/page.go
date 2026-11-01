@@ -438,20 +438,11 @@ func (b *Browser) Submit(ctx context.Context) error {
 func (b *Browser) WaitOutcome(ctx context.Context, timeout time.Duration) (Outcome, string, error) {
 	out, msg := OutcomeUnknown, ""
 	err := b.do(ctx, func(ctx context.Context) error {
-		end := time.Now().Add(timeout)
-		for {
-			if o, m := b.outcome(ctx); o != OutcomeUnknown {
-				out, msg = o, m
-				return nil
-			}
-			releaseObjects(ctx)
-			if !time.Now().Before(end) {
-				return nil
-			}
-			if err := sleep(ctx, pollInterval); err != nil {
-				return err
-			}
-		}
+		_, err := b.poll(ctx, timeout, func(frames []frameRef) bool {
+			out, msg = b.outcome(ctx, frames)
+			return out != OutcomeUnknown
+		})
+		return err
 	})
 	if err != nil {
 		return OutcomeUnknown, "", fmt.Errorf("等待支付结果失败: %w", err)
@@ -459,12 +450,8 @@ func (b *Browser) WaitOutcome(ctx context.Context, timeout time.Duration) (Outco
 	return out, msg, nil
 }
 
-// outcome 扫描一次页面：成功优先，其次被拒提示，最后是未处理过的 3DS 框。
-func (b *Browser) outcome(ctx context.Context) (Outcome, string) {
-	frames, err := b.frames(ctx)
-	if err != nil {
-		return OutcomeUnknown, ""
-	}
+// outcome 检查一轮页面：成功优先，其次被拒提示，最后是未处理过的 3DS 框。
+func (b *Browser) outcome(ctx context.Context, frames []frameRef) (Outcome, string) {
 	if e := b.find(ctx, frames, Sel.Success, false); e != nil {
 		return OutcomeSuccess, truncateMessage(innerText(ctx, e))
 	}

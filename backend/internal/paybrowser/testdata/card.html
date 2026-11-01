@@ -9,9 +9,34 @@
 </style>
 </head>
 <body>
-<!-- 仿造的 Stripe 卡片 iframe（测试用）：字段 id 与 selectors.go 中 CardNumber、Expiry、CVC 的首选项一致。 -->
+<!--
+  仿造的 Stripe 卡片 iframe（测试用），由与支付页跨站的服务提供。
+  字段 id 与 selectors.go 中 CardNumber、Expiry、CVC 的首选项一致。?nocvc=1 时没有 CVC 框。
+  支付页发来 collect 消息时回传各字段的值，以及卡号框收到的真实按键次数（检验逐字键入）。
+-->
 <label>Card number <input id="payment-numberInput" name="number" autocomplete="cc-number" inputmode="numeric"></label>
 <label>Expiration date <input id="payment-expiryInput" name="expiry" autocomplete="cc-exp" inputmode="numeric"></label>
-<label>Security code <input id="payment-cvcInput" name="cvc" autocomplete="cc-csc" inputmode="numeric"></label>
+<label id="cvc-row">Security code <input id="payment-cvcInput" name="cvc" autocomplete="cc-csc" inputmode="numeric"></label>
+<script>
+  if (new URLSearchParams(location.search).get('nocvc') === '1') {
+    document.getElementById('cvc-row').remove()
+  }
+  var numberKeys = 0
+  document.getElementById('payment-numberInput').addEventListener('keydown', function (e) {
+    if (e.isTrusted && e.key.length === 1) numberKeys++
+  })
+  function val(id) {
+    var el = document.getElementById(id)
+    return el ? el.value : ''
+  }
+  window.addEventListener('message', function (e) {
+    if (e.source !== parent || !e.data || e.data.type !== 'collect') return
+    parent.postMessage({
+      type: 'card',
+      number: val('payment-numberInput'), expiry: val('payment-expiryInput'), cvc: val('payment-cvcInput'),
+      numberKeys: numberKeys
+    }, '*')
+  })
+</script>
 </body>
 </html>

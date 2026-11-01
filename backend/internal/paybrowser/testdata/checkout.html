@@ -5,24 +5,42 @@
 <title>Checkout</title>
 <style>
   body { font-family: sans-serif; width: 960px; margin: 24px auto; }
-  iframe { border: 1px solid #ccc; width: 440px; height: 170px; }
+  #card-frame { border: 1px solid #ccc; width: 440px; height: 170px; }
   label { display: block; margin: 8px 0; }
+  #challenge-modal { position: fixed; inset: 0; background: rgba(0, 0, 0, .5); display: flex; align-items: center; justify-content: center; }
+  #challenge-modal iframe { border: 0; width: 420px; height: 280px; background: #fff; }
 </style>
 </head>
 <body>
 <!--
   仿造的 ChatGPT / Stripe 支付页（测试用）。
-  金额与账单地址字段在主页面；卡号、有效期、CVC 在 card.html iframe 中。
-  字段 id 与 selectors.go 中各 Sel 列表的首选项一致。
-  金额在 500 毫秒后才渲染，模拟 Stripe 异步加载。
+  金额、账单地址、Link 邮箱与手机在主页面；卡号、有效期、CVC 在 card.html iframe 中，
+  card.html 与 3DS 的 acs.html 由另一个服务（__CARD_ORIGIN__，与本页跨站）提供，同真实页面上的 js.stripe.com。
+  字段 id 与 selectors.go 中各 Sel 列表的首选项一致。金额在 500 毫秒后才渲染，模拟 Stripe 异步加载。
+
+  查询参数：
+    mode=success|decline|3ds  提交后的表现（默认 success）
+    nocvc=1                   卡片 iframe 里没有 CVC 框
+    saved=1                   先显示已存卡，点「Use a different card」才出现卡片 iframe
+    mangle=1                  模拟地址联想：整段输入城市时被改写成别的值，逐字键入不受影响
+  每次提交把收到的全部字段 POST 到本服务的 /pay，供测试断言。
 -->
 <section id="summary">
   <h1>ChatGPT Pro</h1>
   <div id="total-row"><span>Total due today</span> </div>
 </section>
 
-<form id="payment-form" onsubmit="return false">
-  <iframe id="card-frame" name="card-frame" src="card.html" title="Secure card payment input frame"></iframe>
+<form id="payment-form">
+  <div id="saved-card" hidden>
+    <label><input type="radio" name="method" checked> Visa •••• 4242</label>
+    <button type="button" id="use-new-card">Use a different card</button>
+  </div>
+  <div id="new-card">
+    <iframe id="card-frame" name="card-frame" title="Secure card payment input frame"></iframe>
+  </div>
+  <!-- Stripe Link 的邮箱与手机：不应被填写 -->
+  <label>Email <input id="email" type="email" autocomplete="email"></label>
+  <label>Phone <input id="phone" type="tel" autocomplete="tel"></label>
   <label>Full name <input id="billingAddress-nameInput" name="name" autocomplete="billing name"></label>
   <label>Country or region
     <select id="billingAddress-countryInput" name="country" autocomplete="billing country">
@@ -37,16 +55,98 @@
   <label>City <input id="billingAddress-localityInput" name="locality" autocomplete="billing address-level2"></label>
   <label>State <input id="billingAddress-administrativeAreaInput" name="administrativeArea" autocomplete="billing address-level1"></label>
   <label>ZIP <input id="billingAddress-postalCodeInput" name="postalCode" autocomplete="billing postal-code"></label>
+  <div id="payment-error" role="alert" hidden></div>
+  <div id="payment-success" hidden></div>
   <button type="submit" class="SubmitButton">Subscribe</button>
 </form>
 
 <script>
+  var CARD_ORIGIN = '__CARD_ORIGIN__'
+  var q = new URLSearchParams(location.search)
+  var mode = q.get('mode') || 'success'
+  var method = 'new'
+  var cardFrame = document.getElementById('card-frame')
+  cardFrame.src = CARD_ORIGIN + '/card.html' + (q.get('nocvc') === '1' ? '?nocvc=1' : '')
+
+  if (q.get('saved') === '1') {
+    method = 'saved'
+    document.getElementById('saved-card').hidden = false
+    document.getElementById('new-card').style.display = 'none'
+    document.getElementById('use-new-card').addEventListener('click', function () {
+      method = 'new'
+      document.getElementById('saved-card').hidden = true
+      document.getElementById('new-card').style.display = ''
+    })
+  }
+
+  if (q.get('mangle') === '1') {
+    document.getElementById('billingAddress-localityInput').addEventListener('input', function (e) {
+      if (e.inputType === 'insertText' && e.data && e.data.length > 1) this.value = 'Portland, Maine'
+    })
+  }
+
   setTimeout(function () {
     var amount = document.createElement('span')
     amount.id = 'OrderDetails-TotalAmount'
     amount.textContent = '₱1,120.00'
     document.getElementById('total-row').appendChild(amount)
   }, 500)
+
+  function val(id) { return document.getElementById(id).value }
+
+  function show(id, text) {
+    var el = document.getElementById(id)
+    el.textContent = text
+    el.hidden = false
+  }
+
+  function pay(card) {
+    var body = {
+      method: method,
+      number: card.number || '', expiry: card.expiry || '', cvc: card.cvc || '', numberKeys: card.numberKeys || 0,
+      name: val('billingAddress-nameInput'), country: val('billingAddress-countryInput'),
+      line1: val('billingAddress-addressLine1Input'), city: val('billingAddress-localityInput'),
+      state: val('billingAddress-administrativeAreaInput'), zip: val('billingAddress-postalCodeInput'),
+      email: val('email'), phone: val('phone')
+    }
+    fetch('/pay', { method: 'POST', body: JSON.stringify(body) }).then(function () {
+      if (mode === 'decline') {
+        show('payment-error', 'Your card was declined.')
+      } else if (mode === '3ds') {
+        var modal = document.createElement('div')
+        modal.id = 'challenge-modal'
+        var frame = document.createElement('iframe')
+        frame.name = 'stripe-challenge-frame'
+        frame.src = CARD_ORIGIN + '/acs.html?wrap=1'
+        modal.appendChild(frame)
+        document.body.appendChild(modal)
+      } else {
+        show('payment-success', 'Payment successful')
+      }
+    })
+  }
+
+  document.getElementById('payment-form').addEventListener('submit', function (e) {
+    e.preventDefault()
+    document.getElementById('payment-error').hidden = true
+    if (method === 'saved') {
+      pay({})
+      return
+    }
+    cardFrame.contentWindow.postMessage({ type: 'collect' }, CARD_ORIGIN)
+  })
+
+  window.addEventListener('message', function (e) {
+    if (e.origin !== CARD_ORIGIN) return
+    if (e.data.type === 'card') {
+      pay(e.data)
+    } else if (e.data.type === '3ds') {
+      var modal = document.getElementById('challenge-modal')
+      if (modal) modal.remove()
+      if (e.data.ok) show('payment-success', 'Payment successful')
+      else show('payment-error', 'Your card was declined.')
+    }
+  })
 </script>
 </body>
 </html>

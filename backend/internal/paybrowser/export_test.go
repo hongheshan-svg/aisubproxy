@@ -17,3 +17,6 @@ var ChromeIdentity = chromeIdentity
 
 // SocketAlive 判断 unix socket 是否有进程在监听。
 var SocketAlive = socketAlive
+
+// Truncate 把页面提示文字去掉首尾空白并截断到 500 字。
+var Truncate = truncateMessage

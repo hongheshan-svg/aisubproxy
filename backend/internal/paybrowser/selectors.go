@@ -1,7 +1,8 @@
 package paybrowser
 
 // Sel 集中存放支付页各元素的选择器。每项是按优先级排列的候选列表，依次尝试，
-// 查找范围为主页面与各级 iframe。除 NewCardOption 外都是 CSS 选择器。
+// 查找范围为主页面与各级 iframe（含跨站 iframe，主页面优先），只认可见元素。
+// 除 NewCardOption 外都是 CSS 选择器。
 //
 // 卡号到邮编、支付按钮、新增卡入口的初值取自原型 automation/fill-checkout.js；
 // 原型里没有的金额、成功、被拒、3DS 相关项按 Stripe 支付页的常见结构给出，
@@ -17,11 +18,12 @@ var Sel = struct {
 	Amount []string
 	// Success 出现即表示支付成功
 	Success []string
-	// DeclineText 是被拒或出错时的提示文字所在元素
+	// DeclineText 是被拒或出错时的提示文字所在元素（须有文字才算）
 	DeclineText []string
-	// ChallengeFrame 是 3DS 验证框所在的 iframe
+	// ChallengeFrame 是 3DS 验证框所在的 iframe 元素；验证码框可在它里面再嵌几层
 	ChallengeFrame []string
-	// OTPInput、OTPSubmit 是 3DS 验证框里的验证码输入框与提交按钮
+	// OTPInput、OTPSubmit 是 3DS 验证框里的验证码输入框与提交按钮。
+	// OTPInput 都找不到时，取验证框内唯一可见的文本或数字输入框；没有提交按钮时按回车
 	OTPInput, OTPSubmit []string
 	// NewCardOption 是账号已绑卡时「使用新卡」入口的可见文字（按文字匹配，不是 CSS）
 	NewCardOption []string

@@ -13,7 +13,9 @@ import (
 
 	"github.com/chromedp/cdproto/browser"
 	"github.com/chromedp/cdproto/cdp"
+	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/cdproto/fetch"
+	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 )
 
@@ -81,10 +83,15 @@ type Browser struct {
 	started     bool // Chrome 已成功启动，Close 时可尝试正常关闭
 	closeOnce   sync.Once
 
-	// 以下状态由填卡、提交等后续步骤维护。
-	mu        sync.Mutex
-	filled    bool // 已填入卡片与地址
-	submitted bool // 已点击支付；之后绝不再次点击
+	// 以下状态由填卡、提交等后续步骤维护，受 mu 保护。
+	mu          sync.Mutex
+	cardTouched bool                 // 已开始往页面键入卡号：此后页面上可能有卡号，禁止整页截图
+	filled      bool                 // 已填入卡片与地址
+	submitted   bool                 // 已点击支付；之后绝不再次点击
+	answered    map[cdp.FrameID]bool // 已填过验证码的 3DS 框，WaitOutcome 不再把它当成新的验证
+
+	worldMu sync.Mutex
+	worlds  map[cdp.FrameID]runtime.ExecutionContextID // 各 frame 里本包专用的隔离执行环境
 }
 
 // Launch 启动一个全新的 Chrome：临时用户目录，不带自动化标记，按 o 配置代理。
@@ -170,6 +177,12 @@ func Launch(ctx context.Context, o LaunchOptions) (*Browser, error) {
 	}
 	b.started = true
 
+	// 让页面始终认为自己有焦点：Xvfb 下没有窗口管理器，窗口可能拿不到系统焦点，
+	// 那样 document.hasFocus() 为假，键入与焦点事件都不正常。
+	if err := b.run(ctx, emulation.SetFocusEmulationEnabled(true)); err != nil {
+		b.Close()
+		return nil, fmt.Errorf("启动 Chrome 失败: %w", err)
+	}
 	if auth != nil {
 		chromedp.ListenTarget(tabCtx, b.answerProxyAuth(auth))
 		if err := b.run(ctx, fetch.Enable().WithHandleAuthRequests(true)); err != nil {

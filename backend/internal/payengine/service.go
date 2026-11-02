@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tuzi/cdk-recharge-system/internal/cardpool"
@@ -99,7 +100,8 @@ type Service struct {
 	mu      sync.Mutex
 	running map[string]bool // 正在处理的单号
 
-	recoveryFailed bool // 重启恢复失败过（已告警）；只在 Start 和其后的工作协程里读写，二者不并发
+	recoveryFailed bool        // 重启恢复失败过（已告警）；只在 Start 和其后的工作协程里读写，二者不并发
+	recovered      atomic.Bool // 重启恢复已完成：此前不派发，确认协程也不定论
 }
 
 // New 创建引擎，未提供的依赖取默认实现。

@@ -35,11 +35,11 @@ func (s *Service) Kick() {
 
 // Start 同步完成重启恢复后启动后台协程：工作协程（收到 Kick 或每 10 秒按建单顺序取 queued 单据处理，
 // 同时处理的单据数不超过 LoadConcurrency()）、确认协程（每 5 秒扫描确认中的单据）、截图清理协程（每天一次）。
-// 恢复没做完时不派发，工作协程每一轮先重试恢复，首次失败告警一次。ctx 结束时全部停止，处理中的单据随之中断，留待下次启动恢复。
+// 恢复没做完时不派发、也不确认，工作协程每一轮先重试恢复，首次失败告警一次。ctx 结束时全部停止，处理中的单据随之中断，留待下次启动恢复。
 func (s *Service) Start(ctx context.Context) {
-	recovered := s.tryRecover(ctx)
+	s.tryRecover(ctx)
 	s.loops.Add(3)
-	go s.loop(ctx, recovered)
+	go s.loop(ctx)
 	go s.verifyLoop(ctx)
 	go s.shotLoop(ctx)
 	s.Kick()
@@ -48,7 +48,7 @@ func (s *Service) Start(ctx context.Context) {
 // Wait 阻塞到后台协程与全部单据协程退出；调用前须先取消传给 Start 的 ctx。
 func (s *Service) Wait() { s.loops.Wait() }
 
-func (s *Service) loop(ctx context.Context, recovered bool) {
+func (s *Service) loop(ctx context.Context) {
 	defer s.loops.Done()
 	ticker := time.NewTicker(dispatchInterval)
 	defer ticker.Stop()
@@ -62,10 +62,8 @@ func (s *Service) loop(ctx context.Context, recovered bool) {
 		if ctx.Err() != nil {
 			return
 		}
-		if !recovered {
-			if recovered = s.tryRecover(ctx); !recovered {
-				continue
-			}
+		if !s.recovered.Load() && !s.tryRecover(ctx) {
+			continue
 		}
 		s.dispatch(ctx)
 	}

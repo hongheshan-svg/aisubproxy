@@ -537,6 +537,7 @@ func TestUnverifiableDeclinedEscalates(t *testing.T) {
 				t.Fatal(err)
 			}
 			h.start(t)
+			h.clock.Advance(h.timeouts.DeclineGrace + time.Second) // 预置的单是重启前遗留的，先过完重启后的宽限期
 			waitEvent(t, o.OrderNo, "等下次检查")
 			if g := mustOrder(t, o.OrderNo); g.State != StateVerifying {
 				t.Fatalf("证据不全不应定论: %+v", g)
@@ -793,6 +794,119 @@ func TestRecoveredOrderConcludes(t *testing.T) {
 	assertReleases(t, h, cardpool.ResultSuccess)
 	if len(h.br.browsers()) != 0 {
 		t.Fatal("恢复路径不应启动浏览器，更不可能再点支付")
+	}
+}
+
+// declinedBeforeRestart 预置一张页面被拒后服务停机的单：宽限期在停机期间已经过去，授权推送也没送达。
+func declinedBeforeRestart(t *testing.T, h *harness) *Order {
+	t.Helper()
+	at := h.clock.Now().Unix() - 600
+	return presetOrder(t, "a@x.com", StateVerifying, map[string]any{
+		"submitted_at": at, "card_id": testCardID, "lease_token": testLeaseToken,
+		"page_outcome": "declined", "verify_until": at + 120, "next_check_at": at, "error_message": "Your card was declined.",
+	})
+}
+
+// R24：停机期间授权推送送不到，重启后要重新等够宽限期，不能按过期的 verify_until 立刻定成被拒。
+func TestRestartRestoresDeclineGrace(t *testing.T) {
+	// assertWaiting 确认 Start 后已跑过几轮检查，单据仍在等宽限期
+	assertWaiting := func(t *testing.T, h *harness, no string) {
+		t.Helper()
+		want := h.clock.Now().Unix() + int64(h.timeouts.DeclineGrace/time.Second)
+		if g := mustOrder(t, no); g.VerifyUntil == nil || *g.VerifyUntil != want {
+			t.Fatalf("verify_until 应为 now + DeclineGrace (%d): %+v", want, g)
+		}
+		waitAccountCalls(t, h, 3)
+		if g := mustOrder(t, no); g.State != StateVerifying || len(h.pool.released()) != 0 {
+			t.Fatalf("重启后的宽限期内不应定论: %+v", g)
+		}
+	}
+	t.Run("重启后才到达成功授权", func(t *testing.T) {
+		h := newPayHarness(t, nil)
+		o := declinedBeforeRestart(t, h)
+		var txns atomic.Value
+		txns.Store([]cardpool.Transaction{})
+		h.pool.listTxns = func(f cardpool.TxnFilter) ([]cardpool.Transaction, int, error) {
+			return pagedTxns(txns.Load().([]cardpool.Transaction))(f)
+		}
+		h.start(t)
+		assertWaiting(t, h, o.OrderNo)
+		txns.Store([]cardpool.Transaction{txnAt("A1", "approved", h.clock.Now().Unix())})
+		h.clock.Advance(h.timeouts.DeclineGrace + time.Second)
+		g := waitDone(t, o.OrderNo)
+		if g.State != StateNeedsReview || g.ErrorCode != "evidence_conflict" {
+			t.Fatalf("重启后到达的成功授权应转待人工: %+v", g)
+		}
+		assertReleases(t, h, cardpool.ResultAborted)
+	})
+	t.Run("始终没有授权", func(t *testing.T) {
+		h := newPayHarness(t, nil)
+		o := declinedBeforeRestart(t, h)
+		h.start(t)
+		assertWaiting(t, h, o.OrderNo)
+		h.clock.Advance(h.timeouts.DeclineGrace + time.Second)
+		g := waitDone(t, o.OrderNo)
+		if g.State != StateFailed || g.Failure != FailureDeclined {
+			t.Fatalf("过了宽限期才定被拒: %+v", g)
+		}
+		assertReleases(t, h, cardpool.ResultFailed)
+	})
+	t.Run("只推后不提前，也不动其它确认中的单", func(t *testing.T) {
+		h := newPayHarness(t, nil)
+		now := h.clock.Now().Unix()
+		later := presetOrder(t, "later@x.com", StateVerifying, map[string]any{"page_outcome": "declined", "verify_until": now + 3600})
+		unknown := presetOrder(t, "unknown@x.com", StateVerifying, map[string]any{"page_outcome": "unknown", "verify_until": now - 10})
+		if err := h.svc.recoverOrders(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if g := mustOrder(t, later.OrderNo); *g.VerifyUntil != now+3600 {
+			t.Fatalf("不应提前 verify_until: %+v", g)
+		}
+		if g := mustOrder(t, unknown.OrderNo); *g.VerifyUntil != now-10 {
+			t.Fatalf("页面结果不明的单不应改动: %+v", g)
+		}
+	})
+}
+
+// R24：宽限期写不进去时计入恢复错误，由 R19 的重试接住；重试成功之前确认协程不能拿过期的 verify_until 定论。
+func TestRestartGraceWriteFailureRetried(t *testing.T) {
+	h := newPayHarness(t, nil)
+	o := declinedBeforeRestart(t, h)
+	stale := *o.VerifyUntil
+	if _, err := db.DB.Exec(`ALTER TABLE pay_order_events RENAME TO pay_order_events_hidden`); err != nil {
+		t.Fatal(err)
+	}
+	h.start(t)
+	if a := h.alerts.Texts(); len(a) != 1 || !strings.Contains(a[0], "重启恢复失败") {
+		t.Fatalf("写不进去应计入恢复失败并告警: %v", a)
+	}
+	time.Sleep(50 * time.Millisecond) // 是 VerifyTick 的 10 倍，确认协程有机会跑多轮
+	if g := mustOrder(t, o.OrderNo); g.State != StateVerifying || *g.VerifyUntil != stale {
+		t.Fatalf("恢复没做完时单据不应变化: %+v", g)
+	}
+	if len(h.pool.released()) != 0 || h.gpt.count("Account") != 0 {
+		t.Fatalf("恢复没做完时不应开始确认: released=%v account=%d", h.pool.released(), h.gpt.count("Account"))
+	}
+
+	if _, err := db.DB.Exec(`ALTER TABLE pay_order_events_hidden RENAME TO pay_order_events`); err != nil {
+		t.Fatal(err)
+	}
+	h.svc.Kick()
+	want := h.clock.Now().Unix() + int64(h.timeouts.DeclineGrace/time.Second)
+	deadline := time.Now().Add(5 * time.Second)
+	for *mustOrder(t, o.OrderNo).VerifyUntil != want {
+		if time.Now().After(deadline) {
+			t.Fatalf("重试后应写入宽限期: %+v", mustOrder(t, o.OrderNo))
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	waitAccountCalls(t, h, 3)
+	if g := mustOrder(t, o.OrderNo); g.State != StateVerifying {
+		t.Fatalf("宽限期内不应定论: %+v", g)
+	}
+	h.clock.Advance(h.timeouts.DeclineGrace + time.Second)
+	if g := waitDone(t, o.OrderNo); g.State != StateFailed || g.Failure != FailureDeclined {
+		t.Fatalf("过了宽限期应定被拒: %+v", g)
 	}
 }
 

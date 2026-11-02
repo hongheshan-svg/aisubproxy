@@ -72,7 +72,11 @@ func (s *Service) verifyLoop(ctx context.Context) {
 	}
 }
 
+// verifyDue 检查到期的确认中单据。恢复没做完时什么都不做：被拒单的宽限期可能还没补上，不能按过期的 verify_until 定论。
 func (s *Service) verifyDue(ctx context.Context) {
+	if !s.recovered.Load() {
+		return
+	}
 	list, err := dueVerifying(ctx, s.now().Unix())
 	if err != nil {
 		if ctx.Err() == nil {
@@ -292,8 +296,8 @@ func leaseFromOrder(o *Order) *cardpool.Lease {
 }
 
 // recoverOrders 收敛上次运行遗留的单据，必须在第一次派发之前完成：
-// 提交之前的中间状态判 failed / not_submitted 并释放租约；submitted、requires_3ds 转 verifying 继续确认，绝不再点支付。
-// queued 留给工作协程，verifying 留给确认协程。有单据没收敛时返回错误，由工作协程重试。
+// 提交之前的中间状态判 failed / not_submitted 并释放租约；submitted、requires_3ds 转 verifying 继续确认，绝不再点支付；
+// 页面被拒的 verifying 单补上宽限期。queued 留给工作协程，其余 verifying 留给确认协程。有单据没收敛时返回错误，由工作协程重试。
 func (s *Service) recoverOrders(ctx context.Context) error {
 	stale, err := ordersInStates(ctx, StateChecking, StateLinkCreated, StateOpening, StateFunding, StateFilling)
 	if err != nil {
@@ -317,7 +321,29 @@ func (s *Service) recoverOrders(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("单据 %s: %w", j.o.OrderNo, err))
 		}
 	}
+	verifying, err := ordersInStates(ctx, StateVerifying)
+	if err != nil {
+		return errors.Join(append(errs, err)...)
+	}
+	for i := range verifying {
+		if err := s.restoreDeclineGrace(ctx, &verifying[i]); err != nil {
+			errs = append(errs, fmt.Errorf("单据 %s: %w", verifying[i].OrderNo, err))
+		}
+	}
 	return errors.Join(errs...)
+}
+
+// restoreDeclineGrace 让页面被拒的单重新等够 DeclineGrace：停机期间授权推送送不到，
+// 按停机前的 verify_until 定论，会把已扣款的单定成 declined。只推后不提前。
+func (s *Service) restoreDeclineGrace(ctx context.Context, o *Order) error {
+	if o.PageOutcome != string(paybrowser.OutcomeDeclined) {
+		return nil
+	}
+	until := s.now().Add(s.t.DeclineGrace).Unix()
+	if o.VerifyUntil != nil && *o.VerifyUntil >= until {
+		return nil
+	}
+	return transition(ctx, o.OrderNo, StateVerifying, StateVerifying, "info", "服务重启，重新等待授权推送", map[string]any{"verify_until": until})
 }
 
 // tryRecover 收敛遗留单据，返回是否已全部完成。没完成时不能派发，由工作协程下一轮再试。
@@ -329,6 +355,7 @@ func (s *Service) tryRecover(ctx context.Context) bool {
 		if s.recoveryFailed {
 			log.Printf("[payengine] 重启恢复已完成，恢复派发")
 		}
+		s.recovered.Store(true)
 		return true
 	case ctx.Err() == nil:
 		s.reportRecoveryFailure(err)

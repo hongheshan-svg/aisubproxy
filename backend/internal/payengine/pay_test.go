@@ -776,3 +776,210 @@ func TestCardSecretsScrubbed(t *testing.T) {
 		}
 	})
 }
+
+// 验证码同卡号一样不得出现在错误信息、事件、告警、日志里：页面报错可能把输入框内容带出来。
+func TestOTPScrubbed(t *testing.T) {
+	const otp = "918273"
+	dirty := "页面回显验证码 " + otp + " 校验失败"
+	cases := map[string]func(*harness){
+		"填验证码报错": func(h *harness) {
+			h.br.waitOutcome = outcomes(outcomeStep{out: paybrowser.OutcomeChallenge})
+			h.br.enterOTP = func(string) error { return errors.New(dirty) }
+		},
+		"填完之后等结果报错": func(h *harness) {
+			h.br.waitOutcome = outcomes(outcomeStep{out: paybrowser.OutcomeChallenge}, outcomeStep{err: errors.New(dirty)})
+		},
+		"页面提示夹带": func(h *harness) {
+			h.br.waitOutcome = outcomes(outcomeStep{out: paybrowser.OutcomeChallenge}, outcomeStep{text: dirty})
+		},
+	}
+	for name, set := range cases {
+		t.Run(name, func(t *testing.T) {
+			logs := captureLog(t)
+			h := newPayHarness(t, nil)
+			h.pool.waitOTP = func(context.Context, string, time.Time) (string, error) { return otp, nil }
+			set(h)
+			h.start(t)
+			o := h.submit(t, false)
+			waitState(t, o.OrderNo, StateVerifying)
+			h.clock.Advance(h.timeouts.Verify + time.Second)
+			g := waitDone(t, o.OrderNo)
+			if g.State != StateNeedsReview || !strings.Contains(g.ErrorMessage, "校验失败") {
+				t.Fatalf("应转待人工并保留说明: %+v", g)
+			}
+			if a := h.alerts.Texts(); len(a) != 1 {
+				t.Fatalf("应告警 1 次: %v", a)
+			}
+			texts := append([]string{g.ErrorMessage, logs.String()}, h.alerts.Texts()...)
+			for _, e := range eventStates(t, g.OrderNo) {
+				texts = append(texts, e.Message)
+			}
+			for _, txt := range texts {
+				if strings.Contains(strings.ReplaceAll(txt, g.OrderNo, ""), otp) {
+					t.Fatalf("文本不应含验证码: %q", txt)
+				}
+			}
+		})
+	}
+}
+
+// CVV 可能恰好是卡号的一段：先抹 CVV 会把卡号切碎，正则再也匹配不上，卡号片段就留下了。
+func TestCVVIsCardFragmentScrubbed(t *testing.T) {
+	const card, spaced, cvv = "4539148803436467", "4539 1488 0343 6467", "803"
+	logs := captureLog(t)
+	h := newPayHarness(t, nil)
+	h.pool.sensitive = func(*cardpool.Lease) (*marswallex.CardSensitive, error) {
+		return &marswallex.CardSensitive{CardID: testCardID, CardNo: card, CVV2: cvv, ExpiryDate: "08/28"}, nil
+	}
+	h.br.fill = func(paybrowser.Card, paybrowser.Billing) error {
+		return fmt.Errorf("输入框内容 %s / %s，cvc %s 校验失败", card, spaced, cvv)
+	}
+	h.start(t)
+	g := waitDone(t, h.submit(t, false).OrderNo)
+	assertNotSubmitted(t, g, "fill_failed")
+	if !strings.Contains(g.ErrorMessage, "校验失败") {
+		t.Fatalf("应保留其余说明: %q", g.ErrorMessage)
+	}
+	texts := append([]string{g.ErrorMessage, logs.String()}, h.alerts.Texts()...)
+	for _, e := range eventStates(t, g.OrderNo) {
+		texts = append(texts, e.Message)
+	}
+	for _, txt := range texts {
+		txt = strings.ReplaceAll(txt, g.OrderNo, "")
+		for _, bad := range []string{"4539", "1488", "0343", "6467", cvv} {
+			if strings.Contains(txt, bad) {
+				t.Fatalf("文本不应残留卡号片段 %q: %q", bad, txt)
+			}
+		}
+	}
+}
+
+// 租约必须在注资之前落库：注资时服务崩溃，重启恢复要靠单据里的令牌释放卡。
+func TestLeaseStoredBeforeFund(t *testing.T) {
+	h := newPayHarness(t, nil)
+	h.gpt.accountFn = planFrom(2)
+	var seen atomic.Pointer[Order]
+	h.pool.fund = func(context.Context, *cardpool.Lease, int64) (*cardpool.Order, error) {
+		g, err := getOrder(ctx, mustNo(t, h))
+		if err != nil {
+			return nil, err
+		}
+		seen.Store(g)
+		return &cardpool.Order{OutOrderNo: "FUND-1", State: cardpool.StateProcessing}, nil
+	}
+	h.br.waitOutcome = outcomes(outcomeStep{out: paybrowser.OutcomeSuccess})
+	h.start(t)
+	waitDone(t, h.submit(t, false).OrderNo)
+	g := seen.Load()
+	if g == nil || g.LeaseToken != testLeaseToken || g.CardID != testCardID {
+		t.Fatalf("注资时库里应已有租约与卡: %+v", g)
+	}
+}
+
+// 注资金额取建单时的快照：建单后改套餐表，不影响排队中的单。
+func TestFundUsesOrderSnapshot(t *testing.T) {
+	h := newPayHarness(t, nil)
+	h.gpt.accountFn = planFrom(2)
+	h.br.waitOutcome = outcomes(outcomeStep{out: paybrowser.OutcomeSuccess})
+	o := h.submit(t, false)
+	tbl, err := LoadPlanTable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range tbl {
+		if tbl[i].Key == "plus" {
+			r := tbl[i].Regions["PH"]
+			r.FundCents = 9900
+			tbl[i].Regions["PH"] = r
+		}
+	}
+	if err := SavePlanTable(tbl); err != nil {
+		t.Fatal(err)
+	}
+	h.start(t)
+	if g := waitDone(t, o.OrderNo); g.State != StateSucceeded {
+		t.Fatalf("应成功: %+v", g)
+	}
+	if a := h.pool.lastArgs("Fund"); h.pool.count("Fund") != 1 || a[1] != int64(3000) {
+		t.Fatalf("应按快照注资 3000 分: %v", a)
+	}
+}
+
+// 服务在任一步骤中停止：单据不写错误终态，也不释放、不告警，全部留给下次启动。
+// 新 Service 走 Start 恢复后，提交前的步骤到 failed / not_submitted 并释放，提交后的步骤到 verifying、不再点支付。
+func TestCancelDuringStepLeavesForRecovery(t *testing.T) {
+	cases := []struct {
+		name, state string
+		submits     int
+		block       func(*harness, func() error)
+	}{
+		{"Fund", StateFunding, 0, func(h *harness, wait func() error) {
+			h.pool.fund = func(context.Context, *cardpool.Lease, int64) (*cardpool.Order, error) { return nil, wait() }
+		}},
+		{"WaitOrder", StateFunding, 0, func(h *harness, wait func() error) {
+			h.pool.waitOrder = func(context.Context, string) (*cardpool.Order, error) { return nil, wait() }
+		}},
+		{"Fill", StateFilling, 0, func(h *harness, wait func() error) {
+			h.br.fill = func(paybrowser.Card, paybrowser.Billing) error { return wait() }
+		}},
+		{"Submit", StateSubmitted, 1, func(h *harness, wait func() error) {
+			h.br.submit = wait
+		}},
+		{"WaitOTP", StateRequires3DS, 1, func(h *harness, wait func() error) {
+			h.br.waitOutcome = outcomes(outcomeStep{out: paybrowser.OutcomeChallenge})
+			h.pool.waitOTP = func(context.Context, string, time.Time) (string, error) { return "", wait() }
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := newPayHarness(t, nil)
+			runCtx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			entered := make(chan struct{})
+			c.block(h, func() error {
+				close(entered)
+				<-runCtx.Done()
+				return runCtx.Err()
+			})
+			h.svc.Start(runCtx)
+			o := h.submit(t, false)
+			select {
+			case <-entered:
+			case <-time.After(5 * time.Second):
+				t.Fatalf("单据未走到 %s: %+v", c.name, mustOrder(t, o.OrderNo))
+			}
+			cancel()
+			h.svc.Wait()
+
+			g := mustOrder(t, o.OrderNo)
+			if g.State != c.state || g.Failure != "" || g.ErrorCode != "" || g.FinishedAt != nil {
+				t.Fatalf("停止时不应写错误终态: %+v", g)
+			}
+			if len(h.pool.released()) != 0 || len(h.alerts.Texts()) != 0 {
+				t.Fatalf("停止时不应释放或告警: %+v %v", h.pool.released(), h.alerts.Texts())
+			}
+			assertSubmitCount(t, h, c.submits)
+
+			h.rebuild(h.pool)
+			h.start(t)
+			g = mustOrder(t, o.OrderNo)
+			if c.submits == 0 {
+				if g.State != StateFailed || g.Failure != FailureNotSubmitted || g.ErrorMessage != restartMessage {
+					t.Fatalf("提交前的步骤应 failed / not_submitted: %+v", g)
+				}
+				rel := assertReleases(t, h, cardpool.ResultAborted)
+				if rel[0].Lease.Token != testLeaseToken {
+					t.Fatalf("应按单据字段释放: %+v", rel[0])
+				}
+			} else {
+				if g.State != StateVerifying || g.Failure != "" || g.PageOutcome != "unknown" {
+					t.Fatalf("提交后的步骤应转 verifying: %+v", g)
+				}
+				if len(h.pool.released()) != 0 {
+					t.Fatalf("确认结束前不应释放: %+v", h.pool.released())
+				}
+			}
+			assertSubmitCount(t, h, c.submits)
+		})
+	}
+}

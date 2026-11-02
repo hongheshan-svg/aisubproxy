@@ -596,6 +596,68 @@ func TestBackfillArgsAndDeadline(t *testing.T) {
 	}
 }
 
+// 停机较久时，补拉窗口要盖住提交时间，否则看不到当时的授权；超出卡池能补拉的范围就不定论，转待人工。
+func TestBackfillWindowCoversSubmittedAt(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		idle time.Duration
+		days int // 0 表示不应补拉
+	}{
+		{"30 小时", 30 * time.Hour, 3},
+		{"4 天", 4 * 24 * time.Hour, 7},
+		{"8 天", 8 * 24 * time.Hour, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			h := declinedHarness(t)
+			h.start(t)
+			o := h.submit(t, false)
+			waitState(t, o.OrderNo, StateVerifying)
+			h.clock.Advance(c.idle)
+			g := waitDone(t, o.OrderNo)
+			if c.days == 0 {
+				if g.State != StateNeedsReview || g.ErrorCode != "evidence_unavailable" {
+					t.Fatalf("补拉不到提交时间应转待人工: %+v", g)
+				}
+				if n := h.pool.count("BackfillRecent"); n != 0 {
+					t.Fatalf("超出范围不应补拉: %d", n)
+				}
+				return
+			}
+			if g.State != StateFailed {
+				t.Fatalf("补拉成功且没有授权应定论失败: %+v", g)
+			}
+			if a := h.pool.lastArgs("BackfillRecent"); len(a) != 1 || a[0] != c.days {
+				t.Fatalf("应补拉 %d 天: %v", c.days, a)
+			}
+		})
+	}
+}
+
+func TestDeclineBackfillDays(t *testing.T) {
+	now := time.Unix(1_800_000_000, 0)
+	at := func(d time.Duration) *int64 { v := now.Add(-d).Unix(); return &v }
+	for _, c := range []struct {
+		name string
+		at   *int64
+		days int
+		ok   bool
+	}{
+		{"刚提交", at(10 * time.Minute), 1, true},
+		{"接近 1 天，留出余量", at(23*time.Hour + 30*time.Minute), 3, true},
+		{"接近 3 天，留出余量", at(71*time.Hour + 30*time.Minute), 7, true},
+		{"接近 7 天，留出余量", at(167*time.Hour + 30*time.Minute), 0, false},
+		{"超过 7 天", at(200 * time.Hour), 0, false},
+		{"没有提交时间", nil, 7, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			days, ok := declineBackfillDays(c.at, now)
+			if days != c.days || ok != c.ok {
+				t.Fatalf("got %d %v, want %d %v", days, ok, c.days, c.ok)
+			}
+		})
+	}
+}
+
 // 补拉只在要定论失败时调用：宽限期内、账号已开通、已有成功或处理中的授权、证据查询出错、页面结果不是被拒，都不调用。
 func TestBackfillOnlyBeforeConcluding(t *testing.T) {
 	assertNoBackfill := func(t *testing.T, h *harness) {

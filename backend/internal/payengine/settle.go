@@ -29,9 +29,24 @@ const (
 	// 漏算会把已扣款单误判为被拒，所以宁可放宽窗口。
 	authClockSkew = 5 * time.Minute
 
-	// declineBackfillDays 是定论失败前补拉的天数。卡池只接受 1、3、7，付款到定论通常不过十几分钟，1 天足够。
-	declineBackfillDays = 1
+	// declineBackfillMargin 是选补拉窗口时多留的余量，盖住 authClockSkew 和补拉本身的耗时。
+	declineBackfillMargin = time.Hour
 )
+
+// declineBackfillDays 选定论失败前补拉的天数（卡池只接受 1、3、7）。窗口要盖住提交时间：服务停机再恢复时单据可能已提交很久，
+// 窗口不够就看不到当时的授权。ok 为 false 表示超出卡池能补拉的范围，不能定论。没有提交时间时取最大窗口。
+func declineBackfillDays(submittedAt *int64, now time.Time) (days int, ok bool) {
+	if submittedAt == nil {
+		return 7, true
+	}
+	age := now.Sub(time.Unix(*submittedAt, 0)) + declineBackfillMargin
+	for _, d := range []int{1, 3, 7} {
+		if age <= time.Duration(d)*24*time.Hour {
+			return d, true
+		}
+	}
+	return 0, false
+}
 
 // orderNoName 是单号格式，截图清理只动名字符合它的目录。
 var orderNoName = regexp.MustCompile(`^PO\d{12}[0-9a-f]{8}$`)
@@ -200,9 +215,15 @@ func (s *Service) verifyDeclined(ctx context.Context, j *job, accErr error, exha
 
 // backfillAndRecheck 补拉一次交易后重新查授权。补拉出错或超时按证据不全处理，返回错误，由 verifyDeclined 走等待或转人工。
 func (s *Service) backfillAndRecheck(ctx context.Context, j *job) (approved, pending bool, err error) {
+	days, ok := declineBackfillDays(j.o.SubmittedAt, s.now())
+	if !ok {
+		err = errors.New("提交时间早于卡池能补拉的范围（7 天），无法确认授权")
+		s.noteVerifyErr(ctx, j, "backfill", "补拉交易失败，等下次检查：", err)
+		return false, false, err
+	}
 	bctx, cancel := context.WithTimeout(ctx, s.t.Backfill)
 	defer cancel()
-	_, err = s.opts.Pool.BackfillRecent(bctx, declineBackfillDays)
+	_, err = s.opts.Pool.BackfillRecent(bctx, days)
 	if ctx.Err() != nil {
 		return false, false, ctx.Err()
 	}

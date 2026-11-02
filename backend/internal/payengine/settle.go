@@ -398,15 +398,23 @@ func (s *Service) recoverOrders(ctx context.Context) error {
 
 // restoreDeclineGrace 让页面被拒的单重新等够 DeclineGrace：停机期间授权推送送不到，
 // 按停机前的 verify_until 定论，会把已扣款的单定成 declined。只推后不提前。
+// 每次启动每单只补一次：恢复可能因别的单失败而反复重试，不能每轮都写事件、推后 verify_until。
 func (s *Service) restoreDeclineGrace(ctx context.Context, o *Order) error {
-	if o.PageOutcome != string(paybrowser.OutcomeDeclined) {
+	if o.PageOutcome != string(paybrowser.OutcomeDeclined) || s.graceRestored[o.OrderNo] {
 		return nil
 	}
 	until := s.now().Add(s.t.DeclineGrace).Unix()
-	if o.VerifyUntil != nil && *o.VerifyUntil >= until {
-		return nil
+	if o.VerifyUntil == nil || *o.VerifyUntil < until {
+		err := transition(ctx, o.OrderNo, StateVerifying, StateVerifying, "info", "服务重启，重新等待授权推送", map[string]any{"verify_until": until})
+		if err != nil {
+			return err
+		}
 	}
-	return transition(ctx, o.OrderNo, StateVerifying, StateVerifying, "info", "服务重启，重新等待授权推送", map[string]any{"verify_until": until})
+	if s.graceRestored == nil {
+		s.graceRestored = map[string]bool{}
+	}
+	s.graceRestored[o.OrderNo] = true
+	return nil
 }
 
 // tryRecover 收敛遗留单据，返回是否已全部完成。没完成时不能派发，由工作协程下一轮再试。

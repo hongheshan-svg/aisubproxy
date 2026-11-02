@@ -1038,6 +1038,32 @@ func TestRestartRestoresDeclineGrace(t *testing.T) {
 
 // R24：宽限期写不进去时计入恢复错误，由 R19 的重试接住；重试成功之前这张被拒单不能按过期的 verify_until 定论。
 // 只有被拒单要等：其余确认中的单定论都是安全方向（成功或转人工），恢复失败期间照常确认。
+// 恢复因别的单失败时会反复重试。同一张被拒单只补一次宽限期：否则每轮重试都写一条事件，还把 verify_until 一直往后推。
+func TestRestartGraceRetryNotRepeated(t *testing.T) {
+	h := newPayHarness(t, nil)
+	o := declinedBeforeRestart(t, h)
+	ctx := context.Background()
+	if err := h.svc.recoverOrders(ctx); err != nil {
+		t.Fatal(err)
+	}
+	first := mustOrder(t, o.OrderNo)
+	if first.VerifyUntil == nil {
+		t.Fatalf("应补上宽限期: %+v", first)
+	}
+	for i := 0; i < 3; i++ {
+		h.clock.Advance(10 * time.Second)
+		if err := h.svc.recoverOrders(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if g := mustOrder(t, o.OrderNo); *g.VerifyUntil != *first.VerifyUntil {
+		t.Fatalf("重试不应再推后 verify_until: %d → %d", *first.VerifyUntil, *g.VerifyUntil)
+	}
+	if n := countEvents(t, o.OrderNo, "重新等待授权推送"); n != 1 {
+		t.Fatalf("事件应只有 1 条，实际 %d", n)
+	}
+}
+
 func TestRestartGraceWriteFailureRetried(t *testing.T) {
 	h := newPayHarness(t, nil)
 	declined := declinedBeforeRestart(t, h)

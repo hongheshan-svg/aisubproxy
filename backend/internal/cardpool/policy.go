@@ -44,7 +44,7 @@ func DefaultPolicy() Policy {
 		ValidityMonths:       24,
 		CardNamePrefix:       "POOL",
 		MaxUsesPerCard:       1,
-		LeaseMinutes:         30,
+		LeaseMinutes:         35, // 付款引擎第 5–9 步严格上限约 32 分钟（payengine），要留够
 		CancelAfterDays:      7,
 		HealthWindowHours:    24,
 		ProductFailThreshold: 3,

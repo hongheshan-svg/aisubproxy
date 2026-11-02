@@ -17,7 +17,7 @@ func TestDefaultPolicyValid(t *testing.T) {
 		t.Fatal("map/slice 不应为 nil")
 	}
 	if p.OpenAmountCents != 0 || p.ValidityMonths != 24 || p.CardNamePrefix != "POOL" || p.MaxUsesPerCard != 1 ||
-		p.LeaseMinutes != 30 || p.CancelAfterDays != 7 || p.HealthWindowHours != 24 ||
+		p.LeaseMinutes != 35 || p.CancelAfterDays != 7 || p.HealthWindowHours != 24 ||
 		p.ProductFailThreshold != 3 || p.CardFailThreshold != 2 || !p.AutoSuspend {
 		t.Fatalf("默认值不符: %+v", p)
 	}
@@ -52,7 +52,7 @@ func TestPolicyValidateRejects(t *testing.T) {
 func TestLoadPolicyFillsDefaults(t *testing.T) {
 	dbtest.Open(t)
 	p, err := LoadPolicy()
-	if err != nil || p.LeaseMinutes != 30 {
+	if err != nil || p.LeaseMinutes != 35 {
 		t.Fatalf("未设置应为默认: %+v %v", p, err)
 	}
 	if err := db.SetSetting(PolicySettingKey, `{"max_uses_per_card":3}`); err != nil {
@@ -62,7 +62,7 @@ func TestLoadPolicyFillsDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.MaxUsesPerCard != 3 || p.LeaseMinutes != 30 || !p.AutoSuspend {
+	if p.MaxUsesPerCard != 3 || p.LeaseMinutes != 35 || !p.AutoSuspend {
 		t.Fatalf("got %+v", p)
 	}
 }
@@ -80,7 +80,7 @@ func TestSavePolicyRejectsInvalidAndKeepsOld(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 	got, err := LoadPolicy()
-	if err != nil || got.MaxUsesPerCard != 5 || got.LeaseMinutes != 30 {
+	if err != nil || got.MaxUsesPerCard != 5 || got.LeaseMinutes != 35 {
 		t.Fatalf("旧策略应保留: %+v %v", got, err)
 	}
 }

@@ -16,6 +16,9 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/marswallex/mwtest"
 )
 
+// defaultLease 是默认策略的租约时长；这些测试验证到期行为，不写死具体分钟数。
+var defaultLease = time.Duration(DefaultPolicy().LeaseMinutes) * time.Minute
+
 func sensitivePath(id string) string { return "/v1/card/sensitive/" + id }
 
 func sensitiveJSON(id string) string {
@@ -84,12 +87,12 @@ func TestAcquirePriorityAndOrder(t *testing.T) {
 	if b, err := hex.DecodeString(l.Token); err != nil || len(b) != 16 {
 		t.Fatalf("令牌应为 16 字节十六进制: %q", l.Token)
 	}
-	if !l.ExpiresAt.Equal(clock.Now().Add(30 * time.Minute)) {
+	if !l.ExpiresAt.Equal(clock.Now().Add(defaultLease)) {
 		t.Fatalf("到期时间 %v", l.ExpiresAt)
 	}
 	c := mustGetCard(t, "p1-u1-old")
 	if c.PoolState != PoolLeased || c.LeaseToken != l.Token || c.LeaseOwner != "ord-1" ||
-		i64(c.LeaseExpiresAt) != now+1800 || c.LeaseSensitive {
+		i64(c.LeaseExpiresAt) != now+int64(defaultLease/time.Second) || c.LeaseSensitive {
 		t.Fatalf("卡应已租出: %+v", c)
 	}
 
@@ -360,7 +363,7 @@ func TestFundRequiresValidLease(t *testing.T) {
 	if _, err := s.Fund(ctx, nil, 100); !errors.Is(err, ErrLeaseInvalid) {
 		t.Fatalf("nil 租约: %v", err)
 	}
-	clock.Advance(30 * time.Minute) // lease_expires_at == now → 已过期
+	clock.Advance(defaultLease) // lease_expires_at == now → 已过期
 	if _, err := s.Fund(ctx, l, 100); !errors.Is(err, ErrLeaseInvalid) {
 		t.Fatalf("过期租约: %v", err)
 	}
@@ -430,7 +433,7 @@ func TestSensitiveMarksBeforeCall(t *testing.T) {
 	// 过期租约：不标记、不发请求
 	insertCard(t, Card{CardID: "c2", ProductID: "p1"})
 	l2 := mustAcquire(t, s, AcquireRequest{PlanKey: "gpt"})
-	clock.Advance(31 * time.Minute)
+	clock.Advance(defaultLease + time.Minute)
 	if _, err := s.Sensitive(ctx, l2); !errors.Is(err, ErrLeaseInvalid) {
 		t.Fatalf("过期租约: %v", err)
 	}
@@ -609,7 +612,7 @@ func TestExpireLeases(t *testing.T) {
 	insertCard(t, Card{CardID: "c2", ProductID: "p1"})
 	mustAcquire(t, s, AcquireRequest{PlanKey: "gpt", OrderRef: "o2"})
 
-	clock.Advance(20*time.Minute - time.Second)
+	clock.Advance(defaultLease - 10*time.Minute - time.Second)
 	if err := s.expireLeasesOnce(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -662,7 +665,7 @@ func TestAdminLeaseFlow(t *testing.T) {
 	}
 	c := mustGetCard(t, "c1")
 	if c.PoolState != PoolLeased || c.LeaseOwner != "admin:alice" || c.LeaseToken != l.Token ||
-		i64(c.LeaseExpiresAt) != clock.Now().Add(30*time.Minute).Unix() {
+		i64(c.LeaseExpiresAt) != clock.Now().Add(defaultLease).Unix() {
 		t.Fatalf("%+v", c)
 	}
 	if _, err := s.AdminLease(ctx, "c1", "bob"); !errors.Is(err, ErrBadRequest) {
@@ -725,7 +728,7 @@ func TestAdminLeaseFlow(t *testing.T) {
 	if _, err := s.AdminLease(ctx, "c2", "alice"); err != nil {
 		t.Fatal(err)
 	}
-	clock.Advance(31 * time.Minute)
+	clock.Advance(defaultLease + time.Minute)
 	if _, err := s.AdminFund(ctx, "c2", 100, "alice"); !errors.Is(err, ErrLeaseInvalid) {
 		t.Fatalf("过期租约转入: %v", err)
 	}

@@ -301,6 +301,183 @@ func TestDeclineReturnsMessage(t *testing.T) {
 	}
 }
 
+func TestClassifyPageError(t *testing.T) {
+	cases := map[string]paybrowser.Outcome{
+		"Your card number is incomplete.":            paybrowser.OutcomeFormRejected,
+		"Your card's security code is incomplete.":   paybrowser.OutcomeFormRejected,
+		"Your postal code is incomplete.":            paybrowser.OutcomeFormRejected,
+		"Your card's expiration date is incomplete.": paybrowser.OutcomeFormRejected,
+		"Your card number is invalid.":               paybrowser.OutcomeFormRejected,
+		"This field is required.":                    paybrowser.OutcomeFormRejected,
+		"That card number is not valid.":             paybrowser.OutcomeFormRejected,
+		"Please enter a valid address.":              paybrowser.OutcomeFormRejected,
+		"Please fill in this field.":                 paybrowser.OutcomeFormRejected,
+		"Your card's expiration year is in the past": paybrowser.OutcomeFormRejected,
+		"YOUR POSTAL CODE IS INCOMPLETE.":            paybrowser.OutcomeFormRejected,
+
+		"Your card was declined.":                                   paybrowser.OutcomeDeclined,
+		"Your card has insufficient funds.":                         paybrowser.OutcomeDeclined,
+		"Your card's security code is incorrect.":                   paybrowser.OutcomeDeclined,
+		"Your card has been declined. Please try a different card.": paybrowser.OutcomeDeclined,
+		"Processing error":                                          paybrowser.OutcomeDeclined,
+		"Your card has expired.":                                    paybrowser.OutcomeDeclined,
+		"Do not honor":                                              paybrowser.OutcomeDeclined,
+		"This card was reported lost.":                              paybrowser.OutcomeDeclined,
+		"This card was reported stolen.":                            paybrowser.OutcomeDeclined,
+		"Suspected fraud":                                           paybrowser.OutcomeDeclined,
+		"We are unable to process your payment.":                    paybrowser.OutcomeDeclined,
+		"Your payment could not be processed.":                      paybrowser.OutcomeDeclined,
+		"YOUR CARD WAS DECLINED.":                                   paybrowser.OutcomeDeclined,
+		// 同时含两类词时按被拒算：判断顺序不能反，真拒付不能被当成校验错误
+		"Your card was declined: the postal code is invalid.": paybrowser.OutcomeDeclined,
+		"Your card number is incorrect or invalid.":           paybrowser.OutcomeDeclined,
+		// 认不出的文字和原来一样按被拒走确认流程
+		"":                      paybrowser.OutcomeDeclined,
+		"Something went wrong.": paybrowser.OutcomeDeclined,
+		"您的银行卡被拒绝":              paybrowser.OutcomeDeclined,
+	}
+	for text, want := range cases {
+		if got := paybrowser.ClassifyPageError(text); got != want {
+			t.Errorf("ClassifyPageError(%q) = %q，期望 %q", text, got, want)
+		}
+	}
+}
+
+// checkoutQuery 把键值对编成查询串，值里可以有空格和撇号。
+func checkoutQuery(kv ...string) string {
+	v := url.Values{}
+	for i := 0; i+1 < len(kv); i += 2 {
+		v.Add(kv[i], kv[i+1])
+	}
+	return v.Encode()
+}
+
+// I-1：点击后才出现的提示按文字分类，不按选择器：真实拒付文字也可能出现在 .FieldError 里。全部命中元素都要看，不能只看第一个。
+func TestPageErrorAfterClickClassified(t *testing.T) {
+	const incomplete, declined = "Your postal code is incomplete.", "Your card was declined."
+	cases := []struct {
+		name  string
+		query string
+		want  paybrowser.Outcome
+		text  string
+	}{
+		{"主页面校验错误", checkoutQuery("fielderror", incomplete), paybrowser.OutcomeFormRejected, incomplete},
+		{"FieldError 里的真拒付", checkoutQuery("fielderror", declined), paybrowser.OutcomeDeclined, declined},
+		{"第一条是校验错误第二条是拒付", checkoutQuery("fielderror", incomplete, "fielderror", declined), paybrowser.OutcomeDeclined, declined},
+		{"第一条是拒付第二条是校验错误", checkoutQuery("fielderror", declined, "fielderror", incomplete), paybrowser.OutcomeDeclined, declined},
+		{"两条校验错误取第一条", checkoutQuery("fielderror", incomplete, "fielderror", "Your card number is invalid."), paybrowser.OutcomeFormRejected, incomplete},
+		{"卡片 iframe 里的校验错误", checkoutQuery("cardfielderror", incomplete), paybrowser.OutcomeFormRejected, incomplete},
+		{"卡片 iframe 里的真拒付", checkoutQuery("cardfielderror", declined), paybrowser.OutcomeDeclined, declined},
+		{"认不出的文字仍按被拒", checkoutQuery("fielderror", "Processing error"), paybrowser.OutcomeDeclined, "Processing error"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			needChrome(t)
+			f := newFakeCheckout(t)
+			b, ctx := openCheckout(t, f, c.query, paybrowser.LaunchOptions{})
+			fillAndSubmit(t, b, ctx)
+			if msg := waitOutcome(t, b, ctx, c.want); msg != c.text {
+				t.Fatalf("提示文字 = %q，期望 %q", msg, c.text)
+			}
+			if n := len(f.payments()); n != 0 {
+				t.Fatalf("前端校验没过时仿造页不应收到提交: %d", n)
+			}
+		})
+	}
+}
+
+// I-1：点击前已经显示的提示不是这次付款的结果，要忽略；之后真正出现的被拒文字仍要识别。
+func TestExistingNoticeIgnored(t *testing.T) {
+	const banner = "Prices are shown in your local currency."
+	for name, key := range map[string]string{"主页面横幅": "banner", "卡片 iframe 里的提示": "cardbanner"} {
+		t.Run(name, func(t *testing.T) {
+			needChrome(t)
+			f := newFakeCheckout(t)
+			b, ctx := openCheckout(t, f, checkoutQuery(key, banner, "mode", "decline", "delay", "3000"), paybrowser.LaunchOptions{})
+			fillAndSubmit(t, b, ctx)
+
+			got, msg, err := b.WaitOutcome(ctx, 500*time.Millisecond)
+			if err != nil || got != paybrowser.OutcomeUnknown || msg != "" {
+				t.Fatalf("只有点击前的提示时 WaitOutcome = %q, %q, %v，期望 unknown", got, msg, err)
+			}
+			msg = waitOutcome(t, b, ctx, paybrowser.OutcomeDeclined)
+			if msg != "Your card was declined." {
+				t.Fatalf("被拒消息 = %q，不应带上点击前的提示", msg)
+			}
+		})
+	}
+}
+
+// 点击前的提示不能挡住后面的判断：横幅一直在，3DS 框仍要识别。
+func TestExistingNoticeDoesNotHideChallenge(t *testing.T) {
+	needChrome(t)
+	f := newFakeCheckout(t)
+	b, ctx := openCheckout(t, f, checkoutQuery("banner", "Prices are shown in your local currency.", "mode", "3ds"), paybrowser.LaunchOptions{})
+	fillAndSubmit(t, b, ctx)
+	waitOutcome(t, b, ctx, paybrowser.OutcomeChallenge)
+}
+
+// 判断「点击前已有」按文字完全相同：点击前后文字一样时算旧提示，单据走结果不明的确认流程，这是安全方向。
+func TestExistingNoticeSameTextIgnored(t *testing.T) {
+	needChrome(t)
+	f := newFakeCheckout(t)
+	b, ctx := openCheckout(t, f, checkoutQuery("banner", "Your card was declined.", "mode", "decline"), paybrowser.LaunchOptions{})
+	fillAndSubmit(t, b, ctx)
+	got, msg, err := b.WaitOutcome(ctx, 1500*time.Millisecond)
+	if err != nil || got != paybrowser.OutcomeUnknown || msg != "" {
+		t.Fatalf("文字和点击前相同时 WaitOutcome = %q, %q, %v，期望 unknown", got, msg, err)
+	}
+	onlyPayment(t, f)
+}
+
+// 收集点击前的提示有短超时，页面卡死时当作没有提示，绝不挡住提交；Submit 本身不会因此报错（收集函数不返回错误）。
+func TestScanBeforeClickBoundedOnBusyPage(t *testing.T) {
+	needChrome(t)
+	started := make(chan struct{})
+	var once sync.Once
+	page := amountDiv + `<div role="alert">Prices are shown in your local currency.</div>` +
+		laterScript(`fetch('/started').finally(function () { while (true) {} })`)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/started" {
+			once.Do(func() { close(started) })
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Write([]byte(page))
+	}))
+	t.Cleanup(srv.Close)
+	b := launch(t, paybrowser.LaunchOptions{})
+	ctx := openCtx(t)
+	if err := b.Open(ctx, srv.URL, nil); err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	// 页面还正常时能收到提示
+	got, err := paybrowser.ScanBeforeClick(ctx, b)
+	if err != nil || !got["Prices are shown in your local currency."] {
+		t.Fatalf("正常页面应收到点击前的提示: %v, %v", got, err)
+	}
+
+	select {
+	case <-started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("页面脚本没有开始执行")
+	}
+	time.Sleep(300 * time.Millisecond) // 等请求收尾，脚本进入死循环
+
+	begin := time.Now()
+	got, err = paybrowser.ScanBeforeClick(ctx, b)
+	if err != nil {
+		t.Fatalf("收集失败不应报错: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("页面卡死时应当作空集: %v", got)
+	}
+	if d := time.Since(begin); d > 5*time.Second {
+		t.Fatalf("收集用了 %v，超时太长会耽误点击", d)
+	}
+}
+
 func TestChallengeThenOTP(t *testing.T) {
 	needChrome(t)
 	f := newFakeCheckout(t)

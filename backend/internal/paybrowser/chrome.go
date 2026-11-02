@@ -130,6 +130,7 @@ type Browser struct {
 	filled      bool                 // 已填入卡片与地址
 	submitted   bool                 // 已点击支付；之后绝不再次点击
 	answered    map[cdp.FrameID]bool // 已填过验证码的 3DS 框，WaitOutcome 不再把它当成新的验证
+	beforeClick map[string]bool      // 点击支付前页面上已有的提示文字，WaitOutcome 不把它们当成付款结果
 
 	worldMu sync.Mutex
 	worlds  map[cdp.FrameID]runtime.ExecutionContextID // 各 frame 里本包专用的隔离执行环境

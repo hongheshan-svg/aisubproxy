@@ -42,6 +42,8 @@ func pageOutcomeNote(out paybrowser.Outcome) string {
 		return "支付页显示成功，确认是否开通"
 	case paybrowser.OutcomeDeclined:
 		return "支付页显示被拒，等待授权推送后定论"
+	case paybrowser.OutcomeFormRejected:
+		return "支付页显示表单校验未通过，等待授权推送后定论"
 	}
 	return "支付页没有明确结果，确认是否开通"
 }

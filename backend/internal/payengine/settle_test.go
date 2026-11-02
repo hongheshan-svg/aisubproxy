@@ -291,6 +291,126 @@ func TestDeclinedAfterGrace(t *testing.T) {
 	}
 }
 
+const postalIncomplete = "Your postal code is incomplete."
+
+func formRejectedHarness(t *testing.T) *harness {
+	t.Helper()
+	h := newPayHarness(t, nil)
+	h.br.waitOutcome = outcomes(outcomeStep{out: paybrowser.OutcomeFormRejected, text: postalIncomplete})
+	return h
+}
+
+// I-1：页面校验没过的单，处理和被拒一样（等宽限、查证据），只有最终定论不同：不计入健康度，不让配置问题停用卡产品。
+func TestFormRejectedConcludes(t *testing.T) {
+	h := formRejectedHarness(t)
+	h.start(t)
+	start := h.clock.Now().Unix()
+	o := h.submit(t, false)
+	g := waitState(t, o.OrderNo, StateVerifying)
+	if g.PageOutcome != "form_rejected" || g.VerifyUntil == nil || *g.VerifyUntil != start+int64(h.timeouts.DeclineGrace/time.Second) {
+		t.Fatalf("校验错误应记 page_outcome 并只等 DeclineGrace: %+v", g)
+	}
+	if g.ErrorMessage != postalIncomplete {
+		t.Fatalf("应记下页面文字: %+v", g)
+	}
+	waitEvent(t, o.OrderNo, "校验未通过")
+	waitAccountCalls(t, h, 2)
+	if got := mustOrder(t, o.OrderNo); got.State != StateVerifying || len(h.pool.released()) != 0 {
+		t.Fatalf("宽限期内不应定论: %+v", got)
+	}
+
+	h.clock.Advance(h.timeouts.DeclineGrace + time.Second)
+	g = waitDone(t, o.OrderNo)
+	if g.State != StateFailed || g.Failure != FailureDeclined || g.ErrorCode != "form_rejected" ||
+		g.ErrorMessage != "页面校验未通过："+postalIncomplete || g.SessionSealed != "" {
+		t.Fatalf("应 failed / form_rejected: %+v", g)
+	}
+	assertReleases(t, h, cardpool.ResultAborted)
+	assertSubmitCount(t, h, 1)
+	if n := len(h.alerts.Texts()); n != 0 {
+		t.Fatalf("校验错误不告警: %d", n)
+	}
+	waitEvent(t, o.OrderNo, "页面校验未通过：")
+}
+
+func TestFormRejectedButApprovedAuthNeedsReview(t *testing.T) {
+	h := formRejectedHarness(t)
+	h.pool.listTxns = pagedTxns([]cardpool.Transaction{txnAt("A1", "approved", h.clock.Now().Unix()+10)})
+	h.start(t)
+	o := h.submit(t, false)
+	waitState(t, o.OrderNo, StateVerifying)
+	h.clock.Advance(h.timeouts.DeclineGrace + time.Second)
+	g := waitDone(t, o.OrderNo)
+	if g.State != StateNeedsReview || g.ErrorCode != "evidence_conflict" || g.Failure != "" {
+		t.Fatalf("有成功授权应转待人工: %+v", g)
+	}
+	assertReleases(t, h, cardpool.ResultAborted)
+	if a := h.alerts.Texts(); len(a) != 1 {
+		t.Fatalf("应告警 1 次: %v", a)
+	}
+}
+
+func TestFormRejectedButAccountOpenedSucceeds(t *testing.T) {
+	h := formRejectedHarness(t)
+	h.gpt.accountFn = planFrom(2)
+	h.start(t)
+	g := waitDone(t, h.submit(t, false).OrderNo)
+	if g.State != StateSucceeded || g.ErrorMessage != "" || g.ErrorCode != "" {
+		t.Fatalf("账号已开通应成功，并清掉页面提示: %+v", g)
+	}
+	assertReleases(t, h, cardpool.ResultSuccess)
+}
+
+// 证据一直不全时和被拒一样转人工，不定论失败。
+func TestFormRejectedEvidenceUnavailableEscalates(t *testing.T) {
+	h := formRejectedHarness(t)
+	h.pool.listTxns = func(cardpool.TxnFilter) ([]cardpool.Transaction, int, error) {
+		return nil, 0, errors.New("读交易表失败")
+	}
+	h.start(t)
+	o := h.submit(t, false)
+	waitState(t, o.OrderNo, StateVerifying)
+	h.clock.Advance(h.timeouts.DeclineGrace + time.Second)
+	waitEvent(t, o.OrderNo, "读交易表失败")
+	if g := mustOrder(t, o.OrderNo); g.State != StateVerifying {
+		t.Fatalf("上限之前应继续等: %+v", g)
+	}
+	h.clock.Advance(h.timeouts.Verify)
+	g := waitDone(t, o.OrderNo)
+	if g.State != StateNeedsReview || g.ErrorCode != "evidence_unavailable" || g.Failure != "" {
+		t.Fatalf("超过上限应转待人工: %+v", g)
+	}
+	assertReleases(t, h, cardpool.ResultAborted)
+}
+
+// 过长的页面文字加上前缀后仍受 error_message 上限约束。
+func TestFormRejectedMessageTruncated(t *testing.T) {
+	h := newPayHarness(t, nil)
+	h.br.waitOutcome = outcomes(outcomeStep{out: paybrowser.OutcomeFormRejected, text: "invalid " + strings.Repeat("字", 600)})
+	h.start(t)
+	o := h.submit(t, false)
+	waitState(t, o.OrderNo, StateVerifying)
+	h.clock.Advance(h.timeouts.DeclineGrace + time.Second)
+	g := waitDone(t, o.OrderNo)
+	if n := len([]rune(g.ErrorMessage)); n > errorMessageLimit || !strings.HasPrefix(g.ErrorMessage, "页面校验未通过：") {
+		t.Fatalf("error_message 应有前缀且不超过 %d 字: %d %q", errorMessageLimit, n, g.ErrorMessage)
+	}
+}
+
+// 校验错误文字夹带卡号也要抹掉（定论写的是转确认时脱敏过的文字）。
+func TestFormRejectedMessageScrubbed(t *testing.T) {
+	h := newPayHarness(t, nil)
+	h.br.waitOutcome = outcomes(outcomeStep{out: paybrowser.OutcomeFormRejected, text: "Your card number " + testCardNoSpaced + " is invalid."})
+	h.start(t)
+	o := h.submit(t, false)
+	waitState(t, o.OrderNo, StateVerifying)
+	h.clock.Advance(h.timeouts.DeclineGrace + time.Second)
+	g := waitDone(t, o.OrderNo)
+	if strings.Contains(g.ErrorMessage, testCardNoSpaced) || !strings.Contains(g.ErrorMessage, "***") {
+		t.Fatalf("文字应脱敏: %q", g.ErrorMessage)
+	}
+}
+
 func TestDeclinedButAccountOpenedSucceeds(t *testing.T) {
 	h := declinedHarness(t)
 	h.gpt.accountFn = planFrom(2)
@@ -1034,6 +1154,45 @@ func TestRestartRestoresDeclineGrace(t *testing.T) {
 			t.Fatalf("页面结果不明的单不应改动: %+v", g)
 		}
 	})
+}
+
+// I-1：校验错误的单重启后同样要补宽限期；补上之后定论不计入健康度。
+func TestRestartRestoresGraceForFormRejected(t *testing.T) {
+	h := newPayHarness(t, nil)
+	at := h.clock.Now().Unix() - 600
+	o := presetOrder(t, "a@x.com", StateVerifying, map[string]any{
+		"submitted_at": at, "card_id": testCardID, "lease_token": testLeaseToken,
+		"page_outcome": "form_rejected", "verify_until": at + 120, "next_check_at": at, "error_message": postalIncomplete,
+	})
+	h.start(t)
+	want := h.clock.Now().Unix() + int64(h.timeouts.DeclineGrace/time.Second)
+	if g := mustOrder(t, o.OrderNo); g.VerifyUntil == nil || *g.VerifyUntil != want {
+		t.Fatalf("verify_until 应为 now + DeclineGrace (%d): %+v", want, g)
+	}
+	waitAccountCalls(t, h, 3)
+	if g := mustOrder(t, o.OrderNo); g.State != StateVerifying || len(h.pool.released()) != 0 {
+		t.Fatalf("重启后的宽限期内不应定论: %+v", g)
+	}
+	h.clock.Advance(h.timeouts.DeclineGrace + time.Second)
+	g := waitDone(t, o.OrderNo)
+	if g.State != StateFailed || g.ErrorCode != "form_rejected" || g.ErrorMessage != "页面校验未通过："+postalIncomplete {
+		t.Fatalf("过了宽限期才定论: %+v", g)
+	}
+	assertReleases(t, h, cardpool.ResultAborted)
+}
+
+// I-1：恢复没做完时校验错误的单也不能定论：宽限期可能还没补上，按过期的 verify_until 会把已扣款的单定成失败。
+func TestRecoveryPendingBlocksFormRejectedConclusion(t *testing.T) {
+	h := newPayHarness(t, nil)
+	at := h.clock.Now().Unix() - 600
+	o := presetOrder(t, "a@x.com", StateVerifying, map[string]any{
+		"submitted_at": at, "card_id": testCardID, "lease_token": testLeaseToken,
+		"page_outcome": "form_rejected", "verify_until": at + 120, "next_check_at": at, "error_message": postalIncomplete,
+	})
+	h.svc.verifyDue(ctx) // recovered 还是 false
+	if g := mustOrder(t, o.OrderNo); g.State != StateVerifying || len(h.pool.released()) != 0 {
+		t.Fatalf("恢复没做完时不应定论: %+v", g)
+	}
 }
 
 // R24：宽限期写不进去时计入恢复错误，由 R19 的重试接住；重试成功之前这张被拒单不能按过期的 verify_until 定论。

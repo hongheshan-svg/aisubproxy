@@ -37,10 +37,11 @@ type Billing struct{ Name, Line1, City, State, Zip, Country string }
 type Outcome string
 
 const (
-	OutcomeSuccess   Outcome = "success"
-	OutcomeDeclined  Outcome = "declined"
-	OutcomeChallenge Outcome = "challenge" // 出现 3DS 验证框，需要验证码
-	OutcomeUnknown   Outcome = "unknown"   // 等到超时，页面没有给出可识别的结果
+	OutcomeSuccess      Outcome = "success"
+	OutcomeDeclined     Outcome = "declined"
+	OutcomeFormRejected Outcome = "form_rejected" // 页面提示是表单校验错误，这笔付款多半没有发到发卡行
+	OutcomeChallenge    Outcome = "challenge"     // 出现 3DS 验证框，需要验证码
+	OutcomeUnknown      Outcome = "unknown"       // 等到超时，页面没有给出可识别的结果
 )
 
 // ShotScope 是截图范围。
@@ -69,6 +70,17 @@ const (
 	settleDelay  = 200 * time.Millisecond // 按 Esc 后等地址联想收起再核对
 	reflowDelay  = 500 * time.Millisecond // 下拉框改选后（如国家）地址表单会重绘
 	msgLimit     = 500                    // 页面提示文字最多保留的字数
+
+	preClickScanWait = 2 * time.Second // 点击前收集已有提示的时限，卡住时当作没有提示，不耽误点击
+)
+
+// 页面提示的分类词，都是小写，按「含有」匹配。真实拒付文字可能出现在任何错误容器里，所以只看文字、不看选择器。
+var (
+	declineWords = []string{
+		"declin", "insufficient", "do not honor", "try a different", "incorrect", "has expired",
+		"stolen", "lost", "fraud", "unable to process", "could not be processed",
+	}
+	formErrorWords = []string{"incomplete", "required", "invalid", "not valid", "please enter", "please fill", "in the past"}
 )
 
 // amountJS 按 Sel.Amount 的顺序找第一个含数字的元素，返回其文字（空白已归一）；找不到返回空串。
@@ -419,6 +431,7 @@ func (b *Browser) Submit(ctx context.Context) error {
 			}
 			return errors.New("找不到支付按钮")
 		}
+		before := b.scanBeforeClick(ctx)
 		// 先记下已提交再点击：点击中途出错也绝不再点第二次
 		b.mu.Lock()
 		if b.submitted {
@@ -426,6 +439,7 @@ func (b *Browser) Submit(ctx context.Context) error {
 			return ErrAlreadySubmitted
 		}
 		b.submitted = true
+		b.beforeClick = before
 		b.mu.Unlock()
 		if err := click(ctx, btn); err != nil {
 			return fmt.Errorf("点击支付按钮失败: %w", err)
@@ -459,13 +473,29 @@ func (b *Browser) WaitOutcome(ctx context.Context, timeout time.Duration) (Outco
 	return OutcomeUnknown, "", fmt.Errorf("等待支付结果失败: %w", err)
 }
 
-// outcome 检查一轮页面：成功优先，其次被拒提示，最后是未处理过的 3DS 框。
+// outcome 检查一轮页面：成功优先，其次是点击后才出现的提示（全部看一遍，有一条算被拒就是被拒，否则算校验错误），
+// 最后是未处理过的 3DS 框。
 func (b *Browser) outcome(ctx context.Context, frames []frameRef) (Outcome, string) {
 	if e := b.find(ctx, frames, Sel.Success, false); e != nil {
 		return OutcomeSuccess, truncateMessage(innerText(ctx, e))
 	}
-	if e := b.find(ctx, frames, Sel.DeclineText, true); e != nil {
-		return OutcomeDeclined, truncateMessage(innerText(ctx, e))
+	b.mu.Lock()
+	before := b.beforeClick // 赋值之后不再修改，出锁后只读
+	b.mu.Unlock()
+	formError := ""
+	for _, t := range b.visibleTexts(ctx, frames, Sel.DeclineText) {
+		if before[t] {
+			continue
+		}
+		if classifyPageError(t) == OutcomeDeclined {
+			return OutcomeDeclined, truncateMessage(t)
+		}
+		if formError == "" {
+			formError = t
+		}
+	}
+	if formError != "" {
+		return OutcomeFormRejected, truncateMessage(formError)
 	}
 	if e := b.find(ctx, frames, Sel.ChallengeFrame, false); e != nil {
 		if id, err := contentFrame(ctx, e); err == nil && !b.isAnswered(id) {
@@ -473,6 +503,45 @@ func (b *Browser) outcome(ctx context.Context, frames []frameRef) (Outcome, stri
 		}
 	}
 	return OutcomeUnknown, ""
+}
+
+// classifyPageError 按文字判断页面提示的类别，不区分大小写：先认被拒，再认表单校验错误，其余按被拒走确认流程。
+// 被拒要先判断：同时含两类词的文字（如拒付原因里提到邮编无效）不能当成校验错误，否则会少算发卡行的拒付。
+func classifyPageError(text string) Outcome {
+	lower := strings.ToLower(text)
+	switch {
+	case containsAny(lower, declineWords):
+		return OutcomeDeclined
+	case containsAny(lower, formErrorWords):
+		return OutcomeFormRejected
+	}
+	return OutcomeDeclined
+}
+
+func containsAny(s string, words []string) bool {
+	for _, w := range words {
+		if strings.Contains(s, w) {
+			return true
+		}
+	}
+	return false
+}
+
+// scanBeforeClick 收集点击前各 frame 里已显示的提示文字，它们不是这次付款的结果。
+// 有短超时，出错或超时就少收或不收：多算一条提示只会走确认流程，不能因此耽误提交。
+// 这里绝不能释放对象句柄：调用方还拿着支付按钮。
+func (b *Browser) scanBeforeClick(ctx context.Context) map[string]bool {
+	ctx, cancel := context.WithTimeout(ctx, preClickScanWait)
+	defer cancel()
+	frames, err := b.frames(ctx)
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	for _, t := range b.visibleTexts(ctx, frames, Sel.DeclineText) {
+		seen[t] = true
+	}
+	return seen
 }
 
 func (b *Browser) isAnswered(id cdp.FrameID) bool {

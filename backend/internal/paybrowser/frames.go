@@ -61,6 +61,21 @@ const findJS = `((sels, visible, needText) => {
 	return null
 })`
 
+// visibleTextsJS 返回 sels 命中的全部可见元素的文字（空白已归一），没有文字的跳过。选择器写错时跳过。
+const visibleTextsJS = `((sels, visible) => {
+	const out = []
+	for (const s of sels) {
+		let list
+		try { list = document.querySelectorAll(s) } catch (e) { continue }
+		for (const el of list) {
+			if (!visible(el)) continue
+			const t = (el.innerText || '').replace(/\s+/g, ' ').trim()
+			if (t) out.push(t)
+		}
+	}
+	return out
+})`
+
 // findTextJS 找可见文字含任一 needles（不分大小写）的元素，返回离它最近的可点击祖先。
 const findTextJS = `((needles, visible) => {
 	const clickable = 'button, a, label, summary, [role="button"], [role="radio"], [role="tab"], [role="option"], [role="link"], [role="menuitem"]'
@@ -196,6 +211,33 @@ func (b *Browser) find(ctx context.Context, frames []frameRef, sels []string, ne
 		}
 	}
 	return nil
+}
+
+// visibleTexts 按 sels 顺序逐个选择器在各 frame 中收集命中元素的文字，相同文字只留一条。读不出的 frame 跳过。
+func (b *Browser) visibleTexts(ctx context.Context, frames []frameRef, sels []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, s := range sels {
+		expr := fmt.Sprintf("%s(%s, %s)", visibleTextsJS, mustJSON([]string{s}), visibleJS)
+		for _, f := range frames {
+			r, exc, err := runtime.Evaluate(expr).WithContextID(f.ctx).WithReturnByValue(true).Do(ctx)
+			if err != nil {
+				b.forgetWorld(f.id)
+				continue
+			}
+			var list []string
+			if exc != nil || json.Unmarshal(r.Value, &list) != nil {
+				continue
+			}
+			for _, t := range list {
+				if !seen[t] {
+					seen[t] = true
+					out = append(out, t)
+				}
+			}
+		}
+	}
+	return out
 }
 
 // findText 按 needles 顺序逐条文字在各 frame 中找可点击元素（NewCardOption 用），同样文字顺序优先于 frame 顺序。

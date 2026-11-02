@@ -20,7 +20,12 @@
   同 Stripe 地址表单，改国家会重绘：姓名与其余地址字段被清空。
 
   查询参数：
-    mode=success|decline|3ds  提交后的表现（默认 success）
+    mode=success|decline|3ds|none  提交后的表现（默认 success；none 表示页面没有任何结果）
+    delay=毫秒                mode=decline 时，收到提交后过这么久才显示被拒
+    banner=文字               页面一开始就有带这段文字的 [role="alert"] 横幅
+    fielderror=文字           点支付后不发 /pay，只在主页面显示 .FieldError（可重复，按顺序显示多条），模拟前端校验
+    cardbanner=文字           卡片 iframe 里一开始就有带这段文字的 [role="alert"]
+    cardfielderror=文字       点支付后不发 /pay，只在卡片 iframe 里显示 .p-FieldError
     nocvc=1                   卡片 iframe 里没有 CVC 框
     saved=1                   先显示已存卡，点「Use a different card」才出现卡片 iframe
     mangle=1                  模拟地址联想：整段输入城市时被改写成别的值，逐字键入不受影响
@@ -78,7 +83,15 @@
     cardQuery.set('decoy', '1')
     document.getElementById('promo-row').style.display = ''
   }
+  if (q.get('cardbanner')) cardQuery.set('banner', q.get('cardbanner'))
   cardFrame.src = CARD_ORIGIN + '/card.html?' + cardQuery
+
+  if (q.get('banner')) {
+    var banner = document.createElement('div')
+    banner.setAttribute('role', 'alert')
+    banner.textContent = q.get('banner')
+    document.getElementById('summary').appendChild(banner)
+  }
 
   if (q.get('saved') === '1') {
     method = 'saved'
@@ -142,7 +155,9 @@
     }
     fetch('/pay', { method: 'POST', body: JSON.stringify(body) }).then(function () {
       if (mode === 'decline') {
-        show('payment-error', 'Your card was declined.')
+        setTimeout(function () { show('payment-error', 'Your card was declined.') }, Number(q.get('delay')) || 0)
+      } else if (mode === 'none') {
+        // 页面没有任何结果
       } else if (mode === '3ds') {
         var modal = document.createElement('div')
         modal.id = 'challenge-modal'
@@ -160,6 +175,20 @@
   document.getElementById('payment-form').addEventListener('submit', function (e) {
     e.preventDefault()
     document.getElementById('payment-error').hidden = true
+    var fieldErrors = q.getAll('fielderror')
+    if (fieldErrors.length) {
+      fieldErrors.forEach(function (text) {
+        var el = document.createElement('div')
+        el.className = 'FieldError'
+        el.textContent = text
+        document.getElementById('payment-form').appendChild(el)
+      })
+      return
+    }
+    if (q.get('cardfielderror')) {
+      cardFrame.contentWindow.postMessage({ type: 'fielderror', text: q.get('cardfielderror') }, CARD_ORIGIN)
+      return
+    }
     if (method === 'saved') {
       pay({})
       return

@@ -13,7 +13,9 @@
   仿造的 Stripe 卡片 iframe（测试用），由与支付页跨站的服务提供。
   字段 id 与 selectors.go 中 CardNumber、Expiry、CVC 的首选项一致。?nocvc=1 时没有 CVC 框。
   ?decoy=1 时多一个可见的 submit 按钮，每次点击都 POST 到本服务的 /decoy 计数（支付不应点到它）。
-  支付页发来 collect 消息时回传各字段的值，以及卡号框收到的真实按键次数（检验逐字键入）。
+  ?banner=文字 时一开始就有带这段文字的 [role="alert"]。
+  支付页发来 collect 消息时回传各字段的值，以及卡号框收到的真实按键次数（检验逐字键入）；
+  发来 fielderror 消息时显示 .p-FieldError。
 -->
 <label>Card number <input id="payment-numberInput" name="number" autocomplete="cc-number" inputmode="numeric"></label>
 <label>Expiration date <input id="payment-expiryInput" name="expiry" autocomplete="cc-exp" inputmode="numeric"></label>
@@ -29,6 +31,13 @@
     decoy.style.display = ''
     decoy.addEventListener('click', function () { fetch('/decoy', { method: 'POST' }) })
   }
+  function addNote(attr, value, text) {
+    var el = document.createElement('div')
+    el.setAttribute(attr, value)
+    el.textContent = text
+    document.body.appendChild(el)
+  }
+  if (q.get('banner')) addNote('role', 'alert', q.get('banner'))
   var numberKeys = 0
   document.getElementById('payment-numberInput').addEventListener('keydown', function (e) {
     if (e.isTrusted && e.key.length === 1) numberKeys++
@@ -38,7 +47,9 @@
     return el ? el.value : ''
   }
   window.addEventListener('message', function (e) {
-    if (e.source !== parent || !e.data || e.data.type !== 'collect') return
+    if (e.source !== parent || !e.data) return
+    if (e.data.type === 'fielderror') addNote('class', 'p-FieldError', e.data.text)
+    if (e.data.type !== 'collect') return
     parent.postMessage({
       type: 'card',
       number: val('payment-numberInput'), expiry: val('payment-expiryInput'), cvc: val('payment-cvcInput'),

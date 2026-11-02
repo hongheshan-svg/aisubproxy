@@ -18,7 +18,8 @@ var Sel = struct {
 	Amount []string
 	// Success 出现即表示支付成功
 	Success []string
-	// DeclineText 是被拒或出错时的提示文字所在元素（须有文字才算）
+	// DeclineText 是被拒或校验出错时的提示文字所在元素（须有文字才算）。全部命中元素都看，点击前就有的文字不算，
+	// 属于被拒还是校验错误按文字内容判断（见 classifyPageError），不按这里的选择器
 	DeclineText []string
 	// ChallengeFrame 是 3DS 验证框所在的 iframe 元素；验证码框可在它里面再嵌几层
 	ChallengeFrame []string

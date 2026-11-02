@@ -33,17 +33,23 @@ const (
 // orderNoName 是单号格式，截图清理只动名字符合它的目录。
 var orderNoName = regexp.MustCompile(`^PO\d{12}[0-9a-f]{8}$`)
 
+// isDeclinedOutcome 判断页面结果是否按「被拒」的流程处理：只等 DeclineGrace、走 verifyDeclined、重启后补宽限。
+// 校验错误也走这条路：文字是否属实只有真实页面知道，钱有没有扣要看证据，只有最终定论不同（见 concludeDeclined）。
+func isDeclinedOutcome(page string) bool {
+	return page == string(paybrowser.OutcomeDeclined) || page == string(paybrowser.OutcomeFormRejected)
+}
+
 // beginVerify 关闭浏览器，把已提交的单据转入确认阶段（步骤 9）。text 是页面提示或出错说明，记入 error_message；
-// 被拒时只等 DeclineGrace（让授权推送到达），其余等满 Verify。
+// 被拒或校验错误时只等 DeclineGrace（让授权推送到达），其余等满 Verify。
 func (s *Service) beginVerify(ctx context.Context, j *job, out paybrowser.Outcome, text, note string) error {
 	j.closeBrowser()
 	now := s.now()
 	until := now.Add(s.t.Verify)
 	page := string(paybrowser.OutcomeUnknown)
-	switch out {
-	case paybrowser.OutcomeSuccess:
+	switch {
+	case out == paybrowser.OutcomeSuccess:
 		page = string(out)
-	case paybrowser.OutcomeDeclined:
+	case isDeclinedOutcome(string(out)):
 		page = string(out)
 		until = now.Add(s.t.DeclineGrace)
 	}
@@ -93,7 +99,7 @@ func (s *Service) verifyDue(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if !recovered && list[i].PageOutcome == string(paybrowser.OutcomeDeclined) {
+		if !recovered && isDeclinedOutcome(list[i].PageOutcome) {
 			continue
 		}
 		s.verifyOrder(ctx, &list[i])
@@ -149,14 +155,14 @@ func (s *Service) verifyOrder(ctx context.Context, o *Order) {
 	switch {
 	case now < until:
 		s.verifyReschedule(ctx, j)
-	case o.PageOutcome == string(paybrowser.OutcomeDeclined):
+	case isDeclinedOutcome(o.PageOutcome):
 		s.verifyDeclined(ctx, j, accErr, now >= until+int64(s.t.Verify/time.Second))
 	default:
 		s.verifyEscalate(ctx, j, "verify_timeout", "确认超时：账号未开通，支付页也没有明确拒绝")
 	}
 }
 
-// verifyDeclined 定论支付页显示被拒、宽限期已过的单据。只有确认了账号未开通、翻完交易没有成功授权也没有处理中的授权，才算 failed / declined。
+// verifyDeclined 定论支付页显示被拒或校验错误、宽限期已过的单据。只有确认了账号未开通、翻完交易没有成功授权也没有处理中的授权，才算失败。
 // 证据不全（查询出错、授权还在处理中）绝不定成被拒——把已扣款的单子定成 declined 是最贵的错误：
 // 继续等下次检查，等到 exhausted（verify_until 之后再过一个 Verify）仍不全就转人工。
 func (s *Service) verifyDeclined(ctx context.Context, j *job, accErr error, exhausted bool) {
@@ -172,13 +178,7 @@ func (s *Service) verifyDeclined(ctx context.Context, j *job, accErr error, exha
 		s.verifyEscalate(ctx, j, "evidence_conflict", "证据冲突：支付页显示被拒，但该卡有成功授权")
 		return
 	case !pending && accErr == nil:
-		reason := j.o.ErrorMessage
-		if reason == "" {
-			reason = "支付页显示被拒"
-		}
-		s.verifyConclude(ctx, j, StateFailed, "error", "支付被拒："+reason,
-			cardpool.Outcome{Result: cardpool.ResultFailed, ErrorCode: truncate(reason, 200)},
-			map[string]any{"failure": FailureDeclined, "error_code": "card_declined", "error_message": reason})
+		s.concludeDeclined(ctx, j)
 		return
 	}
 	if exhausted {
@@ -186,6 +186,28 @@ func (s *Service) verifyDeclined(ctx context.Context, j *job, accErr error, exha
 		return
 	}
 	s.verifyReschedule(ctx, j)
+}
+
+// concludeDeclined 写失败定论。校验错误多半是配置或表单问题，不是这张卡或这个产品的问题，所以 Release(aborted) 不计入健康度；
+// 失败类别仍是 declined：单据已提交，绝不记成 not_submitted。
+func (s *Service) concludeDeclined(ctx context.Context, j *job) {
+	if j.o.PageOutcome == string(paybrowser.OutcomeFormRejected) {
+		msg := "页面校验未通过"
+		if j.o.ErrorMessage != "" {
+			msg += "：" + j.o.ErrorMessage
+		}
+		msg = truncate(j.scrub(msg), errorMessageLimit)
+		s.verifyConclude(ctx, j, StateFailed, "error", msg, cardpool.Outcome{Result: cardpool.ResultAborted},
+			map[string]any{"failure": FailureDeclined, "error_code": "form_rejected", "error_message": msg})
+		return
+	}
+	reason := j.o.ErrorMessage
+	if reason == "" {
+		reason = "支付页显示被拒"
+	}
+	s.verifyConclude(ctx, j, StateFailed, "error", "支付被拒："+reason,
+		cardpool.Outcome{Result: cardpool.ResultFailed, ErrorCode: truncate(reason, 200)},
+		map[string]any{"failure": FailureDeclined, "error_code": "card_declined", "error_message": reason})
 }
 
 // noteVerifyErr 把确认错误写进时间线，同一单、同一来源的文本没变就不再写：定时检查每 15 秒一轮，故障期间不能刷满时间线。
@@ -360,7 +382,7 @@ func leaseFromOrder(o *Order) *cardpool.Lease {
 
 // recoverOrders 收敛上次运行遗留的单据，必须在第一次派发之前完成：
 // 提交之前的中间状态判 failed / not_submitted 并释放租约；submitted、requires_3ds 转 verifying 继续确认，绝不再点支付；
-// 页面被拒的 verifying 单补上宽限期。queued 留给工作协程，其余 verifying 留给确认协程。有单据没收敛时返回错误，由工作协程重试。
+// 页面被拒或校验错误的 verifying 单补上宽限期。queued 留给工作协程，其余 verifying 留给确认协程。有单据没收敛时返回错误，由工作协程重试。
 func (s *Service) recoverOrders(ctx context.Context) error {
 	stale, err := ordersInStates(ctx, StateChecking, StateLinkCreated, StateOpening, StateFunding, StateFilling)
 	if err != nil {
@@ -396,11 +418,11 @@ func (s *Service) recoverOrders(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
-// restoreDeclineGrace 让页面被拒的单重新等够 DeclineGrace：停机期间授权推送送不到，
+// restoreDeclineGrace 让页面被拒或校验错误的单重新等够 DeclineGrace：停机期间授权推送送不到，
 // 按停机前的 verify_until 定论，会把已扣款的单定成 declined。只推后不提前。
 // 每次启动每单只补一次：恢复可能因别的单失败而反复重试，不能每轮都写事件、推后 verify_until。
 func (s *Service) restoreDeclineGrace(ctx context.Context, o *Order) error {
-	if o.PageOutcome != string(paybrowser.OutcomeDeclined) || s.graceRestored[o.OrderNo] {
+	if !isDeclinedOutcome(o.PageOutcome) || s.graceRestored[o.OrderNo] {
 		return nil
 	}
 	until := s.now().Add(s.t.DeclineGrace).Unix()

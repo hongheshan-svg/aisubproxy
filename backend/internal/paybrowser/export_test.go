@@ -1,5 +1,11 @@
 package paybrowser
 
+import (
+	"context"
+
+	"github.com/chromedp/chromedp"
+)
+
 // 测试专用的导出项，生产代码路径不使用。
 
 // LoopbackProxy 让 Launch 对回环地址也走代理（--proxy-bypass-list=<-loopback>），
@@ -20,6 +26,20 @@ var SocketAlive = socketAlive
 
 // Truncate 把页面提示文字去掉首尾空白并截断到 500 字。
 var Truncate = truncateMessage
+
+// ClassifyPageError 按文字内容判断页面提示属于被拒还是表单校验未通过。
+var ClassifyPageError = classifyPageError
+
+// ScanBeforeClick 执行一次点击前的提示收集，返回收集到的文字集合。
+// 不走 b.do：它收尾时释放句柄用的是调用方的 ctx，页面卡死时会等满那个 ctx，量不出收集本身的耗时。
+func ScanBeforeClick(ctx context.Context, b *Browser) (map[string]bool, error) {
+	var got map[string]bool
+	err := b.run(ctx, chromedp.ActionFunc(func(c context.Context) error {
+		got = b.scanBeforeClick(c)
+		return nil
+	}))
+	return got, err
+}
 
 // InstallHintFor 返回当前部署方式下的安装提示。
 var InstallHintFor = installHint

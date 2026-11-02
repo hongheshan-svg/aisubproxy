@@ -1562,3 +1562,35 @@ func TestShotCleanupRunsOnStart(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+// R26：只有用默认的真实浏览器工厂时才清理 Chrome 临时目录。测试替身不碰它：
+// go test ./... 并行时，别的包的测试可能正在用这些目录。
+func TestStartCleansStaleProfilesOnlyWithRealBrowser(t *testing.T) {
+	stale := func(t *testing.T) string {
+		t.Helper()
+		tmp := t.TempDir()
+		t.Setenv("TMPDIR", tmp)
+		dir := filepath.Join(tmp, "cdk-pay-chrome-123")
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	t.Run("替身工厂不清理", func(t *testing.T) {
+		h := newPayHarness(t, nil)
+		dir := stale(t)
+		h.start(t)
+		if _, err := os.Lstat(dir); err != nil {
+			t.Fatalf("不应清理: %v", err)
+		}
+	})
+	t.Run("默认工厂在 Start 返回前清理", func(t *testing.T) {
+		h := newPayHarness(t, nil)
+		dir := stale(t)
+		h.svc = New(Options{Pool: h.pool, Alert: h.alerts.add, ShotDir: h.shotDir, Timeouts: &h.timeouts})
+		h.start(t)
+		if _, err := os.Lstat(dir); !os.IsNotExist(err) {
+			t.Fatalf("应清理: %v", err)
+		}
+	})
+}

@@ -240,3 +240,52 @@ func TestSocketAlive(t *testing.T) {
 		t.Error("不存在的路径不应判为存活")
 	}
 }
+
+// R26：崩溃残留的临时目录里有用户会话 cookie，启动时要删掉；不能跟随符号链接，也不能动别的东西。
+func TestCleanStaleProfiles(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("TMPDIR", tmp)
+	outside := t.TempDir()
+	keep := filepath.Join(outside, "keep.txt")
+	if err := os.WriteFile(keep, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	stale := filepath.Join(tmp, "cdk-pay-chrome-123")
+	if err := os.MkdirAll(filepath.Join(stale, "Default"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stale, "Default", "Cookies"), []byte("session"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(stale, "inner-link")); err != nil { // 目录里的链接
+		t.Fatal(err)
+	}
+	link := filepath.Join(tmp, "cdk-pay-chrome-link") // 名字符合的链接本身
+	if err := os.Symlink(outside, link); err != nil {
+		t.Fatal(err)
+	}
+	plain := filepath.Join(tmp, "cdk-pay-chrome-file")
+	if err := os.WriteFile(plain, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(tmp, "other-dir")
+	if err := os.Mkdir(other, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	paybrowser.CleanStaleProfiles()
+
+	if _, err := os.Lstat(stale); !os.IsNotExist(err) {
+		t.Fatalf("残留目录应删除: %v", err)
+	}
+	for _, p := range []string{keep, link, plain, other} {
+		if _, err := os.Lstat(p); err != nil {
+			t.Fatalf("%s 应保留: %v", p, err)
+		}
+	}
+
+	// 临时目录读不出来时只打日志，不崩溃
+	t.Setenv("TMPDIR", filepath.Join(tmp, "missing"))
+	paybrowser.CleanStaleProfiles()
+}

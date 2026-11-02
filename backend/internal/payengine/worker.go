@@ -37,6 +37,9 @@ func (s *Service) Kick() {
 // 同时处理的单据数不超过 LoadConcurrency()）、确认协程（每 5 秒扫描确认中的单据）、截图清理协程（每天一次）。
 // 恢复没做完时不派发、也不确认，工作协程每一轮先重试恢复，首次失败告警一次。ctx 结束时全部停止，处理中的单据随之中断，留待下次启动恢复。
 func (s *Service) Start(ctx context.Context) {
+	if s.realBrowser {
+		paybrowser.CleanStaleProfiles() // 必须在第一次派发之前：这之后的目录都是正在用的
+	}
 	s.tryRecover(ctx)
 	s.loops.Add(3)
 	go s.loop(ctx)

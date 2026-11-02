@@ -94,6 +94,9 @@ type Options struct {
 type Service struct {
 	opts Options
 	t    Timeouts
+	// realBrowser 表示用的是默认的真实浏览器工厂。只有这时 Start 才清理 Chrome 临时目录：
+	// 测试替身不用真实浏览器，go test ./... 并行时别的包的测试可能正在用这些目录。
+	realBrowser bool
 
 	kick    chan struct{}
 	loops   sync.WaitGroup // 工作协程与各单据协程
@@ -112,7 +115,8 @@ func New(o Options) *Service {
 	if o.ChatGPT == nil {
 		o.ChatGPT = newChatGPT
 	}
-	if o.Browser == nil {
+	realBrowser := o.Browser == nil
+	if realBrowser {
 		o.Browser = launchBrowser
 	}
 	if o.Now == nil {
@@ -134,7 +138,7 @@ func New(o Options) *Service {
 	if t.OutcomeMargin <= 0 {
 		t.OutcomeMargin = DefaultTimeouts().OutcomeMargin
 	}
-	return &Service{opts: o, t: t, kick: make(chan struct{}, 1), running: map[string]bool{}, verifyErrs: map[string]map[string]string{}}
+	return &Service{opts: o, t: t, realBrowser: realBrowser, kick: make(chan struct{}, 1), running: map[string]bool{}, verifyErrs: map[string]map[string]string{}}
 }
 
 func (s *Service) now() time.Time { return s.opts.Now() }

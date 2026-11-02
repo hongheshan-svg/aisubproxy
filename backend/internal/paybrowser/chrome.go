@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -39,6 +40,8 @@ const (
 	startGrace   = 30 * time.Second // 调用方放弃后，最多再等启动这么久才强制中止
 	closeTimeout = 5 * time.Second
 	checkTimeout = 30 * time.Second
+
+	profilePrefix = "cdk-pay-chrome-" // 临时用户目录的名字前缀
 )
 
 // FindChrome 返回 Chrome 可执行文件路径。设置了 CHROME_PATH 时只认它（文件不存在直接报错，不再回落），
@@ -110,7 +113,7 @@ func Launch(ctx context.Context, o LaunchOptions) (*Browser, error) {
 	if err != nil {
 		return nil, err
 	}
-	dir, err := os.MkdirTemp("", "cdk-pay-chrome-")
+	dir, err := os.MkdirTemp("", profilePrefix+"*")
 	if err != nil {
 		return nil, fmt.Errorf("创建 Chrome 临时目录失败: %w", err)
 	}
@@ -203,6 +206,26 @@ func (b *Browser) acceptDialog(ev any) {
 	if ev, ok := ev.(*page.EventJavascriptDialogOpening); ok {
 		log.Printf("[paybrowser] 自动接受页面对话框，类型 %s", ev.Type)
 		go b.runQuiet(page.HandleJavaScriptDialog(true))
+	}
+}
+
+// CleanStaleProfiles 删除系统临时目录下上次崩溃残留的 Chrome 用户目录（里面有用户会话 cookie）。
+// 只能在确定没有浏览器在跑时调用。ReadDir 不跟随符号链接（链接的 IsDir 为 false，直接跳过），
+// RemoveAll 也不会穿过目录里的链接。失败只打日志。
+func CleanStaleProfiles() {
+	tmp := os.TempDir()
+	entries, err := os.ReadDir(tmp)
+	if err != nil {
+		log.Printf("[paybrowser] 读取临时目录失败: %v", err)
+		return
+	}
+	for _, e := range entries {
+		if !e.IsDir() || !strings.HasPrefix(e.Name(), profilePrefix) {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(tmp, e.Name())); err != nil {
+			log.Printf("[paybrowser] 删除残留的 Chrome 临时目录 %s 失败: %v", e.Name(), err)
+		}
 	}
 }
 

@@ -183,6 +183,8 @@ html[data-heading='serif'] {
 }
 .el-tag { border-radius: 6px; }
 .el-message-box { background: var(--surface-solid) !important; border-color: var(--brd) !important; }
+/* 抽屉默认用半透明的 --el-bg-color，背后的页面文字会透出来；和弹窗一样用不透明底色 */
+.el-drawer { background: var(--surface-solid) !important; }
 .el-overlay { background-color: var(--el-mask-color, rgba(0,0,0,.45)) !important; }
 
 /* dark 仅作「加深」兜底；各皮肤自己的 html.dark[data-skin=…] 优先级更高 */

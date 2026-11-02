@@ -79,7 +79,7 @@
           </el-table>
           <div class="mt-3 flex justify-end">
             <el-pagination
-              v-model:current-page="page" :page-size="pageSize" :total="total" layout="total, prev, pager, next" small
+              v-model:current-page="page" :page-size="pageSize" :total="total" layout="total, prev, pager, next" size="small"
               @current-change="loadOrders"
             />
           </div>
@@ -165,7 +165,7 @@
     <el-drawer v-model="detailOpen" :title="`订单 ${detailNo}`" size="min(760px, 100vw)" @closed="onDetailClosed">
       <div v-loading="detailLoading" class="space-y-4">
         <template v-if="detail">
-          <el-descriptions :column="1" size="small" border>
+          <el-descriptions :column="1" size="small" border label-width="84px">
             <el-descriptions-item label="状态">
               <el-tag size="small" :type="stateTagType(detail.order.state)">{{ stateLabel(detail.order.state) }}</el-tag>
               <el-tag v-if="detail.order.dry_run" size="small" type="info" class="ml-1">试运行</el-tag>
@@ -278,7 +278,8 @@ const formDirty = computed(() => formSnapshot !== '' && formState() !== formSnap
 // syncForm=false 时只更新服务端数据 config，不动 plansForm 编辑缓冲。
 function applyConfig(c: PayConfig, syncForm = true) {
   config.value = c
-  if (!planKey.value && c.plans.length) planKey.value = c.plans[0].key
+  // 默认选第一个能提交的套餐（Go 的套餐名待核实，选中它只会看到禁用的按钮）
+  if (!planKey.value && c.plans.length) planKey.value = (c.plans.find((p) => p.chatgpt_plan_name) ?? c.plans[0]).key
   if (!region.value) region.value = REGIONS[0]
   if (!syncForm) return
   concurrency.value = c.concurrency

@@ -61,7 +61,7 @@ type Order struct {
 	State             string `json:"state"`
 	SessionSealed     string `json:"-"`
 	CheckoutSessionID string `json:"checkout_session_id"`
-	CheckoutURL       string `json:"checkout_url"`
+	CheckoutURL       string `json:"-"`
 	AmountMinor       int64  `json:"amount_minor"`
 	AmountText        string `json:"amount_text"`
 	CardID            string `json:"card_id"`

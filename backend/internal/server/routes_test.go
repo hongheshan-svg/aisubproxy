@@ -1,6 +1,8 @@
 package server
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -84,6 +86,27 @@ func TestPayRoutesRegistered(t *testing.T) {
 	} {
 		if !have[want] {
 			t.Errorf("route missing: %s", want)
+		}
+	}
+}
+
+// 付款接口必须在 admin 组内：走真实路由和中间件，无凭证一律 401，防止路由被挪出鉴权。
+func TestPayRoutesRequireAdminAuth(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Setenv("WEB_DIR", "")
+	r := gin.New()
+	setupRoutes(r)
+	const no = "PO260101000000abcdef01"
+	for _, c := range []struct{ method, path string }{
+		{"POST", "/orders"}, {"GET", "/orders"}, {"GET", "/orders/" + no},
+		{"POST", "/orders/" + no + "/resolve"}, {"GET", "/orders/" + no + "/shots/01-form.png"},
+		{"GET", "/config"}, {"PUT", "/config"}, {"GET", "/proxies"}, {"PUT", "/proxies"}, {"POST", "/browser-check"},
+	} {
+		req := httptest.NewRequest(c.method, "/api/v1/admin/pay"+c.path, nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s 无凭证应 401，实际 %d", c.method, c.path, w.Code)
 		}
 	}
 }

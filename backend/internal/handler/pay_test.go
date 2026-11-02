@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -92,7 +93,9 @@ func TestPayEngineNilReturns503(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	SetPayEngine(nil)
 	for name, h := range map[string]gin.HandlerFunc{
-		"submit": AdminPaySubmit, "list": AdminPayList, "config": AdminPayGetConfig, "proxies": AdminPayGetProxies,
+		"submit": AdminPaySubmit, "list": AdminPayList, "get": AdminPayGet, "resolve": AdminPayResolve, "shot": AdminPayShot,
+		"getConfig": AdminPayGetConfig, "putConfig": AdminPayPutConfig, "getProxies": AdminPayGetProxies,
+		"putProxies": AdminPayPutProxies, "browserCheck": AdminPayBrowserCheck,
 	} {
 		w := payDo(h, "GET", "/x", "/x", "{}")
 		if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "付款引擎未启动") {
@@ -131,9 +134,9 @@ func TestPaySubmitMapsErrors(t *testing.T) {
 	if w := post(`{not json`); w.Code != 400 || strings.Contains(w.Body.String(), "not json") {
 		t.Fatalf("坏请求体: %d %s", w.Code, w.Body.String())
 	}
-	big := `{"session":"` + strings.Repeat("x", 70<<10) + `"}`
-	if w := post(big); w.Code != 400 {
-		t.Fatalf("超过 64KB 应 400: %d", w.Code)
+	big := `{"plan_key":"plus","region":"PH","dry_run":true,"session":"` + strings.Repeat("x", 70<<10) + `"}`
+	if w := post(big); w.Code != 400 || !strings.Contains(w.Body.String(), "请求体无效") {
+		t.Fatalf("超过 64KB 应 400「请求体无效」: %d %s", w.Code, w.Body.String())
 	}
 }
 
@@ -188,6 +191,13 @@ func TestPayOrderDetailAndList(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &d); err != nil || d.Order["order_no"] != ok.OrderNo || d.Events == nil || d.Evidence == nil {
 		t.Fatalf("详情结构: %v %s", err, w.Body.String())
 	}
+	if _, err := db.DB.Exec(`UPDATE pay_orders SET checkout_url = 'https://pay.example/c/CHECKOUT-SECRET' WHERE order_no = ?`, ok.OrderNo); err != nil {
+		t.Fatal(err)
+	}
+	w = payDo(AdminPayGet, "GET", "/orders/:no", "/orders/"+ok.OrderNo, "")
+	if strings.Contains(w.Body.String(), "CHECKOUT-SECRET") || strings.Contains(w.Body.String(), "checkout_url") {
+		t.Fatalf("详情含支付链接: %s", w.Body.String())
+	}
 	var sealed string
 	_ = db.DB.QueryRow(`SELECT session_sealed FROM pay_orders WHERE order_no = ?`, ok.OrderNo).Scan(&sealed)
 	if sealed == "" {
@@ -202,7 +212,7 @@ func TestPayOrderDetailAndList(t *testing.T) {
 		t.Fatalf("不存在应 404: %d", w.Code)
 	}
 
-	w = payDo(AdminPayList, "GET", "/orders", "/orders?state=queued&page=1&size=10", "")
+	w = payDo(AdminPayList, "GET", "/orders", "/orders?state=queued&page=1&page_size=10", "")
 	var l struct {
 		Orders []map[string]any `json:"orders"`
 		Total  int              `json:"total"`
@@ -244,9 +254,66 @@ func TestPayProxiesWriteOnly(t *testing.T) {
 	}
 }
 
+func TestPayPutProxiesRejectsEmptyBodyWithoutAudit(t *testing.T) {
+	payEnv(t)
+	for _, body := range []string{`{}`, `null`} {
+		if w := payDo(AdminPayPutProxies, "PUT", "/proxies", "/proxies", body); w.Code != 400 {
+			t.Errorf("%s 应 400: %d", body, w.Code)
+		}
+	}
+	if a := payAudit(t); strings.Contains(a, "pay_proxies_update") {
+		t.Fatalf("空体不应写审计: %s", a)
+	}
+}
+
+// 任何错误响应都不得回显输入：邮箱、套餐键、代理地址与密码。
+func TestPayErrorsDoNotEchoInput(t *testing.T) {
+	payEnv(t)
+	post := func(body string) *httptest.ResponseRecorder {
+		return payDo(AdminPaySubmit, "POST", "/orders", "/orders", body)
+	}
+	const email = "echo.me@example.com"
+	if w := post(paySubmitBody("plus", "PH", paySession(email), false)); w.Code != 200 {
+		t.Fatal(w.Body.String())
+	}
+	cases := map[string]*httptest.ResponseRecorder{
+		"inflight":  post(paySubmitBody("plus", "PH", paySession(email), false)),
+		"plan":      post(paySubmitBody("ECHO-PLAN", "PH", paySession("x@example.com"), false)),
+		"region":    post(paySubmitBody("plus", "ECHO-REGION", paySession("x@example.com"), false)),
+		"proxyKey":  payDo(AdminPayPutProxies, "PUT", "/proxies", "/proxies", `{"http://user:pw@px.example:8080":"PH"}`),
+		"proxyAddr": payDo(AdminPayPutProxies, "PUT", "/proxies", "/proxies", `{"PH":"ftp://user:pw@px.example:8080"}`),
+		"cfgKey":    payDo(AdminPayPutConfig, "PUT", "/config", "/config", payConfigBodyWithKey("ECHO-KEY", "PH")),
+		"cfgRegion": payDo(AdminPayPutConfig, "PUT", "/config", "/config", payConfigBodyWithKey("plus", "ECHO-KEY")),
+	}
+	for name, w := range cases {
+		if w.Code < 400 {
+			t.Errorf("%s 应为错误: %d", name, w.Code)
+		}
+		for _, leak := range []string{email, "echo.me", "ECHO-PLAN", "ECHO-REGION", "ECHO-KEY", "pw", "px.example", "user:"} {
+			if strings.Contains(w.Body.String(), leak) {
+				t.Errorf("%s 响应回显了 %q: %s", name, leak, w.Body.String())
+			}
+		}
+	}
+	if cases["inflight"].Code != 409 {
+		t.Errorf("inflight: %d", cases["inflight"].Code)
+	}
+}
+
+// payConfigBodyWithKey 给出一份完整的套餐表，其中第一个套餐的键或某个地区键被替换成指定值。
+func payConfigBodyWithKey(key, region string) string {
+	plans := payengine.DefaultPlanTable()
+	if key != "plus" {
+		plans[0].Key = key
+	} else {
+		plans[1].Regions[region] = payengine.RegionConf{Currency: "USD"}
+	}
+	b, _ := json.Marshal(map[string]any{"plans": plans, "concurrency": 1})
+	return string(b)
+}
+
 func TestPayShotRejectsTraversal(t *testing.T) {
-	s, dir := payEnv(t)
-	_ = s
+	_, dir := payEnv(t)
 	const no = "PO260101000000abcdef01"
 	if err := os.MkdirAll(filepath.Join(dir, no), 0o755); err != nil {
 		t.Fatal(err)
@@ -286,7 +353,7 @@ func TestPayShotRejectsTraversal(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, name := range []string{"03-link.png", "04-dir.png"} {
-		if w := payDo(AdminPayShot, "GET", "/orders/:no/shots/:name", "/orders/"+no+"/shots/"+name, ""); w.Code != 404 || strings.Contains(w.Body.String(), "S") && w.Body.Len() == 1 {
+		if w := payDo(AdminPayShot, "GET", "/orders/:no/shots/:name", "/orders/"+no+"/shots/"+name, ""); w.Code != 404 {
 			t.Errorf("%s 应 404: %d", name, w.Code)
 		}
 	}
@@ -420,6 +487,63 @@ func TestPayPutConfig(t *testing.T) {
 	}
 }
 
+func plusPHCap(t *testing.T) int64 {
+	t.Helper()
+	tbl, err := payengine.LoadPlanTable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range tbl {
+		if p.Key == "plus" {
+			return p.Regions["PH"].CapMinor
+		}
+	}
+	return -1
+}
+
+func TestPayPutConfigRejectsIncompletePlans(t *testing.T) {
+	payEnv(t)
+	if plusPHCap(t) != 120000 {
+		t.Fatal("前提：plus/PH 上限应为 120000")
+	}
+	for name, body := range map[string]string{
+		"缺 plans":    `{"concurrency":2}`,
+		"plans null": `{"plans":null,"concurrency":2}`,
+		"空数组":        `{"plans":[],"concurrency":2}`,
+		"部分套餐":       `{"plans":[{"key":"go"}],"concurrency":1}`,
+	} {
+		w := payDo(AdminPayPutConfig, "PUT", "/config", "/config", body)
+		if w.Code != 400 || !strings.Contains(w.Body.String(), "套餐表不完整") {
+			t.Errorf("%s 应 400「套餐表不完整」: %d %s", name, w.Code, w.Body.String())
+		}
+		if plusPHCap(t) != 120000 {
+			t.Fatalf("%s 后套餐配置被改动", name)
+		}
+	}
+	if payengine.LoadConcurrency() != 1 {
+		t.Fatal("并发数不应被改")
+	}
+}
+
+// 套餐名、期望类型被传成空串时用默认值，不清空已有的 ChatGPT 套餐名。
+func TestPayPutConfigKeepsPlanNamesWhenBlank(t *testing.T) {
+	payEnv(t)
+	plans := payengine.DefaultPlanTable()
+	for i := range plans {
+		plans[i].ChatGPTPlanName, plans[i].ExpectPlanType = "", ""
+	}
+	pb, _ := json.Marshal(map[string]any{"plans": plans, "concurrency": 1})
+	if w := payDo(AdminPayPutConfig, "PUT", "/config", "/config", string(pb)); w.Code != 200 {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	tbl, _ := payengine.LoadPlanTable()
+	for _, p := range tbl {
+		if p.Key == "plus" && (p.ChatGPTPlanName != "chatgptplusplan" || p.ExpectPlanType != "plus") {
+			t.Fatalf("plus 的套餐名被清空: %+v", p)
+		}
+	}
+}
+
 func TestPayBrowserCheckNoChrome(t *testing.T) {
 	payEnv(t)
 	t.Setenv("CHROME_PATH", filepath.Join(t.TempDir(), "no-such-chrome"))
@@ -463,5 +587,63 @@ func TestPayBrowserCheckOneAtATime(t *testing.T) {
 	wg.Wait()
 	if first.Code != 200 {
 		t.Fatalf("第一个检查: %d", first.Code)
+	}
+}
+
+func TestPayShotRejectsSymlinkedOrderDir(t *testing.T) {
+	_, dir := payEnv(t)
+	const no = "PO260101000000abcdef02"
+	other := t.TempDir()
+	if err := os.WriteFile(filepath.Join(other, "01-form.png"), []byte("OUTSIDE"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(other, filepath.Join(dir, no)); err != nil {
+		t.Fatal(err)
+	}
+	w := payDo(AdminPayShot, "GET", "/orders/:no/shots/:name", "/orders/"+no+"/shots/01-form.png", "")
+	if w.Code != 404 || strings.Contains(w.Body.String(), "OUTSIDE") {
+		t.Fatalf("单号目录是符号链接应 404: %d", w.Code)
+	}
+}
+
+func TestPaySubmitSessionForms(t *testing.T) {
+	payEnv(t)
+	obj := `{"plan_key":"plus","region":"PH","dry_run":true,"session":` + paySession("obj@example.com") + `}`
+	if w := payDo(AdminPaySubmit, "POST", "/orders", "/orders", obj); w.Code != 200 {
+		t.Fatalf("对象形式应 200: %d %s", w.Code, w.Body.String())
+	}
+	for _, sess := range []string{`null`, `123`, `[]`, `""`} {
+		body := `{"plan_key":"plus","region":"PH","dry_run":true,"session":` + sess + `}`
+		w := payDo(AdminPaySubmit, "POST", "/orders", "/orders", body)
+		if w.Code != 400 || !strings.Contains(w.Body.String(), "会话无效") {
+			t.Errorf("session=%s 应 400「会话无效」: %d %s", sess, w.Code, w.Body.String())
+		}
+	}
+}
+
+func TestPayInternalErrorIsGeneric(t *testing.T) {
+	payEnv(t)
+	if err := db.SetSecretSetting("pay_region_proxies", "not-json-INTERNAL"); err != nil {
+		t.Fatal(err)
+	}
+	w := payDo(AdminPayGetProxies, "GET", "/proxies", "/proxies", "")
+	if w.Code != 500 || !strings.Contains(w.Body.String(), "操作失败") || strings.Contains(w.Body.String(), "损坏") || strings.Contains(w.Body.String(), "INTERNAL") {
+		t.Fatalf("500 应只给「操作失败」: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// 套餐表已写入、并发数写失败时补一条审计。
+func TestPayPutConfigPartialSaveAudited(t *testing.T) {
+	payEnv(t)
+	old := paySaveConcurrency
+	paySaveConcurrency = func(int) error { return errors.New("db down") }
+	t.Cleanup(func() { paySaveConcurrency = old })
+	pb, _ := json.Marshal(map[string]any{"plans": payengine.DefaultPlanTable(), "concurrency": 2})
+	w := payDo(AdminPayPutConfig, "PUT", "/config", "/config", string(pb))
+	if w.Code != 500 || strings.Contains(w.Body.String(), "db down") {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	if a := payAudit(t); !strings.Contains(a, "pay_config_update") || !strings.Contains(a, "套餐表已保存，并发数保存失败") {
+		t.Fatalf("审计: %s", a)
 	}
 }

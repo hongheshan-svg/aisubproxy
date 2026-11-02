@@ -52,14 +52,15 @@ var (
 	payShotNameRe = regexp.MustCompile(`^\d{2}-[a-z0-9_]+\.png$`)
 )
 
-// payFail 把引擎错误映射成 HTTP 响应。Resolve 的状态冲突同时满足 ErrBadRequest 与 ErrStateChanged，须先判断前者。
-// 响应只给固定文案或引擎的错误说明（不含会话、代理、卡信息）；会话错误一律只回「会话无效」。
+// payFail 把引擎错误映射成 HTTP 响应。Resolve 的状态冲突同时满足 ErrBadRequest 与 ErrStateChanged，
+// 所以 ErrStateChanged 必须排在 ErrBadRequest 之前判断，否则会被当成 400。
+// 响应只给固定文案或不含输入值的引擎错误说明；会话错误一律只回「会话无效」。
 func payFail(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, payengine.ErrStateChanged):
 		c.JSON(http.StatusConflict, gin.H{"error": "单据状态已变化"})
-	case errors.Is(err, payengine.ErrInflight):
-		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+	case errors.Is(err, payengine.ErrInflight): // 引擎错误里带账号邮箱，对外只给固定文案
+		c.JSON(http.StatusConflict, gin.H{"error": payengine.ErrInflight.Error()})
 	case errors.Is(err, payengine.ErrBadSession):
 		c.JSON(http.StatusBadRequest, gin.H{"error": "会话无效"})
 	case errors.Is(err, payengine.ErrPlanUnavailable), errors.Is(err, payengine.ErrBadRequest):
@@ -123,7 +124,7 @@ func AdminPaySubmit(c *gin.Context) {
 func AdminPayList(c *gin.Context) {
 	payRoute(func(c *gin.Context, s *payengine.Service) {
 		page, _ := strconv.Atoi(c.Query("page"))
-		size, _ := strconv.Atoi(c.Query("size"))
+		size, _ := strconv.Atoi(c.Query("page_size"))
 		orders, total, err := s.List(c.Request.Context(), strings.TrimSpace(c.Query("state")), page, size)
 		if err != nil {
 			payFail(c, err)
@@ -188,7 +189,7 @@ func AdminPayShot(c *gin.Context) {
 			return
 		}
 		dir := filepath.Join(s.ShotDir(), no)
-		if !isPlainFile(filepath.Join(dir, name)) || isSymlink(dir) {
+		if !isPlainDir(dir) || !isPlainFile(filepath.Join(dir, name)) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "截图不存在"})
 			return
 		}
@@ -207,9 +208,10 @@ func isPlainFile(p string) bool {
 	return err == nil && fi.Mode().IsRegular()
 }
 
-func isSymlink(p string) bool {
+// isPlainDir 判断 p 是真实目录（不是符号链接）。
+func isPlainDir(p string) bool {
 	fi, err := os.Lstat(p)
-	return err != nil || fi.Mode()&os.ModeSymlink != 0
+	return err == nil && fi.Mode().IsDir()
 }
 
 // payConfigBody 组装 GET/PUT /config 的响应。租约提示：卡池租约短于一单最长占用时间时为 true。
@@ -254,6 +256,25 @@ func AdminPayPutConfig(c *gin.Context) {
 		if !bindPayJSON(c, &req) {
 			return
 		}
+		// 套餐表必须完整：缺失的套餐会被整体覆盖掉（未知键与重复键由 SavePlanTable 拒绝）
+		if len(req.Plans) != len(payengine.PlanKeys) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "套餐表不完整"})
+			return
+		}
+		// 套餐名与期望类型为空时沿用默认值，免得误传空串清掉
+		for i := range req.Plans {
+			for _, d := range payengine.DefaultPlanTable() {
+				if d.Key != req.Plans[i].Key {
+					continue
+				}
+				if req.Plans[i].ChatGPTPlanName == "" {
+					req.Plans[i].ChatGPTPlanName = d.ChatGPTPlanName
+				}
+				if req.Plans[i].ExpectPlanType == "" {
+					req.Plans[i].ExpectPlanType = d.ExpectPlanType
+				}
+			}
+		}
 		if err := payengine.ValidateConcurrency(req.Concurrency); err != nil {
 			payFail(c, err)
 			return
@@ -262,7 +283,9 @@ func AdminPayPutConfig(c *gin.Context) {
 			payFail(c, err)
 			return
 		}
-		if err := payengine.SaveConcurrency(req.Concurrency); err != nil {
+		if err := paySaveConcurrency(req.Concurrency); err != nil {
+			// 套餐表已生效而并发数没存上：补一条审计，管理员可重试
+			auditAdmin(c, "pay_config_update", payConfigAudit(req.Plans, req.Concurrency)+" 套餐表已保存，并发数保存失败")
 			payFail(c, err)
 			return
 		}
@@ -312,6 +335,10 @@ func AdminPayPutProxies(c *gin.Context) {
 		if !bindPayJSON(c, &req) {
 			return
 		}
+		if len(req) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "请求体无效"})
+			return
+		}
 		if err := payengine.SaveProxies(req); err != nil {
 			payFail(c, err)
 			return
@@ -336,6 +363,8 @@ func AdminPayPutProxies(c *gin.Context) {
 		c.JSON(http.StatusOK, st)
 	})(c)
 }
+
+var paySaveConcurrency = payengine.SaveConcurrency
 
 var (
 	payBrowserCheck = paybrowser.Check

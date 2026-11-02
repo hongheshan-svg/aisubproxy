@@ -118,15 +118,15 @@ func SavePlanTable(p []PlanConf) error {
 	seen := map[string]bool{}
 	for _, pc := range p {
 		if !contains(PlanKeys, pc.Key) {
-			return fmt.Errorf("%w: 未知套餐 %q", ErrBadRequest, pc.Key)
+			return fmt.Errorf("%w: 未知套餐", ErrBadRequest)
 		}
 		if seen[pc.Key] {
-			return fmt.Errorf("%w: 套餐 %s 重复", ErrBadRequest, pc.Key)
+			return fmt.Errorf("%w: 套餐重复", ErrBadRequest)
 		}
 		seen[pc.Key] = true
 		for r, rc := range pc.Regions {
 			if !contains(Regions, r) {
-				return fmt.Errorf("%w: 未知地区 %q", ErrBadRequest, r)
+				return fmt.Errorf("%w: 未知地区", ErrBadRequest)
 			}
 			if rc.CapMinor < 0 || rc.FundCents < 0 {
 				return fmt.Errorf("%w: %s/%s 金额不能为负", ErrBadRequest, pc.Key, r)
@@ -167,11 +167,11 @@ func ResolvePlan(planKey, region string, dryRun bool) (PlanConf, RegionConf, err
 		}
 	}
 	if plan == nil {
-		return PlanConf{}, RegionConf{}, unavailable("未知套餐 %q", planKey)
+		return PlanConf{}, RegionConf{}, unavailable("未知套餐")
 	}
 	rc, ok := plan.Regions[region]
 	if !ok {
-		return PlanConf{}, RegionConf{}, unavailable("未知地区 %q", region)
+		return PlanConf{}, RegionConf{}, unavailable("未知地区")
 	}
 	if plan.ChatGPTPlanName == "" {
 		return PlanConf{}, RegionConf{}, unavailable("套餐 %s 未配置 ChatGPT 套餐名", plan.Label)
@@ -274,11 +274,11 @@ func socks5WithAuth(addr string) bool {
 }
 
 // SaveProxies 合并保存地区代理：空串保持不变，"-" 清除，其余须为 http/https/socks5 地址（与 chatgpt.New 一致）。
-// 错误消息不含代理地址。
+// 错误消息不含代理地址，也不回显输入的键（键可能被误填成带密码的地址）。
 func SaveProxies(in map[string]string) error {
 	for r, v := range in {
 		if !contains(Regions, r) {
-			return fmt.Errorf("%w: 未知地区 %q", ErrBadRequest, r)
+			return fmt.Errorf("%w: 未知地区", ErrBadRequest)
 		}
 		if v != "" && v != "-" && !validProxy(v) {
 			return fmt.Errorf("%w: 地区 %s 的代理地址格式无效，须为 http、https 或 socks5 地址", ErrBadRequest, r)

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -16,12 +17,15 @@ import (
 
 const cardHealthPolicyKey = "card_health_policy"
 
+// webhookObservers 跟踪 Webhook 触发的卡健康观察协程：测试要等它们退出，否则会撞上已关闭的测试库。
+var webhookObservers sync.WaitGroup
+
 // CardFailVerdict 失败归因结论。
 const (
-	verdictNeedMore      = "need_more"       // 未达失败次数
-	verdictEmailSuspect  = "email_suspect"   // 同邮箱反复失败 → 更像号/邮箱问题
-	verdictCardSuspect   = "card_suspect"    // 多邮箱失败 → 更像卡问题
-	verdictUnknownEmails = "unknown_emails"  // 缺邮箱，暂不判卡
+	verdictNeedMore       = "need_more"      // 未达失败次数
+	verdictEmailSuspect   = "email_suspect"  // 同邮箱反复失败 → 更像号/邮箱问题
+	verdictCardSuspect    = "card_suspect"   // 多邮箱失败 → 更像卡问题
+	verdictUnknownEmails  = "unknown_emails" // 缺邮箱，暂不判卡
 	verdictAlreadyBlocked = "already_blocked"
 )
 
@@ -229,13 +233,12 @@ type CardHealthObserveResult struct {
 	Error          string `json:"error,omitempty"`
 }
 
-// resolveEmailForOrder 尽量拿到完整邮箱：本地 session > 入参 > unknown。
+// resolveEmailForOrder 尽量拿到完整邮箱：绑定会话时记下的邮箱 > 入参 > unknown。
+// 会话清空后这份邮箱还在：退回到脱敏邮箱的话，同一账号会被算成两个邮箱，把好卡误判成坏卡。
 func resolveEmailForOrder(cdkCode, fallback string) (email, source string) {
 	if code := strings.TrimSpace(cdkCode); code != "" {
-		if sess, err := db.GetSessionByCDK(code); err == nil && strings.TrimSpace(sess) != "" {
-			if em := extractEmailFromSession(sess); em != "" {
-				return normalizeAccountEmail(em), "session"
-			}
+		if em, err := db.GetAccountEmailByCDK(code); err == nil && em != "" {
+			return normalizeAccountEmail(em), "session"
 		}
 	}
 	if em := strings.TrimSpace(fallback); em != "" {
@@ -293,7 +296,9 @@ func observeFromWebhookPayload(payload map[string]interface{}) {
 		errCode = strAny(payload["last_error_code"])
 	}
 
+	webhookObservers.Add(1)
 	go func() {
+		defer webhookObservers.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		res := ObserveCardOrderOutcome(ctx, CardOrderObservation{
@@ -446,9 +451,9 @@ func AdminListCardHealth(c *gin.Context) {
 // AdminUnblockCard POST /api/v1/admin/card-health/unblock
 func AdminUnblockCard(c *gin.Context) {
 	var body struct {
-		CardID      int64  `json:"card_id"`
-		Unfreeze    bool   `json:"unfreeze"`
-		Notes       string `json:"notes"`
+		CardID   int64  `json:"card_id"`
+		Unfreeze bool   `json:"unfreeze"`
+		Notes    string `json:"notes"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil || body.CardID <= 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "card_id required"})

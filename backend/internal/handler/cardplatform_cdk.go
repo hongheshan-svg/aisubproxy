@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -12,10 +13,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
+	"github.com/tuzi/cdk-recharge-system/internal/secretbox"
 )
 
 func writeCardErr(c *gin.Context, err error) {
@@ -1043,8 +1046,12 @@ func PublicCDKPreflight(c *gin.Context) {
 	}
 	sess := extractCredentialSession(body["credential"])
 	if sess != "" && !cardplatform.IsXPremiumCredential(sess) && !cardplatform.IsGrokCredential(sess) && (code != "" || tok != "") {
+		// 这份副本只用来记账号邮箱；存不下不影响兑换（会话已随预检发给卡台），只是之后凭卡密查不到账单
 		if err := db.BindCDKSession(code, tok, sess); err != nil {
-			log.Printf("[cdk-preflight] bind session failed code=%s tok=%s: %v", code, shortTok(tok), err)
+			log.Printf("[cdk-preflight] bind session failed code=%s tok=%s: %v", shortTok(code), shortTok(tok), err)
+			if errors.Is(err, secretbox.ErrNoMasterKey) || errors.Is(err, secretbox.ErrBadMasterKey) {
+				opsAlertDaily("cdk-session-nokey", "APP_MASTER_KEY 缺失或不合法：兑换预检的用户会话已拒绝保存（不影响兑换），这些卡密之后无法凭卡密查账单。", time.Now())
+			}
 		}
 	} else if st >= 200 && st < 300 {
 		log.Printf("[cdk-preflight] no session to bind (mode may be mailbox) tok=%s", shortTok(tok))
@@ -1098,6 +1105,9 @@ func PublicCDKResult(c *gin.Context) {
 			if found, err := db.FindCodeByRedemptionToken(token); err == nil {
 				cdkCode = found
 			}
+			if isCompletedOrderStatus(publicResultStatus(payload)) {
+				clearSessionAfterCompleted("", token)
+			}
 			go observeFromPublicResult(context.Background(), payload, cdkCode)
 		}
 	}
@@ -1140,20 +1150,20 @@ func PublicCDKResultByCode(c *gin.Context) {
 	}
 	payload["cdk_code"] = bind.CDKCode
 	payload["redemption_token"] = bind.RedemptionToken
-	payload["has_session_binding"] = strings.TrimSpace(bind.SessionPayload) != ""
+	// 含义是「能凭卡密查账单」：会话清空后邮箱还在，账单照样能查
+	payload["has_session_binding"] = bind.HasSession || bind.AccountEmail != ""
 
 	// 卡健康观察（webhook 未配时靠轮询学）
 	if st >= 200 && st < 300 {
 		go observeFromPublicResult(context.Background(), payload, bind.CDKCode)
 	}
 
-	// 已完成的订单：从 accounthub 获取账单 URL
-	orderStatus := strAny(payload["status"])
-	if orderStatus == "" {
-		if order, ok := payload["order"].(map[string]any); ok {
-			orderStatus = strAny(order["status"])
-		}
+	orderStatus := publicResultStatus(payload)
+	if st >= 200 && st < 300 && isCompletedOrderStatus(orderStatus) {
+		clearSessionAfterCompleted(bind.CDKCode, bind.RedemptionToken)
 	}
+
+	// 已完成的订单：从 accounthub 获取账单 URL
 	if orderStatus == "completed" {
 		email := ""
 		if order, ok := payload["order"].(map[string]any); ok {
@@ -1162,8 +1172,8 @@ func PublicCDKResultByCode(c *gin.Context) {
 		if email == "" {
 			email = strAny(payload["account_email"])
 		}
-		if email == "" && strings.TrimSpace(bind.SessionPayload) != "" {
-			email = extractEmailFromSession(bind.SessionPayload)
+		if email == "" {
+			email = bind.AccountEmail
 		}
 		if email != "" {
 			if inv, err := queryAccounthubInvoices(email); err == nil {
@@ -1173,6 +1183,39 @@ func PublicCDKResultByCode(c *gin.Context) {
 	}
 
 	c.JSON(st, payload)
+}
+
+// publicResultStatus 取公开 result 响应里的订单状态（顶层优先，其次 order.status）。
+func publicResultStatus(payload map[string]any) string {
+	status := strAny(payload["status"])
+	if status == "" {
+		if order, ok := payload["order"].(map[string]any); ok {
+			status = strAny(order["status"])
+		}
+	}
+	return status
+}
+
+// isCompletedOrderStatus 判断订单是否已兑换完成（失败的单用户可能还要重试，不算）。
+func isCompletedOrderStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "completed", "success", "done", "paid":
+		return true
+	}
+	return false
+}
+
+// clearSessionAfterCompleted 订单完成后清空会话。best-effort：失败（如旧明文行缺主密钥）只记日志，由定时清理兜底。
+func clearSessionAfterCompleted(code, token string) {
+	var err error
+	if code != "" {
+		err = db.ClearCDKSessionByCode(code)
+	} else {
+		err = db.ClearCDKSessionByToken(token)
+	}
+	if err != nil {
+		log.Printf("[cdk-session] 订单完成后清空会话失败: %v", err)
+	}
 }
 
 func shortTok(tok string) string {

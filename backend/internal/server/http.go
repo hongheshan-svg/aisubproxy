@@ -67,6 +67,10 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	// 启动付款引擎：Start 内含同步的重启恢复，这里返回后 HTTP 才会开始监听（Run 在 New 之后）
 	pay.Start(ctx)
 
+	// CDK 链路后台维护：清理到期或已完成订单的用户会话
+	handler.SetOpsAlert(alertSender("cdk", notify.SendText))
+	handler.StartOpsMaintenance(ctx)
+
 	return &Server{
 		engine: engine,
 		cfg:    cfg,

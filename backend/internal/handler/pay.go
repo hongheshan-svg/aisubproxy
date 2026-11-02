@@ -256,8 +256,12 @@ func AdminPayPutConfig(c *gin.Context) {
 		if !bindPayJSON(c, &req) {
 			return
 		}
-		// 套餐表必须完整：缺失的套餐会被整体覆盖掉（未知键与重复键由 SavePlanTable 拒绝）
-		if len(req.Plans) != len(payengine.PlanKeys) {
+		// 套餐表必须完整：缺失的套餐或地区会被整体覆盖掉，金额配置随之清零（未知键与重复键由 SavePlanTable 拒绝）
+		complete := len(req.Plans) == len(payengine.PlanKeys)
+		for _, p := range req.Plans {
+			complete = complete && len(p.Regions) == len(payengine.Regions)
+		}
+		if !complete {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "套餐表不完整"})
 			return
 		}

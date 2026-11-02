@@ -506,11 +506,24 @@ func TestPayPutConfigRejectsIncompletePlans(t *testing.T) {
 	if plusPHCap(t) != 120000 {
 		t.Fatal("前提：plus/PH 上限应为 120000")
 	}
+	// 套餐数量够，但某个套餐的地区缺失：该套餐的金额配置同样会被清掉
+	withRegions := func(edit func(p *payengine.PlanConf)) string {
+		plans := payengine.DefaultPlanTable()
+		for i := range plans {
+			if plans[i].Key == "plus" {
+				edit(&plans[i])
+			}
+		}
+		b, _ := json.Marshal(map[string]any{"plans": plans, "concurrency": 1})
+		return string(b)
+	}
 	for name, body := range map[string]string{
 		"缺 plans":    `{"concurrency":2}`,
 		"plans null": `{"plans":null,"concurrency":2}`,
 		"空数组":        `{"plans":[],"concurrency":2}`,
 		"部分套餐":       `{"plans":[{"key":"go"}],"concurrency":1}`,
+		"套餐没有地区":     withRegions(func(p *payengine.PlanConf) { p.Regions = nil }),
+		"套餐缺一个地区":    withRegions(func(p *payengine.PlanConf) { delete(p.Regions, "PH") }),
 	} {
 		w := payDo(AdminPayPutConfig, "PUT", "/config", "/config", body)
 		if w.Code != 400 || !strings.Contains(w.Body.String(), "套餐表不完整") {

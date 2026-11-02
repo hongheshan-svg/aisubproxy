@@ -4,6 +4,7 @@ import (
 	"errors"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/tuzi/cdk-recharge-system/internal/db"
@@ -212,5 +213,46 @@ func TestProxiesWriteOnly(t *testing.T) {
 	}
 	if st, _ = ProxyStatus(); st["PH"] {
 		t.Fatal("应已清除")
+	}
+}
+
+// M-7：两名管理员同时保存不同地区的代理，后写的不能覆盖先写的，否则那个地区会无声地变成直连。
+func TestSaveProxiesConcurrent(t *testing.T) {
+	dbtest.Open(t)
+	dbtest.SetMasterKey(t)
+	for round := 0; round < 20; round++ {
+		if err := SaveProxies(map[string]string{"PH": "-", "US": "-", "JP": "-", "CL": "-", "EG": "-"}); err != nil {
+			t.Fatal(err)
+		}
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		errs := make([]error, len(Regions))
+		for i, r := range Regions {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				errs[i] = SaveProxies(map[string]string{r: "http://proxy-" + strings.ToLower(r) + ".example:8080"})
+			}()
+		}
+		close(start)
+		wg.Wait()
+		for i, err := range errs {
+			if err != nil {
+				t.Fatalf("第 %d 轮保存 %s 失败: %v", round, Regions[i], err)
+			}
+		}
+		got, err := LoadProxies()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != len(Regions) {
+			t.Fatalf("第 %d 轮并发保存后只剩 %d 个地区，其余被覆盖: %v", round, len(got), got)
+		}
+		for _, r := range Regions {
+			if want := "http://proxy-" + strings.ToLower(r) + ".example:8080"; got[r] != want {
+				t.Fatalf("第 %d 轮地区 %s = %q，期望 %q", round, r, got[r], want)
+			}
+		}
 	}
 }

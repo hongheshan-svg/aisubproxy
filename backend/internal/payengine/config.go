@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 )
@@ -273,6 +274,9 @@ func socks5WithAuth(addr string) bool {
 	return err == nil && u.Scheme == "socks5" && u.User != nil
 }
 
+// saveProxiesMu 保护 SaveProxies 的读改写：两名管理员同时保存不同地区时，后写的不能覆盖先写的。
+var saveProxiesMu sync.Mutex
+
 // SaveProxies 合并保存地区代理：空串保持不变，"-" 清除，其余须为 http/https/socks5 地址（与 chatgpt.New 一致）。
 // 错误消息不含代理地址，也不回显输入的键（键可能被误填成带密码的地址）。
 func SaveProxies(in map[string]string) error {
@@ -287,6 +291,8 @@ func SaveProxies(in map[string]string) error {
 			return fmt.Errorf("%w: 地区 %s 的 socks5 代理不支持账号密码，请改用 http 代理", ErrBadRequest, r)
 		}
 	}
+	saveProxiesMu.Lock()
+	defer saveProxiesMu.Unlock()
 	cur, err := LoadProxies()
 	if err != nil {
 		return err

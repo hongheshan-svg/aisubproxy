@@ -22,7 +22,7 @@
 - **Docker 部署**：`git pull` 后执行 `docker compose up -d --build`。镜像增大约 400MB；`docker-compose.yml` 新增了 `security_opt`（引用 `deploy/chrome-seccomp.json`），自己用 `docker run` 的需要加 `--security-opt seccomp=deploy/chrome-seccomp.json`。
 - **服务器内存建议 ≥ 2GB**（自动付款并发为 1）。
 - 系统会创建专用用户 `cdk-chrome` 来运行 Chrome，并保留 Chrome 的沙箱，不会关闭沙箱。
-- **已保存过选卡策略的服务器**：卡片租约保留原值 30 分钟，建议在兑换页「配置」里改成 35 分钟（页面也会提示）。
+- **已保存过选卡策略的服务器**：卡片租约保留原值 30 分钟，建议在「卡池」页的策略里改成 35 分钟（兑换页也会提示）。
 
 ## v1.5.1 - 2026-11-01
 

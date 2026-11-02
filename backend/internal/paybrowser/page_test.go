@@ -45,6 +45,7 @@ type fakeCheckout struct {
 	session     string
 	pays        []payRecord
 	decoyClicks atomic.Int32 // 卡片 iframe 里诱饵 submit 按钮被点击的次数
+	promoClicks atomic.Int32 // 主页面优惠码 Apply 按钮被点击的次数
 }
 
 func newFakeCheckout(t *testing.T) *fakeCheckout {
@@ -89,6 +90,8 @@ func newFakeCheckout(t *testing.T) *fakeCheckout {
 			f.mu.Lock()
 			f.pays = append(f.pays, rec)
 			f.mu.Unlock()
+		case r.URL.Path == "/promo" && r.Method == http.MethodPost:
+			f.promoClicks.Add(1)
 		default:
 			http.NotFound(w, r)
 		}
@@ -670,6 +673,19 @@ func TestSubmitClicksMainPayButton(t *testing.T) {
 	onlyPayment(t, f)
 	if n := f.decoyClicks.Load(); n != 0 {
 		t.Fatalf("iframe 里的 submit 按钮被点了 %d 次，期望 0 次", n)
+	}
+}
+
+// M-2：主页面上排在前面的优惠码 Apply 也是 submit 按钮，点到它就白白用掉唯一一次提交。
+func TestSubmitPrefersSubmitButtonOverPromoApply(t *testing.T) {
+	needChrome(t)
+	f := newFakeCheckout(t)
+	b, ctx := openCheckout(t, f, "promo=1&mode=success", paybrowser.LaunchOptions{})
+	fillAndSubmit(t, b, ctx)
+	waitOutcome(t, b, ctx, paybrowser.OutcomeSuccess)
+	onlyPayment(t, f)
+	if n := f.promoClicks.Load(); n != 0 {
+		t.Fatalf("优惠码按钮被点了 %d 次，期望 0 次", n)
 	}
 }
 

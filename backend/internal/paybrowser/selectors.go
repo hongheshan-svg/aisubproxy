@@ -43,7 +43,8 @@ var Sel = struct {
 	},
 	Zip: []string{`#billingAddress-postalCodeInput`, `input[name="postalCode"]`, `input[autocomplete="billing postal-code"]`},
 
-	PayButton: []string{`button[type="submit"]`, `.SubmitButton`},
+	// .SubmitButton 在前：主页面可能有别的 submit 按钮（如优惠码 Apply）排在支付按钮前面
+	PayButton: []string{`.SubmitButton`, `button[type="submit"]`},
 
 	Amount: []string{
 		`#OrderDetails-TotalAmount`, `[data-testid="product-summary-total-amount"]`,

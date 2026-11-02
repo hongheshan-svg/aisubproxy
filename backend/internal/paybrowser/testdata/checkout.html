@@ -26,6 +26,7 @@
     fielderror=文字           点支付后不发 /pay，只在主页面显示 .FieldError（可重复，按顺序显示多条），模拟前端校验
     cardbanner=文字           卡片 iframe 里一开始就有带这段文字的 [role="alert"]
     cardfielderror=文字       点支付后不发 /pay，只在卡片 iframe 里显示 .p-FieldError
+    promo=1                   支付表单前面多一个可见的优惠码 submit 按钮 Apply（点击会被服务端计数，支付不应点到它）
     nocvc=1                   卡片 iframe 里没有 CVC 框
     saved=1                   先显示已存卡，点「Use a different card」才出现卡片 iframe
     mangle=1                  模拟地址联想：整段输入城市时被改写成别的值，逐字键入不受影响
@@ -39,6 +40,11 @@
   <h1>ChatGPT Pro</h1>
   <div id="total-row"><span>Total due today</span> </div>
 </section>
+
+<form id="promo-form" hidden>
+  <label>Promotion code <input id="promo-code"></label>
+  <button type="submit">Apply</button>
+</form>
 
 <form id="payment-form">
   <div id="saved-card" hidden>
@@ -110,6 +116,15 @@
       document.getElementById(id).value = ''
     })
   })
+
+  if (q.get('promo') === '1') {
+    var promoForm = document.getElementById('promo-form')
+    promoForm.hidden = false
+    promoForm.addEventListener('submit', function (e) {
+      e.preventDefault()
+      fetch('/promo', { method: 'POST' })
+    })
+  }
 
   if (q.get('latepay') === '1') {
     var payButton = document.querySelector('.SubmitButton')

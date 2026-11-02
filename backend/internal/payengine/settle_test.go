@@ -446,6 +446,9 @@ func TestBackfillFindsApprovedAuthNeedsReview(t *testing.T) {
 			if g.State != StateNeedsReview || g.ErrorCode != "evidence_conflict" || g.Failure != "" {
 				t.Fatalf("补拉后才出现成功授权应转待人工: %+v", g)
 			}
+			if want := map[string]string{"页面被拒": "被拒", "页面校验未通过": "校验未通过"}[name]; !strings.Contains(g.ErrorMessage, want) {
+				t.Fatalf("转人工的说明应写明页面结果 %q: %q", want, g.ErrorMessage)
+			}
 			assertReleases(t, h, cardpool.ResultAborted)
 			if n := h.pool.count("BackfillRecent"); n != 1 {
 				t.Fatalf("应补拉 1 次: %d", n)

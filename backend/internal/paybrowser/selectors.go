@@ -50,7 +50,8 @@ var Sel = struct {
 		`#OrderDetails-TotalAmount`, `[data-testid="product-summary-total-amount"]`,
 		`#ProductSummary-totalAmount`, `.OrderDetails-total .CurrencyAmount`,
 	},
-	Success:     []string{`#payment-success`, `.SubmitButton--complete`, `[data-testid="payment-success"]`},
+	// 不用 .SubmitButton--complete：它可能只表示表单已填完。认不出成功只是多等一会儿，再靠查账号定论；误判成功会立刻关掉浏览器
+	Success:     []string{`#payment-success`, `[data-testid="payment-success"]`},
 	DeclineText: []string{`#payment-error`, `[role="alert"]`, `.p-FieldError`, `.FieldError`},
 	ChallengeFrame: []string{
 		`iframe[name="stripe-challenge-frame"]`, `iframe[src*="three-ds"]`,

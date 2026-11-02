@@ -27,6 +27,7 @@
     cardbanner=文字           卡片 iframe 里一开始就有带这段文字的 [role="alert"]
     cardfielderror=文字       点支付后不发 /pay，只在卡片 iframe 里显示 .p-FieldError
     promo=1                   支付表单前面多一个可见的优惠码 submit 按钮 Apply（点击会被服务端计数，支付不应点到它）
+    formcomplete=1            支付按钮一直带 SubmitButton--complete（Stripe 可能用它表示表单已填完，不代表付款成功）
     nocvc=1                   卡片 iframe 里没有 CVC 框
     saved=1                   先显示已存卡，点「Use a different card」才出现卡片 iframe
     mangle=1                  模拟地址联想：整段输入城市时被改写成别的值，逐字键入不受影响
@@ -116,6 +117,10 @@
       document.getElementById(id).value = ''
     })
   })
+
+  if (q.get('formcomplete') === '1') {
+    document.querySelector('.SubmitButton').classList.add('SubmitButton--complete')
+  }
 
   if (q.get('promo') === '1') {
     var promoForm = document.getElementById('promo-form')

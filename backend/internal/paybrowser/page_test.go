@@ -689,6 +689,15 @@ func TestSubmitPrefersSubmitButtonOverPromoApply(t *testing.T) {
 	}
 }
 
+// 按钮上的 SubmitButton--complete 不算付款成功：误判会立刻关掉浏览器，3DS 就走不下去了。
+func TestFormCompleteClassIsNotSuccess(t *testing.T) {
+	needChrome(t)
+	f := newFakeCheckout(t)
+	b, ctx := openCheckout(t, f, "formcomplete=1&mode=3ds", paybrowser.LaunchOptions{})
+	fillAndSubmit(t, b, ctx)
+	waitOutcome(t, b, ctx, paybrowser.OutcomeChallenge)
+}
+
 func TestFillRejectsBadCard(t *testing.T) {
 	b := &paybrowser.Browser{} // 校验在碰浏览器之前完成
 	for _, c := range []paybrowser.Card{

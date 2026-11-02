@@ -200,17 +200,25 @@ func (s *Service) verifyDeclined(ctx context.Context, j *job, accErr error, exha
 	case err != nil:
 		// 证据不全，走下面的等待或转人工
 	case approved:
-		s.verifyEscalate(ctx, j, "evidence_conflict", "证据冲突：支付页显示被拒，但该卡有成功授权")
+		s.verifyEscalate(ctx, j, "evidence_conflict", "证据冲突："+pageFailText(j.o.PageOutcome)+"，但该卡有成功授权")
 		return
 	case !pending && accErr == nil:
 		s.concludeDeclined(ctx, j)
 		return
 	}
 	if exhausted {
-		s.verifyEscalate(ctx, j, "evidence_unavailable", "支付页显示被拒，但一直无法确认账号与授权交易")
+		s.verifyEscalate(ctx, j, "evidence_unavailable", pageFailText(j.o.PageOutcome)+"，但一直无法确认账号与授权交易")
 		return
 	}
 	s.verifyReschedule(ctx, j)
+}
+
+// pageFailText 是转人工时对页面结果的描述。
+func pageFailText(pageOutcome string) string {
+	if pageOutcome == string(paybrowser.OutcomeFormRejected) {
+		return "支付页提示校验未通过"
+	}
+	return "支付页显示被拒"
 }
 
 // backfillAndRecheck 补拉一次交易后重新查授权。补拉出错或超时按证据不全处理，返回错误，由 verifyDeclined 走等待或转人工。

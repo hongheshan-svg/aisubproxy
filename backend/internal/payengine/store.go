@@ -264,3 +264,20 @@ func ordersInStates(ctx context.Context, states ...string) ([]Order, error) {
 	}
 	return collectOrders(rows)
 }
+
+// dueVerifying 返回确认中且到了下次检查时间的单据（按 id 升序）。
+func dueVerifying(ctx context.Context, now int64) ([]Order, error) {
+	rows, err := db.DB.QueryContext(ctx, `SELECT `+orderColumns+` FROM pay_orders
+		WHERE state = ? AND (next_check_at IS NULL OR next_check_at <= ?) ORDER BY id`, StateVerifying, now)
+	if err != nil {
+		return nil, err
+	}
+	return collectOrders(rows)
+}
+
+// setNextCheck 更新确认中单据的下次检查时间，不写时间线（定时检查不刷事件）。
+func setNextCheck(ctx context.Context, no string, at int64) error {
+	_, err := db.DB.ExecContext(ctx, `UPDATE pay_orders SET next_check_at = ?, updated_at = ? WHERE order_no = ? AND state = ?`,
+		at, time.Now().UTC().Unix(), no, StateVerifying)
+	return err
+}

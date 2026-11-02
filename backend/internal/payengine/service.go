@@ -2,6 +2,7 @@ package payengine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -51,13 +52,13 @@ type Browser interface {
 	Close()
 }
 
-// Timeouts 是各步骤的超时；测试可缩短。
+// Timeouts 是各步骤的超时；测试可缩短。VerifyTick 是确认协程扫描到期单据的间隔。
 type Timeouts struct {
-	PageLoad, Fill, SubmitResult, OTP, Fund, Verify, VerifyEvery, DeclineGrace time.Duration
+	PageLoad, Fill, SubmitResult, OTP, Fund, Verify, VerifyEvery, DeclineGrace, VerifyTick time.Duration
 }
 
 // DefaultTimeouts 返回引擎默认超时：页面加载 60 秒、填表 2 分钟、提交后等待页面结果 2 分钟、
-// 验证码 5 分钟、注资 3 分钟、确认 10 分钟（每 15 秒查一次）、被拒后等待授权推送 2 分钟。
+// 验证码 5 分钟、注资 3 分钟、确认 10 分钟（每 15 秒查一次）、被拒后等待授权推送 2 分钟；确认协程每 5 秒扫描一次。
 func DefaultTimeouts() Timeouts {
 	return Timeouts{
 		PageLoad:     60 * time.Second,
@@ -68,6 +69,7 @@ func DefaultTimeouts() Timeouts {
 		Verify:       10 * time.Minute,
 		VerifyEvery:  15 * time.Second,
 		DeclineGrace: 2 * time.Minute,
+		VerifyTick:   5 * time.Second,
 	}
 }
 
@@ -76,7 +78,7 @@ type Options struct {
 	Pool    Pool
 	ChatGPT func(proxyURL string) (ChatGPT, error)                               // nil → chatgpt.New
 	Browser func(ctx context.Context, proxyURL, shotDir string) (Browser, error) // nil → paybrowser.Launch
-	Now     func() time.Time                                                     // nil → time.Now
+	Now     func() time.Time                                                     // nil → time.Now；提交时间、确认时限与截图清理都用它
 	Alert   func(string)                                                         // nil → log.Printf
 	// ShotDir 是截图根目录，每单一个子目录；空则为 DB_PATH 所在目录下的 pay-shots。
 	ShotDir  string
@@ -115,8 +117,13 @@ func New(o Options) *Service {
 	if o.Timeouts != nil {
 		t = *o.Timeouts
 	}
+	if t.VerifyTick <= 0 {
+		t.VerifyTick = DefaultTimeouts().VerifyTick
+	}
 	return &Service{opts: o, t: t, kick: make(chan struct{}, 1), running: map[string]bool{}}
 }
+
+func (s *Service) now() time.Time { return s.opts.Now() }
 
 func newChatGPT(proxyURL string) (ChatGPT, error) {
 	c, err := chatgpt.New(proxyURL)
@@ -227,4 +234,52 @@ func (s *Service) Get(ctx context.Context, no string) (*Order, []Event, error) {
 // List 按 id 倒序分页列出单据，state 为空不筛选；返回总数。
 func (s *Service) List(ctx context.Context, state string, page, size int) ([]Order, int, error) {
 	return listOrders(ctx, state, page, size)
+}
+
+// Resolve 人工定论一张待人工的单据：result 为 succeeded 或 failed，note 去空白后不能为空，否则返回 ErrBadRequest。
+// 只改本单结果，不释放租约（转待人工时已释放）、不触发任何付款。needs_review 已写过一次终态字段，这里用 transition，
+// 不重写 finished_at。待人工的单一定已经提交，标记失败时记为 declined，绝不记成 not_submitted。
+func (s *Service) Resolve(ctx context.Context, no, result, note, by string) error {
+	note, by = strings.TrimSpace(note), strings.TrimSpace(by)
+	set := map[string]any{"resolved_by": by, "resolve_note": note}
+	label := "成功"
+	switch result {
+	case StateSucceeded:
+	case StateFailed:
+		label = "失败"
+		set["failure"] = FailureDeclined
+	default:
+		return fmt.Errorf("%w: 结果只能是 succeeded 或 failed", ErrBadRequest)
+	}
+	if note == "" {
+		return fmt.Errorf("%w: 备注不能为空", ErrBadRequest)
+	}
+	if by == "" {
+		return fmt.Errorf("%w: 缺少操作人", ErrBadRequest)
+	}
+	o, err := getOrder(ctx, no)
+	if err != nil {
+		return err
+	}
+	if o.State != StateNeedsReview {
+		return fmt.Errorf("%w: 只有待人工的单据才能定论，当前为 %s", ErrBadRequest, o.State)
+	}
+	msg := fmt.Sprintf("%s 人工定论为%s：%s", by, label, note)
+	err = transition(ctx, no, StateNeedsReview, result, "info", msg, set)
+	if errors.Is(err, ErrStateChanged) {
+		return fmt.Errorf("%w: 单据已被他人定论", ErrBadRequest)
+	}
+	return err
+}
+
+// Evidence 返回该单的卡在 submitted_at 之后的交易（新的在前）；未提交或没有卡时返回空。翻完所有页，查询出错如实返回。
+func (s *Service) Evidence(ctx context.Context, no string) ([]cardpool.Transaction, error) {
+	o, err := getOrder(ctx, no)
+	if err != nil {
+		return nil, err
+	}
+	if o.SubmittedAt == nil || o.CardID == "" {
+		return []cardpool.Transaction{}, nil
+	}
+	return s.txnsSince(ctx, o.CardID, *o.SubmittedAt)
 }

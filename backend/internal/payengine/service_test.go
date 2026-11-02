@@ -39,6 +39,10 @@ type harness struct {
 	br      *browserFactory
 	alerts  *alertLog
 	shotDir string
+
+	// 以下由 newPayHarness 设置
+	clock    *testClock
+	timeouts Timeouts
 }
 
 // newHarness 建内存库与主密钥，启用 plus/PH（上限 ₱1,200.00、注资 30 美元），装好全部替身；不启动工作协程。
@@ -328,22 +332,6 @@ func TestAmountUnreadableAborts(t *testing.T) {
 	}
 	if h.pool.total() != 0 {
 		t.Fatal("不应调用卡池")
-	}
-}
-
-func TestRealOrderStopsBeforePaying(t *testing.T) {
-	h := newHarness(t)
-	h.start(t)
-	g := waitDone(t, h.submit(t, false).OrderNo)
-	assertNotSubmitted(t, g, "pay_not_ready")
-	if g.AmountMinor != 112000 || g.SubmittedAt != nil {
-		t.Fatalf("应记金额且未提交: %+v", g)
-	}
-	if h.pool.total() != 0 {
-		t.Fatal("不应调用卡池")
-	}
-	if bs := h.br.browsers(); len(bs) != 1 || bs[0].count("Close") != 1 || bs[0].count("Submit") != 0 {
-		t.Fatal("浏览器应已关闭且未点支付")
 	}
 }
 

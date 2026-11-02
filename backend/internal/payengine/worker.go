@@ -6,13 +6,16 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"math/rand/v2"
 	"net/url"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/tuzi/cdk-recharge-system/internal/cardpool"
 	"github.com/tuzi/cdk-recharge-system/internal/chatgpt"
 	"github.com/tuzi/cdk-recharge-system/internal/paybrowser"
 )
@@ -31,18 +34,26 @@ func (s *Service) Kick() {
 	}
 }
 
-// Start 启动工作协程：收到 Kick 或每 10 秒按建单顺序取 queued 单据处理，
-// 同时处理的单据数不超过 LoadConcurrency()。ctx 结束时停止派发，处理中的单据随之中断。
+// Start 同步完成重启恢复后启动后台协程：工作协程（收到 Kick 或每 10 秒按建单顺序取 queued 单据处理，
+// 同时处理的单据数不超过 LoadConcurrency()）、确认协程（每 5 秒扫描确认中的单据）、截图清理协程（每天一次）。
+// 恢复没做完时不派发，工作协程每一轮先重试恢复。ctx 结束时全部停止，处理中的单据随之中断，留待下次启动恢复。
 func (s *Service) Start(ctx context.Context) {
-	s.loops.Add(1)
-	go s.loop(ctx)
+	recovered := true
+	if err := s.recoverOrders(ctx); err != nil {
+		recovered = false
+		log.Printf("[payengine] 重启恢复未完成，暂不派发新单据: %v", err)
+	}
+	s.loops.Add(3)
+	go s.loop(ctx, recovered)
+	go s.verifyLoop(ctx)
+	go s.shotLoop(ctx)
 	s.Kick()
 }
 
-// Wait 阻塞到工作协程与全部单据协程退出；调用前须先取消传给 Start 的 ctx。
+// Wait 阻塞到后台协程与全部单据协程退出；调用前须先取消传给 Start 的 ctx。
 func (s *Service) Wait() { s.loops.Wait() }
 
-func (s *Service) loop(ctx context.Context) {
+func (s *Service) loop(ctx context.Context, recovered bool) {
 	defer s.loops.Done()
 	ticker := time.NewTicker(dispatchInterval)
 	defer ticker.Stop()
@@ -55,6 +66,13 @@ func (s *Service) loop(ctx context.Context) {
 		}
 		if ctx.Err() != nil {
 			return
+		}
+		if !recovered {
+			if err := s.recoverOrders(ctx); err != nil {
+				log.Printf("[payengine] 重启恢复未完成，暂不派发新单据: %v", err)
+				continue
+			}
+			recovered = true
 		}
 		s.dispatch(ctx)
 	}
@@ -113,6 +131,11 @@ type job struct {
 	browser Browser
 	shots   int            // 已截图张数，用作截图名序号
 	pending map[string]any // 随下一次状态写入一并落库的列
+
+	lease      *cardpool.Lease // 提交前放弃时要释放的租约；提交之后由确认阶段按单据字段释放
+	holderName string          // 持卡人英文名，填表用
+	secrets    []string        // 要从文字里抹掉的 CVV、验证码
+	cardNo     *regexp.Regexp  // 匹配完整卡号（含空格或连字符分组），要从文字里抹掉
 }
 
 // note 记下一列，随下一次状态写入落库。
@@ -141,9 +164,31 @@ func (j *job) closeBrowser() {
 	}
 }
 
-// scrub 去掉文字中可能夹带的代理地址、代理账号密码（含各种转义形式）与会话 token；长串先替换。
+// useSession 记下解开的会话。刷新会覆盖 AccessToken，原 token 单独登记，免得它夹在错误文字里漏过脱敏。
+func (j *job) useSession(sess chatgpt.Session) {
+	j.sess = sess
+	j.secrets = append(j.secrets, sess.AccessToken)
+}
+
+// noteCardSecrets 登记完整卡号与 CVV：之后所有经过 scrub 的文字都会抹掉它们。
+func (j *job) noteCardSecrets(cardNo, cvv string) {
+	if digits := []rune(strings.TrimSpace(cardNo)); len(digits) > 0 {
+		parts := make([]string, len(digits))
+		for i, r := range digits {
+			parts[i] = regexp.QuoteMeta(string(r))
+		}
+		j.cardNo = regexp.MustCompile(strings.Join(parts, `[\s-]*`))
+	}
+	j.secrets = append(j.secrets, cvv)
+}
+
+// scrub 去掉文字中可能夹带的完整卡号、CVV、验证码、代理地址、代理账号密码（含各种转义形式）与会话 token；长串先替换。
+// 卡号最先处理：CVV 可能恰好是卡号的一段，先替换 CVV 会让卡号匹配不上。
 func (j *job) scrub(s string) string {
-	secrets := []string{j.proxy, j.sess.SessionToken, j.sess.AccessToken}
+	if j.cardNo != nil {
+		s = j.cardNo.ReplaceAllString(s, "***")
+	}
+	secrets := append([]string{j.proxy, j.sess.SessionToken, j.sess.AccessToken}, j.secrets...)
 	if u, err := url.Parse(j.proxy); err == nil && u.User != nil {
 		secrets = append(secrets, u.User.String())
 		if pw, ok := u.User.Password(); ok {
@@ -248,24 +293,55 @@ func (s *Service) process(ctx context.Context, o *Order) bool {
 	return true
 }
 
-// settle 按 run 的结果收尾：放弃原因写入失败终态；服务停止留待重启；
-// 其它意外错误（如写库失败）尝试以 internal_error 结束，免得单据卡在中间状态，再失败才只记日志。
+// settle 按 run 的结果收尾。一旦单据写入过 submitted_at，任何错误（放弃原因也好、意外错误也好）都转 verifying 交给确认协程：
+// 已点支付的单子记成「未提交」，用户会重复付款。提交之前的错误释放租约并以 failed / not_submitted 结束，
+// 其中意外错误（如写库失败）记 internal_error，免得单据卡在中间状态。写库再失败只打日志，留给重启恢复。
+// 服务停止时不收尾：单据与租约都留给重启恢复。
 func (s *Service) settle(ctx context.Context, j *job, err error) {
 	var f *stepFailure
 	switch {
 	case err == nil:
 	case ctx.Err() != nil:
 		log.Printf("[payengine] 单据 %s 在 %s 时服务停止，留待重启后处理", j.o.OrderNo, j.o.State)
-	case errors.As(err, &f):
-		if err := s.fail(ctx, j, f); err != nil {
-			log.Printf("[payengine] 单据 %s 写入失败结果出错: %v", j.o.OrderNo, j.scrub(err.Error()))
+	case j.o.SubmittedAt != nil:
+		msg := truncate(j.scrub(err.Error()), errorMessageLimit)
+		log.Printf("[payengine] 单据 %s 提交后在 %s 时出错，转确认: %s", j.o.OrderNo, j.o.State, msg)
+		s.event(ctx, j, "warn", "提交后出错："+msg, "")
+		if verr := s.beginVerify(ctx, j, paybrowser.OutcomeUnknown, msg, "页面结果不明，确认是否开通"); verr != nil {
+			log.Printf("[payengine] 单据 %s 转确认失败，留待重启恢复: %s", j.o.OrderNo, j.scrub(verr.Error()))
 		}
+	case errors.As(err, &f):
+		s.abandon(ctx, j, f)
 	default:
 		msg := j.scrub(err.Error())
 		log.Printf("[payengine] 单据 %s 在 %s 时中断: %s", j.o.OrderNo, j.o.State, msg)
-		if ferr := s.fail(ctx, j, &stepFailure{code: "internal_error", msg: "内部错误：" + msg}); ferr != nil {
-			log.Printf("[payengine] 单据 %s 写入失败结果出错: %v", j.o.OrderNo, j.scrub(ferr.Error()))
-		}
+		s.abandon(ctx, j, &stepFailure{code: "internal_error", msg: "内部错误：" + msg})
+	}
+}
+
+// abandon 处理提交之前的放弃：关浏览器、Release(aborted)、写 failed / not_submitted。
+func (s *Service) abandon(ctx context.Context, j *job, f *stepFailure) {
+	j.closeBrowser()
+	s.release(ctx, j, j.lease, cardpool.Outcome{Result: cardpool.ResultAborted})
+	j.lease = nil
+	if err := s.fail(ctx, j, f); err != nil {
+		log.Printf("[payengine] 单据 %s 写入失败结果出错: %s", j.o.OrderNo, j.scrub(err.Error()))
+	}
+}
+
+// release 释放租约并上报用卡结果。租约已失效（到期被卡池收回等）或其它错误都只记 warn 事件，不重试：
+// 卡池会自行回收到期租约，单据结果不受影响。
+func (s *Service) release(ctx context.Context, j *job, l *cardpool.Lease, o cardpool.Outcome) {
+	if l == nil {
+		return
+	}
+	err := s.opts.Pool.Release(ctx, l, o)
+	switch {
+	case err == nil:
+	case errors.Is(err, cardpool.ErrLeaseInvalid):
+		s.event(ctx, j, "warn", "租约已失效，卡已由卡池收回", "")
+	default:
+		s.event(ctx, j, "warn", "释放租约失败："+j.scrub(err.Error()), "")
 	}
 }
 
@@ -295,7 +371,7 @@ func (s *Service) check(ctx context.Context, j *job) error {
 	if err != nil {
 		return abort("session_unreadable", "会话密文无法解开（主密钥缺失或已更换）")
 	}
-	j.sess = sess
+	j.useSession(sess)
 	proxies, err := LoadProxies()
 	if err != nil {
 		return abort("proxy_unavailable", "读取地区代理失败：%v", err)
@@ -380,10 +456,179 @@ func (s *Service) openPage(ctx context.Context, j *job) error {
 	return nil
 }
 
-// pay 衔接读完金额之后的步骤 5–9（选卡注资、填表提交、3DS、确认开通）。
-// 尚未接入：真实付款单在此以 failed / not_submitted 结束，不调用卡池、不点支付。
-func (s *Service) pay(_ context.Context, _ *job) error {
-	return abort("pay_not_ready", "自动付款尚未开放，未提交")
+// pay 是读完金额之后的步骤 5–8：选卡注资、填表、记下提交时间后点支付、等页面结果（含 3DS），最后转确认阶段（步骤 9）。
+//
+// 只点一次支付的保证：Browser.Submit 的调用点只有 submitAndWait 这一处，只能从这里走到；
+// 进入它之前必须把 filling → submitted 写入成功（条件更新，同一单只能成功一次），写失败就不点。
+// 确认协程与重启恢复都不持有浏览器，走不到这里。
+func (s *Service) pay(ctx context.Context, j *job) error {
+	if err := s.fundCard(ctx, j); err != nil {
+		return err
+	}
+	if err := s.fillCard(ctx, j); err != nil {
+		return err
+	}
+	at := s.now().Unix()
+	if err := s.advance(ctx, j, StateSubmitted, "已记下提交时间，点击支付", map[string]any{"submitted_at": at}); err != nil {
+		return err
+	}
+	j.o.SubmittedAt = &at
+	out, text, err := s.submitAndWait(ctx, j)
+	if err != nil {
+		return err
+	}
+	return s.beginVerify(ctx, j, out, text, pageOutcomeNote(out))
+}
+
+func pageOutcomeNote(out paybrowser.Outcome) string {
+	switch out {
+	case paybrowser.OutcomeSuccess:
+		return "支付页显示成功，确认是否开通"
+	case paybrowser.OutcomeDeclined:
+		return "支付页显示被拒，等待授权推送后定论"
+	}
+	return "支付页没有明确结果，确认是否开通"
+}
+
+// fundCard 是步骤 5：选卡、记下租约、注资并等注资单定论。资金操作绝不自动重发：Fund 只调一次，结果不明就放弃，由卡池对账收敛。
+func (s *Service) fundCard(ctx context.Context, j *job) error {
+	if err := s.advance(ctx, j, StateFunding, "选卡注资", nil); err != nil {
+		return err
+	}
+	l, err := s.opts.Pool.Acquire(ctx, cardpool.AcquireRequest{PlanKey: j.o.PlanKey, OrderRef: j.o.OrderNo, AccountEmail: j.o.AccountEmail})
+	if errors.Is(err, cardpool.ErrNoCard) {
+		return abort("no_card", "选卡失败：%v", err)
+	}
+	if err != nil {
+		return abort("acquire_failed", "选卡失败：%v", err)
+	}
+	j.lease = l
+	j.o.CardID, j.o.LeaseToken = l.CardID, l.Token
+	j.note("card_id", l.CardID)
+	j.note("lease_token", l.Token)
+
+	// 姓名先于注资确认：缺姓名填不了表，没必要先把钱转进卡里
+	info, err := s.opts.Pool.CardInfo(ctx, l.CardID)
+	if err != nil {
+		return abort("card_info_failed", "读取卡信息失败：%v", err)
+	}
+	j.holderName = strings.TrimSpace(info.HolderFirstName + " " + info.HolderLastName)
+	if j.holderName == "" {
+		return abort("card_info_failed", "该卡没有持卡人姓名，无法填写账单信息")
+	}
+	// 租约在注资之前落库，重启恢复才能按单据字段释放
+	if err := s.advance(ctx, j, StateFunding, "已选卡，尾号 "+info.Last4, map[string]any{"card_last4": info.Last4}); err != nil {
+		return err
+	}
+
+	fctx, cancel := context.WithTimeout(ctx, s.t.Fund)
+	defer cancel()
+	fo, err := s.opts.Pool.Fund(fctx, l, j.o.FundCents)
+	if err != nil {
+		return fundAbort(err)
+	}
+	if err := s.advance(ctx, j, StateFunding, "已提交注资，等待到账", map[string]any{"fund_order_no": fo.OutOrderNo}); err != nil {
+		return err
+	}
+	done, err := s.opts.Pool.WaitOrder(fctx, fo.OutOrderNo)
+	if err != nil {
+		return fundAbort(err)
+	}
+	if done.State != cardpool.StateSuccess {
+		return abort("fund_failed", "注资未成功（%s）：%s", done.State, done.LastError)
+	}
+	return nil
+}
+
+// fundAbort 把注资出错转成放弃原因：超时记 fund_timeout，其余记 fund_failed。两者都可能已经到账，由卡池回收转回。
+func fundAbort(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return abort("fund_timeout", "注资超时，结果不明，已放弃")
+	}
+	return abort("fund_failed", "注资失败：%v", err)
+}
+
+// fillCard 是步骤 6：取卡号、填卡与免税州账单地址。卡号与 CVV 只留在内存，并立刻登记脱敏。
+func (s *Service) fillCard(ctx context.Context, j *job) error {
+	if err := s.advance(ctx, j, StateFilling, "注资成功，填写支付表单", nil); err != nil {
+		return err
+	}
+	fctx, cancel := context.WithTimeout(ctx, s.t.Fill)
+	defer cancel()
+	sv, err := s.opts.Pool.Sensitive(fctx, j.lease)
+	if err != nil {
+		return abort("card_sensitive_failed", "取卡号失败：%v", err)
+	}
+	j.noteCardSecrets(sv.CardNo, sv.CVV2)
+	mm, yy, err := parseExpiry(sv.ExpiryDate)
+	if err != nil {
+		return abort("card_expiry_invalid", "%v", err)
+	}
+	bill := TaxFreeAddress(rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())))
+	bill.Name = j.holderName
+	j.note("billing_state", bill.State)
+	card := paybrowser.Card{Number: sv.CardNo, ExpMonth: mm, ExpYear: yy, CVC: sv.CVV2}
+	if err := j.browser.Fill(fctx, card, bill); err != nil {
+		return abort("fill_failed", "填写支付表单失败：%v", err)
+	}
+	return nil
+}
+
+// submitAndWait 是步骤 7–8：点支付（全程唯一一次）、等页面结果；出现 3DS 框时取验证码填入一次再等结果。
+// 第二次出现验证框不再填：等验证码的时间已计入卡池租约预算，交给确认阶段定论。
+func (s *Service) submitAndWait(ctx context.Context, j *job) (paybrowser.Outcome, string, error) {
+	sctx, cancel := context.WithTimeout(ctx, s.t.SubmitResult)
+	defer cancel()
+	if err := j.browser.Submit(sctx); err != nil {
+		return paybrowser.OutcomeUnknown, "", fmt.Errorf("点击支付时出错：%w", err)
+	}
+	out, text, err := j.browser.WaitOutcome(ctx, s.t.SubmitResult)
+	if err != nil {
+		return paybrowser.OutcomeUnknown, "", err
+	}
+	if out != paybrowser.OutcomeChallenge {
+		return out, text, nil
+	}
+	if err := s.answerChallenge(ctx, j); err != nil {
+		return paybrowser.OutcomeUnknown, "", err
+	}
+	out, text, err = j.browser.WaitOutcome(ctx, s.t.SubmitResult)
+	if err != nil {
+		return paybrowser.OutcomeUnknown, "", err
+	}
+	if out == paybrowser.OutcomeChallenge {
+		s.event(ctx, j, "warn", "填写验证码后再次出现验证框，不再填写", "")
+		return paybrowser.OutcomeUnknown, "", nil
+	}
+	return out, text, nil
+}
+
+// answerChallenge 是步骤 8：截 3DS 验证框、等该卡在提交之后收到的验证码、填入并提交。
+func (s *Service) answerChallenge(ctx context.Context, j *job) error {
+	if err := s.advance(ctx, j, StateRequires3DS, "出现 3DS 验证框，等待验证码", nil); err != nil {
+		return err
+	}
+	shotCtx, cancelShot := context.WithTimeout(ctx, s.t.PageLoad)
+	s.shot(shotCtx, j, "challenge", paybrowser.ShotChallenge)
+	cancelShot()
+
+	octx, cancel := context.WithTimeout(ctx, s.t.OTP)
+	defer cancel()
+	otp, err := s.opts.Pool.WaitOTP(octx, j.o.CardID, time.Unix(*j.o.SubmittedAt, 0))
+	if errors.Is(err, context.DeadlineExceeded) {
+		return errors.New("等待验证码超时")
+	}
+	if err != nil {
+		return fmt.Errorf("等待验证码失败：%w", err)
+	}
+	j.secrets = append(j.secrets, otp)
+	ectx, cancelEnter := context.WithTimeout(ctx, s.t.SubmitResult)
+	defer cancelEnter()
+	if err := j.browser.EnterOTP(ectx, otp); err != nil {
+		return fmt.Errorf("填写验证码失败：%w", err)
+	}
+	s.event(ctx, j, "info", "已填写验证码", "")
+	return nil
 }
 
 // sessionCookies 把会话转成注入 chatgpt.com 的 cookie。

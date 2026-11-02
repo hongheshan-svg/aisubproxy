@@ -16,7 +16,7 @@ const (
 	settingConcurrency = "pay_concurrency"
 	settingProxies     = "pay_region_proxies"
 
-	maxConcurrency = 3
+	MaxConcurrency = 3
 )
 
 // PlanKeys 是支持的套餐键（顺序即展示顺序）。
@@ -204,7 +204,7 @@ func LoadConcurrency() int {
 		return 1
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(raw))
-	if err != nil || n < 1 || n > maxConcurrency {
+	if err != nil || n < 1 || n > MaxConcurrency {
 		return 1
 	}
 	return n
@@ -212,8 +212,8 @@ func LoadConcurrency() int {
 
 // ValidateConcurrency 检查并发数是否在 1~3；保存前可先调用，避免整体保存时一半成功一半失败。
 func ValidateConcurrency(n int) error {
-	if n < 1 || n > maxConcurrency {
-		return fmt.Errorf("%w: 并发数须在 1 到 %d 之间", ErrBadRequest, maxConcurrency)
+	if n < 1 || n > MaxConcurrency {
+		return fmt.Errorf("%w: 并发数须在 1 到 %d 之间", ErrBadRequest, MaxConcurrency)
 	}
 	return nil
 }

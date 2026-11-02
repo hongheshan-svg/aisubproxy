@@ -230,6 +230,7 @@ func payConfigBody(s *payengine.Service) (gin.H, error) {
 		"concurrency":     payengine.LoadConcurrency(),
 		"lease_minutes":   pol.LeaseMinutes,
 		"max_pay_minutes": int(math.Ceil(maxPay.Minutes())),
+		"max_concurrency": payengine.MaxConcurrency,
 		"lease_warning":   time.Duration(pol.LeaseMinutes)*time.Minute < maxPay,
 	}, nil
 }

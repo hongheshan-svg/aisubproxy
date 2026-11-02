@@ -1,12 +1,7 @@
 <template>
   <div class="space-y-4">
+    <AdminPageHeader title="卡台 Webhook" description="接收卡台主动推送的兑换结果与卡交易事件" class="!mb-0" />
     <el-card shadow="never">
-      <template #header>
-        <div class="flex items-center justify-between">
-          <span class="font-semibold">卡台 Webhook 回调</span>
-          <el-tag size="small" type="success">验签 + 幂等入库</el-tag>
-        </div>
-      </template>
       <p class="text-sm text-muted mb-3">
         兑换结果仍可用轮询 <code>/public/cdk/result</code>；配置 Webhook 后卡台会主动推送
         <code>gpt_direct.completed</code> / 卡交易等事件（OpenAPI §7）。
@@ -79,6 +74,7 @@
 </template>
 
 <script setup lang="ts">
+import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { onMounted, ref } from 'vue'
 import { authFetch } from '../../lib/api'
 import { dialog } from '../../lib/dialog'

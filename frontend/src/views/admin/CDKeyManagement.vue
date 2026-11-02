@@ -1,9 +1,8 @@
 <template>
   <div class="pb-2 space-y-4">
-    <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-      <div>
-        <h1 class="text-2xl font-bold text-ink">CDK 卡密</h1>
-        <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
+    <AdminPageHeader title="CDK 卡密" class="!mb-0">
+      <template #description>
+        <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
           <el-tag :type="configured ? 'success' : 'danger'" size="small">
             {{ configured ? 'API 已配置' : '未配置 Key' }}
           </el-tag>
@@ -12,10 +11,10 @@
             <el-button link type="primary" @click="copyText(egressIp)">复制</el-button>
           </span>
           <span v-if="balanceText">余额 <b class="mono text-ink">{{ balanceText }}</b></span>
-          <span class="text-subtle">{{ priceSource }} · v{{ pricingVersion ?? '—' }}</span>
+          <span v-if="priceSource || pricingVersion != null" class="text-subtle">{{ priceSource }}<template v-if="pricingVersion != null"> · v{{ pricingVersion }}</template></span>
         </div>
-      </div>
-      <div class="flex flex-wrap gap-2">
+      </template>
+      <template #actions>
         <el-popover placement="bottom-end" :width="420" trigger="click">
           <template #reference>
             <el-button size="small">代理换码</el-button>
@@ -32,15 +31,15 @@
         </el-popover>
         <router-link to="/ops/integration" class="btn-secondary !py-1.5 !px-3 text-sm">卡台配置</router-link>
         <el-button size="small" :loading="loadingMeta" @click="refreshAll">刷新</el-button>
-      </div>
-    </div>
+      </template>
+    </AdminPageHeader>
 
     <label class="text-sm">{{ t('xPremium.product') }}
       <select v-model="directProduct" class="input !w-48" :disabled="issuing || loadingMeta" @change="loadMeta">
         <option value="gpt">ChatGPT</option><option value="x">X Premium</option><option value="grok">Grok</option><option value="claude">Claude</option>
       </select>
     </label>
-    <div v-if="metaError" class="alert alert-error">{{ metaError }}</div>
+    <ApiErrorNotice :message="metaError" />
     <el-button v-if="!configured" type="warning" size="small" @click="$router.push('/ops/integration')">
       去配置 API Key
     </el-button>
@@ -326,6 +325,8 @@
 </template>
 
 <script setup lang="ts">
+import ApiErrorNotice from '../../components/ApiErrorNotice.vue'
+import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { useI18n } from 'vue-i18n'
 const { t } = useI18n()
 import { computed, onMounted, reactive, ref, watch } from 'vue'

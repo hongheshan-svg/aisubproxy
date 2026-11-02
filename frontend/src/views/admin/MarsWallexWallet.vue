@@ -1,10 +1,7 @@
 <template>
   <div class="space-y-4">
+    <AdminPageHeader title="MarsWallex 钱包" description="主钱包与子账户、充值地址、币种兑换、转账与流水" class="!mb-0" />
     <div class="card space-y-3">
-      <div>
-        <h2 class="text-xl font-bold text-ink">MarsWallex 钱包</h2>
-        <p class="text-sm text-muted mt-1">主钱包与子账户、充值地址、兑换、转账与流水</p>
-      </div>
 
       <el-tabs v-model="tab" @tab-change="onTabChange">
         <!-- ============ 账户 ============ -->
@@ -69,7 +66,7 @@
         </el-tab-pane>
 
         <!-- ============ 兑换 ============ -->
-        <el-tab-pane label="兑换" name="conversion">
+        <el-tab-pane label="币种兑换" name="conversion">
           <el-form label-position="top" class="max-w-xl" @submit.prevent>
             <el-form-item label="卖出币种（主钱包余额币种）">
               <el-select v-model="conv.sell_currency" style="width: 100%">
@@ -229,6 +226,7 @@
 </template>
 
 <script setup lang="ts">
+import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { dialog } from '../../lib/dialog'
 import { copyToClipboard } from '../../lib/clipboard'

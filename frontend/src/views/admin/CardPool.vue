@@ -1,9 +1,6 @@
 <template>
   <div class="space-y-4">
-    <div class="card">
-      <h2 class="text-xl font-bold text-ink">卡池</h2>
-      <p class="text-sm text-muted mt-1">MarsWallex 卡池：库存、卡、持卡人、单据、交易与策略</p>
-    </div>
+    <AdminPageHeader title="卡池" description="MarsWallex 卡池：库存、卡、持卡人、单据、交易与策略" class="!mb-0" />
 
     <div class="card">
       <el-tabs v-model="tab">
@@ -12,10 +9,11 @@
           <div class="flex justify-end mb-2">
             <el-button size="small" :loading="ovLoading" @click="loadOverview">刷新</el-button>
           </div>
+          <ApiErrorNotice v-if="ovConfigError" :message="ovConfigError" />
           <div v-if="overview" class="space-y-4">
             <div>
               <div class="text-xs uppercase tracking-wide text-muted mb-1">主钱包余额</div>
-              <p v-if="overview.balance_error" class="text-sm text-warn">{{ overview.balance_error }}</p>
+              <ApiErrorNotice v-if="overview.balance_error" :message="overview.balance_error" />
               <el-table v-else :data="overview.main_balances" size="small" border empty-text="暂无余额">
                 <el-table-column prop="currency" label="币种" width="100" />
                 <el-table-column prop="available_balance" label="可用" min-width="120" />
@@ -554,6 +552,9 @@
 </template>
 
 <script setup lang="ts">
+import ApiErrorNotice from '../../components/ApiErrorNotice.vue'
+import { mapApiError } from '../../lib/errors'
+import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import CardholderForm from './components/CardholderForm.vue'
@@ -675,12 +676,23 @@ function canViewSensitive(c: Card) {
 // ---------- 概览 ----------
 const overview = ref<Overview | null>(null)
 const ovLoading = ref(false)
+const ovConfigError = ref('')
 
 async function loadOverview() {
   ovLoading.value = true
   try {
     const r = await api<Overview>('/overview')
-    if (!r.ok) return dialog.toast(errText(r, '加载概览失败'), 'err')
+    if (!r.ok) {
+      // 未配置凭证：只在页面内给一个带「去配置」的提示，不再弹 toast
+      const m = mapApiError(errText(r, '加载概览失败'))
+      if (m.config) {
+        ovConfigError.value = m.raw
+        overview.value = null
+        return
+      }
+      return dialog.toast(m.raw, 'err')
+    }
+    ovConfigError.value = ''
     overview.value = r.data
   } finally {
     ovLoading.value = false
@@ -705,7 +717,10 @@ async function loadProducts() {
   if (r.ok) {
     products.value = r.data.items || []
     ensureTargetRows()
-  } else dialog.toast(errText(r, '加载产品失败'), 'warn')
+  } else if (!mapApiError(errText(r, '')).config) {
+    // 未配置凭证已在概览里提示（带「去配置」），这里不再重复弹 toast
+    dialog.toast(errText(r, '加载产品失败'), 'warn')
+  }
 }
 
 // ---------- 卡 ----------

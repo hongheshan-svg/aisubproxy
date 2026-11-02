@@ -1,5 +1,6 @@
 <template>
   <div class="space-y-4">
+    <AdminPageHeader title="卡台选卡规则" description="卡台（ZovoCard）开卡产品的在线状态、自动选卡优先级与选卡策略" class="!mb-0" />
 
     <!-- 产品在线状态 -->
     <div class="card">
@@ -307,6 +308,7 @@
 </template>
 
 <script setup lang="ts">
+import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { authFetch } from '../../lib/api'
 import { dialog } from '../../lib/dialog'

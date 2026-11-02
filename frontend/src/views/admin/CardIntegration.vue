@@ -1,36 +1,19 @@
 <template>
   <div class="space-y-4">
-    <!-- 出口 IP -->
-    <div class="card egress-hero">
-      <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <div class="text-xs uppercase tracking-wide text-muted">本机出口 IP · 卡台白名单</div>
-          <div class="mt-1 flex flex-wrap items-baseline gap-3">
-            <span class="text-3xl font-bold mono text-ink">{{ egressIp || '…' }}</span>
-            <el-tag v-if="egressIp" size="small" effect="dark" type="warning">填到卡台 API Key 白名单</el-tag>
-          </div>
-          <p class="text-xs text-subtle mt-2">发码/拉价格/余额从此 IP 出网（不是浏览器 IP）</p>
-        </div>
-        <div class="flex gap-2">
-          <el-button type="primary" :disabled="!egressIp" @click="copyText(egressIp)">复制 IP</el-button>
-          <el-button :loading="loadingNet" @click="loadNetwork">重探测</el-button>
-        </div>
-      </div>
-    </div>
+    <AdminPageHeader class="!mb-0" title="卡台 ZovoCard" description="Base 用站点根；Open API / CDK 路径自动拼接。发码、拉价格、查余额都从本机出口 IP 出网。">
+      <template #actions>
+        <span class="egress-badge" title="填到卡台 API Key 白名单（不是浏览器 IP）">
+          出口 IP <b class="mono">{{ egressIp || '…' }}</b>
+        </span>
+        <el-button size="small" :disabled="!egressIp" @click="copyText(egressIp)">复制</el-button>
+        <el-button size="small" :loading="loadingNet" @click="loadNetwork">重探测</el-button>
+        <el-tag v-if="hints.card_api_key_configured" type="success" effect="plain">Key 已存</el-tag>
+        <el-tag v-else type="info" effect="plain">Key 未配置</el-tag>
+      </template>
+    </AdminPageHeader>
 
     <!-- 配置 -->
     <div class="card space-y-4">
-      <div class="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <h2 class="text-xl font-bold text-ink">卡台接入</h2>
-          <p class="text-sm text-muted mt-1">Base 用站点根；Open API / CDK 路径自动拼接</p>
-        </div>
-        <div class="flex gap-2">
-          <el-tag v-if="hints.card_api_key_configured" type="success" effect="plain">Key 已存</el-tag>
-          <el-tag v-else type="info" effect="plain">Key 未配置</el-tag>
-        </div>
-      </div>
-
       <div class="flex flex-wrap gap-2">
         <el-button round :type="presetActive === 'prod' ? 'primary' : 'default'" @click="applyPreset('prod')">
           生产 · zovocard.com
@@ -206,6 +189,7 @@
 </template>
 
 <script setup lang="ts">
+import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { authFetch } from '../../lib/api'
 import { dialog } from '../../lib/dialog'
@@ -441,6 +425,7 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+.egress-badge { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; font-size: 12px; background: var(--warn-soft); color: var(--warn); }
 .egress-hero {
   background: linear-gradient(120deg, var(--primary-soft), transparent 55%);
   border-color: var(--brd-2);

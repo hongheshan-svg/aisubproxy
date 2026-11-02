@@ -1,14 +1,11 @@
 <template>
   <div class="space-y-4">
+    <AdminPageHeader title="自动付款" description="用 ChatGPT 会话和卡池里的卡完成套餐付款：发起付款、付款订单与付款配置" class="!mb-0" />
     <div class="card space-y-3">
-      <div>
-        <h2 class="text-xl font-bold text-ink">MarsWallex 兑换</h2>
-        <p class="text-sm text-muted mt-1">用 ChatGPT 会话和卡池里的卡完成套餐付款：测试兑换、订单与配置</p>
-      </div>
 
       <el-tabs v-model="tab" @tab-change="onTabChange">
         <!-- ============ 测试兑换 ============ -->
-        <el-tab-pane label="测试兑换" name="test">
+        <el-tab-pane label="发起付款" name="test">
           <el-alert v-if="config?.lease_warning" type="warning" :closable="false" show-icon class="mb-3" :title="leaseWarningText" />
           <div class="space-y-3 max-w-3xl" v-loading="configLoading">
             <div>
@@ -25,7 +22,7 @@
               <el-select v-model="region" placeholder="地区" style="width: 140px">
                 <el-option v-for="r in regionList" :key="r" :label="r" :value="r" />
               </el-select>
-              <el-switch v-model="dryRun" active-text="试运行（不选卡、不付款）" />
+              <el-switch v-model="dryRun" active-text="试运行（不选卡、不付款）" inactive-text="关闭 = 真实付款" />
             </div>
             <div class="text-sm">
               <template v-if="regionConf && regionConf.cap_minor > 0">
@@ -36,15 +33,15 @@
             </div>
             <div v-if="submitBlockReason" class="text-sm text-warn">{{ submitBlockReason }}</div>
             <div>
-              <el-button type="primary" :loading="submitting" :disabled="!!submitBlockReason || !session.trim()" @click="submit">
-                {{ dryRun ? '试运行' : '提交付款' }}
+              <el-button :type="dryRun ? 'primary' : 'danger'" :loading="submitting" :disabled="!!submitBlockReason || !session.trim()" @click="submit">
+                {{ dryRun ? '试运行' : '真实付款' }}
               </el-button>
             </div>
           </div>
         </el-tab-pane>
 
         <!-- ============ 订单 ============ -->
-        <el-tab-pane label="订单" name="orders">
+        <el-tab-pane label="付款订单" name="orders">
           <div class="flex flex-wrap items-center gap-2 mb-3">
             <el-select v-model="stateFilter" clearable placeholder="全部状态" style="width: 160px" @change="onFilterChange">
               <el-option v-for="s in STATES" :key="s" :label="stateLabel(s)" :value="s" />
@@ -86,11 +83,14 @@
         </el-tab-pane>
 
         <!-- ============ 配置 ============ -->
-        <el-tab-pane label="配置" name="config">
+        <el-tab-pane label="付款配置" name="config">
           <el-alert v-if="config?.lease_warning" type="warning" :closable="false" show-icon class="mb-3" :title="leaseWarningText" />
           <div class="space-y-4" v-loading="configLoading">
             <div v-for="p in plansForm" :key="p.key" class="space-y-2">
-              <div class="font-semibold">{{ p.label || p.key }}</div>
+              <div class="font-semibold">
+                {{ p.label || p.key }}
+                <el-tag size="small" class="ml-2" :type="p.rows.some((r: any) => r.enabled) ? 'success' : 'info'">已启用 {{ p.rows.filter((r: any) => r.enabled).length }}/{{ p.rows.length }}</el-tag>
+              </div>
               <el-table :data="p.rows" size="small" border>
                 <el-table-column label="地区" width="70" prop="region" />
                 <el-table-column label="启用" width="70">
@@ -234,6 +234,7 @@
 </template>
 
 <script setup lang="ts">
+import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { authFetch } from '../../lib/api'
 import { dialog } from '../../lib/dialog'
@@ -413,7 +414,8 @@ async function submit() {
       const rc = pc?.regions?.[reg]
       if (!rc) return
       const ok = await dialog.confirm(
-        `将从卡池取一张卡注资 ${usd(rc.fund_cents)} 美元并真实付款，应付金额上限 ${formatMinor(rc.cap_minor, rc.currency)}。确认提交？`,
+        `套餐：${pc?.label || plan}\n地区：${reg}\n卡：付款时从卡池选卡（提交时尚未确定卡尾号）\n` +
+          `将取一张卡注资 ${usd(rc.fund_cents)} 美元并真实付款，应付金额上限 ${formatMinor(rc.cap_minor, rc.currency)}。\n确认真实付款？`,
         { title: '确认付款', okText: '确认付款', danger: true },
       )
       if (!ok) return

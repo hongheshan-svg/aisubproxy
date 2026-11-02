@@ -1,16 +1,10 @@
 <template>
   <div class="pb-2 space-y-5">
-    <div class="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-      <div>
-        <h1 class="text-3xl font-bold text-ink">兑换对账</h1>
-        <p class="text-sm text-muted mt-2">
-          卡台 CDK 兑换订单：开通邮箱、用卡、开通时间、实付金额、CDK 消耗/释放状态
-        </p>
-      </div>
-      <div class="flex flex-wrap gap-2">
+    <AdminPageHeader title="CDK 兑换订单" description="卡台 CDK 兑换订单：开通邮箱、用卡、开通时间、实付金额、CDK 消耗/释放状态" class="!mb-0">
+      <template #actions>
         <el-button :loading="loading" @click="load">刷新</el-button>
-      </div>
-    </div>
+      </template>
+    </AdminPageHeader>
 
     <div class="card !py-3 flex flex-wrap items-center gap-3 text-sm">
       <span class="text-muted">共 <b class="mono text-ink">{{ total }}</b> 笔</span>
@@ -34,7 +28,7 @@
       <el-button @click="onFilterChange">筛选</el-button>
     </div>
 
-    <div v-if="error" class="alert alert-error">{{ error }}</div>
+    <ApiErrorNotice :message="error" />
 
     <div class="card overflow-hidden !p-0">
       <el-table :data="displayRows" v-loading="loading" size="small" stripe empty-text="暂无兑换订单">
@@ -157,6 +151,8 @@
 </template>
 
 <script setup lang="ts">
+import ApiErrorNotice from '../../components/ApiErrorNotice.vue'
+import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { computed, onMounted, ref } from 'vue'
 import { authFetch } from '../../lib/api'
 import { dialog } from '../../lib/dialog'

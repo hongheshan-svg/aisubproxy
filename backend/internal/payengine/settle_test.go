@@ -580,6 +580,58 @@ func TestPendingAuthDoesNotDecline(t *testing.T) {
 	}
 }
 
+// R26：平台的状态取值未实测，判定默认不放行：只有 failed 才算没扣款，其余取值都算还没定论；退款与冲正不参与。
+func TestAuthStatusDefaultsToPending(t *testing.T) {
+	txn := func(kind, status string, at int64) cardpool.Transaction {
+		return cardpool.Transaction{TransactionID: "T1", Kind: kind, CardID: testCardID, Status: status, OccurredAt: &at, UpdatedAt: at}
+	}
+	declinedAfterGrace := func(t *testing.T, kind, status string) (*harness, *Order) {
+		t.Helper()
+		h := declinedHarness(t)
+		h.pool.listTxns = pagedTxns([]cardpool.Transaction{txn(kind, status, h.clock.Now().Unix()+5)})
+		h.start(t)
+		o := h.submit(t, false)
+		waitState(t, o.OrderNo, StateVerifying)
+		h.clock.Advance(h.timeouts.DeclineGrace + time.Second)
+		return h, o
+	}
+	for _, c := range [][2]string{{"SETTLE", "approved"}, {"settle", "APPROVED"}} {
+		t.Run("算成功授权/"+c[0]+"/"+c[1], func(t *testing.T) {
+			_, o := declinedAfterGrace(t, c[0], c[1])
+			if g := waitDone(t, o.OrderNo); g.State != StateNeedsReview || g.ErrorCode != "evidence_conflict" {
+				t.Fatalf("应转待人工: %+v", g)
+			}
+		})
+	}
+	for _, c := range [][2]string{{"AUTH", "reversed"}, {"AUTH", ""}, {"SETTLE", "pending"}, {"SETTLE", "reversed"}, {"SETTLE", ""}} {
+		t.Run("算未定论/"+c[0]+"/"+c[1], func(t *testing.T) {
+			h, o := declinedAfterGrace(t, c[0], c[1])
+			base := h.pool.count("ListTransactions")
+			for deadline := time.Now().Add(5 * time.Second); h.pool.count("ListTransactions") < base+3; {
+				if time.Now().After(deadline) {
+					t.Fatal("宽限期后应继续检查交易")
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			if g := mustOrder(t, o.OrderNo); g.State != StateVerifying {
+				t.Fatalf("状态没定论时不应定被拒: %+v", g)
+			}
+			h.clock.Advance(h.timeouts.Verify)
+			if g := waitDone(t, o.OrderNo); g.State != StateNeedsReview || g.ErrorCode != "evidence_unavailable" {
+				t.Fatalf("一直没定论应转待人工: %+v", g)
+			}
+		})
+	}
+	for _, c := range [][2]string{{"AUTH", "failed"}, {"SETTLE", "FAILED"}, {"AUTH_REVERSAL", "approved"}, {"AUTH_REVERSAL", ""}, {"REFUND", "approved"}, {"REFUND", "pending"}} {
+		t.Run("不算/"+c[0]+"/"+c[1], func(t *testing.T) {
+			_, o := declinedAfterGrace(t, c[0], c[1])
+			if g := waitDone(t, o.OrderNo); g.State != StateFailed || g.Failure != FailureDeclined {
+				t.Fatalf("应定被拒: %+v", g)
+			}
+		})
+	}
+}
+
 // captureLog 把标准日志重定向到缓冲区；须在 h.start 之前调用，才能在工作协程退出后还原。
 func captureLog(t *testing.T) *lockedBuffer {
 	t.Helper()

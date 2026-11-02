@@ -227,8 +227,10 @@ func authWindowStart(submittedAt int64) int64 {
 	return submittedAt - int64(authClockSkew/time.Second)
 }
 
-// verifyAuth 翻完该卡在授权窗口内（见 authWindowStart）的交易，看有没有成功授权、处理中的授权。
-// 平台状态原样入库（文档是小写，实际可能有大写），比较时不区分大小写。
+// verifyAuth 翻完该卡在授权窗口内（见 authWindowStart）的交易，看有没有成功授权、未定论的授权。
+// 只看 AUTH 与 SETTLE：approved 算成功，failed 不算，其余任何取值（含空串、未知值）都算未定论。
+// 文档枚举 AUTH 为 approved/failed/pending、SETTLE 为 approved/pending，平台未实测，所以默认不放行：
+// 把已扣款的单定成 declined 是最贵的错误，多一次人工核对不是。平台状态原样入库，比较时不区分大小写。
 func (s *Service) verifyAuth(ctx context.Context, o *Order) (approved, pending bool, err error) {
 	if o.CardID == "" {
 		return false, false, errors.New("单据没有记录卡")
@@ -242,13 +244,13 @@ func (s *Service) verifyAuth(ctx context.Context, o *Order) (approved, pending b
 		return false, false, err
 	}
 	for _, t := range list {
-		if !strings.EqualFold(t.Kind, "AUTH") {
+		if !strings.EqualFold(t.Kind, "AUTH") && !strings.EqualFold(t.Kind, "SETTLE") {
 			continue
 		}
 		switch {
 		case strings.EqualFold(t.Status, "approved"):
 			approved = true
-		case strings.EqualFold(t.Status, "pending"):
+		case !strings.EqualFold(t.Status, "failed"):
 			pending = true
 		}
 	}

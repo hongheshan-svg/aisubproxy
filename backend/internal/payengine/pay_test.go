@@ -268,17 +268,147 @@ func TestSettleAfterSubmitNeverNotSubmitted(t *testing.T) {
 	}
 }
 
-// R16：连转 verifying 也写不进去时只打日志，单据留给重启恢复。
-func TestSettleAfterSubmitWriteFailureLeavesForRecovery(t *testing.T) {
+// R16、R25：连转 verifying 也写不进去时单据保持原状，告警一次（文本脱敏），留给确认协程接管。
+func TestSettleAfterSubmitWriteFailureAlerts(t *testing.T) {
 	h := newPayHarness(t, nil)
 	at := h.clock.Now().Unix()
 	o := presetOrder(t, "a@x.com", StateRequires3DS, map[string]any{"submitted_at": at})
 	stale := *o
 	stale.State = StateSubmitted // 内存里的状态过期，写库的条件更新必然失败
-	h.svc.settle(ctx, &job{o: &stale}, errors.New("boom"))
+	// 这条错误文本里只有状态名，把它当敏感串来验证告警走了脱敏
+	h.svc.settle(ctx, &job{o: &stale, secrets: []string{StateRequires3DS}}, errors.New("boom"))
 	g := mustOrder(t, o.OrderNo)
 	if g.State != StateRequires3DS || g.Failure != "" || g.FinishedAt != nil {
 		t.Fatalf("写库失败应保持原状: %+v", g)
+	}
+	a := h.alerts.Texts()
+	if len(a) != 1 || !strings.Contains(a[0], o.OrderNo) || !strings.Contains(a[0], "转确认") {
+		t.Fatalf("应告警 1 次: %v", a)
+	}
+	if strings.Contains(a[0], StateRequires3DS) {
+		t.Fatalf("告警应脱敏: %q", a[0])
+	}
+}
+
+func waitAlerts(t *testing.T, h *harness, n int) []string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for len(h.alerts.Texts()) < n {
+		if time.Now().After(deadline) {
+			t.Fatalf("告警未达到 %d 条: %v", n, h.alerts.Texts())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	return h.alerts.Texts()
+}
+
+// R25：两次转确认都失败时告警恰好一次；写库恢复后确认协程接管进 verifying 并最终定论，全程只点一次支付。
+func TestBeginVerifyFailureAdopted(t *testing.T) {
+	h := newPayHarness(t, nil)
+	h.gpt.accountFn = planFrom(2)
+	h.br.waitOutcome = func(context.Context, int) (paybrowser.Outcome, string, error) {
+		_, err := db.DB.Exec(`ALTER TABLE pay_order_events RENAME TO pay_order_events_hidden`)
+		return paybrowser.OutcomeSuccess, "", err
+	}
+	h.start(t)
+	o := h.submit(t, false)
+	a := waitAlerts(t, h, 1)
+	if !strings.Contains(a[0], o.OrderNo) || !strings.Contains(a[0], "转确认") {
+		t.Fatalf("告警内容不符: %q", a[0])
+	}
+	time.Sleep(50 * time.Millisecond) // 接管也写不进去，确认协程已经重试了多轮
+	if g := mustOrder(t, o.OrderNo); g.State != StateSubmitted {
+		t.Fatalf("写库恢复之前应保持 submitted: %+v", g)
+	}
+	if n := len(h.alerts.Texts()); n != 1 {
+		t.Fatalf("接管重试不应重复告警: %v", h.alerts.Texts())
+	}
+
+	if _, err := db.DB.Exec(`ALTER TABLE pay_order_events_hidden RENAME TO pay_order_events`); err != nil {
+		t.Fatal(err)
+	}
+	g := waitDone(t, o.OrderNo)
+	if g.State != StateSucceeded {
+		t.Fatalf("接管后应定论: %+v", g)
+	}
+	if !containsInOrder(eventStates(t, o.OrderNo), StateSubmitted, StateVerifying, StateSucceeded) {
+		t.Fatalf("应经过 verifying: %+v", eventStates(t, o.OrderNo))
+	}
+	if n := len(h.alerts.Texts()); n != 1 {
+		t.Fatalf("告警应恰好 1 次: %v", h.alerts.Texts())
+	}
+	assertSubmitCount(t, h, 1)
+	assertReleases(t, h, cardpool.ResultSuccess)
+}
+
+// R25：没有工作协程在处理的已提交单都要接管；确认协程不持有浏览器。
+func TestOrphanedSubmittedAdopted(t *testing.T) {
+	for _, state := range []string{StateSubmitted, StateRequires3DS} {
+		t.Run(state, func(t *testing.T) {
+			h := newPayHarness(t, nil)
+			h.start(t)
+			o := presetOrder(t, "a@x.com", state, nil)
+			g := waitState(t, o.OrderNo, StateVerifying)
+			if g.PageOutcome != "unknown" || g.VerifyUntil == nil || g.NextCheckAt == nil {
+				t.Fatalf("应按结果不明转确认: %+v", g)
+			}
+			if len(h.br.browsers()) != 0 {
+				t.Fatal("接管不应启动浏览器")
+			}
+		})
+	}
+}
+
+// R25：正在处理的单在 running 里，不能被接管：工作协程还要把页面结果写进去。
+func TestRunningSubmittedNotAdopted(t *testing.T) {
+	h := newPayHarness(t, nil)
+	h.gpt.accountFn = planFrom(2)
+	gate := make(chan struct{})
+	h.br.waitOutcome = func(c context.Context, _ int) (paybrowser.Outcome, string, error) {
+		select {
+		case <-gate:
+			return paybrowser.OutcomeSuccess, "", nil
+		case <-c.Done():
+			return paybrowser.OutcomeUnknown, "", c.Err()
+		}
+	}
+	h.start(t)
+	o := h.submit(t, false)
+	waitState(t, o.OrderNo, StateSubmitted)
+	time.Sleep(50 * time.Millisecond) // 是 VerifyTick 的 10 倍，确认协程已经扫描了多轮
+	if g := mustOrder(t, o.OrderNo); g.State != StateSubmitted {
+		t.Fatalf("处理中的单不应被接管: %+v", g)
+	}
+	close(gate)
+	if g := waitDone(t, o.OrderNo); g.State != StateSucceeded || g.PageOutcome != "success" {
+		t.Fatalf("页面结果应由工作协程写入: %+v", g)
+	}
+}
+
+// R25：提交之前放弃时写库失败，单据不收敛，该账号会一直报 ErrInflight，要告警一次；停机时不算故障。
+func TestAbandonWriteFailureAlerts(t *testing.T) {
+	h := newPayHarness(t, nil)
+	o := presetOrder(t, "a@x.com", StateFilling, nil)
+	stale := *o
+	stale.State = StateFunding // 内存里的状态过期，写库的条件更新必然失败
+	// 这条错误文本里只有状态名，把它当敏感串来验证告警走了脱敏
+	h.svc.settle(ctx, &job{o: &stale, secrets: []string{StateFilling}}, abort("fill_failed", "填不上"))
+	if g := mustOrder(t, o.OrderNo); g.State != StateFilling {
+		t.Fatalf("写库失败应保持原状: %+v", g)
+	}
+	a := h.alerts.Texts()
+	if len(a) != 1 || !strings.Contains(a[0], o.OrderNo) {
+		t.Fatalf("应告警 1 次: %v", a)
+	}
+	if strings.Contains(a[0], StateFilling) {
+		t.Fatalf("告警应脱敏: %q", a[0])
+	}
+
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	h.svc.abandon(canceled, &job{o: &stale}, &stepFailure{code: "fill_failed", msg: "填不上"})
+	if n := len(h.alerts.Texts()); n != 1 {
+		t.Fatalf("停机时不应告警: %v", h.alerts.Texts())
 	}
 }
 

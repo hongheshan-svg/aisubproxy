@@ -77,6 +77,7 @@ func (s *Service) verifyDue(ctx context.Context) {
 	if !s.recovered.Load() {
 		return
 	}
+	s.adoptSubmitted(ctx)
 	list, err := dueVerifying(ctx, s.now().Unix())
 	if err != nil {
 		if ctx.Err() == nil {
@@ -90,6 +91,34 @@ func (s *Service) verifyDue(ctx context.Context) {
 		}
 		s.verifyOrder(ctx, &list[i])
 	}
+}
+
+// adoptSubmitted 接管已提交、但没有工作协程在处理的单据：settle 连续转确认失败后它们停在 submitted / requires_3ds，
+// 没人再查，可能一直停到下次重启，其间租约到期、余额被转出。靠条件更新保证安全，这里不持有浏览器，走不到点支付。
+func (s *Service) adoptSubmitted(ctx context.Context) {
+	list, err := ordersInStates(ctx, StateSubmitted, StateRequires3DS)
+	if err != nil {
+		if ctx.Err() == nil {
+			log.Printf("[payengine] 读取已提交单据失败: %v", err)
+		}
+		return
+	}
+	for i := range list {
+		if s.isRunning(list[i].OrderNo) {
+			continue
+		}
+		j := &job{o: &list[i]}
+		err := s.beginVerify(ctx, j, paybrowser.OutcomeUnknown, "", "转确认曾失败，由确认协程接管，确认是否开通")
+		if err != nil && ctx.Err() == nil && !errors.Is(err, ErrStateChanged) {
+			log.Printf("[payengine] 单据 %s 接管失败，下一轮再试: %s", j.o.OrderNo, j.scrub(err.Error()))
+		}
+	}
+}
+
+func (s *Service) isRunning(no string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.running[no]
 }
 
 // verifyOrder 检查一张确认中的单据，定论规则见 spec §6。账号已开通即成功；到期前的任何错误都只记事件、等下次检查。

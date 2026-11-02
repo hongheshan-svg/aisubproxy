@@ -286,7 +286,8 @@ func (s *Service) process(ctx context.Context, o *Order) bool {
 
 // settle 按 run 的结果收尾。一旦单据写入过 submitted_at，任何错误（放弃原因也好、意外错误也好）都转 verifying 交给确认协程：
 // 已点支付的单子记成「未提交」，用户会重复付款。提交之前的错误释放租约并以 failed / not_submitted 结束，
-// 其中意外错误（如写库失败）记 internal_error，免得单据卡在中间状态。写库再失败只打日志，留给重启恢复。
+// 其中意外错误（如写库失败）记 internal_error，免得单据卡在中间状态。写库再失败就告警：
+// 已提交的单由确认协程接管（adoptSubmitted），提交前的单要等重启恢复。
 // 服务停止时不收尾：单据与租约都留给重启恢复。
 func (s *Service) settle(ctx context.Context, j *job, err error) {
 	var f *stepFailure
@@ -299,7 +300,11 @@ func (s *Service) settle(ctx context.Context, j *job, err error) {
 		log.Printf("[payengine] 单据 %s 提交后在 %s 时出错，转确认: %s", j.o.OrderNo, j.o.State, msg)
 		s.event(ctx, j, "warn", "提交后出错："+msg, "")
 		if verr := s.beginVerify(ctx, j, paybrowser.OutcomeUnknown, msg, "页面结果不明，确认是否开通"); verr != nil {
-			log.Printf("[payengine] 单据 %s 转确认失败，留待重启恢复: %s", j.o.OrderNo, j.scrub(verr.Error()))
+			detail := j.scrub(verr.Error())
+			log.Printf("[payengine] 单据 %s 转确认失败，等确认协程接管: %s", j.o.OrderNo, detail)
+			if ctx.Err() == nil {
+				s.opts.Alert(fmt.Sprintf("付款单 %s 已提交，但转确认连续失败，等确认协程接管：%s", j.o.OrderNo, detail))
+			}
 		}
 	case errors.As(err, &f):
 		s.abandon(ctx, j, f)
@@ -316,7 +321,11 @@ func (s *Service) abandon(ctx context.Context, j *job, f *stepFailure) {
 	s.release(ctx, j, j.lease, cardpool.Outcome{Result: cardpool.ResultAborted})
 	j.lease = nil
 	if err := s.fail(ctx, j, f); err != nil {
-		log.Printf("[payengine] 单据 %s 写入失败结果出错: %s", j.o.OrderNo, j.scrub(err.Error()))
+		detail := j.scrub(err.Error())
+		log.Printf("[payengine] 单据 %s 写入失败结果出错: %s", j.o.OrderNo, detail)
+		if ctx.Err() == nil {
+			s.opts.Alert(fmt.Sprintf("付款单 %s 放弃时写库失败，单据不收敛，该账号下单会一直报在途：%s", j.o.OrderNo, detail))
+		}
 	}
 }
 

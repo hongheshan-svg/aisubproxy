@@ -204,18 +204,29 @@ wait_healthy() {
 find_chrome() {
   local c
   for c in "${CHROME_CANDIDATES[@]}"; do
-    if [[ -f "$c" ]]; then
-      printf '%s' "$c"
-      return 0
+    [[ -f "$c" && -x "$c" ]] || continue
+    # Ubuntu 的 /usr/bin/chromium(-browser) 可能只是 snap 过渡桩（脚本里有 /snap/）：不算已有浏览器，
+    # 会改装 Google Chrome（Go 端候选列表里 google-chrome 在前，优先选它）
+    if [[ "$(head -c 2 "$c" 2>/dev/null </dev/null)" == "#!" ]] && head -c 4096 "$c" 2>/dev/null </dev/null | grep -qa '/snap/'; then
+      continue
     fi
+    printf '%s' "$c"
+    return 0
   done
   return 1
 }
 
 # pkg_installed <包名>：dpkg 认为已安装；xvfb 另外认 PATH 里的 Xvfb（不是 deb 装的也算）
 pkg_installed() {
-  if dpkg -s "$1" >/dev/null 2>&1 </dev/null; then return 0; fi
+  # 只认完全装好的：dpkg -s 对半装（unpacked、half-configured、config-failed）也返回 0
+  if dpkg-query -W -f='${Status}' "$1" 2>/dev/null </dev/null | grep -q '^install ok installed$'; then return 0; fi
   [[ "$1" == xvfb ]] && command -v Xvfb >/dev/null 2>&1
+}
+
+# apt_run：就地设非交互；NEEDRESTART_MODE=l 只列出需要重启的服务、不自动重启（不动服务器上别的服务）。
+# -o DPkg::Lock::Timeout=300：unattended-upgrades、cloud-init 常占着 dpkg 锁，等它最多 5 分钟。
+apt_run() {
+  DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get -o DPkg::Lock::Timeout=300 "$@" </dev/null
 }
 
 ensure_chrome_user() {
@@ -238,7 +249,7 @@ sandbox_selftest() {
   fi
   uid="$(id -u "$CHROME_USER")" || return 1
   gid="$(id -g "$CHROME_USER")" || return 1
-  home="$(mktemp -d)" || return 1
+  home="$(mktemp -d /tmp/cdk-chrome-selftest.XXXXXX)" || return 1
   chown "$uid:$gid" "$home" && chmod 700 "$home" || { rm -rf "$home"; return 1; }
   if out="$(cd / && HOME="$home" timeout 30 setpriv --no-new-privs --reuid="$uid" --regid="$gid" --clear-groups \
       "$chrome" --headless=new --disable-gpu --no-first-run --user-data-dir="$home/profile" --dump-dom about:blank 2>&1 </dev/null)" \
@@ -294,7 +305,6 @@ install_browser_deps() {
       return 1
     fi
     ensure_chrome_user || return 1
-    export DEBIAN_FRONTEND=noninteractive
     local deb_dir="" deb=""
     if [[ $need_chrome -eq 1 ]]; then
       if [[ "$(uname -m)" == x86_64 ]]; then
@@ -302,7 +312,7 @@ install_browser_deps() {
         deb_dir="$(mktemp -d)" || return 1
         chmod 755 "$deb_dir" || { rm -rf "$deb_dir"; return 1; }
         deb="$deb_dir/google-chrome-stable_current_amd64.deb"
-        if ! curl -fsSL -o "$deb" "$CHROME_DEB_URL" </dev/null; then
+        if ! curl -fsSL --connect-timeout 15 --retry 3 --retry-delay 2 --max-time 900 -o "$deb" "$CHROME_DEB_URL" </dev/null; then
           rm -rf "$deb_dir"
           warn "下载 Chrome 失败：$CHROME_DEB_URL"
           return 1
@@ -314,16 +324,20 @@ install_browser_deps() {
       fi
     fi
     log "安装浏览器依赖（apt-get）…"
-    if ! apt-get update </dev/null; then
-      [[ -z "$deb_dir" ]] || rm -rf "$deb_dir"
-      warn "apt-get update 失败"
-      return 1
+    if ! apt_run update; then
+      warn "apt-get update 失败，30 秒后重试一次"
+      sleep 30
+      if ! apt_run update; then
+        [[ -z "$deb_dir" ]] || rm -rf "$deb_dir"
+        warn "apt-get update 仍然失败"
+        return 1
+      fi
     fi
     local rc=0
     if [[ -n "$deb" ]]; then
-      apt-get install -y --no-install-recommends "$deb" ${pkgs[@]+"${pkgs[@]}"} </dev/null || rc=$?
+      apt_run install -y --no-install-recommends "$deb" ${pkgs[@]+"${pkgs[@]}"} || rc=$?
     else
-      apt-get install -y --no-install-recommends "${pkgs[@]}" </dev/null || rc=$?
+      apt_run install -y --no-install-recommends "${pkgs[@]}" || rc=$?
     fi
     [[ -z "$deb_dir" ]] || rm -rf "$deb_dir"
     if [[ $rc -ne 0 ]]; then
@@ -371,6 +385,11 @@ main() {
   log "校验 v${ver}（sha256、签名、自检）…"
   verify_and_extract "$tmp" "$ver"
 
+  # 自动付款需要的 Chrome、Xvfb、字体。装不上只警告，不影响程序本身升级；放在停服之前，下载和 apt 期间旧服务继续运行
+  if ! install_browser_deps; then
+    warn "浏览器依赖未装好，MarsWallex 自动付款暂不可用。解决后单独重跑：${BROWSER_DEPS_CMD}"
+  fi
+
   mkdir -p "$INSTALL_DIR/data" "$INSTALL_DIR/updates"
   if [[ -f "$INSTALL_DIR/cdk-recharge" ]]; then
     upgrading=1
@@ -381,11 +400,6 @@ main() {
   write_app_env
   # 留一份安装脚本，方便以后 `bash $INSTALL_DIR/install.sh rollback`
   if [[ -f "${BASH_SOURCE[0]:-}" ]]; then cp -f "${BASH_SOURCE[0]}" "$INSTALL_DIR/install.sh" 2>/dev/null || true; fi
-
-  # 自动付款需要的 Chrome、Xvfb、字体。装不上只警告，不影响程序本身升级
-  if ! install_browser_deps; then
-    warn "浏览器依赖未装好，MarsWallex 自动付款暂不可用。解决后单独重跑：${BROWSER_DEPS_CMD}"
-  fi
 
   if systemd_on; then
     write_unit

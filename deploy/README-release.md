@@ -38,7 +38,7 @@ curl -fsSL https://raw.githubusercontent.com/hongheshan-svg/aisubproxy/master/de
 
 - 下载最新 Release，依次校验 sha256 和签名，再运行一次新程序的 `--version` 自检。
 - 装到 `/opt/cdk-recharge`，生成 `app.env`（随机 `JWT_SECRET` 和 `APP_MASTER_KEY`，权限 600），注册 systemd 服务 `cdk-recharge`。
-- 同时安装浏览器依赖（见下文「浏览器依赖」），失败只警告、不中断安装。
+- 同时安装浏览器依赖（见下文「浏览器依赖」），失败只警告、不中断安装。升级时这一步在停服务之前做，下载和 apt 期间旧服务继续运行；apt 被别的进程占锁时最多等 5 分钟。
 - 默认只监听 `127.0.0.1:9080`，需要用 Caddy 或 Nginx 反代 HTTPS。
 - 首次登录走安装向导：用 `journalctl -u cdk-recharge | grep 'Setup Token'` 查到令牌后，打开 `/ops/setup`。
 - 指定版本安装：`… | sudo bash -s -- v1.5.0`。

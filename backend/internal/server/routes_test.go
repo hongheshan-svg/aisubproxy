@@ -58,3 +58,32 @@ func TestMarsWallexKeypairRouteRegistered(t *testing.T) {
 	}
 	t.Fatal("route missing: POST /api/v1/admin/marswallex/keypair")
 }
+
+// 付款后台接口的 10 条路由都注册在 /api/v1/admin/pay 下。
+func TestPayRoutesRegistered(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Setenv("WEB_DIR", "")
+	r := gin.New()
+	setupRoutes(r)
+	have := map[string]bool{}
+	for _, rt := range r.Routes() {
+		have[rt.Method+" "+rt.Path] = true
+	}
+	const p = "/api/v1/admin/pay"
+	for _, want := range []string{
+		"POST " + p + "/orders",
+		"GET " + p + "/orders",
+		"GET " + p + "/orders/:no",
+		"POST " + p + "/orders/:no/resolve",
+		"GET " + p + "/orders/:no/shots/:name",
+		"GET " + p + "/config",
+		"PUT " + p + "/config",
+		"GET " + p + "/proxies",
+		"PUT " + p + "/proxies",
+		"POST " + p + "/browser-check",
+	} {
+		if !have[want] {
+			t.Errorf("route missing: %s", want)
+		}
+	}
+}

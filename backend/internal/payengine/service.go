@@ -78,6 +78,13 @@ func DefaultTimeouts() Timeouts {
 	}
 }
 
+// MaxPayDuration 是一单付款从取卡租约到定论最长可能占用卡的时间，卡池租约须不短于它：
+// 注资 + 填表 + 点支付后等页面结果 + 3DS 页面加载 + 验证码 + 填验证码并等结果 + 被拒宽限 + 确认 + 确认间隔 + 扫描间隔 + 5 秒关闭浏览器。
+func MaxPayDuration(t Timeouts) time.Duration {
+	return t.Fund + t.Fill + t.SubmitResult + t.SubmitResult + t.PageLoad + t.OTP +
+		t.SubmitResult + t.SubmitResult + t.DeclineGrace + t.Verify + t.VerifyEvery + t.VerifyTick + 5*time.Second
+}
+
 // Options 为 Service 的依赖。
 type Options struct {
 	Pool    Pool
@@ -143,6 +150,12 @@ func New(o Options) *Service {
 }
 
 func (s *Service) now() time.Time { return s.opts.Now() }
+
+// ShotDir 返回截图根目录（每单一个子目录），供后台接口读取截图。
+func (s *Service) ShotDir() string { return s.opts.ShotDir }
+
+// Timeouts 返回引擎实际使用的各步骤超时。
+func (s *Service) Timeouts() Timeouts { return s.t }
 
 func newChatGPT(proxyURL string) (ChatGPT, error) {
 	c, err := chatgpt.New(proxyURL)

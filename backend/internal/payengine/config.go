@@ -210,10 +210,18 @@ func LoadConcurrency() int {
 	return n
 }
 
-// SaveConcurrency 保存并发数，范围 1~3。
-func SaveConcurrency(n int) error {
+// ValidateConcurrency 检查并发数是否在 1~3；保存前可先调用，避免整体保存时一半成功一半失败。
+func ValidateConcurrency(n int) error {
 	if n < 1 || n > maxConcurrency {
 		return fmt.Errorf("%w: 并发数须在 1 到 %d 之间", ErrBadRequest, maxConcurrency)
+	}
+	return nil
+}
+
+// SaveConcurrency 保存并发数，范围 1~3。
+func SaveConcurrency(n int) error {
+	if err := ValidateConcurrency(n); err != nil {
+		return err
 	}
 	return db.SetSetting(settingConcurrency, strconv.Itoa(n))
 }

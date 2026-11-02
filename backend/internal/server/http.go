@@ -16,6 +16,7 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/handler"
 	"github.com/tuzi/cdk-recharge-system/internal/notify"
+	"github.com/tuzi/cdk-recharge-system/internal/payengine"
 	"github.com/tuzi/cdk-recharge-system/internal/plansync"
 )
 
@@ -49,6 +50,12 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	engine.Use(SecurityHeadersMiddleware())
 	engine.Use(CORSMiddleware())
 
+	// MarsWallex 卡池与付款引擎先建好并注入 handler，再注册路由；付款引擎依赖卡池，所以排在其后
+	pool := cardpool.New(cardpool.Options{Client: handler.MarsWallexClient, Alert: cardPoolAlert(notify.SendText)})
+	handler.SetCardPool(pool)
+	pay := payengine.New(payengine.Options{Pool: pool, Alert: alertSender("payengine", notify.SendText)})
+	handler.SetPayEngine(pay)
+
 	// Setup routes
 	setupRoutes(engine)
 
@@ -56,9 +63,9 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	plansync.Start(ctx)
 
 	// 启动 MarsWallex 卡池（对账、回收、补卡、Webhook 事件处理）
-	pool := cardpool.New(cardpool.Options{Client: handler.MarsWallexClient, Alert: cardPoolAlert(notify.SendText)})
-	handler.SetCardPool(pool)
 	pool.Start(ctx)
+	// 启动付款引擎：Start 内含同步的重启恢复，这里返回后 HTTP 才会开始监听（Run 在 New 之后）
+	pay.Start(ctx)
 
 	return &Server{
 		engine: engine,
@@ -66,15 +73,18 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	}, nil
 }
 
-// cardPoolAlert 包装卡池告警：先写日志（Telegram 未配置时 SendText 静默返回，告警不能因此丢失），
+// alertSender 包装模块告警：先写日志（前缀标明模块；Telegram 未配置时 SendText 静默返回，告警不能因此丢失），
 // 再 HTML 转义后发送。告警里有平台错误信息、商户名、持卡人备注等不受控文本，SendText 用 parse_mode=HTML，
 // 未转义的 < 或 & 会让 Telegram 拒收整条消息。告警文本不含卡号、CVV2、验证码。
-func cardPoolAlert(send func(string)) func(string) {
+func alertSender(prefix string, send func(string)) func(string) {
 	return func(text string) {
-		log.Printf("[cardpool] 告警: %s", text)
+		log.Printf("[%s] 告警: %s", prefix, text)
 		send(html.EscapeString(text))
 	}
 }
+
+// cardPoolAlert 是卡池的告警函数。
+func cardPoolAlert(send func(string)) func(string) { return alertSender("cardpool", send) }
 
 // enforceJWTSecret 在 release 模式下拒绝使用空/默认密钥启动。
 func enforceJWTSecret(mode string) error {
@@ -262,6 +272,18 @@ func setupRoutes(r *gin.Engine) {
 			admin.GET("/cardpool/backfill", handler.AdminCardPoolBackfillStatus)
 			admin.POST("/cardpool/backfill", handler.AdminCardPoolBackfill)
 			admin.GET("/cardpool/cards/:id/balance-transactions", handler.AdminCardPoolCardTransfers)
+
+			// MarsWallex 兑换（付款引擎）：建单、单据、人工定论、截图、配置、代理、浏览器自检
+			admin.POST("/pay/orders", handler.AdminPaySubmit)
+			admin.GET("/pay/orders", handler.AdminPayList)
+			admin.GET("/pay/orders/:no", handler.AdminPayGet)
+			admin.POST("/pay/orders/:no/resolve", handler.AdminPayResolve)
+			admin.GET("/pay/orders/:no/shots/:name", handler.AdminPayShot)
+			admin.GET("/pay/config", handler.AdminPayGetConfig)
+			admin.PUT("/pay/config", handler.AdminPayPutConfig)
+			admin.GET("/pay/proxies", handler.AdminPayGetProxies)
+			admin.PUT("/pay/proxies", handler.AdminPayPutProxies)
+			admin.POST("/pay/browser-check", handler.AdminPayBrowserCheck)
 
 			// 卡台 Open API：实时价格 / 余额 / 发码 / 列码 / CDK 订单
 			admin.GET("/cardplatform/ping", handler.CardPlatformPing)

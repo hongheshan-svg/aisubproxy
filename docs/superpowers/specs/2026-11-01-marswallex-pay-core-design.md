@@ -234,6 +234,14 @@ CDK 与兑换入口（B）；升级、点数、续费绑卡、宽限期（C）�
 4. 支付页各字段与金额汇总的选择器。
 5. MarsWallex 发卡行 3DS 页面结构与成功页标志（只能在第一笔真实付款时看到）。
 
+实现时按猜测写的部分，也要一并核实（`internal/paybrowser/selectors.go`）：
+
+6. 付款成功的真实标志。`Sel.Success` 目前只有占位选择器，认不出时等满 2 分钟再靠查账号定论，不会误判，但会慢。
+7. 点击后页面会出现哪些 `[role="alert"]` 文字（如「Processing your payment…」、3DS 提示、非英文文案）。不在词表里的文字一律按被拒处理，并立刻结束等待、关闭浏览器；要补进 `classifyPageError`。
+8. 真实拒付文字和校验错误文字分别长什么样，确认 `classifyPageError` 能分开。
+9. `.SubmitButton` 是否就是真实支付按钮、是否延迟渲染。它暂时不可见时会回落到别的 submit 按钮，白白用掉唯一一次提交，确认后考虑去掉回落项。
+10. Go 的 `chatgpt_plan_name` 与 Pro 5x 的 `expect_plan_type` 核实后写进代码默认值（`planDefaults`）：配置页没有这两项的输入框。
+
 ## 13. 风险
 
 - **MarsWallex 卡能否付 ChatGPT 未经验证**。第一笔真实付款被拒时要逐项排查：账单地址与持卡人登记地址不一致、卡 BIN 所属国、出口 IP 地区、3DS，不能直接断定卡不可用。

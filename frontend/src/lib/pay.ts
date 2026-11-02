@@ -37,6 +37,11 @@ export function failureLabel(f: string): string {
   return FAILURE_LABEL[f] ?? f
 }
 
+/** 订单详情「失败原因」的类别文字。人工定论的单显示定论本身：管理员判定没扣款时，系统记的 declined（提交后被拒）会误导。 */
+export function failureText(failure: string, resolvedBy: string): string {
+  return resolvedBy ? '人工定论为失败' : failureLabel(failure)
+}
+
 const PAGE_OUTCOME_LABEL: Record<string, string> = {
   success: '支付页显示成功',
   declined: '支付页显示被拒',

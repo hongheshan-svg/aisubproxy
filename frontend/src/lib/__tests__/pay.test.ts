@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { failureLabel, formatMinor, fromMinor, isTerminal, pageOutcomeLabel, payBlockReason, stateLabel, toMinor } from '../pay'
+import { failureLabel, failureText, formatMinor, fromMinor, isTerminal, pageOutcomeLabel, payBlockReason, stateLabel, toMinor } from '../pay'
 
 describe('pay lib', () => {
   it('stateLabel 13 个状态', () => {
@@ -25,6 +25,13 @@ describe('pay lib', () => {
     expect(pageOutcomeLabel('unknown')).toBe('没有明确结果')
     expect(pageOutcomeLabel('')).toBe('—')
     expect(pageOutcomeLabel('x')).toBe('x')
+  })
+
+  it('failureText：人工定论的单不显示系统判定的失败类别', () => {
+    expect(failureText('declined', '')).toBe('提交后被拒')
+    expect(failureText('not_submitted', '')).toBe('提交前放弃，未扣款')
+    expect(failureText('declined', 'alice')).toBe('人工定论为失败')
+    expect(failureText('x', '')).toBe('x')
   })
 
   it('formatMinor', () => {

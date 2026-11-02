@@ -181,7 +181,7 @@
             <el-descriptions-item label="提交时间">{{ fmtTs(detail.order.submitted_at) }}</el-descriptions-item>
             <el-descriptions-item label="创建 / 完成">{{ fmtTs(detail.order.created_at) }} / {{ fmtTs(detail.order.finished_at) }}</el-descriptions-item>
             <el-descriptions-item v-if="detail.order.failure || detail.order.error_message" label="失败原因">
-              <div v-if="detail.order.failure">{{ failureLabel(detail.order.failure) }}</div>
+              <div v-if="detail.order.failure">{{ failureText(detail.order.failure, detail.order.resolved_by) }}</div>
               <div v-if="detail.order.error_message">{{ detail.order.error_message }}</div>
               <div v-if="detail.order.error_code" class="text-xs text-muted">{{ detail.order.error_code }}</div>
             </el-descriptions-item>
@@ -239,7 +239,7 @@ import { authFetch } from '../../lib/api'
 import { dialog } from '../../lib/dialog'
 import { errText, fmtTs } from '../../lib/cardpool'
 import {
-  STATES, currencyDigits, failureLabel, formatMinor, fromMinor, isTerminal, pageOutcomeLabel, payApi, stateLabel, toMinor, payBlockReason,
+  STATES, currencyDigits, failureText, formatMinor, fromMinor, isTerminal, pageOutcomeLabel, payApi, stateLabel, toMinor, payBlockReason,
 } from '../../lib/pay'
 
 const REGIONS = ['PH', 'US', 'JP', 'CL', 'EG']

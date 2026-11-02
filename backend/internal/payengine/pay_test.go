@@ -590,6 +590,17 @@ func TestPreSubmitFailuresReleaseAborted(t *testing.T) {
 		{"持卡人姓名为空", "card_info_failed", func(h *harness) {
 			h.pool.cardInfo = func(string) (cardpool.CardInfo, error) { return cardpool.CardInfo{Last4: "4242"}, nil }
 		}, 0},
+		// fund_cents 是美元分，而 cardpool.Fund 按卡币种下单：非美元卡会多充或少充
+		{"卡币种不是美元", "card_currency_unsupported", func(h *harness) {
+			h.pool.cardInfo = func(string) (cardpool.CardInfo, error) {
+				return cardpool.CardInfo{Last4: "4242", Currency: "PHP", HolderFirstName: "JOHN", HolderLastName: "DOE"}, nil
+			}
+		}, 0},
+		{"卡币种为空", "card_currency_unsupported", func(h *harness) {
+			h.pool.cardInfo = func(string) (cardpool.CardInfo, error) {
+				return cardpool.CardInfo{Last4: "4242", HolderFirstName: "JOHN", HolderLastName: "DOE"}, nil
+			}
+		}, 0},
 		{"取卡号失败", "card_sensitive_failed", func(h *harness) {
 			h.pool.sensitive = func(*cardpool.Lease) (*marswallex.CardSensitive, error) { return nil, boom }
 		}, 1},
@@ -619,6 +630,23 @@ func TestPreSubmitFailuresReleaseAborted(t *testing.T) {
 				t.Fatalf("Fund 应调用 %d 次: %d", c.fundCalls, n)
 			}
 		})
+	}
+}
+
+// 币种比较不区分大小写：小写的 usd 也是美元卡，照常注资。
+func TestCardCurrencyCaseInsensitive(t *testing.T) {
+	h := newPayHarness(t, nil)
+	h.pool.cardInfo = func(string) (cardpool.CardInfo, error) {
+		return cardpool.CardInfo{Last4: "4242", Currency: " usd ", HolderFirstName: "JOHN", HolderLastName: "DOE"}, nil
+	}
+	h.gpt.accountFn = planFrom(2)
+	h.br.waitOutcome = outcomes(outcomeStep{out: paybrowser.OutcomeSuccess})
+	h.start(t)
+	if g := waitDone(t, h.submit(t, false).OrderNo); g.State != StateSucceeded {
+		t.Fatalf("应成功: %+v", g)
+	}
+	if n := h.pool.count("Fund"); n != 1 {
+		t.Fatalf("应注资 1 次: %d", n)
 	}
 }
 

@@ -78,7 +78,7 @@ func newPayHarness(t *testing.T, tune func(*Timeouts)) *harness {
 			PlanKey: r.PlanKey, OrderRef: r.OrderRef, AccountEmail: r.AccountEmail}, nil
 	}
 	h.pool.cardInfo = func(string) (cardpool.CardInfo, error) {
-		return cardpool.CardInfo{Last4: "4242", HolderFirstName: "JOHN", HolderLastName: "DOE"}, nil
+		return cardpool.CardInfo{Last4: "4242", Currency: "USD", HolderFirstName: "JOHN", HolderLastName: "DOE"}, nil
 	}
 	h.pool.fund = func(context.Context, *cardpool.Lease, int64) (*cardpool.Order, error) {
 		return &cardpool.Order{OutOrderNo: "FUND-1", State: cardpool.StateProcessing}, nil

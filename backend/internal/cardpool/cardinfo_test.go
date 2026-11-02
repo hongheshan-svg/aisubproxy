@@ -15,14 +15,14 @@ func TestCardInfo(t *testing.T) {
 		t.Fatal(err)
 	}
 	insertCard(t, Card{CardID: "c1", CardHolderID: "h1", ProductID: "p1", Last4: "4242"})
-	insertCard(t, Card{CardID: "c2", CardHolderID: "h-missing", ProductID: "p1", Last4: "1111"})
+	insertCard(t, Card{CardID: "c2", CardHolderID: "h-missing", ProductID: "p1", Last4: "1111", Currency: "PHP"})
 
 	got, err := s.CardInfo(ctx, "c1")
-	if err != nil || got != (CardInfo{Last4: "4242", HolderFirstName: "JOHN", HolderLastName: "DOE"}) {
+	if err != nil || got != (CardInfo{Last4: "4242", Currency: "USD", HolderFirstName: "JOHN", HolderLastName: "DOE"}) {
 		t.Fatalf("卡信息不符: %+v %v", got, err)
 	}
 	got, err = s.CardInfo(ctx, "c2")
-	if err != nil || got != (CardInfo{Last4: "1111"}) {
+	if err != nil || got != (CardInfo{Last4: "1111", Currency: "PHP"}) {
 		t.Fatalf("持卡人不存在时姓名应为空: %+v %v", got, err)
 	}
 	if _, err := s.CardInfo(ctx, "nope"); !errors.Is(err, ErrNotFound) {

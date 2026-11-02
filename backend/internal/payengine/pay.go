@@ -72,6 +72,10 @@ func (s *Service) fundCard(ctx context.Context, j *job) error {
 	if j.holderName == "" {
 		return abort("card_info_failed", "该卡没有持卡人姓名，无法填写账单信息")
 	}
+	// fund_cents 是美元分，而 Fund 按卡币种下单：不是美元卡就会充错金额
+	if !strings.EqualFold(strings.TrimSpace(info.Currency), "USD") {
+		return abort("card_currency_unsupported", "该卡币种 %q 不是美元，注资金额无法换算", info.Currency)
+	}
 	// 租约在注资之前落库，重启恢复才能按单据字段释放
 	if err := s.advance(ctx, j, StateFunding, "已选卡，尾号 "+info.Last4, map[string]any{"card_last4": info.Last4}); err != nil {
 		return err

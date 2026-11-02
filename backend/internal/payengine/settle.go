@@ -21,6 +21,11 @@ const (
 	shotCleanEvery = 24 * time.Hour     // 截图清理间隔
 	txnPageSize    = 100                // 翻交易时每页条数；卡池的分页上限更小时按实际读到的条数继续翻
 	restartMessage = "服务重启，未提交"
+
+	// authClockSkew 是查授权交易时往 submitted_at 之前多看的时长。transaction_time 是平台时钟（Unix 秒），
+	// 与本机 submitted_at 可能有偏差，真实授权可能显示在提交之前。多算一笔只会多一次人工核对，
+	// 漏算会把已扣款单误判为被拒，所以宁可放宽窗口。
+	authClockSkew = 5 * time.Minute
 )
 
 // orderNoName 是单号格式，截图清理只动名字符合它的目录。
@@ -184,7 +189,12 @@ func (s *Service) verifyAccount(ctx context.Context, j *job) (bool, error) {
 	return strings.EqualFold(strings.TrimSpace(acc.PlanType), expect), nil
 }
 
-// verifyAuth 翻完该卡在 submitted_at 之后的交易，看有没有成功授权、处理中的授权。
+// authWindowStart 返回一单授权交易窗口的起点（含）：submitted_at 减去 authClockSkew。定论与 Evidence 共用，口径才一致。
+func authWindowStart(submittedAt int64) int64 {
+	return submittedAt - int64(authClockSkew/time.Second)
+}
+
+// verifyAuth 翻完该卡在授权窗口内（见 authWindowStart）的交易，看有没有成功授权、处理中的授权。
 // 平台状态原样入库（文档是小写，实际可能有大写），比较时不区分大小写。
 func (s *Service) verifyAuth(ctx context.Context, o *Order) (approved, pending bool, err error) {
 	if o.CardID == "" {
@@ -192,7 +202,7 @@ func (s *Service) verifyAuth(ctx context.Context, o *Order) (approved, pending b
 	}
 	var since int64
 	if o.SubmittedAt != nil {
-		since = *o.SubmittedAt
+		since = authWindowStart(*o.SubmittedAt)
 	}
 	list, err := s.txnsSince(ctx, o.CardID, since)
 	if err != nil {
@@ -213,7 +223,7 @@ func (s *Service) verifyAuth(ctx context.Context, o *Order) (approved, pending b
 }
 
 // txnsSince 返回该卡在 since 之后的交易（新的在前）。交易按时间倒序分页，翻到全部读完或出现早于 since 的记录为止。
-// 时间只精确到秒，与 since 同一秒的算在内：宁可多算一笔，也不能漏掉这次付款的授权。
+// 时间只精确到秒，与 since 同一秒的算在内。
 func (s *Service) txnsSince(ctx context.Context, cardID string, since int64) ([]cardpool.Transaction, error) {
 	out := []cardpool.Transaction{}
 	seen := 0

@@ -272,7 +272,8 @@ func (s *Service) Resolve(ctx context.Context, no, result, note, by string) erro
 	return err
 }
 
-// Evidence 返回该单的卡在 submitted_at 之后的交易（新的在前）；未提交或没有卡时返回空。翻完所有页，查询出错如实返回。
+// Evidence 返回该单的卡在授权窗口内（submitted_at 减去时钟容差，见 authWindowStart）的交易，新的在前；
+// 未提交或没有卡时返回空。翻完所有页，查询出错如实返回。
 func (s *Service) Evidence(ctx context.Context, no string) ([]cardpool.Transaction, error) {
 	o, err := getOrder(ctx, no)
 	if err != nil {
@@ -281,5 +282,5 @@ func (s *Service) Evidence(ctx context.Context, no string) ([]cardpool.Transacti
 	if o.SubmittedAt == nil || o.CardID == "" {
 		return []cardpool.Transaction{}, nil
 	}
-	return s.txnsSince(ctx, o.CardID, *o.SubmittedAt)
+	return s.txnsSince(ctx, o.CardID, authWindowStart(*o.SubmittedAt))
 }

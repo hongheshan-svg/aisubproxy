@@ -528,7 +528,8 @@ func TestApprovedAuthBeforeSubmitIgnored(t *testing.T) {
 	h.pool.listTxns = pagedTxns([]cardpool.Transaction{
 		{TransactionID: "R1", Kind: "AUTH_REVERSAL", CardID: testCardID, Status: "approved", UpdatedAt: at + 10, OccurredAt: ptr(at + 10)},
 		txnAt("F1", "failed", at+5),
-		txnAt("A0", "approved", at-10),
+		txnAt("A1", "approved", at-301), // 刚好在 5 分钟容差之外
+		txnAt("A0", "approved", at-3600),
 	})
 	h.start(t)
 	o := h.submit(t, false)
@@ -542,6 +543,25 @@ func TestApprovedAuthBeforeSubmitIgnored(t *testing.T) {
 }
 
 func ptr(v int64) *int64 { return &v }
+
+// R18：transaction_time 是平台时钟，比本机早一点的授权也可能就是这次付款，不能定成被拒。
+func TestApprovedAuthWithinSkewNeedsReview(t *testing.T) {
+	for name, before := range map[string]int64{"提交前 30 秒": 30, "恰好在容差边界": 300} {
+		t.Run(name, func(t *testing.T) {
+			h := declinedHarness(t)
+			h.pool.listTxns = pagedTxns([]cardpool.Transaction{txnAt("A1", "approved", h.clock.Now().Unix()-before)})
+			h.start(t)
+			o := h.submit(t, false)
+			waitState(t, o.OrderNo, StateVerifying)
+			h.clock.Advance(h.timeouts.DeclineGrace + time.Second)
+			g := waitDone(t, o.OrderNo)
+			if g.State != StateNeedsReview || g.ErrorCode != "evidence_conflict" || g.Failure != "" {
+				t.Fatalf("容差内的成功授权应转待人工: %+v", g)
+			}
+			assertReleases(t, h, cardpool.ResultAborted)
+		})
+	}
+}
 
 // 第一页全是提交之后的其它交易，成功授权在第二页：只看第一页就会把已扣款的单子定成 declined。
 func TestApprovedAuthOnLaterPageNeedsReview(t *testing.T) {
@@ -1507,7 +1527,7 @@ func TestEvidence(t *testing.T) {
 	for i := 0; i < 120; i++ {
 		all = append(all, txnAt(fmt.Sprintf("N%d", i), "approved", at+1000-int64(i)))
 	}
-	all = append(all, txnAt("OLD", "approved", at-1))
+	all = append(all, txnAt("OLD", "approved", at-3600))
 	h.pool.listTxns = pagedTxns(all)
 
 	notSubmitted := presetOrder(t, "n@x.com", StateFilling, map[string]any{"card_id": testCardID})
@@ -1540,6 +1560,31 @@ func TestEvidence(t *testing.T) {
 	}
 	if _, err := h.svc.Evidence(ctx, o.OrderNo); err == nil {
 		t.Fatal("查询失败应报错，不能当成没有交易")
+	}
+}
+
+// R18：Evidence 与定论用同一个窗口，管理员才看得到让单据转人工的那笔授权；窗口外的不算。
+func TestEvidenceIncludesSkewWindow(t *testing.T) {
+	h := newPayHarness(t, nil)
+	at := h.clock.Now().Unix()
+	h.pool.listTxns = pagedTxns([]cardpool.Transaction{
+		txnAt("AFTER", "approved", at+10),
+		txnAt("SKEW30", "approved", at-30),
+		txnAt("EDGE", "approved", at-300),
+		txnAt("OUT", "approved", at-301),
+		txnAt("OLD", "approved", at-3600),
+	})
+	o := presetOrder(t, "a@x.com", StateVerifying, map[string]any{"submitted_at": at, "card_id": testCardID})
+	list, err := h.svc.Evidence(ctx, o.OrderNo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make([]string, 0, len(list))
+	for _, x := range list {
+		got = append(got, x.TransactionID)
+	}
+	if strings.Join(got, ",") != "AFTER,SKEW30,EDGE" {
+		t.Fatalf("窗口应为提交前 5 分钟起: %v", got)
 	}
 }
 

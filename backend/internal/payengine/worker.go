@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/url"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -140,15 +141,23 @@ func (j *job) closeBrowser() {
 	}
 }
 
-// scrub 去掉文字中可能夹带的代理地址、代理密码与会话 token。
+// scrub 去掉文字中可能夹带的代理地址、代理账号密码（含各种转义形式）与会话 token；长串先替换。
 func (j *job) scrub(s string) string {
 	secrets := []string{j.proxy, j.sess.SessionToken, j.sess.AccessToken}
 	if u, err := url.Parse(j.proxy); err == nil && u.User != nil {
-		pw, _ := u.User.Password()
-		secrets = append(secrets, u.User.String(), pw)
+		secrets = append(secrets, u.User.String())
+		if pw, ok := u.User.Password(); ok {
+			secrets = append(secrets, pw, url.QueryEscape(pw), url.PathEscape(pw))
+		}
 	}
+	if i := strings.Index(j.proxy, "://"); i >= 0 {
+		if at := strings.LastIndex(j.proxy, "@"); at > i {
+			secrets = append(secrets, j.proxy[i+3:at])
+		}
+	}
+	sort.SliceStable(secrets, func(a, b int) bool { return len(secrets[a]) > len(secrets[b]) })
 	for _, sec := range secrets {
-		if len(sec) >= 4 {
+		if sec != "" {
 			s = strings.ReplaceAll(s, sec, "***")
 		}
 	}
@@ -228,27 +237,36 @@ func (s *Service) shot(ctx context.Context, j *job, step string, scope paybrowse
 func (s *Service) process(ctx context.Context, o *Order) bool {
 	j := &job{o: o}
 	if err := s.advance(ctx, j, StateChecking, "检查账号", nil); err != nil {
-		if !errors.Is(err, ErrStateChanged) {
+		if !errors.Is(err, ErrStateChanged) && ctx.Err() == nil && !errors.Is(err, context.Canceled) {
 			log.Printf("[payengine] 单据 %s 领取失败: %v", o.OrderNo, err)
 		}
 		return false
 	}
 	defer j.closeBrowser()
 
-	err := s.run(ctx, j)
+	s.settle(ctx, j, s.run(ctx, j))
+	return true
+}
+
+// settle 按 run 的结果收尾：放弃原因写入失败终态；服务停止留待重启；
+// 其它意外错误（如写库失败）尝试以 internal_error 结束，免得单据卡在中间状态，再失败才只记日志。
+func (s *Service) settle(ctx context.Context, j *job, err error) {
 	var f *stepFailure
 	switch {
 	case err == nil:
 	case ctx.Err() != nil:
-		log.Printf("[payengine] 单据 %s 在 %s 时服务停止，留待重启后处理", o.OrderNo, j.o.State)
+		log.Printf("[payengine] 单据 %s 在 %s 时服务停止，留待重启后处理", j.o.OrderNo, j.o.State)
 	case errors.As(err, &f):
 		if err := s.fail(ctx, j, f); err != nil {
-			log.Printf("[payengine] 单据 %s 写入失败结果出错: %v", o.OrderNo, err)
+			log.Printf("[payengine] 单据 %s 写入失败结果出错: %v", j.o.OrderNo, j.scrub(err.Error()))
 		}
 	default:
-		log.Printf("[payengine] 单据 %s 在 %s 时中断: %s", o.OrderNo, j.o.State, j.scrub(err.Error()))
+		msg := j.scrub(err.Error())
+		log.Printf("[payengine] 单据 %s 在 %s 时中断: %s", j.o.OrderNo, j.o.State, msg)
+		if ferr := s.fail(ctx, j, &stepFailure{code: "internal_error", msg: "内部错误：" + msg}); ferr != nil {
+			log.Printf("[payengine] 单据 %s 写入失败结果出错: %v", j.o.OrderNo, j.scrub(ferr.Error()))
+		}
 	}
-	return true
 }
 
 // run 依次执行步骤 2–4；试运行在读完金额后以 previewed 结束，真实付款单交给 pay。
@@ -350,6 +368,9 @@ func (s *Service) openPage(ctx context.Context, j *job) error {
 	}
 	if err != nil {
 		return abort("amount_unreadable", "读不出应付金额：%v", err)
+	}
+	if !paybrowser.CurrencyMatches(text, j.o.Currency) {
+		return abort("currency_mismatch", "支付页金额 %q 的币种与期望的 %s 不符", text, j.o.Currency)
 	}
 	j.o.AmountMinor, j.o.AmountText = minor, text
 	j.note("amount_minor", minor)

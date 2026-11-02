@@ -442,3 +442,85 @@ func TestGetAndList(t *testing.T) {
 		t.Fatalf("List 不符: %v %d %+v", err, total, list)
 	}
 }
+
+func TestCurrencyMismatchAborts(t *testing.T) {
+	for _, dry := range []bool{false, true} {
+		t.Run(fmt.Sprintf("dry=%v", dry), func(t *testing.T) {
+			h := newHarness(t)
+			h.br.amount, h.br.amountText = 2000, "US$20.00"
+			h.start(t)
+			g := waitDone(t, h.submit(t, dry).OrderNo)
+			assertNotSubmitted(t, g, "currency_mismatch")
+			if g.AmountText != "US$20.00" || g.AmountMinor != 0 {
+				t.Fatalf("应保留原文且不记金额: %+v", g)
+			}
+			if !strings.Contains(g.ErrorMessage, "US$20.00") || !strings.Contains(g.ErrorMessage, "PHP") {
+				t.Fatalf("消息应带原文与期望币种: %s", g.ErrorMessage)
+			}
+			if h.pool.total() != 0 {
+				t.Fatal("不应调用卡池")
+			}
+			if bs := h.br.browsers(); len(bs) != 1 || bs[0].count("Close") != 1 {
+				t.Fatal("浏览器应已关闭")
+			}
+		})
+	}
+}
+
+func TestUnexpectedErrorFailsOrder(t *testing.T) {
+	h := newHarness(t)
+	o := h.submit(t, true)
+	j := &job{o: o}
+	if err := h.svc.advance(ctx, j, StateChecking, "检查账号", nil); err != nil {
+		t.Fatal(err)
+	}
+	j.sess.SessionToken = "tok-secret-xyz"
+	h.svc.settle(ctx, j, errors.New("写库失败 tok-secret-xyz"))
+	g, _ := getOrder(ctx, o.OrderNo)
+	assertNotSubmitted(t, g, "internal_error")
+	if strings.Contains(g.ErrorMessage, "tok-secret-xyz") {
+		t.Fatalf("错误文本应已脱敏: %s", g.ErrorMessage)
+	}
+}
+
+func TestScrubSecrets(t *testing.T) {
+	j := &job{proxy: "http://us:p%40s@h:8080"}
+	j.sess.SessionToken = "st-token-1"
+	out := j.scrub("dial http://us:p%40s@h:8080 failed; pw p@s enc p%40s tok st-token-1")
+	for _, bad := range []string{"p@s", "p%40s", "st-token-1", "us:"} {
+		if strings.Contains(out, bad) {
+			t.Fatalf("%q 不应出现: %s", bad, out)
+		}
+	}
+	j = &job{proxy: "http://u:ab@h:1"}
+	if out := j.scrub("bad ab pass"); strings.Contains(out, "ab") {
+		t.Fatalf("短密码不应出现: %s", out)
+	}
+}
+
+func TestConcurrencyTwoRunsInParallel(t *testing.T) {
+	h := newHarness(t)
+	if err := SaveConcurrency(2); err != nil {
+		t.Fatal(err)
+	}
+	h.br.openGate = make(chan struct{})
+	h.start(t)
+	a := h.submitAs(t, sessionFor("a@x.com"), true)
+	b := h.submitAs(t, sessionFor("b@x.com"), true)
+	deadline := time.Now().Add(5 * time.Second)
+	for cur, _ := h.br.openingNow(); cur < 2; cur, _ = h.br.openingNow() {
+		if time.Now().After(deadline) {
+			t.Fatal("并发 2 时应有两张单同时 Open")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	close(h.br.openGate)
+	for _, no := range []string{a.OrderNo, b.OrderNo} {
+		if g := waitDone(t, no); g.State != StatePreviewed {
+			t.Fatalf("%s 应完成试运行: %+v", no, g)
+		}
+	}
+	if _, peak := h.br.openingNow(); peak != 2 {
+		t.Fatalf("峰值应为 2: %d", peak)
+	}
+}

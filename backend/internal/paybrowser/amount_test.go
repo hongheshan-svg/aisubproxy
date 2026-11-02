@@ -46,3 +46,37 @@ func TestCurrencyExponent(t *testing.T) {
 		}
 	}
 }
+
+func TestCurrencyMatches(t *testing.T) {
+	cases := []struct {
+		text, cur string
+		want      bool
+	}{
+		{"Total due today ₱1,120.00", "PHP", true},
+		{"$20.00", "USD", true},
+		{"US$20.00", "USD", true},
+		{"USD 20.00", "USD", true},
+		{"¥3,000", "JPY", true},
+		{"CLP 20,000", "CLP", true},
+		{"CLP 20,000", "CLP", true},
+		{"EGP 500.00", "EGP", true},
+		{"20.00 USD", "USD", true},
+		{"EUR 5.00", "EUR", true},
+		{"US$20.00", "PHP", false},
+		{"€200.00", "PHP", false},
+		{"$20,000", "CLP", false},
+		{"CLP$20,000", "USD", false},
+		{"A$20.00", "USD", false},
+		{"CN¥100", "JPY", false},
+		{"£5.00", "EGP", false},
+		{"20 USDT", "USD", false},
+		{"1,120.00", "PHP", false},
+		{"", "PHP", false},
+		{"₱1,120.00 US$20.00", "PHP", false},
+	}
+	for _, c := range cases {
+		if got := paybrowser.CurrencyMatches(c.text, c.cur); got != c.want {
+			t.Errorf("CurrencyMatches(%q, %q) = %v，期望 %v", c.text, c.cur, got, c.want)
+		}
+	}
+}

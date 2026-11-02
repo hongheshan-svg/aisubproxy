@@ -1170,7 +1170,7 @@ func TestShutdownLeavesOrderForRecovery(t *testing.T) {
 func needsReviewOrder(t *testing.T, h *harness) *Order {
 	t.Helper()
 	o := presetOrder(t, "review@x.com", StateVerifying, map[string]any{"submitted_at": h.clock.Now().Unix(), "card_id": testCardID})
-	if err := finish(ctx, o.OrderNo, StateVerifying, StateNeedsReview, "error", "转待人工", map[string]any{"error_code": "verify_timeout"}); err != nil {
+	if err := finish(ctx, o.OrderNo, StateVerifying, StateNeedsReview, "error", "转待人工", map[string]any{"error_code": "verify_timeout", "error_message": "确认超时"}); err != nil {
 		t.Fatal(err)
 	}
 	// 用哨兵值验证人工定论不会重写结束时间
@@ -1190,6 +1190,9 @@ func TestResolve(t *testing.T) {
 		g := mustOrder(t, o.OrderNo)
 		if g.State != StateSucceeded || g.ResolvedBy != "admin" || g.ResolveNote != "已核对账号" {
 			t.Fatalf("定论结果不符: %+v", g)
+		}
+		if g.ErrorCode != "" || g.ErrorMessage != "" {
+			t.Fatalf("标记成功应清掉错误信息: %+v", g)
 		}
 		if g.FinishedAt == nil || *g.FinishedAt != 12345 {
 			t.Fatalf("不应重写 finished_at: %v", g.FinishedAt)
@@ -1211,6 +1214,9 @@ func TestResolve(t *testing.T) {
 		g := mustOrder(t, o.OrderNo)
 		if g.State != StateFailed || g.Failure != FailureDeclined || g.ResolvedBy != "admin" {
 			t.Fatalf("已提交的单不能记成未提交: %+v", g)
+		}
+		if g.ErrorCode != "verify_timeout" || g.ErrorMessage != "确认超时" {
+			t.Fatalf("标记失败应保留错误信息: %+v", g)
 		}
 	})
 	t.Run("参数校验", func(t *testing.T) {
@@ -1238,12 +1244,17 @@ func TestResolve(t *testing.T) {
 		if err := h.svc.Resolve(ctx, o.OrderNo, StateSucceeded, "第一次", "admin"); err != nil {
 			t.Fatal(err)
 		}
-		if err := h.svc.Resolve(ctx, o.OrderNo, StateFailed, "第二次", "admin"); !errors.Is(err, ErrBadRequest) {
-			t.Fatalf("对 succeeded 单应为 ErrBadRequest: %v", err)
+		err := h.svc.Resolve(ctx, o.OrderNo, StateFailed, "第二次", "admin")
+		if !errors.Is(err, ErrBadRequest) || !strings.Contains(err.Error(), "当前为 succeeded") {
+			t.Fatalf("对 succeeded 单应报冲突并说明当前状态: %v", err)
+		}
+		if g := mustOrder(t, o.OrderNo); g.State != StateSucceeded || g.ResolveNote != "第一次" {
+			t.Fatalf("冲突时不应改单: %+v", g)
 		}
 		v := presetOrder(t, "v@x.com", StateVerifying, nil)
-		if err := h.svc.Resolve(ctx, v.OrderNo, StateFailed, "备注", "admin"); !errors.Is(err, ErrBadRequest) {
-			t.Fatalf("对确认中的单应为 ErrBadRequest: %v", err)
+		err = h.svc.Resolve(ctx, v.OrderNo, StateFailed, "备注", "admin")
+		if !errors.Is(err, ErrBadRequest) || !strings.Contains(err.Error(), "当前为 verifying") {
+			t.Fatalf("对确认中的单应报冲突并说明当前状态: %v", err)
 		}
 	})
 }

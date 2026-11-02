@@ -256,6 +256,8 @@ func (s *Service) Resolve(ctx context.Context, no, result, note, by string) erro
 	label := "成功"
 	switch result {
 	case StateSucceeded:
+		// 与确认阶段的成功定论一致：成功的单不留错误信息；标记失败时保留，那是定论的依据
+		set["error_code"], set["error_message"] = "", ""
 	case StateFailed:
 		label = "失败"
 		set["failure"] = FailureDeclined
@@ -268,17 +270,11 @@ func (s *Service) Resolve(ctx context.Context, no, result, note, by string) erro
 	if by == "" {
 		return fmt.Errorf("%w: 缺少操作人", ErrBadRequest)
 	}
-	o, err := getOrder(ctx, no)
-	if err != nil {
-		return err
-	}
-	if o.State != StateNeedsReview {
-		return fmt.Errorf("%w: 只有待人工的单据才能定论，当前为 %s", ErrBadRequest, o.State)
-	}
+	// 只靠条件更新判断状态：先读再判断的话，两人同时定论时后者走的是另一条分支
 	msg := fmt.Sprintf("%s 人工定论为%s：%s", by, label, note)
-	err = transition(ctx, no, StateNeedsReview, result, "info", msg, set)
+	err := transition(ctx, no, StateNeedsReview, result, "info", msg, set)
 	if errors.Is(err, ErrStateChanged) {
-		return fmt.Errorf("%w: 单据已被他人定论", ErrBadRequest)
+		return fmt.Errorf("%w: 只有待人工的单据才能定论（%v）", ErrBadRequest, err)
 	}
 	return err
 }

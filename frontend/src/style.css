@@ -32,6 +32,11 @@ html {
   --radius-pill: 999px;
   --page-pad: 22px 20px;
   --nav-height: 60px;
+  --side-w: 232px;
+  --side-w-collapsed: 64px;
+  --topbar-h: 56px;
+  --side-bg: var(--surface-solid);
+  --side-brd: var(--brd);
   --content-max: 1500px;
 
   --bg: #f2ede4;
@@ -73,6 +78,7 @@ html {
 
 /* density */
 html[data-density='compact'] {
+  --side-w: 216px;
   --page-pad: 14px 16px;
   --nav-height: 52px;
   --radius-lg: 12px;
@@ -355,6 +361,7 @@ textarea.input { resize: vertical; }
 .alert-error   { background: var(--err-soft);  color: var(--err);  border-color: var(--err); }
 .alert-success { background: var(--good-soft); color: var(--good); border-color: var(--good); }
 .alert-info    { background: var(--info-soft); color: var(--info); border-color: var(--info); }
+.alert-warning { background: var(--warn-soft); color: var(--warn); border-color: var(--warn); }
 
 /* ── Data tables ── */
 .data-table { @apply min-w-full text-sm; border-collapse: collapse; }
@@ -945,31 +952,20 @@ html.dark[data-skin="zovo"] ::-webkit-scrollbar { width: 10px; height: 10px; }
 html.dark[data-skin="zovo"] ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.12); border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; }
 html.dark[data-skin="zovo"] ::-webkit-scrollbar-track { background: transparent; }
 
-/* cyber 侧栏霓虹（原在 AdminLayout scoped 里用 :global 写，编译后选择器丢了 .sidenav） */
-html[data-skin='cyber'] .app-shell .sidenav {
-  background: linear-gradient(180deg, #0d1524 0%, #0a101c 100%);
-  border-right-color: rgba(34, 211, 238, 0.22);
-  box-shadow: inset -1px 0 0 rgba(34, 211, 238, 0.08);
+/* cyber 侧栏霓虹：只覆盖侧栏变量与当前项发光 */
+html[data-skin='cyber'] {
+  --side-bg: linear-gradient(180deg, #0d1524 0%, #0a101c 100%);
+  --side-brd: rgba(34, 211, 238, 0.22);
 }
-html[data-skin='cyber'] .app-shell .side-link.active {
-  box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.35), 0 0 20px rgba(34, 211, 238, 0.08);
+html[data-skin='cyber'] .app-shell .sn-item.active {
+  box-shadow: inset 3px 0 0 var(--primary), 0 0 0 1px rgba(34, 211, 238, 0.35), 0 0 20px rgba(34, 211, 238, 0.08);
 }
 
-/* 导航形态：由 data-nav 驱动（AdminLayout 用 class 配合） */
-html[data-nav='block'] .nav-pills .pill { border-radius: 6px; }
-html[data-nav='underline'] .nav-pills .pill {
-  border-radius: 0; background: transparent !important;
-  border-bottom: 2px solid transparent; padding-bottom: 8px;
-}
-html[data-nav='underline'] .nav-pills .pill.active {
-  border-bottom-color: var(--primary);
-  color: var(--primary);
-  background: transparent !important;
-}
-html[data-nav='block'] .topnav {
-  background: var(--surface) !important;
-  backdrop-filter: none;
-}
+/* 导航形态：由 data-nav 驱动，作用于侧栏项 */
+html[data-nav='pill'] .sn-item { border-radius: 999px; }
+html[data-nav='block'] .sn-item { border-radius: 6px; }
+html[data-nav='underline'] .sn-item { border-radius: 0; }
+html[data-nav='underline'] .sn-item.active { background: transparent; }
 
 /* Element 按钮圆角跟随主题 */
 .el-button { border-radius: var(--radius-md) !important; }
@@ -992,3 +988,8 @@ html[data-nav='block'] .topnav {
 .result-tile .k { font-size: 11px; color: var(--ink-3); margin-bottom: 4px; }
 .result-tile .v { font-size: 14px; font-weight: 600; color: var(--ink); word-break: break-all; }
 .result-tile .v.mono { font-family: var(--font-mono); font-size: 13px; }
+
+/* 窄屏防横向溢出：分页条允许换行，长文案复选框允许折行 */
+.el-pagination { flex-wrap: wrap; row-gap: 6px; max-width: 100%; }
+.page .el-checkbox { white-space: normal; height: auto; max-width: 100%; align-items: flex-start; }
+.page .el-checkbox__label { white-space: normal; line-height: 1.5; overflow-wrap: anywhere; }

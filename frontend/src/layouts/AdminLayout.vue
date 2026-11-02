@@ -1,128 +1,248 @@
 <template>
-  <div class="app-shell" :class="[`layout-${layout}`, `nav-${nav}`]">
-    <!-- 侧栏 / 细轨（cyber、slate 等） -->
-    <aside v-if="layout === 'sidebar' || layout === 'rail'" class="sidenav">
-      <div class="side-brand" @click="router.push('/ops')">
-        <span class="brand-icon">{{ layout === 'cyber' || skin === 'cyber' ? '◈' : '🚀' }}</span>
-        <span v-if="layout !== 'rail'" class="brand-text">{{ brand.name || '运营控制台' }}</span>
+  <div
+    class="app-shell"
+    :class="{ 'is-collapsed': railMode, 'is-mobile': isMobile, 'is-drawer-open': drawerOpen }"
+  >
+    <div v-if="isMobile && drawerOpen" class="modal-mask sn-mask" @click="drawerOpen = false" />
+
+    <aside
+      id="admin-sidenav"
+      class="sidenav"
+      :class="{ 'is-collapsed': railMode }"
+      :aria-hidden="isMobile && !drawerOpen ? 'true' : undefined"
+      :inert="isMobile && !drawerOpen ? true : undefined"
+      @keydown.esc="drawerOpen = false"
+    >
+      <div class="sn-brand" @click="go('/ops')">
+        <svg class="sn-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 2.5 21 9l-9 12.5L3 9z" /><path d="M3 9h18M8 9l4 12.5M16 9l-4 12.5M8 9l4-6.5L16 9" />
+        </svg>
+        <span v-if="!railMode" class="sn-brand-text">
+          <span class="sn-brand-name">{{ brand.name || '运营控制台' }}</span>
+          <span class="sn-brand-sub">运营控制台</span>
+        </span>
       </div>
-      <nav class="side-pills">
-        <router-link
-          v-for="it in navItems"
-          :key="it.path"
-          :to="it.path"
-          class="side-link"
-          :class="{ active: isActive(it.path) }"
-          :title="it.label"
-        >
-          <el-icon><component :is="it.icon" /></el-icon>
-          <span v-if="layout !== 'rail'" class="side-label">{{ it.label }}</span>
-        </router-link>
+
+      <nav class="sn-nav" aria-label="后台导航">
+        <template v-for="g in groups" :key="g.name || '_root'">
+          <div v-if="g.name && !railMode" class="sn-group" :class="{ 'has-active': g.items.some((i) => isActive(i.path)) }">{{ g.name }}</div>
+          <div v-else-if="g.name && railMode" class="sn-sep" />
+          <el-tooltip
+            v-for="it in g.items"
+            :key="it.path"
+            :content="it.title"
+            placement="right"
+            :disabled="!railMode"
+          >
+            <router-link
+              :to="it.path"
+              class="sn-item"
+              :class="{ active: isActive(it.path) }"
+              :aria-label="it.title"
+              :aria-current="isActive(it.path) ? 'page' : undefined"
+              @click="drawerOpen = false"
+            >
+              <el-icon class="sn-icon"><component :is="it.icon" /></el-icon>
+              <span v-if="!railMode" class="sn-label">{{ it.title }}</span>
+            </router-link>
+          </el-tooltip>
+        </template>
       </nav>
-      <div class="side-foot">
-        <el-popover placement="right-end" :width="340" trigger="click">
-          <template #reference>
-            <button type="button" class="side-tool" title="主题">
-              <el-icon><Brush /></el-icon>
-            </button>
+
+      <div class="sn-foot">
+        <div class="sn-tools">
+          <ThemeToggle />
+          <button
+            v-if="!isMobile"
+            type="button"
+            class="btn-ghost !px-2.5 sn-collapse"
+            :title="railMode ? '展开菜单' : '折叠菜单'"
+            :aria-label="railMode ? '展开菜单' : '折叠菜单'"
+            :aria-expanded="!railMode"
+            aria-controls="admin-sidenav"
+            @click="toggleCollapse"
+          >
+            <el-icon :size="18"><component :is="railMode ? 'Expand' : 'Fold'" /></el-icon>
+          </button>
+        </div>
+        <el-dropdown trigger="click" placement="top-start" @command="onUserCommand">
+          <button type="button" class="sn-user" :title="username">
+            <span class="sn-avatar">{{ username.slice(0, 1).toUpperCase() }}</span>
+            <span v-if="!railMode" class="sn-user-name">{{ username }}</span>
+            <el-icon v-if="!railMode" class="sn-user-caret"><ArrowDown /></el-icon>
+          </button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="pwd">修改密码</el-dropdown-item>
+              <el-dropdown-item command="logout" divided>退出登录</el-dropdown-item>
+            </el-dropdown-menu>
           </template>
-          <SkinPicker show-mode title="整站主题" />
-        </el-popover>
-        <span v-if="layout !== 'rail'" class="admin-name">{{ auth.username || 'admin' }}</span>
-        <el-button v-if="layout !== 'rail'" size="small" @click="doLogout">退出</el-button>
-        <el-button v-else size="small" circle @click="doLogout" title="退出">⎋</el-button>
+        </el-dropdown>
       </div>
     </aside>
 
     <div class="main-col">
-      <!-- 顶栏：top 布局始终显示；侧栏布局显示精简顶条 -->
-      <header v-if="layout === 'top'" class="topnav">
-        <div class="nav-inner">
-          <div class="brand" @click="router.push('/ops')">
-            <span class="brand-icon">🚀</span>
-            <span class="brand-text">{{ brand.name || '运营控制台' }}</span>
-          </div>
-          <nav class="nav-pills">
-            <router-link
-              v-for="it in navItems"
-              :key="it.path"
-              :to="it.path"
-              class="pill"
-              :class="{ active: isActive(it.path) }"
-            >
-              <el-icon><component :is="it.icon" /></el-icon><span>{{ it.label }}</span>
-            </router-link>
-          </nav>
-          <div class="nav-actions">
-            <el-popover placement="bottom-end" :width="340" trigger="click">
-              <template #reference>
-                <span class="hicon" title="整站主题"><el-icon><Brush /></el-icon></span>
-              </template>
-              <SkinPicker show-mode title="整站主题" />
-            </el-popover>
-            <span class="admin-name">{{ auth.username || 'admin' }}</span>
-            <el-button size="small" round @click="doLogout">退出</el-button>
-          </div>
-        </div>
-      </header>
-
-      <header v-else class="subtop">
-        <div class="subtop-inner">
-          <div class="subtop-title">{{ currentTitle }}</div>
-          <div class="nav-actions">
-            <span class="admin-name">{{ auth.username || 'admin' }}</span>
-          </div>
-        </div>
+      <header class="topbar">
+        <button
+          v-if="isMobile"
+          type="button"
+          class="btn-ghost !px-2.5 sn-burger"
+          aria-label="打开菜单"
+          :aria-expanded="drawerOpen"
+          aria-controls="admin-sidenav"
+          @click="openDrawer"
+        >
+          <el-icon :size="20"><Menu /></el-icon>
+        </button>
+        <nav class="crumbs" aria-label="面包屑">
+          <template v-if="currentMeta.group">
+            <span class="crumb-group">{{ currentMeta.group }}</span>
+            <span class="crumb-sep">/</span>
+          </template>
+          <span class="crumb-page">{{ currentMeta.title }}</span>
+        </nav>
       </header>
 
       <main class="page"><router-view /></main>
     </div>
+
+    <el-dialog v-model="pwdOpen" title="修改密码" width="420px" append-to-body align-center @closed="resetPwd">
+      <el-form label-position="top" @submit.prevent>
+        <el-form-item label="旧密码">
+          <el-input v-model="pwdForm.old_password" type="password" show-password autocomplete="current-password" />
+        </el-form-item>
+        <el-form-item label="新密码（至少 12 位）">
+          <el-input v-model="pwdForm.new_password" type="password" show-password autocomplete="new-password" />
+        </el-form-item>
+        <el-form-item label="确认新密码">
+          <el-input v-model="pwdForm.confirm" type="password" show-password autocomplete="new-password" @keyup.enter="submitPwd" />
+        </el-form-item>
+        <div v-if="pwdError" class="alert alert-error">{{ pwdError }}</div>
+      </el-form>
+      <template #footer>
+        <el-button @click="pwdOpen = false">取消</el-button>
+        <el-button type="primary" :loading="pwdLoading" @click="submitPwd">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
-import { serverLogout } from '../lib/api'
-import { siteBrand, currentSkinMeta, siteSkin } from '../theme'
-import SkinPicker from '../components/SkinPicker.vue'
+import { authFetch, serverLogout } from '../lib/api'
+import { dialog } from '../lib/dialog'
+import { siteBrand } from '../theme'
+import ThemeToggle from '../components/ThemeToggle.vue'
+import {
+  buildNavItems, groupNavItems, readNavPref, writeNavPref, isCollapsed, MOBILE_MAX, OPS, type NavPref,
+} from '../lib/adminNav'
 
 const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 const brand = siteBrand
-const skin = siteSkin
+const username = computed(() => auth.username || 'admin')
 
-const layout = computed(() => currentSkinMeta.value.layout)
-const nav = computed(() => currentSkinMeta.value.nav)
-
-const navItems = [
-  { path: '/ops', label: '总览', icon: 'Odometer' },
-  { path: '/ops/cdkeys', label: 'CDK卡密', icon: 'Key' },
-  { path: '/ops/orders', label: '兑换对账', icon: 'Document' },
-  { path: '/ops/integration', label: '卡台接入', icon: 'Link' },
-  { path: '/ops/marswallex', label: 'MarsWallex', icon: 'Wallet' },
-  { path: '/ops/cardpool', label: '卡池', icon: 'Box' },
-  { path: '/ops/marswallex-wallet', label: 'MarsWallex 钱包', icon: 'Coin' },
-  { path: '/ops/marswallex-pay', label: 'MarsWallex 兑换', icon: 'CreditCard' },
-  { path: '/ops/card-selection', label: '选卡配置', icon: 'CreditCard' },
-  { path: '/ops/webhooks', label: 'Webhook', icon: 'Bell' },
-  { path: '/ops/appearance', label: '外观', icon: 'Brush' },
-  { path: '/ops/audit', label: '审计', icon: 'List' },
-]
-
-const currentTitle = computed(() => {
-  const hit = navItems.find((n) => isActive(n.path))
-  return hit?.label || brand.value.name || '控制台'
+// 菜单唯一来源：/ops 子路由的 meta（title / group / icon），按路由定义顺序排列。
+const navItems = computed(() => buildNavItems(router.options.routes))
+const groups = computed(() => groupNavItems(navItems.value))
+const currentMeta = computed(() => {
+  const m = route.meta as Record<string, string>
+  return { title: m.title || brand.value.name || '控制台', group: m.group || '' }
 })
 
 function isActive(p: string) {
-  return p === '/ops' ? route.path === '/ops' : route.path === p || route.path.startsWith(p + '/')
+  return p === OPS ? route.path === OPS : route.path === p || route.path.startsWith(p + '/')
 }
-async function doLogout() {
-  await serverLogout()
-  router.push('/ops/login')
+function go(p: string) {
+  drawerOpen.value = false
+  router.push(p)
+}
+
+// ── 折叠 / 抽屉 ──
+const vw = ref(typeof window === 'undefined' ? 1440 : window.innerWidth)
+const pref = ref<NavPref>(readNavPref())
+const drawerOpen = ref(false)
+const isMobile = computed(() => vw.value <= MOBILE_MAX)
+const collapsed = computed(() => isCollapsed(pref.value, vw.value))
+// 抽屉里始终显示完整菜单
+const railMode = computed(() => !isMobile.value && collapsed.value)
+
+function toggleCollapse() {
+  pref.value = railMode.value ? 'expanded' : 'collapsed'
+  writeNavPref(pref.value)
+}
+async function openDrawer() {
+  drawerOpen.value = true
+  await nextTick()
+  document.querySelector<HTMLElement>('#admin-sidenav .sn-item')?.focus()
+}
+function onResize() {
+  vw.value = window.innerWidth
+  if (!isMobile.value) drawerOpen.value = false
+}
+function onKey(e: KeyboardEvent) {
+  if (e.key === 'Escape') drawerOpen.value = false
+}
+onMounted(() => {
+  window.addEventListener('resize', onResize)
+  window.addEventListener('keydown', onKey)
+})
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', onResize)
+  window.removeEventListener('keydown', onKey)
+})
+watch(() => route.path, () => { drawerOpen.value = false })
+watch(
+  () => [currentMeta.value.title, brand.value.name],
+  () => { if (typeof document !== 'undefined') document.title = `${currentMeta.value.title} · ${brand.value.name || '控制台'}` },
+  { immediate: true },
+)
+
+// ── 用户菜单 / 修改密码 ──
+const pwdOpen = ref(false)
+const pwdLoading = ref(false)
+const pwdError = ref('')
+const pwdForm = reactive({ old_password: '', new_password: '', confirm: '' })
+function resetPwd() {
+  pwdError.value = ''
+  pwdForm.old_password = ''
+  pwdForm.new_password = ''
+  pwdForm.confirm = ''
+}
+async function onUserCommand(cmd: string) {
+  if (cmd === 'pwd') {
+    resetPwd()
+    pwdOpen.value = true
+  } else if (cmd === 'logout') {
+    await serverLogout()
+    router.push('/ops/login')
+  }
+}
+async function submitPwd() {
+  pwdError.value = ''
+  if (pwdForm.new_password !== pwdForm.confirm) {
+    pwdError.value = '两次新密码不一致'
+    return
+  }
+  pwdLoading.value = true
+  try {
+    const r = await authFetch('/api/v1/auth/admin/change-password', {
+      method: 'POST',
+      body: JSON.stringify({ old_password: pwdForm.old_password, new_password: pwdForm.new_password }),
+    })
+    const d = await r.json().catch(() => ({}))
+    if (!r.ok) {
+      pwdError.value = d.error || '修改失败'
+      return
+    }
+    pwdOpen.value = false
+    dialog.toast('密码已修改', 'ok')
+  } finally {
+    pwdLoading.value = false
+  }
 }
 </script>
 
@@ -130,15 +250,10 @@ async function doLogout() {
 .app-shell {
   min-height: 100vh;
   display: flex;
-  flex-direction: column;
-  /* 底色由 html 统一画（见 style.css），这里透明：否则会盖住固定氛围层，
-     原来的 background-attachment: fixed 还会让滚动每帧重绘整屏 */
-  background: transparent;
-  color: var(--ink);
-}
-.layout-sidebar, .layout-rail {
   flex-direction: row;
   align-items: stretch;
+  background: transparent;
+  color: var(--ink);
 }
 .main-col {
   flex: 1;
@@ -148,154 +263,115 @@ async function doLogout() {
   min-height: 100vh;
 }
 
-/* ── top nav ── */
-.topnav {
-  position: sticky; top: 0; z-index: 100;
-  background: color-mix(in srgb, var(--surface) 88%, transparent);
-  backdrop-filter: saturate(1.3) blur(12px);
-  border-bottom: 1px solid var(--brd);
-}
-.nav-inner {
-  max-width: var(--content-max, 1500px); margin: 0 auto;
-  height: var(--nav-height, 60px); padding: 0 20px;
-  display: flex; align-items: center; gap: 14px;
-}
-.brand, .side-brand {
-  display: flex; align-items: center; gap: 8px; cursor: pointer; flex-shrink: 0;
-}
-.brand-icon { font-size: 20px; line-height: 1; }
-.brand-text {
-  font-size: 17px; font-weight: 700; color: var(--ink); white-space: nowrap;
-  font-family: var(--font-display, var(--font-serif));
-}
-.nav-pills { display: flex; align-items: center; gap: 2px; flex-wrap: wrap; flex: 1; }
-.pill {
-  display: inline-flex; align-items: center; gap: 5px;
-  padding: 7px 12px; border-radius: var(--radius-pill, 999px); font-size: 14px;
-  color: var(--ink-2); text-decoration: none; white-space: nowrap; transition: all .15s;
-}
-.pill:hover { background: var(--primary-soft); color: var(--ink); }
-.pill.active { background: var(--primary-soft); color: var(--primary); font-weight: 600; }
-.nav-actions { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
-.hicon { cursor: pointer; color: var(--ink-2); display: flex; font-size: 18px; }
-.admin-name { font-size: 13px; color: var(--ink-2); }
-.page {
-  max-width: var(--content-max, 1500px); width: 100%; margin: 0 auto;
-  padding: var(--page-pad, 22px 20px); flex: 1;
-}
-
-/* ── sidebar ── */
+/* ── 侧栏：与内容区同底色，只靠右边框分隔 ── */
 .sidenav {
-  width: 220px;
+  width: var(--side-w, 232px);
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 16px 12px;
-  background: var(--surface);
-  border-right: 1px solid var(--brd);
   position: sticky;
   top: 0;
   height: 100vh;
-  z-index: 50;
+  z-index: 60;
+  background: var(--side-bg, var(--surface-solid));
+  border-right: 1px solid var(--side-brd, var(--brd));
+  transition: width .18s ease;
 }
-.layout-rail .sidenav {
-  width: 64px;
-  align-items: center;
-  padding: 12px 8px;
-}
-.side-brand {
-  padding: 8px 10px 14px;
-  border-bottom: 1px solid var(--brd);
-  margin-bottom: 8px;
-  width: 100%;
-}
-.layout-rail .side-brand { justify-content: center; padding: 8px 0 12px; }
-.side-pills {
-  display: flex; flex-direction: column; gap: 4px; flex: 1; width: 100%;
-  overflow: auto;
-}
-.side-link {
+.sidenav.is-collapsed { width: var(--side-w-collapsed, 64px); }
+
+.sn-brand {
+  height: var(--topbar-h, 56px);
+  flex-shrink: 0;
   display: flex; align-items: center; gap: 10px;
-  padding: 10px 12px;
-  border-radius: var(--radius-md);
-  color: var(--ink-2);
-  text-decoration: none;
-  font-size: 14px;
-  border: 1px solid transparent;
-  transition: .15s ease;
+  padding: 0 18px; cursor: pointer;
+  border-bottom: 1px solid var(--side-brd, var(--brd));
+  overflow: hidden;
 }
-.layout-rail .side-link { justify-content: center; padding: 12px; }
-.side-link:hover { background: var(--primary-soft); color: var(--ink); }
-.side-link.active {
-  background: var(--primary-soft);
-  color: var(--primary);
-  border-color: var(--brd-2);
-  font-weight: 600;
-  box-shadow: var(--shadow-sm);
-}
-.side-label { white-space: nowrap; }
-.side-foot {
-  display: flex; flex-direction: column; gap: 8px;
-  padding-top: 12px; border-top: 1px solid var(--brd);
-  width: 100%;
-}
-.layout-rail .side-foot { align-items: center; }
-.side-tool {
-  display: flex; align-items: center; justify-content: center;
-  width: 100%; height: 36px; border-radius: var(--radius-md);
-  border: 1px solid var(--brd); background: var(--surface-2);
-  color: var(--ink-2); cursor: pointer;
-}
-.layout-rail .side-tool { width: 40px; }
-
-.subtop {
-  border-bottom: 1px solid var(--brd);
-  background: color-mix(in srgb, var(--surface) 90%, transparent);
-  backdrop-filter: blur(8px);
-  position: sticky; top: 0; z-index: 40;
-}
-.subtop-inner {
-  height: 48px; padding: 0 20px;
-  display: flex; align-items: center; justify-content: space-between;
-}
-.subtop-title {
+.is-collapsed .sn-brand { justify-content: center; padding: 0; }
+.sn-logo { width: 24px; height: 24px; flex-shrink: 0; color: var(--primary); }
+.sn-brand-text { display: flex; flex-direction: column; min-width: 0; line-height: 1.2; }
+.sn-brand-name {
+  font-size: 15px; font-weight: 700; color: var(--ink);
   font-family: var(--font-display, var(--font-serif));
-  font-weight: 700; font-size: 15px; color: var(--ink);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.sn-brand-sub { font-size: 11px; color: var(--ink-3); }
+
+.sn-nav { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 6px 10px 10px; }
+.sn-group {
+  font-size: 11px; letter-spacing: .06em; color: var(--ink-3);
+  margin: 14px 0 4px; padding: 0 12px;
+}
+.sn-group.has-active { color: var(--ink-2); }
+.sn-sep { height: 1px; background: var(--side-brd, var(--brd)); margin: 10px 8px; }
+.sn-item {
+  display: flex; align-items: center; gap: 10px;
+  height: 38px; padding: 0 12px; margin-bottom: 2px;
+  border-radius: var(--radius-md);
+  color: var(--ink-2); text-decoration: none; font-size: 14px;
+  transition: background .15s, color .15s;
+}
+.is-collapsed .sn-item { justify-content: center; padding: 0; }
+.sn-icon { font-size: 18px; flex-shrink: 0; }
+.sn-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sn-item:hover { background: var(--surface-2); color: var(--ink); }
+.sn-item:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+.sn-item.active {
+  background: var(--primary-soft); color: var(--primary); font-weight: 600;
+  box-shadow: inset 3px 0 0 var(--primary);
 }
 
-/* cyber 侧栏霓虹已移到 style.css：scoped 里的 :global(html[...]) .sidenav 会被编译成裸的
-   html[data-skin=cyber]{…}，把侧栏渐变刷到整个 html 上。 */
+.sn-foot {
+  flex-shrink: 0; padding: 10px; border-top: 1px solid var(--side-brd, var(--brd));
+  display: flex; flex-direction: column; gap: 8px;
+}
+.sn-tools { display: flex; gap: 6px; }
+.is-collapsed .sn-tools { flex-direction: column; align-items: center; }
+.sn-foot :deep(.el-dropdown) { width: 100%; }
+.sn-user {
+  width: 100%; display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; border-radius: var(--radius-md);
+  background: transparent; border: 1px solid transparent; color: var(--ink); cursor: pointer;
+}
+.is-collapsed .sn-user { justify-content: center; padding: 6px 0; }
+.sn-user:hover { background: var(--surface-2); }
+.sn-avatar {
+  width: 28px; height: 28px; border-radius: 50%; flex-shrink: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--primary-soft); color: var(--primary); font-weight: 700; font-size: 13px;
+}
+.sn-user-name { flex: 1; text-align: left; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sn-user-caret { color: var(--ink-3); }
 
-/* 窄屏顶栏：品牌 + 操作一行，导航单独一行横向滑动（原来换行后压在页面内容上） */
-@media (max-width: 900px) {
-  .nav-inner { height: auto; flex-wrap: wrap; row-gap: 8px; padding: 10px 14px; }
-  .nav-actions { margin-left: auto; gap: 8px; }
-  .nav-actions .admin-name { display: none; }
-  .nav-pills {
-    order: 3;
-    flex: 1 0 100%;
-    flex-wrap: nowrap;
-    overflow-x: auto;
-    gap: 4px;
-    scrollbar-width: none;
-    -webkit-overflow-scrolling: touch;
-    mask-image: linear-gradient(to right, #000 88%, transparent);
-  }
-  .nav-pills::-webkit-scrollbar { display: none; }
-  .page { padding: 16px 14px; }
+/* ── 主列顶栏 ── */
+.topbar {
+  height: var(--topbar-h, 56px);
+  position: sticky; top: 0; z-index: 40;
+  display: flex; align-items: center; gap: 10px;
+  padding: 0 20px;
+  background: color-mix(in srgb, var(--surface-solid) 88%, transparent);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--brd);
+}
+.crumbs { display: flex; align-items: center; gap: 8px; font-size: 14px; min-width: 0; }
+.crumb-group { color: var(--ink-3); white-space: nowrap; }
+.crumb-sep { color: var(--ink-3); }
+.crumb-page { font-weight: 600; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.page {
+  max-width: var(--content-max, 1500px); width: 100%; margin: 0 auto;
+  padding: var(--page-pad, 22px 20px); flex: 1; min-width: 0;
 }
 
-@media (max-width: 900px) {
-  .layout-sidebar .sidenav,
-  .layout-rail .sidenav {
-    width: 56px;
-    padding: 10px 6px;
-  }
-  .side-label, .layout-sidebar .brand-text, .layout-sidebar .admin-name,
-  .layout-sidebar .side-foot .el-button:not(.is-circle) {
-    display: none !important;
-  }
-  .side-brand, .side-link, .side-foot { align-items: center; justify-content: center; }
+/* ── 窄屏：侧栏变抽屉 ── */
+.is-mobile .sidenav {
+  position: fixed; left: 0; top: 0; bottom: 0;
+  width: min(280px, 84vw);
+  transform: translateX(-100%);
+  transition: transform .2s ease;
+  z-index: 9000;
 }
+.is-mobile.is-drawer-open .sidenav { transform: translateX(0); box-shadow: var(--shadow); }
+.sn-mask { position: fixed; inset: 0; z-index: 8999; }
+.is-mobile .topbar { padding: 0 12px; }
+.is-mobile .page { padding: 16px 14px; }
 </style>

@@ -34,8 +34,6 @@ export interface SkinMeta {
   heading: 'serif' | 'sans' | 'display' | 'mono'
   density: 'comfy' | 'compact' | 'airy'
   nav: 'pill' | 'underline' | 'block'
-  /** 管理端壳层布局 */
-  layout: 'top' | 'sidebar' | 'rail'
   /** 是否默认走暗色（如 cyber/ember/noir） */
   preferDark?: boolean
   /** 主色，用于同步 Element Plus */
@@ -64,7 +62,6 @@ export const SKINS: SkinMeta[] = [
     heading: 'display',
     density: 'comfy',
     nav: 'pill',
-    layout: 'top',
     primary: '#cbb079',
     primaryOn: '#07070a',
     primaryLight: '#9c7c3c',
@@ -81,7 +78,6 @@ export const SKINS: SkinMeta[] = [
     heading: 'serif',
     density: 'comfy',
     nav: 'pill',
-    layout: 'top',
     primary: '#c0563a',
     fonts: ['Inter:wght@400;500;600;700', 'Source+Serif+4:opsz,wght@8..60,500;8..60,600;8..60,700', SERIF_SC],
   },
@@ -95,7 +91,6 @@ export const SKINS: SkinMeta[] = [
     heading: 'mono',
     density: 'compact',
     nav: 'block',
-    layout: 'sidebar',
     preferDark: true,
     primary: '#22d3ee',
     primaryOn: '#041016',
@@ -111,7 +106,6 @@ export const SKINS: SkinMeta[] = [
     heading: 'sans',
     density: 'compact',
     nav: 'block',
-    layout: 'top',
     primary: '#2563eb',
     fonts: ['Inter:wght@400;500;600;700', 'Outfit:wght@500;600;700'],
   },
@@ -125,7 +119,6 @@ export const SKINS: SkinMeta[] = [
     heading: 'display',
     density: 'comfy',
     nav: 'pill',
-    layout: 'top',
     preferDark: true,
     primary: '#ff854a',
     primaryOn: '#1a0c08',
@@ -141,7 +134,6 @@ export const SKINS: SkinMeta[] = [
     heading: 'sans',
     density: 'airy',
     nav: 'pill',
-    layout: 'top',
     primary: '#059669',
     fonts: ['Inter:wght@400;500;600;700', 'Outfit:wght@500;600;700'],
   },
@@ -155,7 +147,6 @@ export const SKINS: SkinMeta[] = [
     heading: 'display',
     density: 'comfy',
     nav: 'underline',
-    layout: 'top',
     primary: '#7c3aed',
     fonts: ['Inter:wght@400;500;600;700', 'Space+Grotesk:wght@500;600;700'],
   },
@@ -169,7 +160,6 @@ export const SKINS: SkinMeta[] = [
     heading: 'mono',
     density: 'compact',
     nav: 'block',
-    layout: 'rail',
     primary: '#475569',
     fonts: ['DM+Sans:wght@400;500;600;700'],
   },
@@ -183,7 +173,6 @@ export const SKINS: SkinMeta[] = [
     heading: 'serif',
     density: 'airy',
     nav: 'underline',
-    layout: 'top',
     primary: '#e11d48',
     fonts: ['Inter:wght@400;500;600;700', 'Instrument+Serif:ital@0;1', 'Source+Serif+4:opsz,wght@8..60,500;8..60,600;8..60,700', SERIF_SC],
   },
@@ -197,7 +186,6 @@ export const SKINS: SkinMeta[] = [
     heading: 'display',
     density: 'compact',
     nav: 'block',
-    layout: 'top',
     preferDark: true,
     primary: '#fafafa',
     primaryOn: '#0a0a0a',
@@ -213,7 +201,6 @@ export const SKINS: SkinMeta[] = [
     heading: 'serif',
     density: 'comfy',
     nav: 'underline',
-    layout: 'top',
     primary: '#8b5e34',
     fonts: ['Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600;8..60,700', SERIF_SC],
   },
@@ -326,7 +313,6 @@ function applySkin() {
   root.setAttribute('data-heading', meta.heading)
   root.setAttribute('data-density', meta.density)
   root.setAttribute('data-nav', meta.nav)
-  root.setAttribute('data-layout', meta.layout)
   // preferDark 皮肤：若用户未显式选 light，自动保证暗色 class 与皮肤一致
   if (meta.preferDark && themeMode.value === 'light') {
     // 允许 light，但皮肤 CSS 本身已是暗色 token；不强制改 mode

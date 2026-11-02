@@ -31,8 +31,6 @@
           if (skin === 'cyber' || skin === 'ember' || skin === 'noir') dark = true
           if (dark) document.documentElement.classList.add('dark')
           document.documentElement.setAttribute('data-skin', skin)
-          var layoutMap = { cyber: 'sidebar', slate: 'rail' }
-          document.documentElement.setAttribute('data-layout', layoutMap[skin] || 'top')
         } catch (e) {}
       })()
     </script>

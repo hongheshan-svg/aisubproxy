@@ -74,18 +74,19 @@ const routes: RouteRecordRaw[] = [
     component: () => import('../layouts/AdminLayout.vue'),
     meta: { requiresAuth: true, requiresAdmin: true },
     children: [
-      { path: '', name: 'AdminDashboard', component: () => import('../views/admin/AdminDashboard.vue') },
-      { path: 'cdkeys', name: 'CDKeyManagement', component: () => import('../views/admin/CDKeyManagement.vue') },
-      { path: 'orders', name: 'OrderReconcile', component: () => import('../views/admin/OrderReconcile.vue') },
-      { path: 'appearance', name: 'SiteAppearance', component: () => import('../views/admin/SiteAppearance.vue') },
-      { path: 'integration', name: 'CardIntegration', component: () => import('../views/admin/CardIntegration.vue') },
-      { path: 'marswallex', name: 'MarsWallexIntegration', component: () => import('../views/admin/MarsWallexIntegration.vue') },
-      { path: 'cardpool', name: 'CardPool', component: () => import('../views/admin/CardPool.vue') },
-      { path: 'marswallex-wallet', name: 'MarsWallexWallet', component: () => import('../views/admin/MarsWallexWallet.vue') },
-      { path: 'marswallex-pay', name: 'MarsWallexPay', component: () => import('../views/admin/MarsWallexPay.vue') },
-      { path: 'audit', name: 'AuditLogs', component: () => import('../views/admin/AuditLogs.vue') },
-      { path: 'webhooks', name: 'Webhooks', component: () => import('../views/admin/WebhookEvents.vue') },
-      { path: 'card-selection', name: 'CardSelectionConfig', component: () => import('../views/admin/CardSelectionConfig.vue') },
+      { path: '', name: 'AdminDashboard', component: () => import('../views/admin/AdminDashboard.vue'), meta: { title: '总览', group: '', icon: 'Odometer' } },
+      { path: 'cdkeys', name: 'CDKeyManagement', component: () => import('../views/admin/CDKeyManagement.vue'), meta: { title: 'CDK 卡密', group: '卡密业务', icon: 'Tickets' } },
+      { path: 'orders', name: 'OrderReconcile', component: () => import('../views/admin/OrderReconcile.vue'), meta: { title: 'CDK 兑换订单', group: '卡密业务', icon: 'Document' } },
+      { path: 'marswallex-wallet', name: 'MarsWallexWallet', component: () => import('../views/admin/MarsWallexWallet.vue'), meta: { title: 'MarsWallex 钱包', group: '资金与付款', icon: 'Wallet' } },
+      { path: 'cardpool', name: 'CardPool', component: () => import('../views/admin/CardPool.vue'), meta: { title: '卡池', group: '资金与付款', icon: 'CreditCard' } },
+      { path: 'marswallex-pay', name: 'MarsWallexPay', component: () => import('../views/admin/MarsWallexPay.vue'), meta: { title: '自动付款', group: '资金与付款', icon: 'Money' } },
+      { path: 'integration', name: 'CardIntegration', component: () => import('../views/admin/CardIntegration.vue'), meta: { title: '卡台 ZovoCard', group: '服务商接入', icon: 'Connection' } },
+      { path: 'card-selection', name: 'CardSelectionConfig', component: () => import('../views/admin/CardSelectionConfig.vue'), meta: { title: '卡台选卡规则', group: '服务商接入', icon: 'Operation' } },
+      { path: 'webhooks', name: 'Webhooks', component: () => import('../views/admin/WebhookEvents.vue'), meta: { title: '卡台 Webhook', group: '服务商接入', icon: 'Bell' } },
+      { path: 'marswallex', name: 'MarsWallexIntegration', component: () => import('../views/admin/MarsWallexIntegration.vue'), meta: { title: 'MarsWallex 对接', group: '服务商接入', icon: 'Platform' } },
+      { path: 'appearance', name: 'SiteAppearance', component: () => import('../views/admin/SiteAppearance.vue'), meta: { title: '外观与品牌', group: '系统', icon: 'Brush' } },
+      { path: 'audit', name: 'AuditLogs', component: () => import('../views/admin/AuditLogs.vue'), meta: { title: '审计日志', group: '系统', icon: 'List' } },
+      { path: 'update', name: 'SystemUpdate', component: () => import('../views/admin/SystemUpdate.vue'), meta: { title: '版本更新', group: '系统', icon: 'Refresh' } },
       // 旧路径兼容
       { path: 'accounts', redirect: OPS_BASE },
       { path: 'proxies', redirect: OPS_BASE },
@@ -125,6 +126,21 @@ async function ensureSetupStatus(): Promise<boolean> {
   return setupInstalled
 }
 
+// 本地登录态（localStorage 到期时间）只代表「曾经登录过」，服务端重启/换密钥后会话可能已失效。
+// 每次页面加载只向服务端确认一次；明确 401/403 才判定失效，网络错误不踢人。
+let sessionVerified = false
+async function serverSessionAlive(): Promise<boolean> {
+  if (sessionVerified) return true
+  try {
+    const r = await fetch('/api/v1/admin/settings', { credentials: 'include' })
+    if (r.status === 401 || r.status === 403) return false
+  } catch {
+    /* 后端不可达：沿用本地登录态 */
+  }
+  sessionVerified = true
+  return true
+}
+
 router.beforeEach(async (to) => {
   const authStore = useAuthStore()
   const installed = await ensureSetupStatus()
@@ -135,6 +151,13 @@ router.beforeEach(async (to) => {
   }
   if (installed && to.meta.setupPage) {
     return `${OPS_BASE}/login`
+  }
+
+  const toLogin = to.path === `${OPS_BASE}/login` || to.path === '/auth/login'
+  if ((to.meta.requiresAdmin || toLogin) && authStore.isLoggedIn && !(await serverSessionAlive())) {
+    authStore.logout()
+    if (toLogin) return
+    return { path: `${OPS_BASE}/login`, query: { redirect: to.fullPath } }
   }
 
   if (to.meta.requiresAdmin && !authStore.isLoggedIn) {

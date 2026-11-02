@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/emulation"
 	"github.com/chromedp/cdproto/fetch"
+	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 )
@@ -176,6 +178,7 @@ func Launch(ctx context.Context, o LaunchOptions) (*Browser, error) {
 		return nil, fmt.Errorf("启动 Chrome 失败: %w", err)
 	}
 	b.started = true
+	chromedp.ListenTarget(tabCtx, b.acceptDialog)
 
 	// 让页面始终认为自己有焦点：Xvfb 下没有窗口管理器，窗口可能拿不到系统焦点，
 	// 那样 document.hasFocus() 为假，键入与焦点事件都不正常。
@@ -191,6 +194,16 @@ func Launch(ctx context.Context, o LaunchOptions) (*Browser, error) {
 		}
 	}
 	return b, nil
+}
+
+// acceptDialog 自动接受页面弹出的 JS 对话框：不关掉它，页面脚本就停在那里，之后的 CDP 调用都不返回。
+// 接受而不是取消，因为 beforeunload 要接受才能跳转；Submit 只调用一次，接受不会造成第二次付款。
+// 对话框文字来自页面、不受控，日志只记类型。事件回调里不能同步发 CDP 命令，所以在协程中执行。
+func (b *Browser) acceptDialog(ev any) {
+	if ev, ok := ev.(*page.EventJavascriptDialogOpening); ok {
+		log.Printf("[paybrowser] 自动接受页面对话框，类型 %s", ev.Type)
+		go b.runQuiet(page.HandleJavaScriptDialog(true))
+	}
 }
 
 // closeAfterStart 在调用方放弃等待后，等启动结束再关闭浏览器。

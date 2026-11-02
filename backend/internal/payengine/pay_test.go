@@ -338,6 +338,51 @@ func mustNo(t *testing.T, h *harness) string {
 	return list[0].OrderNo
 }
 
+// R23：Browser 实现可能不守 timeout，已点支付的单不能因此停在 submitted、占住名额。
+// 替身只在 ctx 结束时返回：引擎的外层时限到点后，单据进 verifying、浏览器关闭、下一张排队单接着处理。
+func TestWaitOutcomeHangVerifies(t *testing.T) {
+	hang := func(c context.Context) (paybrowser.Outcome, string, error) {
+		<-c.Done()
+		return paybrowser.OutcomeUnknown, "", c.Err()
+	}
+	cases := map[string]func(c context.Context, n int) (paybrowser.Outcome, string, error){
+		"3DS 之前": func(c context.Context, _ int) (paybrowser.Outcome, string, error) { return hang(c) },
+		"3DS 之后": func(c context.Context, n int) (paybrowser.Outcome, string, error) {
+			if n == 1 {
+				return paybrowser.OutcomeChallenge, "", nil
+			}
+			return hang(c)
+		},
+	}
+	for name, wait := range cases {
+		t.Run(name, func(t *testing.T) {
+			h := newPayHarness(t, func(to *Timeouts) {
+				to.SubmitResult = 20 * time.Millisecond
+				to.OutcomeMargin = 20 * time.Millisecond
+			})
+			if err := SaveConcurrency(1); err != nil {
+				t.Fatal(err)
+			}
+			h.pool.waitOTP = func(context.Context, string, time.Time) (string, error) { return "123456", nil }
+			h.br.waitOutcome = wait
+			h.start(t)
+			a := h.submitAs(t, sessionFor("a@x.com"), false)
+			g := waitState(t, a.OrderNo, StateVerifying)
+			if g.PageOutcome != "unknown" || g.Failure != "" || g.SubmittedAt == nil || !strings.Contains(g.ErrorMessage, "超时") {
+				t.Fatalf("应转确认并说明超时: %+v", g)
+			}
+			b := h.submitAs(t, sessionFor("b@x.com"), true)
+			if g := waitDone(t, b.OrderNo); g.State != StatePreviewed {
+				t.Fatalf("下一张排队单应被处理: %+v", g)
+			}
+			if first := h.br.browsers()[0]; first.count("Close") != 1 {
+				t.Fatalf("应关闭浏览器: %d", first.count("Close"))
+			}
+			assertSubmitCount(t, h, 1)
+		})
+	}
+}
+
 func TestFundFailureReleasesAborted(t *testing.T) {
 	h := newPayHarness(t, nil)
 	h.pool.waitOrder = func(_ context.Context, no string) (*cardpool.Order, error) {

@@ -435,20 +435,28 @@ func (b *Browser) Submit(ctx context.Context) error {
 }
 
 // WaitOutcome 等提交后的页面结果，返回结果与页面提示文字（最多 500 字）。
-// 到 timeout 仍无可识别的结果时返回 OutcomeUnknown。已填过验证码的 3DS 框不再算作新的验证。
+// 到 timeout 仍无可识别的结果时返回 OutcomeUnknown、不报错；父 ctx 取消时返回取消错误。已填过验证码的 3DS 框不再算作新的验证。
+// timeout 约束其中所有 CDP 调用：poll 只在两轮之间看时间，而页面脚本死循环时单次调用根本不会返回。
 func (b *Browser) WaitOutcome(ctx context.Context, timeout time.Duration) (Outcome, string, error) {
+	wctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	out, msg := OutcomeUnknown, ""
-	err := b.do(ctx, func(ctx context.Context) error {
-		_, err := b.poll(ctx, timeout, func(frames []frameRef) bool {
-			out, msg = b.outcome(ctx, frames)
+	err := b.do(wctx, func(c context.Context) error {
+		_, err := b.poll(c, timeout, func(frames []frameRef) bool {
+			out, msg = b.outcome(c, frames)
 			return out != OutcomeUnknown
 		})
 		return err
 	})
-	if err != nil {
-		return OutcomeUnknown, "", fmt.Errorf("等待支付结果失败: %w", err)
+	switch {
+	case out != OutcomeUnknown:
+		return out, msg, nil
+	case ctx.Err() != nil:
+		return OutcomeUnknown, "", fmt.Errorf("等待支付结果失败: %w", ctx.Err())
+	case err == nil || wctx.Err() != nil:
+		return OutcomeUnknown, "", nil
 	}
-	return out, msg, nil
+	return OutcomeUnknown, "", fmt.Errorf("等待支付结果失败: %w", err)
 }
 
 // outcome 检查一轮页面：成功优先，其次被拒提示，最后是未处理过的 3DS 框。

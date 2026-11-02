@@ -52,13 +52,15 @@ type Browser interface {
 	Close()
 }
 
-// Timeouts 是各步骤的超时；测试可缩短。VerifyTick 是确认协程扫描到期单据的间隔。
+// Timeouts 是各步骤的超时；测试可缩短。VerifyTick 是确认协程扫描到期单据的间隔；
+// OutcomeMargin 是等页面结果时外层时限比 SubmitResult 多出的余量。
 type Timeouts struct {
-	PageLoad, Fill, SubmitResult, OTP, Fund, Verify, VerifyEvery, DeclineGrace, VerifyTick time.Duration
+	PageLoad, Fill, SubmitResult, OTP, Fund, Verify, VerifyEvery, DeclineGrace, VerifyTick, OutcomeMargin time.Duration
 }
 
 // DefaultTimeouts 返回引擎默认超时：页面加载 60 秒、填表 2 分钟、提交后等待页面结果 2 分钟、
-// 验证码 5 分钟、注资 3 分钟、确认 10 分钟（每 15 秒查一次）、被拒后等待授权推送 2 分钟；确认协程每 5 秒扫描一次。
+// 验证码 5 分钟、注资 3 分钟、确认 10 分钟（每 15 秒查一次）、被拒后等待授权推送 2 分钟；确认协程每 5 秒扫描一次；
+// 等页面结果的外层时限多给 10 秒。
 func DefaultTimeouts() Timeouts {
 	return Timeouts{
 		PageLoad:     60 * time.Second,
@@ -70,6 +72,8 @@ func DefaultTimeouts() Timeouts {
 		VerifyEvery:  15 * time.Second,
 		DeclineGrace: 2 * time.Minute,
 		VerifyTick:   5 * time.Second,
+
+		OutcomeMargin: 10 * time.Second,
 	}
 }
 
@@ -121,6 +125,9 @@ func New(o Options) *Service {
 	}
 	if t.VerifyTick <= 0 {
 		t.VerifyTick = DefaultTimeouts().VerifyTick
+	}
+	if t.OutcomeMargin <= 0 {
+		t.OutcomeMargin = DefaultTimeouts().OutcomeMargin
 	}
 	return &Service{opts: o, t: t, kick: make(chan struct{}, 1), running: map[string]bool{}}
 }

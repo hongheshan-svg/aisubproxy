@@ -138,7 +138,7 @@ func (s *Service) submitAndWait(ctx context.Context, j *job) (paybrowser.Outcome
 	if err := j.browser.Submit(sctx); err != nil {
 		return paybrowser.OutcomeUnknown, "", fmt.Errorf("点击支付时出错：%w", err)
 	}
-	out, text, err := j.browser.WaitOutcome(ctx, s.t.SubmitResult)
+	out, text, err := s.waitOutcome(ctx, j)
 	if err != nil {
 		return paybrowser.OutcomeUnknown, "", err
 	}
@@ -148,7 +148,7 @@ func (s *Service) submitAndWait(ctx context.Context, j *job) (paybrowser.Outcome
 	if err := s.answerChallenge(ctx, j); err != nil {
 		return paybrowser.OutcomeUnknown, "", err
 	}
-	out, text, err = j.browser.WaitOutcome(ctx, s.t.SubmitResult)
+	out, text, err = s.waitOutcome(ctx, j)
 	if err != nil {
 		return paybrowser.OutcomeUnknown, "", err
 	}
@@ -157,6 +157,18 @@ func (s *Service) submitAndWait(ctx context.Context, j *job) (paybrowser.Outcome
 		return paybrowser.OutcomeUnknown, "", nil
 	}
 	return out, text, nil
+}
+
+// waitOutcome 等页面结果。外面再包一层时限，不依赖 Browser 实现是否守约：
+// 这里挂住时单据停在 submitted、占着名额，没有告警，租约到期后卡被转出，而钱可能已经扣了。
+func (s *Service) waitOutcome(ctx context.Context, j *job) (paybrowser.Outcome, string, error) {
+	wctx, cancel := context.WithTimeout(ctx, s.t.SubmitResult+s.t.OutcomeMargin)
+	defer cancel()
+	out, text, err := j.browser.WaitOutcome(wctx, s.t.SubmitResult)
+	if err != nil && wctx.Err() != nil && ctx.Err() == nil {
+		return out, text, errors.New("等待页面结果超时")
+	}
+	return out, text, err
 }
 
 // answerChallenge 是步骤 8：截 3DS 验证框、等该卡在提交之后收到的验证码、填入并提交。

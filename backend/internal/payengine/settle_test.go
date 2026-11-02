@@ -705,6 +705,122 @@ func TestVerifyErrorsOnlyLogEvents(t *testing.T) {
 	}
 }
 
+// countEvents 返回时间线上含 sub 的事件条数。
+func countEvents(t *testing.T, no, sub string) int {
+	t.Helper()
+	n := 0
+	for _, e := range eventStates(t, no) {
+		if strings.Contains(e.Message, sub) {
+			n++
+		}
+	}
+	return n
+}
+
+// waitMoreCalls 等 count() 至少再增加 3 次，也就是确认协程又跑了几轮。
+func waitMoreCalls(t *testing.T, count func() int) {
+	t.Helper()
+	base := count()
+	for deadline := time.Now().Add(5 * time.Second); count() < base+3; {
+		if time.Now().After(deadline) {
+			t.Fatal("确认协程没有继续检查")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// R26：定时检查每 15 秒一轮，故障期间不能把时间线刷满。同一来源的错误文本没变就不再写，变了再写一条。
+func TestVerifyErrorEventOnlyOnChange(t *testing.T) {
+	h := newPayHarness(t, nil)
+	var msg atomic.Value
+	msg.Store("ChatGPT 返回 HTTP 502")
+	h.gpt.accountFn = func(n int) (chatgpt.Account, error) {
+		if n == 1 {
+			return accountFree, nil
+		}
+		text := msg.Load().(string)
+		if text == "" {
+			return accountPlus, nil
+		}
+		return chatgpt.Account{}, errors.New(text)
+	}
+	h.br.waitOutcome = outcomes(outcomeStep{out: paybrowser.OutcomeUnknown})
+	h.start(t)
+	o := h.submit(t, false)
+	calls := func() int { return h.gpt.count("Account") }
+
+	waitEvent(t, o.OrderNo, "HTTP 502")
+	waitMoreCalls(t, calls)
+	if n := countEvents(t, o.OrderNo, "查询账号失败"); n != 1 {
+		t.Fatalf("连续相同的错误只应写 1 条事件: %d", n)
+	}
+	msg.Store("ChatGPT 返回 HTTP 503")
+	waitEvent(t, o.OrderNo, "HTTP 503")
+	waitMoreCalls(t, calls)
+	if n := countEvents(t, o.OrderNo, "查询账号失败"); n != 2 {
+		t.Fatalf("文本变化后应再写 1 条，共 2 条: %d", n)
+	}
+
+	msg.Store("")
+	if g := waitDone(t, o.OrderNo); g.State != StateSucceeded {
+		t.Fatalf("恢复后应成功: %+v", g)
+	}
+	h.svc.mu.Lock()
+	left := len(h.svc.verifyErrs)
+	h.svc.mu.Unlock()
+	if left != 0 {
+		t.Fatalf("定论后应删除该单的记录: %d", left)
+	}
+}
+
+// 账号与交易同时出错时各记各的：共用一个槽位的话，两条文本会交替「变化」，每轮都写。
+func TestVerifyErrorEventPerSource(t *testing.T) {
+	h := declinedHarness(t)
+	h.gpt.accountFn = func(n int) (chatgpt.Account, error) {
+		if n == 1 {
+			return accountFree, nil
+		}
+		return chatgpt.Account{}, errors.New("ChatGPT 返回 HTTP 502")
+	}
+	h.pool.listTxns = func(cardpool.TxnFilter) ([]cardpool.Transaction, int, error) {
+		return nil, 0, errors.New("读交易表失败")
+	}
+	h.start(t)
+	o := h.submit(t, false)
+	waitState(t, o.OrderNo, StateVerifying)
+	h.clock.Advance(h.timeouts.DeclineGrace + time.Second)
+	waitEvent(t, o.OrderNo, "读交易表失败")
+	waitMoreCalls(t, func() int { return h.pool.count("ListTransactions") })
+	if a, b := countEvents(t, o.OrderNo, "查询账号失败"), countEvents(t, o.OrderNo, "查询授权交易失败"); a != 1 || b != 1 {
+		t.Fatalf("每种错误各 1 条事件: 账号 %d，交易 %d", a, b)
+	}
+}
+
+// 错误恢复后再出现同样的错误是新的故障，要再记一条。
+func TestVerifyErrorEventAfterRecovery(t *testing.T) {
+	h := newPayHarness(t, nil)
+	var broken atomic.Bool
+	broken.Store(true)
+	h.gpt.accountFn = func(n int) (chatgpt.Account, error) {
+		if n == 1 || !broken.Load() {
+			return accountFree, nil
+		}
+		return chatgpt.Account{}, errors.New("ChatGPT 返回 HTTP 502")
+	}
+	h.br.waitOutcome = outcomes(outcomeStep{out: paybrowser.OutcomeUnknown})
+	h.start(t)
+	o := h.submit(t, false)
+	calls := func() int { return h.gpt.count("Account") }
+	waitEvent(t, o.OrderNo, "HTTP 502")
+	broken.Store(false)
+	waitMoreCalls(t, calls)
+	broken.Store(true)
+	waitMoreCalls(t, calls)
+	if n := countEvents(t, o.OrderNo, "查询账号失败"); n != 2 {
+		t.Fatalf("恢复后再出错应再写 1 条，共 2 条: %d", n)
+	}
+}
+
 // 确认阶段用的是单据里的会话，且刷新后的 token 不写回；地区代理同样走配置。
 func TestVerifyUsesSealedSessionAndProxy(t *testing.T) {
 	h := newPayHarness(t, nil)

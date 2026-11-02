@@ -99,6 +99,9 @@ type Service struct {
 	loops   sync.WaitGroup // 工作协程与各单据协程
 	mu      sync.Mutex
 	running map[string]bool // 正在处理的单号
+	// verifyErrs 记各单上次写入时间线的确认错误（单号 → 来源 → 脱敏后的文本），文本没变就不再写。
+	// 只在内存里，重启后多写一条可以接受；单据定论时删除。
+	verifyErrs map[string]map[string]string
 
 	recoveryFailed bool        // 重启恢复失败过（已告警）；只在 Start 和其后的工作协程里读写，二者不并发
 	recovered      atomic.Bool // 重启恢复已完成：此前不派发，确认协程也不定论
@@ -131,7 +134,7 @@ func New(o Options) *Service {
 	if t.OutcomeMargin <= 0 {
 		t.OutcomeMargin = DefaultTimeouts().OutcomeMargin
 	}
-	return &Service{opts: o, t: t, kick: make(chan struct{}, 1), running: map[string]bool{}}
+	return &Service{opts: o, t: t, kick: make(chan struct{}, 1), running: map[string]bool{}, verifyErrs: map[string]map[string]string{}}
 }
 
 func (s *Service) now() time.Time { return s.opts.Now() }

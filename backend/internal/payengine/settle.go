@@ -133,9 +133,7 @@ func (s *Service) verifyOrder(ctx context.Context, o *Order) {
 			cardpool.Outcome{Result: cardpool.ResultSuccess}, map[string]any{"error_code": "", "error_message": ""})
 		return
 	}
-	if accErr != nil {
-		s.event(ctx, j, "warn", "查询账号失败，等下次检查："+j.scrub(accErr.Error()), "")
-	}
+	s.noteVerifyErr(ctx, j, "account", "查询账号失败，等下次检查：", accErr)
 	now := s.now().Unix()
 	var until int64
 	if o.VerifyUntil != nil {
@@ -159,9 +157,10 @@ func (s *Service) verifyDeclined(ctx context.Context, j *job, accErr error, exha
 	if ctx.Err() != nil {
 		return
 	}
+	s.noteVerifyErr(ctx, j, "auth", "查询授权交易失败，等下次检查：", err)
 	switch {
 	case err != nil:
-		s.event(ctx, j, "warn", "查询授权交易失败，等下次检查："+j.scrub(err.Error()), "")
+		// 证据不全，走下面的等待或转人工
 	case approved:
 		s.verifyEscalate(ctx, j, "evidence_conflict", "证据冲突：支付页显示被拒，但该卡有成功授权")
 		return
@@ -180,6 +179,29 @@ func (s *Service) verifyDeclined(ctx context.Context, j *job, accErr error, exha
 		return
 	}
 	s.verifyReschedule(ctx, j)
+}
+
+// noteVerifyErr 把确认错误写进时间线，同一单、同一来源的文本没变就不再写：定时检查每 15 秒一轮，故障期间不能刷满时间线。
+// err 为 nil 表示这个来源已恢复，之后再出错算新的故障。
+func (s *Service) noteVerifyErr(ctx context.Context, j *job, source, prefix string, err error) {
+	no := j.o.OrderNo
+	if err == nil {
+		s.mu.Lock()
+		delete(s.verifyErrs[no], source)
+		s.mu.Unlock()
+		return
+	}
+	text := prefix + j.scrub(err.Error())
+	s.mu.Lock()
+	if s.verifyErrs[no] == nil {
+		s.verifyErrs[no] = map[string]string{}
+	}
+	same := s.verifyErrs[no][source] == text
+	s.verifyErrs[no][source] = text
+	s.mu.Unlock()
+	if !same {
+		s.event(ctx, j, "warn", text, "")
+	}
 }
 
 // verifyAccount 解开单据里的会话（终态才清空）查账号，判断是否已是目标套餐。
@@ -315,6 +337,9 @@ func (s *Service) verifyConclude(ctx context.Context, j *job, to, level, msg str
 		}
 		return false
 	}
+	s.mu.Lock()
+	delete(s.verifyErrs, j.o.OrderNo)
+	s.mu.Unlock()
 	return true
 }
 

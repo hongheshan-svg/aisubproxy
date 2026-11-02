@@ -2,8 +2,10 @@ package payengine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -135,5 +137,31 @@ func TestListOrdersFilterAndPage(t *testing.T) {
 	in, _ := ordersInStates(ctx, StateQueued, StateChecking)
 	if len(in) != 20 {
 		t.Fatalf("ordersInStates: %d", len(in))
+	}
+}
+
+// 接口直接序列化 Order：会话密文与租约令牌（卡的持有凭证）都不能出去。
+func TestOrderJSONHidesSecrets(t *testing.T) {
+	const sealed, token = "sealed-secret-xyz", "lease-secret-xyz"
+	b, err := json.Marshal(Order{OrderNo: "PO1", CardID: "c1", CardLast4: "4242", SessionSealed: sealed, LeaseToken: token})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{sealed, token} {
+		if strings.Contains(string(b), bad) {
+			t.Fatalf("序列化结果不应含 %q: %s", bad, b)
+		}
+	}
+	var m map[string]any
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"session_sealed", "SessionSealed", "lease_token", "LeaseToken"} {
+		if _, ok := m[key]; ok {
+			t.Fatalf("不应有键 %s: %s", key, b)
+		}
+	}
+	if m["order_no"] != "PO1" || m["card_id"] != "c1" || m["card_last4"] != "4242" {
+		t.Fatalf("其余字段应保留: %s", b)
 	}
 }

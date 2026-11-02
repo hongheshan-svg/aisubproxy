@@ -66,7 +66,7 @@ type Order struct {
 	AmountText        string `json:"amount_text"`
 	CardID            string `json:"card_id"`
 	CardLast4         string `json:"card_last4"`
-	LeaseToken        string `json:"lease_token"`
+	LeaseToken        string `json:"-"`
 	FundOrderNo       string `json:"fund_order_no"`
 	BillingState      string `json:"billing_state"`
 	PageOutcome       string `json:"page_outcome"`

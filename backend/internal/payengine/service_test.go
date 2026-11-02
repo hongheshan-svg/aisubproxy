@@ -281,7 +281,9 @@ func TestAlreadySubscribedFails(t *testing.T) {
 func TestUnauthorizedFails(t *testing.T) {
 	cases := map[string]func(*fakeChatGPT){
 		"查账号未授权": func(g *fakeChatGPT) { g.accountErr = chatgpt.ErrUnauthorized },
-		"刷新未授权":  func(g *fakeChatGPT) { g.refreshErr = fmt.Errorf("%w（会话未返回 accessToken）", chatgpt.ErrUnauthorized) },
+		"刷新未授权": func(g *fakeChatGPT) {
+			g.refreshErr = fmt.Errorf("%w（会话未返回 accessToken）", chatgpt.ErrUnauthorized)
+		},
 	}
 	for name, set := range cases {
 		t.Run(name, func(t *testing.T) {

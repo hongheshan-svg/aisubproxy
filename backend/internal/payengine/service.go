@@ -74,10 +74,10 @@ func DefaultTimeouts() Timeouts {
 // Options 为 Service 的依赖。
 type Options struct {
 	Pool    Pool
-	ChatGPT func(proxyURL string) (ChatGPT, error)                                // nil → chatgpt.New
+	ChatGPT func(proxyURL string) (ChatGPT, error)                               // nil → chatgpt.New
 	Browser func(ctx context.Context, proxyURL, shotDir string) (Browser, error) // nil → paybrowser.Launch
-	Now     func() time.Time                                                      // nil → time.Now
-	Alert   func(string)                                                          // nil → log.Printf
+	Now     func() time.Time                                                     // nil → time.Now
+	Alert   func(string)                                                         // nil → log.Printf
 	// ShotDir 是截图根目录，每单一个子目录；空则为 DB_PATH 所在目录下的 pay-shots。
 	ShotDir  string
 	Timeouts *Timeouts // nil → DefaultTimeouts()

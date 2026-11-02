@@ -1036,45 +1036,70 @@ func TestRestartRestoresDeclineGrace(t *testing.T) {
 	})
 }
 
-// R24：宽限期写不进去时计入恢复错误，由 R19 的重试接住；重试成功之前确认协程不能拿过期的 verify_until 定论。
+// R24：宽限期写不进去时计入恢复错误，由 R19 的重试接住；重试成功之前这张被拒单不能按过期的 verify_until 定论。
+// 只有被拒单要等：其余确认中的单定论都是安全方向（成功或转人工），恢复失败期间照常确认。
 func TestRestartGraceWriteFailureRetried(t *testing.T) {
 	h := newPayHarness(t, nil)
-	o := declinedBeforeRestart(t, h)
-	stale := *o.VerifyUntil
-	if _, err := db.DB.Exec(`ALTER TABLE pay_order_events RENAME TO pay_order_events_hidden`); err != nil {
+	declined := declinedBeforeRestart(t, h)
+	stale := *declined.VerifyUntil
+	now := h.clock.Now().Unix()
+	other := presetOrder(t, "other@x.com", StateVerifying, map[string]any{
+		"submitted_at": now - 900, "card_id": "card-o", "lease_token": "tok-o",
+		"page_outcome": "unknown", "verify_until": now - 300, "next_check_at": now - 300,
+	})
+	// 只拦这张被拒单的宽限期写入，定论（不写 verify_until）不受影响：不加门控时它会被定成 declined
+	if _, err := db.DB.Exec(`CREATE TRIGGER block_grace BEFORE UPDATE OF verify_until ON pay_orders
+		WHEN OLD.order_no = '` + declined.OrderNo + `' BEGIN SELECT RAISE(ABORT, 'grace write blocked'); END`); err != nil {
 		t.Fatal(err)
 	}
 	h.start(t)
-	if a := h.alerts.Texts(); len(a) != 1 || !strings.Contains(a[0], "重启恢复失败") {
-		t.Fatalf("写不进去应计入恢复失败并告警: %v", a)
+	recoveryAlerts := func() int {
+		n := 0
+		for _, a := range h.alerts.Texts() {
+			if strings.Contains(a, "重启恢复失败") {
+				n++
+			}
+		}
+		return n
 	}
-	time.Sleep(50 * time.Millisecond) // 是 VerifyTick 的 10 倍，确认协程有机会跑多轮
-	if g := mustOrder(t, o.OrderNo); g.State != StateVerifying || *g.VerifyUntil != stale {
-		t.Fatalf("恢复没做完时单据不应变化: %+v", g)
+	if recoveryAlerts() != 1 {
+		t.Fatalf("写不进去应计入恢复失败并告警: %v", h.alerts.Texts())
 	}
-	if len(h.pool.released()) != 0 || h.gpt.count("Account") != 0 {
-		t.Fatalf("恢复没做完时不应开始确认: released=%v account=%d", h.pool.released(), h.gpt.count("Account"))
+	if g := waitDone(t, other.OrderNo); g.State != StateNeedsReview || g.ErrorCode != "verify_timeout" {
+		t.Fatalf("其余确认中的单照常定论: %+v", g)
+	}
+	time.Sleep(50 * time.Millisecond) // 是 VerifyTick 的 10 倍，确认协程已经扫描了多轮
+	if g := mustOrder(t, declined.OrderNo); g.State != StateVerifying || *g.VerifyUntil != stale {
+		t.Fatalf("恢复没做完时被拒单不应定论: %+v", g)
+	}
+	for _, r := range h.pool.released() {
+		if r.Lease.Token == testLeaseToken {
+			t.Fatalf("被拒单不应释放: %+v", r)
+		}
 	}
 
-	if _, err := db.DB.Exec(`ALTER TABLE pay_order_events_hidden RENAME TO pay_order_events`); err != nil {
+	if _, err := db.DB.Exec(`DROP TRIGGER block_grace`); err != nil {
 		t.Fatal(err)
 	}
 	h.svc.Kick()
 	want := h.clock.Now().Unix() + int64(h.timeouts.DeclineGrace/time.Second)
 	deadline := time.Now().Add(5 * time.Second)
-	for *mustOrder(t, o.OrderNo).VerifyUntil != want {
+	for *mustOrder(t, declined.OrderNo).VerifyUntil != want {
 		if time.Now().After(deadline) {
-			t.Fatalf("重试后应写入宽限期: %+v", mustOrder(t, o.OrderNo))
+			t.Fatalf("重试后应写入宽限期: %+v", mustOrder(t, declined.OrderNo))
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
 	waitAccountCalls(t, h, 3)
-	if g := mustOrder(t, o.OrderNo); g.State != StateVerifying {
+	if g := mustOrder(t, declined.OrderNo); g.State != StateVerifying {
 		t.Fatalf("宽限期内不应定论: %+v", g)
 	}
 	h.clock.Advance(h.timeouts.DeclineGrace + time.Second)
-	if g := waitDone(t, o.OrderNo); g.State != StateFailed || g.Failure != FailureDeclined {
+	if g := waitDone(t, declined.OrderNo); g.State != StateFailed || g.Failure != FailureDeclined {
 		t.Fatalf("过了宽限期应定被拒: %+v", g)
+	}
+	if recoveryAlerts() != 1 {
+		t.Fatalf("恢复告警只应 1 次: %v", h.alerts.Texts())
 	}
 }
 

@@ -72,12 +72,14 @@ func (s *Service) verifyLoop(ctx context.Context) {
 	}
 }
 
-// verifyDue 检查到期的确认中单据。恢复没做完时什么都不做：被拒单的宽限期可能还没补上，不能按过期的 verify_until 定论。
+// verifyDue 接管无人处理的已提交单，再检查到期的确认中单据。
+// 恢复没做完时：不接管（恢复本身会转，同时做会互相抢），被拒单也不定论（宽限期可能还没补上，按过期的 verify_until 会定成 declined）；
+// 其余单据定论都是安全方向（成功或转人工），照常检查。
 func (s *Service) verifyDue(ctx context.Context) {
-	if !s.recovered.Load() {
-		return
+	recovered := s.recovered.Load()
+	if recovered {
+		s.adoptSubmitted(ctx)
 	}
-	s.adoptSubmitted(ctx)
 	list, err := dueVerifying(ctx, s.now().Unix())
 	if err != nil {
 		if ctx.Err() == nil {
@@ -88,6 +90,9 @@ func (s *Service) verifyDue(ctx context.Context) {
 	for i := range list {
 		if ctx.Err() != nil {
 			return
+		}
+		if !recovered && list[i].PageOutcome == string(paybrowser.OutcomeDeclined) {
+			continue
 		}
 		s.verifyOrder(ctx, &list[i])
 	}

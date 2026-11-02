@@ -1386,7 +1386,7 @@ func TestResolve(t *testing.T) {
 			t.Fatal(err)
 		}
 		err := h.svc.Resolve(ctx, o.OrderNo, StateFailed, "第二次", "admin")
-		if !errors.Is(err, ErrBadRequest) || !strings.Contains(err.Error(), "当前为 succeeded") {
+		if !errors.Is(err, ErrBadRequest) || !errors.Is(err, ErrStateChanged) || !strings.Contains(err.Error(), "当前为 succeeded") {
 			t.Fatalf("对 succeeded 单应报冲突并说明当前状态: %v", err)
 		}
 		if g := mustOrder(t, o.OrderNo); g.State != StateSucceeded || g.ResolveNote != "第一次" {
@@ -1394,7 +1394,7 @@ func TestResolve(t *testing.T) {
 		}
 		v := presetOrder(t, "v@x.com", StateVerifying, nil)
 		err = h.svc.Resolve(ctx, v.OrderNo, StateFailed, "备注", "admin")
-		if !errors.Is(err, ErrBadRequest) || !strings.Contains(err.Error(), "当前为 verifying") {
+		if !errors.Is(err, ErrBadRequest) || !errors.Is(err, ErrStateChanged) || !strings.Contains(err.Error(), "当前为 verifying") {
 			t.Fatalf("对确认中的单应报冲突并说明当前状态: %v", err)
 		}
 	})

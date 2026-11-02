@@ -281,7 +281,7 @@ func (s *Service) Resolve(ctx context.Context, no, result, note, by string) erro
 	msg := fmt.Sprintf("%s 人工定论为%s：%s", by, label, note)
 	err := transition(ctx, no, StateNeedsReview, result, "info", msg, set)
 	if errors.Is(err, ErrStateChanged) {
-		return fmt.Errorf("%w: 只有待人工的单据才能定论（%v）", ErrBadRequest, err)
+		return fmt.Errorf("%w: 只有待人工的单据才能定论（%w）", ErrBadRequest, err)
 	}
 	return err
 }

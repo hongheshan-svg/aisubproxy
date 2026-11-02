@@ -1,7 +1,7 @@
 # MarsWallex 付款核心设计（子项目 A）
 
 - 日期：2026-11-01
-- 状态：已确认设计，待写实现计划
+- 状态：已实现，待生产验收（§12 的核实项尚未用测试账号完成，核实前不要真实付款）
 - 前置：接入层（`2026-10-27-marswallex-access-layer-design.md`）、卡池与资金（`2026-10-28-marswallex-card-pool-design.md`）、钱包（`2026-10-29-marswallex-wallet-design.md`），均已合并并随 v1.5.1 发布
 - 参考：`docs/zovocard-cdk-zh.md`（ZovoCard 的套餐、地区与兑换规则）、`automation/`（支付页填表原型）
 

@@ -94,6 +94,8 @@ type Service struct {
 	loops   sync.WaitGroup // 工作协程与各单据协程
 	mu      sync.Mutex
 	running map[string]bool // 正在处理的单号
+
+	recoveryFailed bool // 重启恢复失败过（已告警）；只在 Start 和其后的工作协程里读写，二者不并发
 }
 
 // New 创建引擎，未提供的依赖取默认实现。

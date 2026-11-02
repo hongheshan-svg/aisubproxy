@@ -320,6 +320,47 @@ func (s *Service) recoverOrders(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// tryRecover 收敛遗留单据，返回是否已全部完成。没完成时不能派发，由工作协程下一轮再试。
+// 停机取消导致的中断不算故障，不告警。
+func (s *Service) tryRecover(ctx context.Context) bool {
+	err := s.recoverOrders(ctx)
+	switch {
+	case err == nil:
+		if s.recoveryFailed {
+			log.Printf("[payengine] 重启恢复已完成，恢复派发")
+		}
+		return true
+	case ctx.Err() == nil:
+		s.reportRecoveryFailure(err)
+	}
+	return false
+}
+
+// reportRecoveryFailure 每次失败都打日志；只在第一次失败时告警：派发被挡住时队列会无声停摆，但重试不必反复提醒。
+func (s *Service) reportRecoveryFailure(err error) {
+	msg := scrubRecoveryError(err)
+	log.Printf("[payengine] 重启恢复未完成，暂不派发新单据: %s", msg)
+	if s.recoveryFailed {
+		return
+	}
+	s.recoveryFailed = true
+	s.opts.Alert("付款引擎重启恢复失败，新单据暂不派发：" + msg)
+}
+
+// scrubRecoveryError 脱敏恢复阶段的错误。这时没有单据上下文，也没有解开过会话，能夹带的只有代理地址，
+// 所以按配置的全部地区代理脱敏；读不出代理配置就无法保证脱敏，不带原文，只给读配置的错误。
+func scrubRecoveryError(err error) string {
+	proxies, perr := LoadProxies()
+	if perr != nil {
+		return truncate("读取代理配置失败，原错误已省略："+perr.Error(), errorMessageLimit)
+	}
+	text := err.Error()
+	for _, p := range proxies {
+		text = (&job{proxy: p}).scrub(text)
+	}
+	return truncate(text, errorMessageLimit)
+}
+
 // shotLoop 启动时清理一次截图，之后每天一次。
 func (s *Service) shotLoop(ctx context.Context) {
 	defer s.loops.Done()

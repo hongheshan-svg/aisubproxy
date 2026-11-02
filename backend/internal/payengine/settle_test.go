@@ -1384,6 +1384,130 @@ func TestRecoveryFailureBlocksDispatch(t *testing.T) {
 	}
 }
 
+// R19：恢复失败时派发被挡住，队列不能无声停摆：告警恰好一次，重试不重复；最终成功后打一条日志。
+func TestRecoveryFailureAlertsOnce(t *testing.T) {
+	logs := captureLog(t)
+	h := newPayHarness(t, nil)
+	stale := presetOrder(t, "stale@x.com", StateChecking, nil)
+	if _, err := db.DB.Exec(`ALTER TABLE pay_order_events RENAME TO pay_order_events_hidden`); err != nil {
+		t.Fatal(err)
+	}
+	h.start(t)
+	// Start 内同步做第一次恢复，返回时告警已发出
+	a := h.alerts.Texts()
+	if len(a) != 1 || !strings.Contains(a[0], "重启恢复失败") {
+		t.Fatalf("首次失败应告警 1 次: %v", a)
+	}
+	// 每次 Kick 触发一轮重试，等日志确认重试真的发生过
+	retries := func() int { return strings.Count(logs.String(), "重启恢复未完成") }
+	for i := 0; i < 3; i++ {
+		before := retries()
+		h.svc.Kick()
+		deadline := time.Now().Add(5 * time.Second)
+		for retries() <= before {
+			if time.Now().After(deadline) {
+				t.Fatal("应继续重试恢复")
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+	if a := h.alerts.Texts(); len(a) != 1 {
+		t.Fatalf("重试不应重复告警: %v", a)
+	}
+	if strings.Contains(logs.String(), "重启恢复已完成") {
+		t.Fatal("还没恢复成功，不应打完成日志")
+	}
+
+	if _, err := db.DB.Exec(`ALTER TABLE pay_order_events_hidden RENAME TO pay_order_events`); err != nil {
+		t.Fatal(err)
+	}
+	h.svc.Kick()
+	waitState(t, stale.OrderNo, StateFailed)
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(logs.String(), "重启恢复已完成") {
+		if time.Now().After(deadline) {
+			t.Fatal("恢复成功后应打一条日志")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	h.svc.Kick()
+	time.Sleep(30 * time.Millisecond)
+	if n := strings.Count(logs.String(), "重启恢复已完成"); n != 1 {
+		t.Fatalf("完成日志只打一条: %d", n)
+	}
+	if a := h.alerts.Texts(); len(a) != 1 {
+		t.Fatalf("恢复成功不应再告警: %v", a)
+	}
+}
+
+// 恢复一次就成功时不告警、不打完成日志。
+func TestRecoverySuccessIsQuiet(t *testing.T) {
+	logs := captureLog(t)
+	h := newPayHarness(t, nil)
+	stale := presetOrder(t, "stale@x.com", StateChecking, nil)
+	h.start(t)
+	if g := mustOrder(t, stale.OrderNo); g.State != StateFailed {
+		t.Fatalf("应已恢复: %+v", g)
+	}
+	if len(h.alerts.Texts()) != 0 || strings.Contains(logs.String(), "重启恢复") {
+		t.Fatalf("恢复顺利时不应告警或打日志: %v %s", h.alerts.Texts(), logs.String())
+	}
+}
+
+// 停机取消导致的恢复中断不是故障，不告警。
+func TestRecoveryCanceledDoesNotAlert(t *testing.T) {
+	h := newPayHarness(t, nil)
+	presetOrder(t, "stale@x.com", StateChecking, nil)
+	runCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	h.svc.Start(runCtx)
+	h.svc.Wait()
+	if a := h.alerts.Texts(); len(a) != 0 {
+		t.Fatalf("停机不应告警: %v", a)
+	}
+}
+
+// R19：恢复阶段没有单据上下文，告警与日志按配置的地区代理脱敏；读不出代理配置时不带原文。
+func TestRecoveryAlertScrubbed(t *testing.T) {
+	const proxy = "http://user:pw-secret@proxy.example:8080"
+	dirty := errors.New("连接 " + proxy + " 失败，密码 pw-secret")
+	assertClean := func(t *testing.T, h *harness, logs *lockedBuffer) {
+		t.Helper()
+		a := h.alerts.Texts()
+		if len(a) != 1 || !strings.Contains(a[0], "重启恢复失败") {
+			t.Fatalf("应告警 1 次: %v", a)
+		}
+		for _, txt := range []string{a[0], logs.String()} {
+			if strings.Contains(txt, "pw-secret") || strings.Contains(txt, "user:") {
+				t.Fatalf("文本不应含代理账号密码: %q", txt)
+			}
+		}
+	}
+	t.Run("按配置的代理脱敏", func(t *testing.T) {
+		logs := captureLog(t)
+		h := newPayHarness(t, nil)
+		if err := SaveProxies(map[string]string{"PH": proxy}); err != nil {
+			t.Fatal(err)
+		}
+		h.svc.reportRecoveryFailure(dirty)
+		h.svc.reportRecoveryFailure(dirty)
+		assertClean(t, h, logs)
+		if a := h.alerts.Texts(); !strings.Contains(a[0], "失败") || !strings.Contains(a[0], "***") {
+			t.Fatalf("应保留说明、只抹敏感部分: %q", a[0])
+		}
+	})
+	t.Run("读不出代理配置时不带原文", func(t *testing.T) {
+		logs := captureLog(t)
+		h := newPayHarness(t, nil)
+		if err := SaveProxies(map[string]string{"PH": proxy}); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("APP_MASTER_KEY", "")
+		h.svc.reportRecoveryFailure(dirty)
+		assertClean(t, h, logs)
+	})
+}
+
 func TestLoopsStopOnCancel(t *testing.T) {
 	h := newPayHarness(t, nil)
 	runCtx, cancel := context.WithCancel(context.Background())

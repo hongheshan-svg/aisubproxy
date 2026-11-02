@@ -36,13 +36,9 @@ func (s *Service) Kick() {
 
 // Start 同步完成重启恢复后启动后台协程：工作协程（收到 Kick 或每 10 秒按建单顺序取 queued 单据处理，
 // 同时处理的单据数不超过 LoadConcurrency()）、确认协程（每 5 秒扫描确认中的单据）、截图清理协程（每天一次）。
-// 恢复没做完时不派发，工作协程每一轮先重试恢复。ctx 结束时全部停止，处理中的单据随之中断，留待下次启动恢复。
+// 恢复没做完时不派发，工作协程每一轮先重试恢复，首次失败告警一次。ctx 结束时全部停止，处理中的单据随之中断，留待下次启动恢复。
 func (s *Service) Start(ctx context.Context) {
-	recovered := true
-	if err := s.recoverOrders(ctx); err != nil {
-		recovered = false
-		log.Printf("[payengine] 重启恢复未完成，暂不派发新单据: %v", err)
-	}
+	recovered := s.tryRecover(ctx)
 	s.loops.Add(3)
 	go s.loop(ctx, recovered)
 	go s.verifyLoop(ctx)
@@ -68,11 +64,9 @@ func (s *Service) loop(ctx context.Context, recovered bool) {
 			return
 		}
 		if !recovered {
-			if err := s.recoverOrders(ctx); err != nil {
-				log.Printf("[payengine] 重启恢复未完成，暂不派发新单据: %v", err)
+			if recovered = s.tryRecover(ctx); !recovered {
 				continue
 			}
-			recovered = true
 		}
 		s.dispatch(ctx)
 	}

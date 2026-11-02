@@ -105,11 +105,12 @@ func AdminPaySubmit(c *gin.Context) {
 			session = str
 		}
 		o, err := s.Submit(c.Request.Context(), payengine.Request{
-			PlanKey: strings.TrimSpace(req.PlanKey),
-			Region:  strings.TrimSpace(req.Region),
-			Session: session,
-			Source:  "admin:" + adminName(c),
-			DryRun:  req.DryRun,
+			PlanKey:   strings.TrimSpace(req.PlanKey),
+			Region:    strings.TrimSpace(req.Region),
+			Session:   session,
+			Source:    "admin_test",
+			SourceRef: adminName(c),
+			DryRun:    req.DryRun,
 		})
 		if err != nil {
 			payFail(c, err)

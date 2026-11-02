@@ -161,10 +161,10 @@ func TestPaySubmitAuditHasNoSession(t *testing.T) {
 			t.Errorf("审计或响应含会话 %q", leak)
 		}
 	}
-	// 来源记为管理员
-	var src string
-	if err := db.DB.QueryRow(`SELECT source FROM pay_orders WHERE order_no = ?`, ok.OrderNo).Scan(&src); err != nil || src != "admin:alice" {
-		t.Fatalf("source = %q, %v", src, err)
+	// 设计 §5：来源是 admin_test，来源引用记管理员用户名
+	var src, ref string
+	if err := db.DB.QueryRow(`SELECT source, source_ref FROM pay_orders WHERE order_no = ?`, ok.OrderNo).Scan(&src, &ref); err != nil || src != "admin_test" || ref != "alice" {
+		t.Fatalf("source = %q, source_ref = %q, %v", src, ref, err)
 	}
 }
 

@@ -82,6 +82,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'marswallex', name: 'MarsWallexIntegration', component: () => import('../views/admin/MarsWallexIntegration.vue') },
       { path: 'cardpool', name: 'CardPool', component: () => import('../views/admin/CardPool.vue') },
       { path: 'marswallex-wallet', name: 'MarsWallexWallet', component: () => import('../views/admin/MarsWallexWallet.vue') },
+      { path: 'marswallex-pay', name: 'MarsWallexPay', component: () => import('../views/admin/MarsWallexPay.vue') },
       { path: 'audit', name: 'AuditLogs', component: () => import('../views/admin/AuditLogs.vue') },
       { path: 'webhooks', name: 'Webhooks', component: () => import('../views/admin/WebhookEvents.vue') },
       { path: 'card-selection', name: 'CardSelectionConfig', component: () => import('../views/admin/CardSelectionConfig.vue') },

@@ -105,6 +105,7 @@ const navItems = [
   { path: '/ops/marswallex', label: 'MarsWallex', icon: 'Wallet' },
   { path: '/ops/cardpool', label: '卡池', icon: 'Box' },
   { path: '/ops/marswallex-wallet', label: 'MarsWallex 钱包', icon: 'Coin' },
+  { path: '/ops/marswallex-pay', label: 'MarsWallex 兑换', icon: 'CreditCard' },
   { path: '/ops/card-selection', label: '选卡配置', icon: 'CreditCard' },
   { path: '/ops/webhooks', label: 'Webhook', icon: 'Bell' },
   { path: '/ops/appearance', label: '外观', icon: 'Brush' },

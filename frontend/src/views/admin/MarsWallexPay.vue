@@ -239,7 +239,7 @@ import { authFetch } from '../../lib/api'
 import { dialog } from '../../lib/dialog'
 import { errText, fmtTs } from '../../lib/cardpool'
 import {
-  STATES, currencyDigits, failureLabel, formatMinor, fromMinor, isTerminal, payApi, stateLabel, toMinor,
+  STATES, currencyDigits, failureLabel, formatMinor, fromMinor, isTerminal, payApi, stateLabel, toMinor, payBlockReason,
 } from '../../lib/pay'
 
 const REGIONS = ['PH', 'US', 'JP', 'CL', 'EG']
@@ -342,6 +342,7 @@ async function putProxies(body: Record<string, string>): Promise<boolean> {
   proxySaving.value = false
   if (!r.ok) { dialog.toast(errText(r, '保存代理失败'), 'err'); return false }
   proxies.value = r.data
+  proxiesFailed.value = false // 响应里就是最新状态
   return true
 }
 
@@ -389,13 +390,7 @@ const regionConf = computed(() => planConf.value?.regions?.[region.value])
 // 试运行只要求有 ChatGPT 套餐名；真实付款还要求地区启用且金额已配。
 const submitBlockReason = computed(() => {
   if (!config.value) return '配置未加载'
-  if (!planConf.value) return '请选择套餐'
-  if (!planConf.value.chatgpt_plan_name) return '该套餐没有 ChatGPT 套餐名，无法提交'
-  if (dryRun.value) return ''
-  const rc = regionConf.value
-  if (!rc || !rc.enabled) return '该套餐在此地区未启用，不能真实付款（可先试运行）'
-  if (!(rc.cap_minor > 0) || !(rc.fund_cents > 0)) return '该套餐在此地区的金额未配置，不能真实付款（可先试运行）'
-  return ''
+  return payBlockReason(planConf.value, region.value, dryRun.value)
 })
 
 async function submit() {
@@ -410,9 +405,12 @@ async function submit() {
     if (!dry) {
       // 动钱前以最新配置为准；不覆盖配置页未保存的编辑
       if (!(await loadConfig({ syncForm: false }))) return
-      if (submitBlockReason.value) { dialog.toast(submitBlockReason.value, 'warn'); return }
-      const rc = config.value?.plans.find((p) => p.key === plan)?.regions?.[reg]
-      if (!rc) { dialog.toast('该套餐在此地区没有配置', 'warn'); return }
+      // 按快照判断，不读当前表单：等待期间改了下拉或开关也不影响这次提交
+      const pc = config.value?.plans.find((p) => p.key === plan)
+      const blocked = payBlockReason(pc, reg, false)
+      if (blocked) { dialog.toast(blocked, 'warn'); return }
+      const rc = pc?.regions?.[reg]
+      if (!rc) return
       const ok = await dialog.confirm(
         `将从卡池取一张卡注资 ${usd(rc.fund_cents)} 美元并真实付款，应付金额上限 ${formatMinor(rc.cap_minor, rc.currency)}。确认提交？`,
         { title: '确认付款', okText: '确认付款', danger: true },

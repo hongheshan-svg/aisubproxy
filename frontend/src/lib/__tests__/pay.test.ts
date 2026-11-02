@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { failureLabel, formatMinor, fromMinor, isTerminal, stateLabel, toMinor } from '../pay'
+import { failureLabel, formatMinor, fromMinor, isTerminal, payBlockReason, stateLabel, toMinor } from '../pay'
 
 describe('pay lib', () => {
   it('stateLabel 13 个状态', () => {
@@ -37,5 +37,28 @@ describe('pay lib', () => {
   it('isTerminal', () => {
     for (const s of ['succeeded', 'failed', 'needs_review', 'previewed']) expect(isTerminal(s)).toBe(true)
     for (const s of ['queued', 'checking', 'link_created', 'opening', 'funding', 'filling', 'submitted', 'requires_3ds', 'verifying']) expect(isTerminal(s)).toBe(false)
+  })
+})
+
+describe('payBlockReason', () => {
+  const region = { enabled: true, cap_minor: 120000, fund_cents: 3000 }
+  const plan = { chatgpt_plan_name: 'chatgptplusplan', regions: { PH: region } }
+
+  it('配置齐全时真实付款和试运行都放行', () => {
+    expect(payBlockReason(plan, 'PH', false)).toBe('')
+    expect(payBlockReason(plan, 'PH', true)).toBe('')
+  })
+  it('没有套餐或套餐名时都不放行', () => {
+    expect(payBlockReason(undefined, 'PH', true)).not.toBe('')
+    expect(payBlockReason({ ...plan, chatgpt_plan_name: '' }, 'PH', true)).not.toBe('')
+  })
+  it('试运行只要求套餐名', () => {
+    expect(payBlockReason({ chatgpt_plan_name: 'x', regions: {} }, 'PH', true)).toBe('')
+  })
+  it('真实付款要求地区已启用且金额都大于 0', () => {
+    expect(payBlockReason(plan, 'JP', false)).not.toBe('')
+    expect(payBlockReason({ ...plan, regions: { PH: { ...region, enabled: false } } }, 'PH', false)).not.toBe('')
+    expect(payBlockReason({ ...plan, regions: { PH: { ...region, cap_minor: 0 } } }, 'PH', false)).not.toBe('')
+    expect(payBlockReason({ ...plan, regions: { PH: { ...region, fund_cents: 0 } } }, 'PH', false)).not.toBe('')
   })
 })

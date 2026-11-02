@@ -70,3 +70,19 @@ export function formatMinor(minor: number, currency: string): string {
   const text = d > 0 ? `${w}.${String(frac).padStart(d, '0')}` : w
   return `${neg ? '-' : ''}${text} ${currency}`
 }
+
+// payBlockReason 返回这个套餐与地区不能提交的原因，可以提交时返回空串。
+// 试运行只要求有 ChatGPT 套餐名；真实付款还要求地区已启用且金额都已配置。与后端 ResolvePlan 的规则一致。
+export function payBlockReason(
+  plan: { chatgpt_plan_name: string; regions?: Record<string, { enabled: boolean; cap_minor: number; fund_cents: number }> } | undefined,
+  region: string,
+  dryRun: boolean,
+): string {
+  if (!plan) return '请选择套餐'
+  if (!plan.chatgpt_plan_name) return '该套餐没有 ChatGPT 套餐名，无法提交'
+  if (dryRun) return ''
+  const rc = plan.regions?.[region]
+  if (!rc || !rc.enabled) return '该套餐在此地区未启用，不能真实付款（可先试运行）'
+  if (!(rc.cap_minor > 0) || !(rc.fund_cents > 0)) return '该套餐在此地区的金额未配置，不能真实付款（可先试运行）'
+  return ''
+}

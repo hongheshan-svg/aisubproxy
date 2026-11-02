@@ -47,7 +47,8 @@ func TestHappyPathSucceeded(t *testing.T) {
 		t.Fatalf("账单州应为免税州: %q", g.BillingState)
 	}
 
-	if r := h.pool.lastArgs("Acquire")[0].(cardpool.AcquireRequest); r.PlanKey != "plus" || r.OrderRef != o.OrderNo || r.AccountEmail != "buyer@example.com" {
+	if r := h.pool.lastArgs("Acquire")[0].(cardpool.AcquireRequest); r.PlanKey != "plus" || r.OrderRef != o.OrderNo ||
+		r.AccountEmail != "buyer@example.com" || r.Currency != "USD" {
 		t.Fatalf("Acquire 参数不符: %+v", r)
 	}
 	if h.pool.count("Fund") != 1 || h.pool.lastArgs("Fund")[1] != int64(3000) {

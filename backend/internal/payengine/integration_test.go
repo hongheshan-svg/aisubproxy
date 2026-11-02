@@ -221,6 +221,48 @@ func TestEngineRealPoolBackfillErrorEscalates(t *testing.T) {
 	}
 }
 
+// M-6：真实卡池下，同产品排在前面的 EUR 卡不会被选中，不会先放弃一单。
+func TestEngineRealPoolSkipsNonUSDCard(t *testing.T) {
+	h, mw := newRealPoolHarness(t)
+	h.gpt.accountFn = planFrom(2)
+	h.br.waitOutcome = outcomes(outcomeStep{out: paybrowser.OutcomeSuccess})
+	if _, err := db.DB.Exec(`INSERT INTO mw_cards (card_id, card_holder_id, product_id, currency, last4, expiry, platform_status,
+		source, pool_state, created_at, updated_at) VALUES ('c0', 'h1', 'p1', 'EUR', '0000', '1230', 'ACTIVE', 'opened', ?, 1, 1)`, cardpool.PoolAvailable); err != nil {
+		t.Fatal(err)
+	}
+	h.start(t)
+	g := waitDone(t, h.submit(t, false).OrderNo)
+	if g.State != StateSucceeded || g.CardID != "c1" {
+		t.Fatalf("应选 USD 卡并成功: %+v", g)
+	}
+	if n := len(mw.Requests("POST", pathRecharge)); n != 1 {
+		t.Fatalf("应转入 1 次: %d", n)
+	}
+	if state, used := cardPoolState(t, "c0"); state != cardpool.PoolAvailable || used != 0 {
+		t.Fatalf("EUR 卡不应被碰: %s %d", state, used)
+	}
+}
+
+// M-6：只有非美元卡时报无卡，提交前放弃，不注资。
+func TestEngineRealPoolOnlyNonUSDCardAborts(t *testing.T) {
+	h, mw := newRealPoolHarness(t)
+	if _, err := db.DB.Exec(`UPDATE mw_cards SET currency = 'EUR' WHERE card_id = 'c1'`); err != nil {
+		t.Fatal(err)
+	}
+	h.start(t)
+	g := waitDone(t, h.submit(t, false).OrderNo)
+	if g.State != StateFailed || g.Failure != FailureNotSubmitted || g.ErrorCode != "no_card" {
+		t.Fatalf("应 failed / no_card: %+v", g)
+	}
+	if n := len(mw.Requests("POST", pathRecharge)); n != 0 {
+		t.Fatalf("不应注资: %d", n)
+	}
+	assertSubmitCount(t, h, 0)
+	if state, used := cardPoolState(t, "c1"); state != cardpool.PoolAvailable || used != 0 {
+		t.Fatalf("EUR 卡不应被碰: %s %d", state, used)
+	}
+}
+
 // 租约在确认期间到期被卡池回收：真实的 ErrLeaseInvalid 不影响单据结果。
 func TestEngineRealPoolLeaseGone(t *testing.T) {
 	h, _ := newRealPoolHarness(t)

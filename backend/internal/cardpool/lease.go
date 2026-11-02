@@ -18,9 +18,10 @@ import (
 // 选卡时每批查询的候选卡数；一批都不合格或都没抢到时接着查下一批。
 const acquireCandidates = 20
 
-// AcquireRequest 为选卡请求。ExcludeCardIDs 供同一订单换卡重试时排除已试过的卡。
+// AcquireRequest 为选卡请求。ExcludeCardIDs 供同一订单换卡重试时排除已试过的卡。Currency 非空时只选该币种的卡（不区分大小写）。
 type AcquireRequest struct {
 	PlanKey, OrderRef, AccountEmail string
+	Currency                        string
 	ExcludeCardIDs                  []string
 }
 
@@ -96,12 +97,16 @@ type candidate struct {
 }
 
 // pickCandidates 查询某产品下可选的卡（selectableWhere），一批最多 20 张，按 use_count 降序、入池时间升序、card_id 升序。
-// after 非空时只取排在它之后的卡（键集分页，不受并发抢卡导致的行变化影响）。
+// currency 非空时只取该币种（须已转大写）的卡。after 非空时只取排在它之后的卡（键集分页，不受并发抢卡导致的行变化影响）。
 // 有效期在 Go 里另行过滤（expiryEligible）。查询结果读完即关闭，避免占用连接时再执行抢卡语句。
-func pickCandidates(ctx context.Context, productID string, maxUses int, exclude []string, after *candidate) ([]candidate, error) {
+func pickCandidates(ctx context.Context, productID string, maxUses int, currency string, exclude []string, after *candidate) ([]candidate, error) {
 	q := `SELECT c.card_id, c.product_id, c.currency, c.expiry, c.use_count, c.created_at` + selectableFrom +
 		` WHERE c.product_id = ? AND` + selectableWhere
 	args := append([]any{productID}, selectableArgs(maxUses)...)
+	if currency != "" {
+		q += ` AND UPPER(c.currency) = ?`
+		args = append(args, currency)
+	}
 	if len(exclude) > 0 {
 		q += ` AND c.card_id NOT IN (` + placeholders(len(exclude)) + `)`
 		for _, id := range exclude {
@@ -157,6 +162,7 @@ func (s *Service) Acquire(ctx context.Context, req AcquireRequest) (*Lease, erro
 	if len(products) == 0 {
 		products = pol.PlanProducts["default"]
 	}
+	currency := strings.ToUpper(strings.TrimSpace(req.Currency))
 	token, err := newLeaseToken()
 	if err != nil {
 		return nil, err
@@ -177,7 +183,7 @@ func (s *Service) Acquire(ctx context.Context, req AcquireRequest) (*Lease, erro
 		// 分批取候选，直到抢到或该产品没有更多候选：一整批有效期不合格的卡不能挡住后面的卡
 		var after *candidate
 		for {
-			cands, err := pickCandidates(ctx, productID, pol.MaxUsesPerCard, req.ExcludeCardIDs, after)
+			cands, err := pickCandidates(ctx, productID, pol.MaxUsesPerCard, currency, req.ExcludeCardIDs, after)
 			if err != nil {
 				return nil, err
 			}
@@ -205,6 +211,9 @@ func (s *Service) Acquire(ctx context.Context, req AcquireRequest) (*Lease, erro
 	}
 
 	reason := "无可用卡"
+	if currency != "" {
+		reason = "无可用的 " + currency + " 卡" // 卡池页可能明明有别的币种的卡，得说清楚缺的是什么
+	}
 	if len(products) > 0 && suspended == len(products) {
 		reason = "全部产品已停用"
 	}

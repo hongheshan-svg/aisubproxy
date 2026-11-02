@@ -12,6 +12,9 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/paybrowser"
 )
 
+// fundCurrency 是注资金额 fund_cents 的币种。Fund 按卡币种下单，所以只能选这个币种的卡。
+const fundCurrency = "USD"
+
 // pay 是读完金额之后的步骤 5–8：选卡注资、填表、记下提交时间后点支付、等页面结果（含 3DS），最后转确认阶段（步骤 9）。
 //
 // 只点一次支付的保证：Browser.Submit 的调用点只有 submitAndWait 这一处，只能从这里走到；
@@ -53,7 +56,7 @@ func (s *Service) fundCard(ctx context.Context, j *job) error {
 	if err := s.advance(ctx, j, StateFunding, "选卡注资", nil); err != nil {
 		return err
 	}
-	l, err := s.opts.Pool.Acquire(ctx, cardpool.AcquireRequest{PlanKey: j.o.PlanKey, OrderRef: j.o.OrderNo, AccountEmail: j.o.AccountEmail})
+	l, err := s.opts.Pool.Acquire(ctx, cardpool.AcquireRequest{PlanKey: j.o.PlanKey, OrderRef: j.o.OrderNo, AccountEmail: j.o.AccountEmail, Currency: fundCurrency})
 	if errors.Is(err, cardpool.ErrNoCard) {
 		return abort("no_card", "选卡失败：%v", err)
 	}
@@ -74,8 +77,8 @@ func (s *Service) fundCard(ctx context.Context, j *job) error {
 	if j.holderName == "" {
 		return abort("card_info_failed", "该卡没有持卡人姓名，无法填写账单信息")
 	}
-	// fund_cents 是美元分，而 Fund 按卡币种下单：不是美元卡就会充错金额
-	if !strings.EqualFold(strings.TrimSpace(info.Currency), "USD") {
+	// fund_cents 是美元分，而 Fund 按卡币种下单：不是美元卡就会充错金额。选卡已按币种过滤，这里是最后一道防线
+	if !strings.EqualFold(strings.TrimSpace(info.Currency), fundCurrency) {
 		return abort("card_currency_unsupported", "该卡币种 %q 不是美元，注资金额无法换算", info.Currency)
 	}
 	// 租约在注资之前落库，重启恢复才能按单据字段释放

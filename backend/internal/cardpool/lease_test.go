@@ -178,6 +178,77 @@ func TestAcquireSkipsUsedUpAndRetiring(t *testing.T) {
 	}
 }
 
+// M-6：付款引擎只能给美元卡注资，非美元卡要在选卡时就排除，否则放弃后卡回到可用，下一单还会选到它。
+func TestAcquireFiltersByCurrency(t *testing.T) {
+	setup := func(t *testing.T) (*Service, int64) {
+		t.Helper()
+		s, _, clock, _ := newTestService(t)
+		setPlans(t, map[string][]string{"gpt": {"p1"}})
+		return s, clock.Now().Unix()
+	}
+	t.Run("同产品有 EUR 和 USD 只选 USD", func(t *testing.T) {
+		s, now := setup(t)
+		insertCard(t, Card{CardID: "eur", ProductID: "p1", Currency: "EUR", CreatedAt: now - 5000}) // 排序上排在前面
+		insertCard(t, Card{CardID: "usd", ProductID: "p1", Currency: "USD", CreatedAt: now - 100})
+		l := mustAcquire(t, s, AcquireRequest{PlanKey: "gpt", Currency: "USD"})
+		if l.CardID != "usd" || l.Currency != "USD" {
+			t.Fatalf("应选 USD 卡: %+v", l)
+		}
+		if c := mustGetCard(t, "eur"); c.PoolState != PoolAvailable {
+			t.Fatalf("EUR 卡不应被租出: %+v", c)
+		}
+	})
+	t.Run("只有 EUR 卡时报无卡", func(t *testing.T) {
+		s, now := setup(t)
+		insertCard(t, Card{CardID: "eur", ProductID: "p1", Currency: "EUR", CreatedAt: now - 5000})
+		_, err := s.Acquire(context.Background(), AcquireRequest{PlanKey: "gpt", Currency: "USD"})
+		if !errors.Is(err, ErrNoCard) || !strings.Contains(err.Error(), "USD") {
+			t.Fatalf("应为 ErrNoCard，并说明缺的币种: %v", err)
+		}
+		if c := mustGetCard(t, "eur"); c.PoolState != PoolAvailable {
+			t.Fatalf("EUR 卡不应被租出: %+v", c)
+		}
+	})
+	t.Run("Currency 为空时不限币种", func(t *testing.T) {
+		s, now := setup(t)
+		insertCard(t, Card{CardID: "eur", ProductID: "p1", Currency: "EUR", CreatedAt: now - 5000})
+		insertCard(t, Card{CardID: "usd", ProductID: "p1", Currency: "USD", CreatedAt: now - 100})
+		if l := mustAcquire(t, s, AcquireRequest{PlanKey: "gpt"}); l.CardID != "eur" {
+			t.Fatalf("不限币种时按原有顺序选: %+v", l)
+		}
+		if l := mustAcquire(t, s, AcquireRequest{PlanKey: "gpt", Currency: "  "}); l.CardID != "usd" {
+			t.Fatalf("全空白按空处理: %+v", l)
+		}
+	})
+	t.Run("币种比较不区分大小写", func(t *testing.T) {
+		s, now := setup(t)
+		insertCard(t, Card{CardID: "lower", ProductID: "p1", Currency: "usd", CreatedAt: now - 5000})
+		insertCard(t, Card{CardID: "upper", ProductID: "p1", Currency: "USD", CreatedAt: now - 100})
+		if l := mustAcquire(t, s, AcquireRequest{PlanKey: "gpt", Currency: "USD"}); l.CardID != "lower" {
+			t.Fatalf("库里的小写币种也算: %+v", l)
+		}
+		if l := mustAcquire(t, s, AcquireRequest{PlanKey: "gpt", Currency: " usd "}); l.CardID != "upper" {
+			t.Fatalf("请求的币种也规范化: %+v", l)
+		}
+	})
+	t.Run("键集分页与排除列表一起带上币种", func(t *testing.T) {
+		s, now := setup(t)
+		savePolicy(t, func(p *Policy) { p.MaxUsesPerCard = 2 })
+		for i := 0; i < 25; i++ { // 排序最靠前、有效期也合格的 EUR 卡：翻页时漏了币种条件就会选到
+			insertCard(t, Card{CardID: fmt.Sprintf("eur-%02d", i), ProductID: "p1", Currency: "EUR", UseCount: 1, CreatedAt: now - 30000 + int64(i)})
+		}
+		for i := 0; i < 21; i++ { // 一批 20 张都不合格，要翻到下一批
+			insertCard(t, Card{CardID: fmt.Sprintf("bad-%02d", i), ProductID: "p1", Expiry: "1026", UseCount: 1, CreatedAt: now - 20000 + int64(i)})
+		}
+		insertCard(t, Card{CardID: "skip", ProductID: "p1", UseCount: 1, CreatedAt: now - 10000})
+		insertCard(t, Card{CardID: "good", ProductID: "p1", UseCount: 1, CreatedAt: now - 9000})
+		l := mustAcquire(t, s, AcquireRequest{PlanKey: "gpt", Currency: "USD", ExcludeCardIDs: []string{"skip"}})
+		if l.CardID != "good" {
+			t.Fatalf("应越过整批不合格的卡和排除的卡选到 good: %+v", l)
+		}
+	})
+}
+
 // 排在前面的 21 张卡有效期都不合格（超过一批 20 张），后面那张合格的卡仍要能选到。
 func TestAcquireKeepsFetchingPastIneligibleBatch(t *testing.T) {
 	s, _, clock, _ := newTestService(t)

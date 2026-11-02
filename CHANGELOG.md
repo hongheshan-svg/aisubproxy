@@ -4,6 +4,26 @@
 
 建议分三类写：新增、变更/修复、升级注意。写给运维和使用者看，不写实现细节。
 
+## 未发布
+
+### 新增
+
+- **MarsWallex 兑换页**：后台新增兑换页，可以测试兑换、查看订单、配置套餐与代理。兑换时系统会在服务器上用真实浏览器（Chrome）打开付款页并自动填卡；后台提供「浏览器自检」，确认服务器能跑起来。
+
+### 升级注意
+
+- **systemd 部署：升级后必须手动跑一次下面这条命令**（后台「版本更新」只替换程序，不会安装浏览器）。它会下载约 150MB 的 Google Chrome，并安装 Xvfb 和字体；已装的会跳过，可以重复执行：
+
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/hongheshan-svg/aisubproxy/master/deploy/install.sh | sudo bash -s -- --browser-deps
+  ```
+
+  装完再到后台点「浏览器自检」，应显示通过。
+- **Docker 部署**：`git pull` 后执行 `docker compose up -d --build`。镜像增大约 400MB；`docker-compose.yml` 新增了 `security_opt`（引用 `deploy/chrome-seccomp.json`），自己用 `docker run` 的需要加 `--security-opt seccomp=deploy/chrome-seccomp.json`。
+- **服务器内存建议 ≥ 2GB**（自动付款并发为 1）。
+- 系统会创建专用用户 `cdk-chrome` 来运行 Chrome，并保留 Chrome 的沙箱，不会关闭沙箱。
+- **已保存过选卡策略的服务器**：卡片租约保留原值 30 分钟，建议在兑换页「配置」里改成 35 分钟（页面也会提示）。
+
 ## v1.5.1 - 2026-11-01
 
 ### 新增

@@ -85,7 +85,94 @@ func TestCheckReportsVersion(t *testing.T) {
 	}
 }
 
+func TestInstallHintByDeployMode(t *testing.T) {
+	cases := []struct {
+		env  string
+		want string
+	}{
+		{"", paybrowser.InstallHint},
+		{"systemd", paybrowser.InstallHint},
+		{"docker", paybrowser.DockerInstallHint},
+		{"  Docker \n", paybrowser.DockerInstallHint},
+		{"DOCKER", paybrowser.DockerInstallHint},
+	}
+	for _, c := range cases {
+		t.Run(c.env, func(t *testing.T) {
+			t.Setenv("CDK_DEPLOY_MODE", c.env)
+			if got := paybrowser.InstallHintFor(); got != c.want {
+				t.Fatalf("installHint() = %q，期望 %q", got, c.want)
+			}
+		})
+	}
+	if !strings.Contains(paybrowser.InstallHint, "install.sh | sudo bash -s -- --browser-deps") {
+		t.Errorf("InstallHint 应是可直接执行的 curl 命令: %s", paybrowser.InstallHint)
+	}
+	for _, want := range []string{"docker compose up -d --build", "seccomp"} {
+		if !strings.Contains(paybrowser.DockerInstallHint, want) {
+			t.Errorf("DockerInstallHint 缺少 %q: %s", want, paybrowser.DockerInstallHint)
+		}
+	}
+}
+
+func TestExplainSandboxError(t *testing.T) {
+	stripAdvice := func(s string) string {
+		if i := strings.Index(s, "If you want to live dangerously"); i >= 0 {
+			return strings.TrimSpace(s[:i])
+		}
+		return s
+	}
+	cases := []struct {
+		name   string
+		in     string
+		wantIn bool // 是否应加说明
+	}{
+		{"沙箱不可用", "chrome failed to start: No usable sandbox! If this is a Debian system, please install the chromium-sandbox package", true},
+		{"Chromium 原文带劝人关沙箱的句子", "[1:1:ERROR] No usable sandbox! If this is a Debian system, please install the chromium-sandbox package to solve this problem. If you want to live dangerously and need an immediate workaround, you can try using --no-sandbox.", true},
+		{"命名空间", "Failed to move to new namespace: PID namespaces supported", true},
+		{"setuid", "The setuid sandbox is not running as root", true},
+		{"其他错误", "chrome failed to start: exec format error", false},
+		{"空", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := paybrowser.ExplainSandboxError(c.in)
+			if !c.wantIn {
+				if got != c.in {
+					t.Fatalf("不相关的错误不应改动: %q", got)
+				}
+				return
+			}
+			if !strings.HasSuffix(got, stripAdvice(c.in)) || !strings.HasPrefix(got, "Chrome 沙箱无法启动") {
+				t.Fatalf("应在原文前加中文说明并保留原文: %q", got)
+			}
+			for _, want := range []string{"用户命名空间", "seccomp", "max_user_namespaces", "apparmor_restrict_unprivileged_userns", "不要"} {
+				if !strings.Contains(got, want) {
+					t.Errorf("说明缺少 %q: %q", want, got)
+				}
+			}
+			// no-sandbox 只能出现在「不要用」的语境里
+			head := strings.TrimSuffix(got, stripAdvice(c.in))
+			if strings.Contains(got[len(head):], "no-sandbox") {
+				t.Errorf("不得原样带出 Chromium 劝人关沙箱的那句话: %q", got)
+			}
+			if i := strings.Index(head, "no-sandbox"); i >= 0 && !strings.Contains(head[:i], "不要") {
+				t.Errorf("no-sandbox 前没有「不要」: %q", head)
+			}
+		})
+	}
+}
+
+func TestCheckUsesDockerHintInDocker(t *testing.T) {
+	t.Setenv("CDK_DEPLOY_MODE", "docker")
+	t.Setenv("CHROME_PATH", filepath.Join(t.TempDir(), "missing-chrome"))
+	r := paybrowser.Check(context.Background())
+	if r.OK || r.InstallHint != paybrowser.DockerInstallHint {
+		t.Fatalf("Check() = %+v，期望 Docker 提示", r)
+	}
+}
+
 func TestCheckReportsInstallHintOnFailure(t *testing.T) {
+	t.Setenv("CDK_DEPLOY_MODE", "")
 	t.Setenv("CHROME_PATH", filepath.Join(t.TempDir(), "missing-chrome"))
 	r := paybrowser.Check(context.Background())
 	if r.OK || r.Error == "" || r.InstallHint != paybrowser.InstallHint {
@@ -94,6 +181,7 @@ func TestCheckReportsInstallHintOnFailure(t *testing.T) {
 }
 
 func TestLaunchFailsCleanlyWithBrokenChrome(t *testing.T) {
+	t.Setenv("CDK_DEPLOY_MODE", "")
 	bad := filepath.Join(t.TempDir(), "not-chrome")
 	if err := os.WriteFile(bad, []byte("not a program"), 0o644); err != nil { // 没有执行权限，进程起不来
 		t.Fatal(err)
@@ -148,6 +236,7 @@ func TestCloseRemovesProfileDir(t *testing.T) {
 }
 
 func TestChromeIdentity(t *testing.T) {
+	t.Setenv("CDK_DEPLOY_MODE", "")
 	found := func(name string) (*user.User, error) {
 		if name != "cdk-chrome" {
 			return nil, user.UnknownUserError(name)

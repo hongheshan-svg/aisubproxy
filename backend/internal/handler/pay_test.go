@@ -559,6 +559,7 @@ func TestPayPutConfigKeepsPlanNamesWhenBlank(t *testing.T) {
 
 func TestPayBrowserCheckNoChrome(t *testing.T) {
 	payEnv(t)
+	t.Setenv("CDK_DEPLOY_MODE", "")
 	t.Setenv("CHROME_PATH", filepath.Join(t.TempDir(), "no-such-chrome"))
 	w := payDo(AdminPayBrowserCheck, "POST", "/browser-check", "/browser-check", "")
 	if w.Code != 200 {

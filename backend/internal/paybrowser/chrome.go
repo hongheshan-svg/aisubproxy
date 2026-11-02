@@ -22,8 +22,42 @@ import (
 	"github.com/chromedp/chromedp"
 )
 
-// InstallHint 是找不到或启动不了 Chrome 时给管理员的安装提示。
-const InstallHint = "sudo bash /opt/cdk-recharge/install.sh --browser-deps"
+// InstallHint 是 systemd 部署找不到或启动不了 Chrome 时给管理员的安装命令。
+// 不指向 /opt/cdk-recharge/install.sh：已部署的服务器上它可能不存在或是旧版（在线更新只换程序、不换脚本）。
+const InstallHint = "curl -fsSL https://raw.githubusercontent.com/hongheshan-svg/aisubproxy/master/deploy/install.sh | sudo bash -s -- --browser-deps"
+
+// DockerInstallHint 是 Docker 部署的处理方法：容器里没有安装脚本可跑，浏览器依赖在镜像里。
+const DockerInstallHint = "Docker 部署的浏览器依赖在镜像里：请用仓库的 docker-compose.yml 重建镜像（docker compose up -d --build），它带有 security_opt；自己 docker run 的请加 --security-opt seccomp=deploy/chrome-seccomp.json"
+
+// installHint 按部署方式给出提示：镜像里设了 CDK_DEPLOY_MODE=docker。
+func installHint() string {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("CDK_DEPLOY_MODE")), "docker") {
+		return DockerInstallHint
+	}
+	return InstallHint
+}
+
+// stripSandboxAdvice 去掉 Chromium 原文末尾劝人关沙箱的那句话（"If you want to live dangerously ... --no-sandbox"）。
+func stripSandboxAdvice(msg string) string {
+	if i := strings.Index(msg, "If you want to live dangerously"); i >= 0 {
+		return strings.TrimSpace(msg[:i])
+	}
+	return msg
+}
+
+// explainSandboxError 识别 Chrome 沙箱起不来的原始报错，在前面加一句中文说明并保留原文。
+// 原始报错（"No usable sandbox! ... install the chromium-sandbox package"）容易误导人去关沙箱，这里明确不能那样做。
+func explainSandboxError(msg string) string {
+	for _, key := range []string{"No usable sandbox", "Failed to move to new namespace", "setuid sandbox"} {
+		if strings.Contains(msg, key) {
+			return "Chrome 沙箱无法启动：服务器或容器禁止了用户命名空间。" +
+				"Docker 部署请检查容器的 seccomp 配置（使用仓库的 deploy/chrome-seccomp.json）；" +
+				"非 Docker 部署请检查 sysctl user.max_user_namespaces（不能为 0）与 kernel.apparmor_restrict_unprivileged_userns（Ubuntu 24.04 上应由 Chrome 安装包自带的 AppArmor 配置放行）。" +
+				"不要用 --no-sandbox 绕过：那会让付款页面的脚本直接运行在服务器权限下。原始错误：" + stripSandboxAdvice(msg)
+		}
+	}
+	return msg
+}
 
 // ErrNoChrome 表示本机找不到 Chrome。
 var ErrNoChrome = errors.New("未找到 Chrome")
@@ -330,7 +364,7 @@ func Check(ctx context.Context) CheckResult {
 func check(ctx context.Context) CheckResult {
 	b, err := Launch(ctx, LaunchOptions{})
 	if err != nil {
-		return CheckResult{Error: err.Error(), InstallHint: InstallHint}
+		return CheckResult{Error: explainSandboxError(err.Error()), InstallHint: installHint()}
 	}
 	defer b.Close()
 	var product string
@@ -347,7 +381,7 @@ func check(ctx context.Context) CheckResult {
 		err = errors.New("页面脚本结果异常")
 	}
 	if err != nil {
-		return CheckResult{Mode: b.Mode(), Error: fmt.Sprintf("Chrome 已启动但无法正常运行页面: %v", err), InstallHint: InstallHint}
+		return CheckResult{Mode: b.Mode(), Error: explainSandboxError(fmt.Sprintf("Chrome 已启动但无法正常运行页面: %v", err)), InstallHint: installHint()}
 	}
 	return CheckResult{OK: true, Version: product, Mode: b.Mode()}
 }

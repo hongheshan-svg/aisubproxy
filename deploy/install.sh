@@ -5,6 +5,8 @@
 #   指定版本：        curl -fsSL …/install.sh | sudo bash -s -- v1.5.0
 #   回滚上一个版本：  sudo /opt/cdk-recharge/cdk-recharge rollback && sudo systemctl restart cdk-recharge
 #                     （本脚本在本地时也可：sudo bash install.sh rollback）
+#   只安装浏览器依赖：curl -fsSL …/install.sh | sudo bash -s -- --browser-deps
+#                     （MarsWallex 自动付款需要 Chrome、Xvfb、字体；后台「版本更新」不会装它们，升级后须手动跑一次）
 #
 # 每个发布包都会校验 sha256 与 ed25519 签名（公钥内置于本脚本与程序），并先运行一次新程序确认能启动，
 # 任何一步失败都不改动已安装的文件。装好后以后的升级在管理后台「版本更新」里一键完成。
@@ -30,7 +32,15 @@ RELEASE_PUBKEY='-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEA+surxd3pW5IwYSjEfHcrfYVVAQmpvBi1GSHskolwV0Q=
 -----END PUBLIC KEY-----'
 
+# Chrome 候选路径，须与 backend/internal/paybrowser/chrome.go 的 chromeCandidates（Linux 部分）一致
+CHROME_CANDIDATES=(/usr/bin/google-chrome-stable /usr/bin/google-chrome /usr/bin/chromium /usr/bin/chromium-browser)
+# 服务以 root 运行时，Chrome 改用这个低权限用户启动并保留沙箱
+CHROME_USER=cdk-chrome
+CHROME_DEB_URL=https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+BROWSER_DEPS_CMD="curl -fsSL https://raw.githubusercontent.com/hongheshan-svg/aisubproxy/master/deploy/install.sh | sudo bash -s -- --browser-deps"
+
 log() { printf '==> %s\n' "$*"; }
+warn() { printf '警告：%s\n' "$*" >&2; }
 die() { printf '错误：%s\n' "$*" >&2; exit 1; }
 
 systemd_on() { [[ "$SKIP_SYSTEMD" != "1" ]]; }
@@ -190,6 +200,146 @@ wait_healthy() {
   return 1
 }
 
+# find_chrome：打印第一个存在的 Chrome 路径；一个都没有返回 1
+find_chrome() {
+  local c
+  for c in "${CHROME_CANDIDATES[@]}"; do
+    if [[ -f "$c" ]]; then
+      printf '%s' "$c"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# pkg_installed <包名>：dpkg 认为已安装；xvfb 另外认 PATH 里的 Xvfb（不是 deb 装的也算）
+pkg_installed() {
+  if dpkg -s "$1" >/dev/null 2>&1 </dev/null; then return 0; fi
+  [[ "$1" == xvfb ]] && command -v Xvfb >/dev/null 2>&1
+}
+
+ensure_chrome_user() {
+  if id -u "$CHROME_USER" >/dev/null 2>&1 </dev/null; then return 0; fi
+  command -v useradd >/dev/null 2>&1 || { warn "缺少 useradd，无法创建系统用户 ${CHROME_USER}"; return 1; }
+  useradd --system --no-create-home --shell /usr/sbin/nologin "$CHROME_USER" </dev/null \
+    || { warn "创建系统用户 ${CHROME_USER} 失败"; return 1; }
+  log "已创建系统用户 ${CHROME_USER}（用来运行 Chrome）"
+}
+
+# sandbox_selftest <chrome 路径>：以 cdk-chrome 身份、带沙箱真实启动一次 Chrome。
+# --no-new-privs 与 systemd 的 NoNewPrivileges=true 同一环境。失败返回 1；没有 setpriv 时跳过（不算失败）。
+sandbox_selftest() {
+  local chrome="$1" ver uid gid home out
+  ver="$(timeout 15 "$chrome" --version 2>/dev/null </dev/null | head -n1)" || ver=""
+  ver="$(printf '%s' "$ver" | sed 's/ *built on.*$//; s/ *$//')"
+  if ! command -v setpriv >/dev/null 2>&1 || ! command -v timeout >/dev/null 2>&1; then
+    warn "缺少 setpriv 或 timeout，跳过沙箱自检；请在后台「浏览器自检」确认。Chrome：${ver:-$chrome}"
+    return 0
+  fi
+  uid="$(id -u "$CHROME_USER")" || return 1
+  gid="$(id -g "$CHROME_USER")" || return 1
+  home="$(mktemp -d)" || return 1
+  chown "$uid:$gid" "$home" && chmod 700 "$home" || { rm -rf "$home"; return 1; }
+  if out="$(cd / && HOME="$home" timeout 30 setpriv --no-new-privs --reuid="$uid" --regid="$gid" --clear-groups \
+      "$chrome" --headless=new --disable-gpu --no-first-run --user-data-dir="$home/profile" --dump-dom about:blank 2>&1 </dev/null)" \
+    && [[ "$out" == *"<html"* ]]; then
+    rm -rf "$home"
+    log "${ver:-Chrome}：沙箱自检通过（以 ${CHROME_USER} 带沙箱启动成功）"
+    return 0
+  fi
+  rm -rf "$home"
+  {
+    printf '错误：Chrome 沙箱自检失败，自动付款无法在这台机器上运行。Chrome 输出（节选）：\n'
+    # Chrome 原文末尾会劝人 "try using --no-sandbox"，那句话不能照抄出来
+    printf '%s\n' "$out" | grep -iE 'sandbox|namespace|fatal|error' | sed 's/ *If you want to live dangerously.*$//' \
+      | grep -v -- 'no-sandbox' | head -n 8 | sed 's/^/    /'
+    printf '原因通常是服务器或容器禁止了用户命名空间。排查方向：\n'
+    printf '  1. sysctl user.max_user_namespaces（不能为 0）；\n'
+    printf '  2. Ubuntu 24.04：sysctl kernel.apparmor_restrict_unprivileged_userns，Chrome 安装包自带的 AppArmor 配置应放行它；\n'
+    printf '  3. 在容器里：容器的 seccomp 配置要放行 clone、unshare（使用仓库的 deploy/chrome-seccomp.json）。\n'
+    printf '不要用 --no-sandbox 绕过：那会让付款页面的脚本直接运行在服务器权限下。\n'
+  } >&2
+  return 1
+}
+
+# install_browser_deps：安装 Chrome、Xvfb、字体，创建 cdk-chrome 用户，并做一次沙箱自检。已装的跳过。
+# 注意：本函数常在 if/|| 条件里被调用，那时 set -e 失效，所以每个可能失败的命令都显式 || return 1；
+# 且所有外部命令都 </dev/null，否则 `curl … | bash` 时会吃掉 stdin 上还没读到的脚本。
+install_browser_deps() {
+  [[ $EUID -eq 0 ]] || { warn "安装浏览器依赖需要 root 权限"; return 1; }
+
+  local mem_kb
+  mem_kb="$(awk '/^MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null </dev/null)" || mem_kb=""
+  # 标称 2GB 的机器实际显示约 1.9GB，所以阈值取 1.8GB
+  if [[ "$mem_kb" =~ ^[0-9]+$ && "$mem_kb" -lt 1800000 ]]; then
+    warn "内存约 $((mem_kb / 1024))MB，自动付款建议服务器内存 ≥ 2GB（并发 1）"
+  fi
+
+  local chrome="" need_chrome=0 pkgs=() p
+  chrome="$(find_chrome)" || need_chrome=1
+  for p in xvfb fonts-liberation fonts-noto-cjk; do
+    pkg_installed "$p" || pkgs+=("$p")
+  done
+
+  if [[ $need_chrome -eq 1 || ${#pkgs[@]} -gt 0 ]]; then
+    if ! command -v apt-get >/dev/null 2>&1; then
+      {
+        printf '这台机器没有 apt-get，无法自动安装浏览器依赖。请手动安装：\n'
+        printf '  - Google Chrome 或 Chromium（路径之一：%s）\n' "${CHROME_CANDIDATES[*]}"
+        printf '  - Xvfb（有界面模式需要）\n'
+        printf '  - 字体：Liberation、Noto CJK\n'
+        printf '装好后再运行：%s\n' "$BROWSER_DEPS_CMD"
+      } >&2
+      ensure_chrome_user >/dev/null 2>&1 || true # 尽力创建，失败不影响上面的提示
+      return 1
+    fi
+    ensure_chrome_user || return 1
+    export DEBIAN_FRONTEND=noninteractive
+    local deb_dir="" deb=""
+    if [[ $need_chrome -eq 1 ]]; then
+      if [[ "$(uname -m)" == x86_64 ]]; then
+        log "下载 Google Chrome 官方安装包（约 150MB）…"
+        deb_dir="$(mktemp -d)" || return 1
+        chmod 755 "$deb_dir" || { rm -rf "$deb_dir"; return 1; }
+        deb="$deb_dir/google-chrome-stable_current_amd64.deb"
+        if ! curl -fsSL -o "$deb" "$CHROME_DEB_URL" </dev/null; then
+          rm -rf "$deb_dir"
+          warn "下载 Chrome 失败：$CHROME_DEB_URL"
+          return 1
+        fi
+        chmod 644 "$deb" || { rm -rf "$deb_dir"; return 1; }
+      else
+        log "$(uname -m) 架构没有 Google Chrome 官方包，改装发行版的 chromium"
+        pkgs+=(chromium)
+      fi
+    fi
+    log "安装浏览器依赖（apt-get）…"
+    if ! apt-get update </dev/null; then
+      [[ -z "$deb_dir" ]] || rm -rf "$deb_dir"
+      warn "apt-get update 失败"
+      return 1
+    fi
+    local rc=0
+    if [[ -n "$deb" ]]; then
+      apt-get install -y --no-install-recommends "$deb" ${pkgs[@]+"${pkgs[@]}"} </dev/null || rc=$?
+    else
+      apt-get install -y --no-install-recommends "${pkgs[@]}" </dev/null || rc=$?
+    fi
+    [[ -z "$deb_dir" ]] || rm -rf "$deb_dir"
+    if [[ $rc -ne 0 ]]; then
+      warn "apt-get install 失败（退出码 $rc）"
+      return 1
+    fi
+    chrome="$(find_chrome)" || { warn "安装完成但仍找不到 Chrome"; return 1; }
+  else
+    ensure_chrome_user || return 1
+    log "浏览器依赖已齐全，跳过安装（${chrome}）"
+  fi
+
+  sandbox_selftest "$chrome" || return 1
+  log "浏览器依赖就绪。请到管理后台点「浏览器自检」确认。"
+}
+
 do_rollback() {
   [[ -x "$INSTALL_DIR/cdk-recharge" ]] || die "$INSTALL_DIR 下没有已安装的程序"
   CDK_INSTALL_DIR="$INSTALL_DIR" WEB_DIR="$INSTALL_DIR/web" "$INSTALL_DIR/cdk-recharge" rollback
@@ -203,6 +353,12 @@ main() {
   local arg="${1:-latest}"
   if [[ "$arg" == rollback ]]; then
     do_rollback
+    return
+  fi
+  if [[ "$arg" == --browser-deps ]]; then
+    # 只装浏览器依赖：不查发布、不下载程序、不动服务
+    [[ $EUID -eq 0 ]] || die "请用 root 运行：${BROWSER_DEPS_CMD}"
+    install_browser_deps || die "浏览器依赖未装好，见上面的提示"
     return
   fi
   check_env
@@ -225,6 +381,11 @@ main() {
   write_app_env
   # 留一份安装脚本，方便以后 `bash $INSTALL_DIR/install.sh rollback`
   if [[ -f "${BASH_SOURCE[0]:-}" ]]; then cp -f "${BASH_SOURCE[0]}" "$INSTALL_DIR/install.sh" 2>/dev/null || true; fi
+
+  # 自动付款需要的 Chrome、Xvfb、字体。装不上只警告，不影响程序本身升级
+  if ! install_browser_deps; then
+    warn "浏览器依赖未装好，MarsWallex 自动付款暂不可用。解决后单独重跑：${BROWSER_DEPS_CMD}"
+  fi
 
   if systemd_on; then
     write_unit

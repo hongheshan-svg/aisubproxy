@@ -20,3 +20,9 @@ var SocketAlive = socketAlive
 
 // Truncate 把页面提示文字去掉首尾空白并截断到 500 字。
 var Truncate = truncateMessage
+
+// InstallHintFor 返回当前部署方式下的安装提示。
+var InstallHintFor = installHint
+
+// ExplainSandboxError 给 Chrome 沙箱类错误加上中文说明。
+var ExplainSandboxError = explainSandboxError

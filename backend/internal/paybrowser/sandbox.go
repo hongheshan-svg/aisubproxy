@@ -23,15 +23,15 @@ func chromeIdentity(uid int, lookup func(name string) (*user.User, error)) (cred
 	}
 	u, err := lookup(chromeUser)
 	if err != nil {
-		return nil, false, fmt.Errorf("服务以 root 运行，需要系统用户 %s 来启动 Chrome（保留沙箱），但找不到该用户，请先运行：%s", chromeUser, InstallHint)
+		return nil, false, fmt.Errorf("服务以 root 运行，需要系统用户 %s 来启动 Chrome（保留沙箱），但找不到该用户，处理方法：%s", chromeUser, installHint())
 	}
 	id, err1 := strconv.ParseUint(u.Uid, 10, 32)
 	gid, err2 := strconv.ParseUint(u.Gid, 10, 32)
 	if err1 != nil || err2 != nil {
-		return nil, false, fmt.Errorf("系统用户 %s 的 uid 或 gid 无效，请重新运行：%s", chromeUser, InstallHint)
+		return nil, false, fmt.Errorf("系统用户 %s 的 uid 或 gid 无效，处理方法：%s", chromeUser, installHint())
 	}
 	if id == 0 {
-		return nil, false, fmt.Errorf("系统用户 %s 的 uid 不能为 0，请重新运行：%s", chromeUser, InstallHint)
+		return nil, false, fmt.Errorf("系统用户 %s 的 uid 不能为 0，处理方法：%s", chromeUser, installHint())
 	}
 	// Groups 为空：去掉 root 的附加组
 	return &syscall.Credential{Uid: uint32(id), Gid: uint32(gid), Groups: []uint32{}}, false, nil

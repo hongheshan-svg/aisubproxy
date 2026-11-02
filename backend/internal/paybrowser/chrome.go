@@ -183,7 +183,7 @@ func Launch(ctx context.Context, o LaunchOptions) (*Browser, error) {
 		return nil, fmt.Errorf("启动 Chrome 失败: %w", err)
 	}
 	b.started = true
-	chromedp.ListenTarget(tabCtx, b.acceptDialog)
+	chromedp.ListenTarget(tabCtx, b.answerDialog)
 
 	// 让页面始终认为自己有焦点：Xvfb 下没有窗口管理器，窗口可能拿不到系统焦点，
 	// 那样 document.hasFocus() 为假，键入与焦点事件都不正常。
@@ -201,13 +201,15 @@ func Launch(ctx context.Context, o LaunchOptions) (*Browser, error) {
 	return b, nil
 }
 
-// acceptDialog 自动接受页面弹出的 JS 对话框：不关掉它，页面脚本就停在那里，之后的 CDP 调用都不返回。
-// 接受而不是取消，因为 beforeunload 要接受才能跳转；Submit 只调用一次，接受不会造成第二次付款。
+// answerDialog 自动回答页面弹出的 JS 对话框：不关掉它，页面脚本就停在那里，之后的 CDP 调用都不返回。
+// alert 只有确定；beforeunload 要接受才能跳转。confirm、prompt 一律取消：接受可能让页面自己再提交一次，
+// 引擎的「只点一次」管不到页面发起的请求。取消最多让这单走到确认或人工，不会多扣款。
 // 对话框文字来自页面、不受控，日志只记类型。事件回调里不能同步发 CDP 命令，所以在协程中执行。
-func (b *Browser) acceptDialog(ev any) {
+func (b *Browser) answerDialog(ev any) {
 	if ev, ok := ev.(*page.EventJavascriptDialogOpening); ok {
-		log.Printf("[paybrowser] 自动接受页面对话框，类型 %s", ev.Type)
-		go b.runQuiet(page.HandleJavaScriptDialog(true))
+		accept := ev.Type == page.DialogTypeAlert || ev.Type == page.DialogTypeBeforeunload
+		log.Printf("[paybrowser] 自动回答页面对话框，类型 %s，接受 %v", ev.Type, accept)
+		go b.runQuiet(page.HandleJavaScriptDialog(accept))
 	}
 }
 

@@ -94,8 +94,9 @@ func captureLog(t *testing.T) *lockedLog {
 	return buf
 }
 
-// R23：对话框不关掉，页面脚本就停在那里，Runtime.evaluate 不会返回。自动接受后要能继续判出页面结果。
-func TestWaitOutcomeAcceptsDialogs(t *testing.T) {
+// R23：对话框不关掉，页面脚本就停在那里，Runtime.evaluate 不会返回。自动处理后要能继续判出页面结果。
+// R30：confirm、prompt 一律取消：接受可能让页面自己再提交一次，引擎的「只点一次」管不到。
+func TestWaitOutcomeAnswersDialogs(t *testing.T) {
 	needChrome(t)
 	const secret = "dialog-secret-text"
 	success := addResult("payment-success", "Thanks")
@@ -107,9 +108,11 @@ func TestWaitOutcomeAcceptsDialogs(t *testing.T) {
 	}{
 		{name: "主页面 alert", kind: "alert", want: paybrowser.OutcomeSuccess,
 			main: laterScript(`alert("` + secret + `");` + success)},
-		// alert 分不出接受还是取消；confirm 要接受，取消就会走到被拒
-		{name: "confirm 要接受而不是取消", kind: "confirm", want: paybrowser.OutcomeSuccess,
+		// alert 分不出接受还是取消；confirm 接受会走到 success（模拟页面自己再提交一次），取消才走到被拒
+		{name: "confirm 要取消而不是接受", kind: "confirm", want: paybrowser.OutcomeDeclined,
 			main: laterScript(`if (confirm("` + secret + `")) {` + success + `} else {` + declined + `}`)},
+		{name: "prompt 要取消而不是接受", kind: "prompt", want: paybrowser.OutcomeDeclined,
+			main: laterScript(`if (prompt("` + secret + `") === null) {` + declined + `} else {` + success + `}`)},
 		{name: "跨站 iframe alert", kind: "alert", want: paybrowser.OutcomeDeclined,
 			main: `<iframe src="__SUB__" title="Bank"></iframe>`,
 			sub:  laterScript(`alert("` + secret + `");` + declined)},

@@ -1,10 +1,13 @@
 <template>
   <!-- Toast 队列 -->
-  <div class="fixed top-4 right-4 z-[9999] flex flex-col gap-2 pointer-events-none">
+  <div class="toast-stack fixed z-[9999] flex flex-col gap-2 pointer-events-none">
     <transition-group name="toast">
-      <div v-for="t in dialogState.toasts" :key="t.id" class="toast" :class="`toast-${t.type}`" role="status">
+      <div v-for="t in dialogState.toasts" :key="t.id" class="toast" :class="`toast-${t.type}`" role="status" :title="t.detail ? `原始信息：${t.detail}` : undefined">
         <span class="toast-icon">{{ t.type === 'err' ? '✕' : t.type === 'warn' ? '!' : t.type === 'info' ? 'i' : '✓' }}</span>
-        <span>{{ t.message }}</span>
+        <span>
+          {{ t.message }}
+          <small v-if="t.detail" class="toast-detail">原始信息：{{ t.detail }}</small>
+        </span>
       </div>
     </transition-group>
   </div>
@@ -99,4 +102,12 @@ function onCancel() {
 .toast-info { --tc: var(--info); }
 .toast-enter-active, .toast-leave-active { transition: opacity .25s ease, transform .25s ease; }
 .toast-enter-from, .toast-leave-to { opacity: 0; transform: translateX(20px); }
+</style>
+
+<style>
+.toast-stack { top: calc(var(--topbar-h, 56px) + 12px); right: 16px; max-width: calc(100vw - 32px); }
+.toast-detail { display: block; margin-top: 2px; font-size: 11px; opacity: .75; word-break: break-all; font-family: var(--font-mono); }
+@media (max-width: 640px) {
+  .toast-stack { left: 12px; right: 12px; top: auto; bottom: 16px; max-width: none; }
+}
 </style>

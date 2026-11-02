@@ -1,5 +1,6 @@
 // 全局自定义弹窗 + Toast，替代浏览器原生 alert/confirm/prompt。
 import { reactive } from 'vue'
+import { mapApiError } from './errors'
 
 export interface SelectOption { label: string; value: any; desc?: string }
 interface ActiveDialog {
@@ -14,7 +15,7 @@ interface ActiveDialog {
   options?: SelectOption[]
   resolve: (v: any) => void
 }
-interface Toast { id: number; message: string; type: 'ok' | 'err' | 'warn' | 'info' }
+interface Toast { id: number; message: string; type: 'ok' | 'err' | 'warn' | 'info'; detail?: string }
 
 export const dialogState = reactive<{ active: ActiveDialog | null; toasts: Toast[] }>({ active: null, toasts: [] })
 
@@ -37,8 +38,18 @@ export const dialog = {
     return open({ kind: 'select', title, message, options, cancelText })
   },
   toast(message: string, type: 'ok' | 'err' | 'warn' | 'info' = 'ok', timeout = 2800) {
+    // 错误类提示：已知错误码翻译成人话，原文留在 detail 里排障；同一条提示不重复弹
+    let detail: string | undefined
+    if (type === 'err' || type === 'warn') {
+      const m = mapApiError(message)
+      if (m.mapped) {
+        message = m.text
+        detail = m.raw
+      }
+    }
+    if (dialogState.toasts.some((t) => t.message === message && t.type === type)) return
     const id = ++toastSeq
-    dialogState.toasts.push({ id, message, type })
+    dialogState.toasts.push({ id, message, type, detail })
     setTimeout(() => {
       const i = dialogState.toasts.findIndex((t) => t.id === id)
       if (i >= 0) dialogState.toasts.splice(i, 1)

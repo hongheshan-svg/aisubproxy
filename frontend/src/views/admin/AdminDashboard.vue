@@ -1,221 +1,65 @@
 <template>
-  <div class="pb-2">
-    <div class="w-full space-y-8">
-      <div class="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-        <div>
-          <h1 class="mt-3 text-3xl font-bold text-ink">管理后台</h1>
-          <p class="text-sm text-muted mt-2">
-            CDK 白标门户：卡台发码 / 公开兑换 / Webhook / Session 账单查询。
-          </p>
-        </div>
-        <el-button @click="openPwdModal">修改密码</el-button>
-      </div>
+  <div class="pb-2 space-y-5">
+    <AdminPageHeader class="!mb-0" title="总览" description="CDK 白标门户运营概况：卡台发码、公开兑换、Webhook、Session 账单查询。" />
 
-      <div v-if="statsError" class="alert alert-error">{{ statsError }}</div>
-      <div v-if="stats.counts_partial" class="alert alert-warning text-sm">
-        CDK 数量较多，状态分布为扫描样本汇总；总数仍以卡台 total 为准。
-      </div>
-
-      <div class="grid gap-5 sm:grid-cols-2 xl:grid-cols-4">
-        <article v-for="card in statCards" :key="card.label" class="card">
-          <div class="text-sm text-muted">{{ card.label }}</div>
-          <div class="mt-3 text-3xl font-bold text-ink mono">{{ card.value }}</div>
-          <div class="mt-2 text-sm text-subtle">{{ card.hint }}</div>
-        </article>
-      </div>
-
-      <div class="grid gap-5 md:grid-cols-2 xl:grid-cols-3">
-        <section class="card space-y-3">
-          <h2 class="text-xl font-semibold text-ink">快捷入口</h2>
-          <div class="flex flex-wrap gap-2">
-            <router-link to="/ops/cdkeys" class="btn-primary">CDK 卡密</router-link>
-            <router-link to="/ops/orders" class="btn-secondary">兑换对账</router-link>
-            <router-link to="/ops/integration" class="btn-secondary">卡台接入</router-link>
-            <router-link to="/ops/webhooks" class="btn-secondary">Webhook</router-link>
-            <router-link to="/ops/appearance" class="btn-secondary">外观</router-link>
-            <router-link to="/billing" class="btn-secondary">Session 账单</router-link>
-          </div>
-        </section>
-        <section class="card space-y-3">
-          <h2 class="text-xl font-semibold text-ink">能力说明</h2>
-          <ul class="text-sm text-muted list-disc pl-5 space-y-1">
-            <li>发码 / 实时服务费：卡台 Open API</li>
-            <li>用户兑换：公开 CDK 四步 + 本站 BFF</li>
-            <li>对账：开通邮箱 / 用卡 / 金额 / CDK 消耗或释放</li>
-            <li>结果通知：轮询 result + 可选 Webhook</li>
-          </ul>
-        </section>
-        <section class="card space-y-3">
-          <div class="flex items-start justify-between gap-3">
-            <div>
-              <h2 class="text-xl font-semibold text-ink">版本更新</h2>
-              <p class="text-xs text-muted mt-1">GitHub 预编译包 · 签名校验 · 自动备份 · 一键无痕热更</p>
-            </div>
-            <el-button size="small" :loading="versionLoading" @click="loadVersion(true)">检查更新</el-button>
-          </div>
-          <div v-if="versionError" class="text-sm" style="color: var(--err)">{{ versionError }}</div>
-          <div v-if="versionInfo.update_hint" class="text-xs" style="color: var(--warn)">{{ versionInfo.update_hint }}</div>
-          <div class="space-y-2 text-sm">
-            <div class="flex justify-between gap-2">
-              <span class="text-muted">当前版本</span>
-              <span class="mono font-semibold text-ink">v{{ versionInfo.current || '—' }}</span>
-            </div>
-            <div class="flex justify-between gap-2">
-              <span class="text-muted">GitHub 最新</span>
-              <span class="mono font-semibold" :style="versionInfo.update_available ? 'color: var(--warn)' : 'color: var(--good)'">
-                {{ versionInfo.latest ? `v${versionInfo.latest}` : '—' }}
-              </span>
-            </div>
-            <div class="flex justify-between gap-2">
-              <span class="text-muted">状态</span>
-              <el-tag size="small" :type="versionInfo.update_available ? 'warning' : 'success'">
-                {{ versionInfo.update_available ? '有新版本' : (versionInfo.latest ? '已是最新' : '未取到远端') }}
-              </el-tag>
-            </div>
-            <div class="flex justify-between gap-2">
-              <span class="text-muted">发布包</span>
-              <el-tag size="small" :type="versionInfo.has_bundle ? 'success' : 'info'">
-                {{ versionInfo.has_bundle ? 'cdk-bundle 可用' : '无预编译包' }}
-              </el-tag>
-            </div>
-            <div v-if="versionInfo.github_repo" class="text-xs text-subtle break-all">
-              仓库 {{ versionInfo.github_repo }}
-              <span v-if="versionInfo.checked_at"> · 检查于 {{ formatChecked(versionInfo.checked_at) }}</span>
-            </div>
-          </div>
-
-          <!-- 更新说明：取自 GitHub Release（CHANGELOG.md 中这一版的小节），按纯文本显示 -->
-          <details
-            v-if="versionInfo.release_notes"
-            :key="versionInfo.latest"
-            :open="!!versionInfo.update_available"
-            class="rounded-xl p-3 text-sm"
-            style="background: var(--surface-2)"
-          >
-            <summary class="cursor-pointer text-ink font-semibold">
-              v{{ versionInfo.latest }} 更新说明
-            </summary>
-            <div class="mt-2 text-xs text-muted leading-relaxed" style="white-space: pre-wrap; max-height: 320px; overflow-y: auto">{{ releaseNotesText(versionInfo.release_notes) }}</div>
-          </details>
-
-          <!-- 热更进度 -->
-          <div v-if="updating || updatePhase" class="rounded-xl p-3 space-y-2" style="background: var(--surface-2)">
-            <div class="flex justify-between text-xs text-muted">
-              <span>{{ updateMessage || updatePhase }}</span>
-              <span class="mono">{{ updateProgress }}%</span>
-            </div>
-            <div class="h-2 rounded-full overflow-hidden" style="background: var(--brd)">
-              <div
-                class="h-2 rounded-full transition-all duration-300"
-                :style="{ width: `${updateProgress}%`, background: updateFailed ? 'var(--err)' : 'var(--primary)' }"
-              />
-            </div>
-            <div v-if="updateFailed" class="text-xs" style="color: var(--err)">{{ updateError }}</div>
-          </div>
-
-          <div class="flex flex-wrap gap-2 pt-1">
-            <el-button
-              type="primary"
-              :loading="updating"
-              :disabled="!canOneClickUpdate"
-              @click="oneClickUpdate"
-            >
-              {{ updating ? '更新中…' : '一键无痕更新' }}
-            </el-button>
-            <a
-              v-if="versionInfo.release_url"
-              class="btn-secondary !px-4 !py-2 text-sm"
-              :href="versionInfo.release_url"
-              target="_blank"
-              rel="noopener noreferrer"
-            >打开 Release</a>
-            <a
-              v-if="versionInfo.tags_url"
-              class="btn-secondary !px-4 !py-2 text-sm"
-              :href="versionInfo.tags_url"
-              target="_blank"
-              rel="noopener noreferrer"
-            >查看 Tags</a>
-          </div>
-          <p class="text-xs text-subtle leading-relaxed">
-            在线下载发布包 → 热替换二进制与前端 → 进程 re-exec 重载。
-            <b>不修改</b> app.env / 数据库。需 Release 挂有 <code>cdk-bundle-linux-amd64.tgz</code>（git tag 触发 CI 自动上传）。
-          </p>
-        </section>
-      </div>
+    <ApiErrorNotice :message="statsError" />
+    <div v-if="stats.counts_partial" class="alert alert-warning text-sm">
+      CDK 数量较多，状态分布为扫描样本汇总；总数仍以卡台 total 为准。
     </div>
 
-    <div
-      v-if="pwdModal"
-      class="fixed inset-0 z-50 flex items-center justify-center p-4"
-      style="background: rgba(0,0,0,0.5)"
-      @click.self="closePwdModal"
-    >
-      <div class="card w-full max-w-md space-y-4">
-        <h2 class="text-xl font-semibold text-ink">修改密码</h2>
-        <div class="form-group">
-          <label>旧密码</label>
-          <input v-model="pwdForm.old_password" type="password" class="input" autocomplete="current-password" />
+    <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <router-link v-for="card in statCards" :key="card.label" :to="card.to" class="stat-card">
+        <div class="text-sm text-muted">{{ card.label }}</div>
+        <div class="mt-2 text-3xl font-bold text-ink mono">{{ card.value }}</div>
+        <div class="mt-1 text-sm text-subtle">{{ card.hint }}</div>
+      </router-link>
+    </div>
+
+    <div class="grid gap-4 lg:grid-cols-3">
+      <section class="card space-y-3 lg:col-span-2">
+        <h2 class="text-base font-semibold text-ink">快捷入口</h2>
+        <div class="grid gap-3 sm:grid-cols-2">
+          <div v-for="g in quickGroups" :key="g.name">
+            <div class="text-xs text-muted mb-1.5">{{ g.name }}</div>
+            <div class="flex flex-wrap gap-2">
+              <router-link v-for="it in g.items" :key="it.to" :to="it.to" class="btn-secondary !py-1.5 !px-3 text-sm">{{ it.title }}</router-link>
+            </div>
+          </div>
         </div>
-        <div class="form-group">
-          <label>新密码（至少 12 位）</label>
-          <input v-model="pwdForm.new_password" type="password" class="input" autocomplete="new-password" />
+      </section>
+
+      <section class="card space-y-2">
+        <h2 class="text-base font-semibold text-ink">版本</h2>
+        <div class="flex justify-between gap-2 text-sm">
+          <span class="text-muted">当前</span>
+          <span class="mono font-semibold text-ink">{{ versionInfo.current ? `v${versionInfo.current}` : '—' }}</span>
         </div>
-        <div class="form-group">
-          <label>确认新密码</label>
-          <input v-model="pwdForm.confirm" type="password" class="input" autocomplete="new-password" />
+        <div class="flex justify-between gap-2 text-sm">
+          <span class="text-muted">GitHub 最新</span>
+          <span class="mono font-semibold" :style="versionInfo.update_available ? 'color: var(--warn)' : ''">
+            {{ versionInfo.latest ? `v${versionInfo.latest}` : '—' }}
+          </span>
         </div>
-        <div v-if="pwdError" class="alert alert-error">{{ pwdError }}</div>
-        <div class="flex gap-2 justify-end">
-          <button class="btn-secondary" type="button" @click="closePwdModal">取消</button>
-          <button class="btn-primary" type="button" :disabled="pwdLoading" @click="submitPwd">保存</button>
-        </div>
-      </div>
+        <router-link to="/ops/update" class="btn-secondary !py-1.5 !px-3 text-sm inline-block">
+          {{ versionInfo.update_available ? '有新版本，去更新' : '版本更新' }}
+        </router-link>
+      </section>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import AdminPageHeader from '../../components/AdminPageHeader.vue'
+import ApiErrorNotice from '../../components/ApiErrorNotice.vue'
 import { authFetch } from '../../lib/api'
 
+const router = useRouter()
 const stats = ref<any>({})
 const statsError = ref('')
 const statsLoading = ref(false)
-const pwdModal = ref(false)
-const pwdLoading = ref(false)
-const pwdError = ref('')
-const pwdForm = reactive({ old_password: '', new_password: '', confirm: '' })
-
-const versionLoading = ref(false)
-const versionError = ref('')
 const versionInfo = ref<any>({})
-
-const updating = ref(false)
-const updatePhase = ref('')
-const updateMessage = ref('')
-const updateProgress = ref(0)
-const updateFailed = ref(false)
-const updateError = ref('')
-let updatePollTimer: number | null = null
-
-const canOneClickUpdate = computed(() => {
-  if (updating.value) return false
-  if (versionInfo.value.update_enabled === false) return false
-  // 有新版本且有 bundle，或强制允许「重装最新」当 has_bundle
-  if (versionInfo.value.one_click_ready) return true
-  return !!(versionInfo.value.has_bundle && versionInfo.value.latest && versionInfo.value.update_available)
-})
-
-// 把 Release 的 Markdown 简化成可读的纯文本：去掉标题井号、加粗与行内代码标记（不渲染 HTML）
-function releaseNotesText(md: string) {
-  return String(md || '')
-    .replace(/\r\n/g, '\n')
-    .replace(/^#{1,6}\s*/gm, '')
-    .replace(/\*\*(.+?)\*\*/g, '$1')
-    .replace(/`([^`]+)`/g, '$1')
-    .trim()
-}
 
 function numOrDash(v: unknown) {
   if (v === null || v === undefined || v === '') return '—'
@@ -223,148 +67,30 @@ function numOrDash(v: unknown) {
   return Number.isFinite(n) ? n : '—'
 }
 
-function formatChecked(iso: string) {
-  try {
-    return new Date(iso).toLocaleString()
-  } catch {
-    return iso
-  }
-}
-
-function stopUpdatePoll() {
-  if (updatePollTimer != null) {
-    window.clearInterval(updatePollTimer)
-    updatePollTimer = null
-  }
-}
-
-async function pollUpdateStatus() {
-  try {
-    const r = await authFetch('/api/v1/admin/system/update/status')
-    const d = await r.json().catch(() => ({}))
-    const st = d.state || {}
-    updatePhase.value = st.phase || ''
-    updateMessage.value = st.message || ''
-    updateProgress.value = Number(st.progress) || 0
-    if (st.phase === 'failed') {
-      updateFailed.value = true
-      updateError.value = st.error || st.message || '更新失败'
-      updating.value = false
-      stopUpdatePoll()
-      return
-    }
-    if (st.phase === 'reloading' || st.phase === 'done') {
-      updateMessage.value = st.message || '重载中，等待服务恢复…'
-      updateProgress.value = Math.max(updateProgress.value, 95)
-      // 轮询 health + 新版本
-      await waitForReload()
-    }
-  } catch {
-    // 进程 re-exec 瞬间可能短暂断连，继续等 health
-    await waitForReload()
-  }
-}
-
-async function waitForReload() {
-  stopUpdatePoll()
-  const before = versionInfo.value.current
-  for (let i = 0; i < 40; i++) {
-    await new Promise((r) => setTimeout(r, 500))
-    try {
-      const h = await fetch('/health', { credentials: 'include' })
-      if (!h.ok) continue
-      // 恢复后刷新版本
-      await loadVersion(true)
-      const after = versionInfo.value.current
-      updateProgress.value = 100
-      updatePhase.value = 'done'
-      updateMessage.value = after && after !== before
-        ? `已热更至 v${after}`
-        : `服务已恢复（当前 v${after || before || '—'}）`
-      updating.value = false
-      updateFailed.value = false
-      return
-    } catch {
-      /* keep waiting */
-    }
-  }
-  updateFailed.value = true
-  updateError.value = '重载超时：请手动刷新页面并检查 systemctl status cdk-recharge'
-  updating.value = false
-}
-
-async function oneClickUpdate() {
-  if (!canOneClickUpdate.value) return
-  const target = versionInfo.value.latest || 'latest'
-  const ok = window.confirm(
-    `确认一键无痕更新到 v${target}？\n\n` +
-      '• 在线下载 GitHub 预编译包\n' +
-      '• 热替换二进制与前端（不改 app.env / 数据库）\n' +
-      '• 进程 re-exec 亚秒重载\n',
-  )
-  if (!ok) return
-
-  updating.value = true
-  updateFailed.value = false
-  updateError.value = ''
-  updatePhase.value = 'starting'
-  updateMessage.value = '提交更新任务…'
-  updateProgress.value = 2
-  try {
-    const r = await authFetch('/api/v1/admin/system/update', {
-      method: 'POST',
-      body: JSON.stringify({ target: 'latest', confirm: true }),
-    })
-    const d = await r.json().catch(() => ({}))
-    if (!r.ok && r.status !== 202) {
-      updateFailed.value = true
-      updateError.value = d.error || '启动更新失败'
-      updating.value = false
-      return
-    }
-    stopUpdatePoll()
-    updatePollTimer = window.setInterval(() => {
-      pollUpdateStatus()
-    }, 800)
-    await pollUpdateStatus()
-  } catch (e: any) {
-    updateFailed.value = true
-    updateError.value = e?.message || '网络错误'
-    updating.value = false
-  }
-}
-
 const statCards = computed(() => {
   const s = stats.value || {}
+  const v = (x: unknown) => (statsLoading.value ? '…' : numOrDash(x))
   return [
-    { label: 'CDK 总数', value: statsLoading.value ? '…' : numOrDash(s.total_cdks ?? s.total_cdkeys), hint: '卡台 Open API' },
-    { label: '可用 CDK', value: statsLoading.value ? '…' : numOrDash(s.unused_cdks ?? s.active_cdks ?? s.active_cdkeys), hint: 'unused 未使用' },
-    { label: '已兑换', value: statsLoading.value ? '…' : numOrDash(s.consumed_cdks), hint: 'consumed' },
-    { label: '兑换订单', value: statsLoading.value ? '…' : numOrDash(s.total_cdk_orders ?? s.total_tasks), hint: '卡台 CDK 订单' },
+    { label: 'CDK 总数', value: v(s.total_cdks ?? s.total_cdkeys), hint: '来自卡台', to: '/ops/cdkeys' },
+    { label: '可用 CDK', value: v(s.unused_cdks ?? s.active_cdks ?? s.active_cdkeys), hint: '未使用', to: '/ops/cdkeys' },
+    { label: '已兑换', value: v(s.consumed_cdks), hint: '已消耗', to: '/ops/cdkeys' },
+    { label: '兑换订单', value: v(s.total_cdk_orders ?? s.total_tasks), hint: '卡台 CDK 订单', to: '/ops/orders' },
   ]
 })
 
-async function loadVersion(force = false) {
-  versionLoading.value = true
-  versionError.value = ''
-  try {
-    const q = force ? '?refresh=1' : ''
-    const r = await authFetch(`/api/v1/admin/system/version${q}`)
-    const d = await r.json().catch(() => ({}))
-    if (!r.ok) {
-      versionError.value = d.error || '版本检查失败'
-      return
-    }
-    versionInfo.value = d
-    if (d.github_error && !d.latest) {
-      versionError.value = `GitHub: ${d.github_error}`
-    }
-  } catch (e: any) {
-    versionError.value = e?.message || '网络错误'
-  } finally {
-    versionLoading.value = false
+// 快捷入口跟侧栏同源：读路由 meta，不再单独维护一份
+const quickGroups = computed(() => {
+  const root = router.options.routes.find((r) => r.path === '/ops')
+  const gs: { name: string; items: { to: string; title: string }[] }[] = []
+  for (const c of root?.children || []) {
+    const m = (c.meta || {}) as Record<string, string>
+    if (!m.title || !m.group) continue
+    let g = gs.find((x) => x.name === m.group)
+    if (!g) gs.push((g = { name: m.group, items: [] }))
+    g.items.push({ to: `/ops/${c.path}`, title: m.title })
   }
-}
+  return gs
+})
 
 onMounted(async () => {
   statsLoading.value = true
@@ -374,55 +100,30 @@ onMounted(async () => {
     const d = await r.json().catch(() => ({}))
     if (!r.ok) {
       statsError.value = d.error || '加载统计失败'
-      return
-    }
-    stats.value = d
-    if (d.error) {
-      statsError.value = d.configured === false
-        ? '未配置卡台 API Key，请先到「卡台接入」填写'
-        : String(d.error)
+    } else {
+      stats.value = d
+      if (d.error) {
+        statsError.value = d.configured === false ? 'card_api_key not configured' : String(d.error)
+      }
     }
   } catch (e: any) {
     statsError.value = e?.message || '网络错误'
   } finally {
     statsLoading.value = false
   }
-  loadVersion(false)
-})
-
-function openPwdModal() {
-  pwdError.value = ''
-  pwdForm.old_password = ''
-  pwdForm.new_password = ''
-  pwdForm.confirm = ''
-  pwdModal.value = true
-}
-function closePwdModal() {
-  pwdModal.value = false
-}
-async function submitPwd() {
-  pwdError.value = ''
-  if (pwdForm.new_password !== pwdForm.confirm) {
-    pwdError.value = '两次新密码不一致'
-    return
-  }
-  pwdLoading.value = true
   try {
-    const r = await authFetch('/api/v1/auth/admin/change-password', {
-      method: 'POST',
-      body: JSON.stringify({
-        old_password: pwdForm.old_password,
-        new_password: pwdForm.new_password,
-      }),
-    })
-    const d = await r.json().catch(() => ({}))
-    if (!r.ok) {
-      pwdError.value = d.error || '修改失败'
-      return
-    }
-    pwdModal.value = false
-  } finally {
-    pwdLoading.value = false
-  }
-}
+    const r = await authFetch('/api/v1/admin/system/version')
+    if (r.ok) versionInfo.value = await r.json().catch(() => ({}))
+  } catch { /* 版本信息拿不到不影响总览 */ }
+})
 </script>
+
+<style scoped>
+.stat-card {
+  display: block; text-decoration: none;
+  padding: 20px; border-radius: var(--radius-md);
+  background: var(--surface); border: 1px solid var(--brd);
+  transition: border-color .15s, transform .15s;
+}
+.stat-card:hover { border-color: var(--primary); transform: translateY(-1px); }
+</style>

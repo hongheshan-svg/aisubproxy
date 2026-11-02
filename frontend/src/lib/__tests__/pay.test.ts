@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { failureLabel, formatMinor, fromMinor, isTerminal, payBlockReason, stateLabel, toMinor } from '../pay'
+import { failureLabel, formatMinor, fromMinor, isTerminal, pageOutcomeLabel, payBlockReason, stateLabel, toMinor } from '../pay'
 
 describe('pay lib', () => {
   it('stateLabel 13 个状态', () => {
@@ -16,6 +16,15 @@ describe('pay lib', () => {
     expect(failureLabel('not_submitted')).toBe('提交前放弃，未扣款')
     expect(failureLabel('declined')).toBe('提交后被拒')
     expect(failureLabel('x')).toBe('x')
+  })
+
+  it('pageOutcomeLabel', () => {
+    expect(pageOutcomeLabel('success')).toBe('支付页显示成功')
+    expect(pageOutcomeLabel('declined')).toBe('支付页显示被拒')
+    expect(pageOutcomeLabel('form_rejected')).toBe('表单校验未通过')
+    expect(pageOutcomeLabel('unknown')).toBe('没有明确结果')
+    expect(pageOutcomeLabel('')).toBe('—')
+    expect(pageOutcomeLabel('x')).toBe('x')
   })
 
   it('formatMinor', () => {

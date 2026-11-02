@@ -37,6 +37,18 @@ export function failureLabel(f: string): string {
   return FAILURE_LABEL[f] ?? f
 }
 
+const PAGE_OUTCOME_LABEL: Record<string, string> = {
+  success: '支付页显示成功',
+  declined: '支付页显示被拒',
+  form_rejected: '表单校验未通过',
+  unknown: '没有明确结果',
+}
+
+export function pageOutcomeLabel(o: string): string {
+  if (!o) return '—'
+  return PAGE_OUTCOME_LABEL[o] ?? o
+}
+
 const TERMINAL = new Set(['succeeded', 'failed', 'needs_review', 'previewed'])
 
 export function isTerminal(state: string): boolean {

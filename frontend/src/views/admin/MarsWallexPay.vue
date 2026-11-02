@@ -177,7 +177,7 @@
             </el-descriptions-item>
             <el-descriptions-item label="账号">{{ detail.order.account_email || '—' }}</el-descriptions-item>
             <el-descriptions-item label="卡">尾号 {{ detail.order.card_last4 || '—' }}；注资单 {{ detail.order.fund_order_no || '—' }}</el-descriptions-item>
-            <el-descriptions-item label="页面提示">{{ detail.order.page_outcome || '—' }}</el-descriptions-item>
+            <el-descriptions-item label="页面提示">{{ pageOutcomeLabel(detail.order.page_outcome) }}</el-descriptions-item>
             <el-descriptions-item label="提交时间">{{ fmtTs(detail.order.submitted_at) }}</el-descriptions-item>
             <el-descriptions-item label="创建 / 完成">{{ fmtTs(detail.order.created_at) }} / {{ fmtTs(detail.order.finished_at) }}</el-descriptions-item>
             <el-descriptions-item v-if="detail.order.failure || detail.order.error_message" label="失败原因">
@@ -239,7 +239,7 @@ import { authFetch } from '../../lib/api'
 import { dialog } from '../../lib/dialog'
 import { errText, fmtTs } from '../../lib/cardpool'
 import {
-  STATES, currencyDigits, failureLabel, formatMinor, fromMinor, isTerminal, payApi, stateLabel, toMinor, payBlockReason,
+  STATES, currencyDigits, failureLabel, formatMinor, fromMinor, isTerminal, pageOutcomeLabel, payApi, stateLabel, toMinor, payBlockReason,
 } from '../../lib/pay'
 
 const REGIONS = ['PH', 'US', 'JP', 'CL', 'EG']

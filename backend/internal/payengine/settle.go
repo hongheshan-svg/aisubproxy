@@ -28,6 +28,9 @@ const (
 	// 与本机 submitted_at 可能有偏差，真实授权可能显示在提交之前。多算一笔只会多一次人工核对，
 	// 漏算会把已扣款单误判为被拒，所以宁可放宽窗口。
 	authClockSkew = 5 * time.Minute
+
+	// declineBackfillDays 是定论失败前补拉的天数。卡池只接受 1、3、7，付款到定论通常不过十几分钟，1 天足够。
+	declineBackfillDays = 1
 )
 
 // orderNoName 是单号格式，截图清理只动名字符合它的目录。
@@ -165,12 +168,19 @@ func (s *Service) verifyOrder(ctx context.Context, o *Order) {
 // verifyDeclined 定论支付页显示被拒或校验错误、宽限期已过的单据。只有确认了账号未开通、翻完交易没有成功授权也没有处理中的授权，才算失败。
 // 证据不全（查询出错、授权还在处理中）绝不定成被拒——把已扣款的单子定成 declined 是最贵的错误：
 // 继续等下次检查，等到 exhausted（verify_until 之后再过一个 Verify）仍不全就转人工。
+// 本地证据都说可以定论时，先补拉一次交易再看：Webhook 不通时本地交易表只靠 15 分钟一次的定时补拉，宽限期内看不到授权。
 func (s *Service) verifyDeclined(ctx context.Context, j *job, accErr error, exhausted bool) {
 	approved, pending, err := s.verifyAuth(ctx, j.o)
 	if ctx.Err() != nil {
 		return
 	}
 	s.noteVerifyErr(ctx, j, "auth", "查询授权交易失败，等下次检查：", err)
+	if err == nil && !approved && !pending && accErr == nil {
+		approved, pending, err = s.backfillAndRecheck(ctx, j)
+		if ctx.Err() != nil {
+			return
+		}
+	}
 	switch {
 	case err != nil:
 		// 证据不全，走下面的等待或转人工
@@ -186,6 +196,26 @@ func (s *Service) verifyDeclined(ctx context.Context, j *job, accErr error, exha
 		return
 	}
 	s.verifyReschedule(ctx, j)
+}
+
+// backfillAndRecheck 补拉一次交易后重新查授权。补拉出错或超时按证据不全处理，返回错误，由 verifyDeclined 走等待或转人工。
+func (s *Service) backfillAndRecheck(ctx context.Context, j *job) (approved, pending bool, err error) {
+	bctx, cancel := context.WithTimeout(ctx, s.t.Backfill)
+	defer cancel()
+	_, err = s.opts.Pool.BackfillRecent(bctx, declineBackfillDays)
+	if ctx.Err() != nil {
+		return false, false, ctx.Err()
+	}
+	s.noteVerifyErr(ctx, j, "backfill", "补拉交易失败，等下次检查：", err)
+	if err != nil {
+		return false, false, err
+	}
+	approved, pending, err = s.verifyAuth(ctx, j.o)
+	if ctx.Err() != nil {
+		return false, false, ctx.Err()
+	}
+	s.noteVerifyErr(ctx, j, "auth", "查询授权交易失败，等下次检查：", err)
+	return approved, pending, err
 }
 
 // concludeDeclined 写失败定论。校验错误多半是配置或表单问题，不是这张卡或这个产品的问题，所以 Release(aborted) 不计入健康度；

@@ -435,7 +435,7 @@ func TestPayConfigLeaseWarning(t *testing.T) {
 	}
 	savePoolLease(t, 30)
 	m := get()
-	if m["max_concurrency"] != float64(3) || m["lease_warning"] != true || m["lease_minutes"] != float64(30) || m["max_pay_minutes"] != float64(32) {
+	if m["max_concurrency"] != float64(3) || m["lease_warning"] != true || m["lease_minutes"] != float64(30) || m["max_pay_minutes"] != float64(33) {
 		t.Fatalf("30 分钟应提示: %v", m)
 	}
 	savePoolLease(t, 35)

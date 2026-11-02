@@ -89,6 +89,7 @@ type fakePool struct {
 	release   func(*cardpool.Lease, cardpool.Outcome) error
 	cardInfo  func(string) (cardpool.CardInfo, error)
 	listTxns  func(cardpool.TxnFilter) ([]cardpool.Transaction, int, error)
+	backfill  func(context.Context, int) (cardpool.BackfillState, error)
 
 	relMu    sync.Mutex
 	releases []releaseCall
@@ -166,6 +167,14 @@ func (p *fakePool) ListTransactions(_ context.Context, f cardpool.TxnFilter) ([]
 		return p.listTxns(f)
 	}
 	return nil, 0, errFakeUnset
+}
+
+func (p *fakePool) BackfillRecent(c context.Context, days int) (cardpool.BackfillState, error) {
+	p.hit("BackfillRecent", days)
+	if p.backfill != nil {
+		return p.backfill(c, days)
+	}
+	return cardpool.BackfillState{}, errFakeUnset
 }
 
 // fakeChatGPT 按配置返回账号与支付会话；配置须在 Start 之前设好。

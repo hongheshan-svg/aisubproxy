@@ -32,6 +32,7 @@ type Pool interface {
 	Release(context.Context, *cardpool.Lease, cardpool.Outcome) error
 	CardInfo(context.Context, string) (cardpool.CardInfo, error)
 	ListTransactions(context.Context, cardpool.TxnFilter) ([]cardpool.Transaction, int, error)
+	BackfillRecent(context.Context, int) (cardpool.BackfillState, error)
 }
 
 // ChatGPT 是引擎用到的 ChatGPT 接口，*chatgpt.Client 直接满足。
@@ -54,14 +55,14 @@ type Browser interface {
 }
 
 // Timeouts 是各步骤的超时；测试可缩短。VerifyTick 是确认协程扫描到期单据的间隔；
-// OutcomeMargin 是等页面结果时外层时限比 SubmitResult 多出的余量。
+// OutcomeMargin 是等页面结果时外层时限比 SubmitResult 多出的余量；Backfill 是定论失败前补拉一次交易的时限。
 type Timeouts struct {
-	PageLoad, Fill, SubmitResult, OTP, Fund, Verify, VerifyEvery, DeclineGrace, VerifyTick, OutcomeMargin time.Duration
+	PageLoad, Fill, SubmitResult, OTP, Fund, Verify, VerifyEvery, DeclineGrace, VerifyTick, OutcomeMargin, Backfill time.Duration
 }
 
 // DefaultTimeouts 返回引擎默认超时：页面加载 60 秒、填表 2 分钟、提交后等待页面结果 2 分钟、
 // 验证码 5 分钟、注资 3 分钟、确认 10 分钟（每 15 秒查一次）、被拒后等待授权推送 2 分钟；确认协程每 5 秒扫描一次；
-// 等页面结果的外层时限多给 10 秒。
+// 等页面结果的外层时限多给 10 秒；定论失败前补拉交易 30 秒。
 func DefaultTimeouts() Timeouts {
 	return Timeouts{
 		PageLoad:     60 * time.Second,
@@ -75,14 +76,16 @@ func DefaultTimeouts() Timeouts {
 		VerifyTick:   5 * time.Second,
 
 		OutcomeMargin: 10 * time.Second,
+		Backfill:      30 * time.Second,
 	}
 }
 
 // MaxPayDuration 是一单付款从取卡租约到定论最长可能占用卡的时间，卡池租约须不短于它：
-// 注资 + 填表 + 点支付后等页面结果 + 3DS 页面加载 + 验证码 + 填验证码并等结果 + 被拒宽限 + 确认 + 确认间隔 + 扫描间隔 + 5 秒关闭浏览器。
+// 注资 + 填表 + 点支付后等页面结果 + 3DS 页面加载 + 验证码 + 填验证码并等结果 + 被拒宽限 + 确认 + 确认间隔 + 扫描间隔 + 5 秒关闭浏览器
+// + 两次定论前补拉（期限到达之前最后一轮，加上到期那一轮，都可能等满补拉时限）。
 func MaxPayDuration(t Timeouts) time.Duration {
 	return t.Fund + t.Fill + t.SubmitResult + t.SubmitResult + t.PageLoad + t.OTP +
-		t.SubmitResult + t.SubmitResult + t.DeclineGrace + t.Verify + t.VerifyEvery + t.VerifyTick + 5*time.Second
+		t.SubmitResult + t.SubmitResult + t.DeclineGrace + t.Verify + t.VerifyEvery + t.VerifyTick + 5*time.Second + 2*t.Backfill
 }
 
 // Options 为 Service 的依赖。
@@ -145,6 +148,9 @@ func New(o Options) *Service {
 	}
 	if t.OutcomeMargin <= 0 {
 		t.OutcomeMargin = DefaultTimeouts().OutcomeMargin
+	}
+	if t.Backfill <= 0 {
+		t.Backfill = DefaultTimeouts().Backfill
 	}
 	return &Service{opts: o, t: t, realBrowser: realBrowser, kick: make(chan struct{}, 1), running: map[string]bool{}, verifyErrs: map[string]map[string]string{}}
 }

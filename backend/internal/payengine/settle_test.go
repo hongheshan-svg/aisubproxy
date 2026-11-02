@@ -93,6 +93,7 @@ func newPayHarness(t *testing.T, tune func(*Timeouts)) *harness {
 	h.pool.listTxns = func(cardpool.TxnFilter) ([]cardpool.Transaction, int, error) {
 		return []cardpool.Transaction{}, 0, nil
 	}
+	h.pool.backfill = func(context.Context, int) (cardpool.BackfillState, error) { return cardpool.BackfillState{}, nil }
 	h.br.fill = func(paybrowser.Card, paybrowser.Billing) error { return nil }
 	h.br.submit = func() error { return nil }
 	h.br.enterOTP = func(string) error { return nil }
@@ -408,6 +409,331 @@ func TestFormRejectedMessageScrubbed(t *testing.T) {
 	g := waitDone(t, o.OrderNo)
 	if strings.Contains(g.ErrorMessage, testCardNoSpaced) || !strings.Contains(g.ErrorMessage, "***") {
 		t.Fatalf("文字应脱敏: %q", g.ErrorMessage)
+	}
+}
+
+// waitBackfill 等到至少补拉过一次，最多 5 秒。
+func waitBackfill(t *testing.T, h *harness) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for h.pool.count("BackfillRecent") == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("没有补拉")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// R48：Webhook 不通时本地交易表只靠定时补拉，宽限期内看不到授权。定论失败前先补拉一次，再按新结果判断。
+func TestBackfillFindsApprovedAuthNeedsReview(t *testing.T) {
+	for name, mk := range map[string]func(*testing.T) *harness{"页面被拒": declinedHarness, "页面校验未通过": formRejectedHarness} {
+		t.Run(name, func(t *testing.T) {
+			h := mk(t)
+			var txns atomic.Value
+			txns.Store([]cardpool.Transaction{})
+			h.pool.listTxns = func(f cardpool.TxnFilter) ([]cardpool.Transaction, int, error) {
+				return pagedTxns(txns.Load().([]cardpool.Transaction))(f)
+			}
+			h.pool.backfill = func(context.Context, int) (cardpool.BackfillState, error) {
+				txns.Store([]cardpool.Transaction{txnAt("A1", "approved", h.clock.Now().Unix())})
+				return cardpool.BackfillState{}, nil
+			}
+			h.start(t)
+			o := h.submit(t, false)
+			waitState(t, o.OrderNo, StateVerifying)
+			h.clock.Advance(h.timeouts.DeclineGrace + time.Second)
+			g := waitDone(t, o.OrderNo)
+			if g.State != StateNeedsReview || g.ErrorCode != "evidence_conflict" || g.Failure != "" {
+				t.Fatalf("补拉后才出现成功授权应转待人工: %+v", g)
+			}
+			assertReleases(t, h, cardpool.ResultAborted)
+			if n := h.pool.count("BackfillRecent"); n != 1 {
+				t.Fatalf("应补拉 1 次: %d", n)
+			}
+		})
+	}
+}
+
+// 补拉后还有处理中的授权：不定论，重排等下次检查；授权转失败后才定论。
+func TestBackfillFindsPendingAuthReschedules(t *testing.T) {
+	h := declinedHarness(t)
+	var txns atomic.Value
+	txns.Store([]cardpool.Transaction{})
+	h.pool.listTxns = func(f cardpool.TxnFilter) ([]cardpool.Transaction, int, error) {
+		return pagedTxns(txns.Load().([]cardpool.Transaction))(f)
+	}
+	h.pool.backfill = func(context.Context, int) (cardpool.BackfillState, error) {
+		if h.pool.count("BackfillRecent") == 1 { // 第一次补拉拉回一笔处理中的授权，之后没有新交易
+			txns.Store([]cardpool.Transaction{txnAt("A1", "pending", h.clock.Now().Unix())})
+		}
+		return cardpool.BackfillState{}, nil
+	}
+	h.start(t)
+	o := h.submit(t, false)
+	waitState(t, o.OrderNo, StateVerifying)
+	h.clock.Advance(h.timeouts.DeclineGrace + time.Second)
+	waitBackfill(t, h)
+	waitMoreCalls(t, func() int { return h.gpt.count("Account") })
+	waitMoreCalls(t, func() int { return h.gpt.count("Account") })
+	if g := mustOrder(t, o.OrderNo); g.State != StateVerifying || len(h.pool.released()) != 0 {
+		t.Fatalf("补拉后还有处理中的授权不应定论: %+v", g)
+	}
+	if n := h.pool.count("BackfillRecent"); n != 1 {
+		t.Fatalf("已知有处理中的授权时不必再补拉: %d", n)
+	}
+	txns.Store([]cardpool.Transaction{txnAt("A1", "failed", h.clock.Now().Unix())})
+	g := waitDone(t, o.OrderNo)
+	if g.State != StateFailed || g.Failure != FailureDeclined {
+		t.Fatalf("授权转失败后应定论: %+v", g)
+	}
+}
+
+// 补拉失败时拿不到完整证据：不定论，记事件，耗尽后转人工。方向偏向人工。
+func TestBackfillFailureEscalates(t *testing.T) {
+	h := declinedHarness(t)
+	h.pool.backfill = func(context.Context, int) (cardpool.BackfillState, error) {
+		return cardpool.BackfillState{}, errors.New("平台返回 HTTP 500")
+	}
+	h.start(t)
+	o := h.submit(t, false)
+	waitState(t, o.OrderNo, StateVerifying)
+	h.clock.Advance(h.timeouts.DeclineGrace + time.Second)
+	e := waitEvent(t, o.OrderNo, "HTTP 500")
+	if e.Level != "warn" || e.State != StateVerifying || !strings.Contains(e.Message, "补拉") {
+		t.Fatalf("应记 warn 事件: %+v", e)
+	}
+	waitMoreCalls(t, func() int { return h.pool.count("BackfillRecent") }) // 补拉一直失败，每轮都再试
+	if g := mustOrder(t, o.OrderNo); g.State != StateVerifying || len(h.pool.released()) != 0 {
+		t.Fatalf("补拉失败不应定论: %+v", g)
+	}
+	if n := countEvents(t, o.OrderNo, "HTTP 500"); n != 1 {
+		t.Fatalf("同样的错误只记 1 条: %d", n)
+	}
+	h.clock.Advance(h.timeouts.Verify)
+	g := waitDone(t, o.OrderNo)
+	if g.State != StateNeedsReview || g.ErrorCode != "evidence_unavailable" || g.Failure != "" {
+		t.Fatalf("耗尽后应转待人工: %+v", g)
+	}
+	assertReleases(t, h, cardpool.ResultAborted)
+	if a := h.alerts.Texts(); len(a) != 1 {
+		t.Fatalf("应告警 1 次: %v", a)
+	}
+}
+
+// 补拉恢复后可以定论。
+func TestBackfillRecoveryConcludes(t *testing.T) {
+	h := declinedHarness(t)
+	var broken atomic.Bool
+	broken.Store(true)
+	h.pool.backfill = func(context.Context, int) (cardpool.BackfillState, error) {
+		if broken.Load() {
+			return cardpool.BackfillState{}, errors.New("平台返回 HTTP 500")
+		}
+		return cardpool.BackfillState{}, nil
+	}
+	h.start(t)
+	o := h.submit(t, false)
+	waitState(t, o.OrderNo, StateVerifying)
+	h.clock.Advance(h.timeouts.DeclineGrace + time.Second)
+	waitEvent(t, o.OrderNo, "HTTP 500")
+	broken.Store(false)
+	g := waitDone(t, o.OrderNo)
+	if g.State != StateFailed || g.Failure != FailureDeclined {
+		t.Fatalf("补拉恢复后应定论: %+v", g)
+	}
+	assertReleases(t, h, cardpool.ResultFailed)
+}
+
+// 补拉超时同样不定论；补拉有时限，默认 30 秒，且时限不受可前进的测试时钟影响。
+func TestBackfillTimeoutDoesNotDecline(t *testing.T) {
+	if got := DefaultTimeouts().Backfill; got != 30*time.Second {
+		t.Fatalf("默认补拉时限 = %v，期望 30 秒", got)
+	}
+	h := newPayHarness(t, func(to *Timeouts) { to.Backfill = 20 * time.Millisecond })
+	h.br.waitOutcome = outcomes(outcomeStep{out: paybrowser.OutcomeDeclined, text: "Your card was declined."})
+	h.pool.backfill = func(c context.Context, _ int) (cardpool.BackfillState, error) {
+		<-c.Done()
+		return cardpool.BackfillState{}, c.Err()
+	}
+	h.start(t)
+	o := h.submit(t, false)
+	waitState(t, o.OrderNo, StateVerifying)
+	h.clock.Advance(h.timeouts.DeclineGrace + time.Second)
+	waitEvent(t, o.OrderNo, "补拉")
+	if g := mustOrder(t, o.OrderNo); g.State != StateVerifying || len(h.pool.released()) != 0 {
+		t.Fatalf("补拉超时不应定论: %+v", g)
+	}
+	h.clock.Advance(h.timeouts.Verify)
+	g := waitDone(t, o.OrderNo)
+	if g.State != StateNeedsReview || g.ErrorCode != "evidence_unavailable" {
+		t.Fatalf("耗尽后应转待人工: %+v", g)
+	}
+}
+
+// 补拉参数：1 天；ctx 带时限。
+func TestBackfillArgsAndDeadline(t *testing.T) {
+	h := declinedHarness(t)
+	var left atomic.Int64
+	h.pool.backfill = func(c context.Context, _ int) (cardpool.BackfillState, error) {
+		if d, ok := c.Deadline(); ok {
+			left.Store(int64(time.Until(d)))
+		}
+		return cardpool.BackfillState{}, nil
+	}
+	h.start(t)
+	o := h.submit(t, false)
+	waitState(t, o.OrderNo, StateVerifying)
+	h.clock.Advance(h.timeouts.DeclineGrace + time.Second)
+	g := waitDone(t, o.OrderNo)
+	if g.State != StateFailed || g.Failure != FailureDeclined {
+		t.Fatalf("补拉成功且没有授权应定论失败: %+v", g)
+	}
+	if a := h.pool.lastArgs("BackfillRecent"); h.pool.count("BackfillRecent") != 1 || a[0] != 1 {
+		t.Fatalf("应补拉 1 次、1 天: %d %v", h.pool.count("BackfillRecent"), a)
+	}
+	if d := time.Duration(left.Load()); d <= 25*time.Second || d > 30*time.Second {
+		t.Fatalf("补拉的 ctx 应带 30 秒时限，实际剩余 %v", d)
+	}
+}
+
+// 补拉只在要定论失败时调用：宽限期内、账号已开通、已有成功或处理中的授权、证据查询出错、页面结果不是被拒，都不调用。
+func TestBackfillOnlyBeforeConcluding(t *testing.T) {
+	assertNoBackfill := func(t *testing.T, h *harness) {
+		t.Helper()
+		if n := h.pool.count("BackfillRecent"); n != 0 {
+			t.Fatalf("不应补拉: %d", n)
+		}
+	}
+	t.Run("宽限期内", func(t *testing.T) {
+		h := declinedHarness(t)
+		h.start(t)
+		o := h.submit(t, false)
+		waitState(t, o.OrderNo, StateVerifying)
+		waitAccountCalls(t, h, 3)
+		assertNoBackfill(t, h)
+	})
+	t.Run("账号已开通", func(t *testing.T) {
+		h := declinedHarness(t)
+		h.gpt.accountFn = planFrom(2)
+		h.start(t)
+		if g := waitDone(t, h.submit(t, false).OrderNo); g.State != StateSucceeded {
+			t.Fatalf("应成功: %+v", g)
+		}
+		assertNoBackfill(t, h)
+	})
+	t.Run("第一次查就有成功授权", func(t *testing.T) {
+		h := declinedHarness(t)
+		h.pool.listTxns = pagedTxns([]cardpool.Transaction{txnAt("A1", "approved", h.clock.Now().Unix()+10)})
+		h.start(t)
+		o := h.submit(t, false)
+		waitState(t, o.OrderNo, StateVerifying)
+		h.clock.Advance(h.timeouts.DeclineGrace + time.Second)
+		if g := waitDone(t, o.OrderNo); g.State != StateNeedsReview || g.ErrorCode != "evidence_conflict" {
+			t.Fatalf("应转待人工: %+v", g)
+		}
+		assertNoBackfill(t, h)
+	})
+	t.Run("有处理中的授权", func(t *testing.T) {
+		h := declinedHarness(t)
+		h.pool.listTxns = pagedTxns([]cardpool.Transaction{txnAt("A1", "pending", h.clock.Now().Unix()+10)})
+		h.start(t)
+		o := h.submit(t, false)
+		waitState(t, o.OrderNo, StateVerifying)
+		h.clock.Advance(h.timeouts.DeclineGrace + time.Second)
+		waitAccountCalls(t, h, h.gpt.count("Account")+3)
+		assertNoBackfill(t, h)
+	})
+	t.Run("查授权出错", func(t *testing.T) {
+		h := declinedHarness(t)
+		h.pool.listTxns = func(cardpool.TxnFilter) ([]cardpool.Transaction, int, error) {
+			return nil, 0, errors.New("读交易表失败")
+		}
+		h.start(t)
+		o := h.submit(t, false)
+		waitState(t, o.OrderNo, StateVerifying)
+		h.clock.Advance(h.timeouts.DeclineGrace + time.Second)
+		waitEvent(t, o.OrderNo, "读交易表失败")
+		assertNoBackfill(t, h)
+	})
+	t.Run("查账号出错", func(t *testing.T) {
+		h := declinedHarness(t)
+		var broken atomic.Bool
+		h.gpt.accountFn = func(int) (chatgpt.Account, error) {
+			if broken.Load() {
+				return chatgpt.Account{}, errors.New("ChatGPT 返回 HTTP 502")
+			}
+			return accountFree, nil
+		}
+		h.start(t)
+		o := h.submit(t, false)
+		waitState(t, o.OrderNo, StateVerifying)
+		broken.Store(true)
+		h.clock.Advance(h.timeouts.DeclineGrace + time.Second)
+		waitEvent(t, o.OrderNo, "HTTP 502")
+		waitAccountCalls(t, h, h.gpt.count("Account")+2)
+		assertNoBackfill(t, h)
+	})
+	t.Run("页面结果不明", func(t *testing.T) {
+		h := newPayHarness(t, nil)
+		h.br.waitOutcome = outcomes(outcomeStep{out: paybrowser.OutcomeUnknown})
+		h.start(t)
+		o := h.submit(t, false)
+		waitState(t, o.OrderNo, StateVerifying)
+		h.clock.Advance(h.timeouts.Verify + time.Second)
+		if g := waitDone(t, o.OrderNo); g.State != StateNeedsReview || g.ErrorCode != "verify_timeout" {
+			t.Fatalf("应转待人工: %+v", g)
+		}
+		assertNoBackfill(t, h)
+	})
+}
+
+// 补拉成功后再查授权出错：证据不全，不定论。
+func TestBackfillThenTxnErrorDoesNotDecline(t *testing.T) {
+	h := declinedHarness(t)
+	var broken atomic.Bool
+	h.pool.listTxns = func(cardpool.TxnFilter) ([]cardpool.Transaction, int, error) {
+		if broken.Load() {
+			return nil, 0, errors.New("读交易表失败")
+		}
+		return []cardpool.Transaction{}, 0, nil
+	}
+	h.pool.backfill = func(context.Context, int) (cardpool.BackfillState, error) {
+		broken.Store(true)
+		return cardpool.BackfillState{}, nil
+	}
+	h.start(t)
+	o := h.submit(t, false)
+	waitState(t, o.OrderNo, StateVerifying)
+	h.clock.Advance(h.timeouts.DeclineGrace + time.Second)
+	waitEvent(t, o.OrderNo, "读交易表失败")
+	if g := mustOrder(t, o.OrderNo); g.State != StateVerifying || len(h.pool.released()) != 0 {
+		t.Fatalf("补拉后查不到授权不应定论: %+v", g)
+	}
+}
+
+// 补拉期间服务停止：不定论、不记事件，留给重启后接着查。
+func TestBackfillInterruptedByShutdown(t *testing.T) {
+	h := newPayHarness(t, nil)
+	at := h.clock.Now().Unix() - 600
+	o := presetOrder(t, "a@x.com", StateVerifying, map[string]any{
+		"submitted_at": at, "card_id": testCardID, "lease_token": testLeaseToken,
+		"page_outcome": "declined", "verify_until": at + 120, "next_check_at": at, "error_message": "Your card was declined.",
+	})
+	runCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h.pool.backfill = func(context.Context, int) (cardpool.BackfillState, error) {
+		cancel()
+		return cardpool.BackfillState{}, context.Canceled
+	}
+	h.svc.verifyOrder(runCtx, o)
+	if h.pool.count("BackfillRecent") != 1 {
+		t.Fatalf("应走到补拉: %d", h.pool.count("BackfillRecent"))
+	}
+	if g := mustOrder(t, o.OrderNo); g.State != StateVerifying || len(h.pool.released()) != 0 {
+		t.Fatalf("停机时不应定论: %+v", g)
+	}
+	if n := countEvents(t, o.OrderNo, "补拉"); n != 0 {
+		t.Fatalf("停机不算故障，不记事件: %d", n)
 	}
 }
 

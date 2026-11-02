@@ -2,6 +2,7 @@ package payengine
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -13,6 +14,8 @@ import (
 )
 
 const (
+	pathAuthTxns      = "/v1/card/transactions/authorization"
+	pathSettleTxns    = "/v1/card/transactions/settlement"
 	pathRecharge      = "/v1/card/recharge-transaction"
 	pathWithdraw      = "/v1/card/withdraw-transaction"
 	pathTransferQuery = "/v1/card/transfer-order"
@@ -144,6 +147,77 @@ func TestEngineRealPoolApprovedAuthNeedsReview(t *testing.T) {
 	var n int
 	if err := db.DB.QueryRow(`SELECT COUNT(*) FROM mw_card_outcomes`).Scan(&n); err != nil || n != 0 {
 		t.Fatalf("待人工不计入健康度: %d %v", n, err)
+	}
+}
+
+// R48：Webhook 没送到、本地交易表为空时，定论前的补拉把平台上的成功授权拉回来，真实卡池下也转待人工。
+func TestEngineRealPoolBackfillFindsApprovedAuth(t *testing.T) {
+	h, mw := newRealPoolHarness(t)
+	h.br.waitOutcome = outcomes(outcomeStep{out: paybrowser.OutcomeDeclined, text: "Your card was declined."})
+	h.start(t)
+	o := h.submit(t, false)
+	waitState(t, o.OrderNo, StateVerifying)
+	mw.On("GET", pathAuthTxns, mwtest.Reply{Body: fmt.Sprintf(`{"count":"1","data":[{"transaction_id":"A9","transaction_type":"AUTH",`+
+		`"card_id":"c1","status":"APPROVED","transaction_amount":"20.00","transaction_currency":"USD","billing_amount":"20.00",`+
+		`"billing_currency":"USD","merchant":{"merchant_name":"OPENAI"},"transaction_time":%d}]}`, h.clock.Now().Unix()+1)})
+	mw.On("GET", pathSettleTxns, mwtest.Reply{Body: `{"count":"0","data":[]}`})
+	h.clock.Advance(h.timeouts.DeclineGrace + time.Second)
+	g := waitDone(t, o.OrderNo)
+	if g.State != StateNeedsReview || g.ErrorCode != "evidence_conflict" {
+		t.Fatalf("补拉到成功授权应转待人工: %+v", g)
+	}
+	if len(mw.Requests("GET", pathAuthTxns)) != 1 || len(mw.Requests("GET", pathSettleTxns)) != 1 {
+		t.Fatalf("应各补拉 1 次: %d %d", len(mw.Requests("GET", pathAuthTxns)), len(mw.Requests("GET", pathSettleTxns)))
+	}
+	list, err := h.svc.Evidence(ctx, o.OrderNo)
+	if err != nil || len(list) != 1 || list[0].TransactionID != "A9" {
+		t.Fatalf("应能查到补拉回来的授权: %v %+v", err, list)
+	}
+	var n int
+	if err := db.DB.QueryRow(`SELECT COUNT(*) FROM mw_card_outcomes`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("待人工不计入健康度: %d %v", n, err)
+	}
+	if state, _ := cardPoolState(t, "c1"); state == cardpool.PoolDisabled {
+		t.Fatalf("已交出卡号的卡不应被「未交卡号出现授权」规则停用: %s", state)
+	}
+}
+
+// 补拉没有新交易：真实卡池下定论失败。
+func TestEngineRealPoolBackfillEmptyDeclines(t *testing.T) {
+	h, mw := newRealPoolHarness(t)
+	h.br.waitOutcome = outcomes(outcomeStep{out: paybrowser.OutcomeDeclined, text: "Your card was declined."})
+	mw.On("GET", pathAuthTxns, mwtest.Reply{Body: `{"count":"0","data":[]}`})
+	mw.On("GET", pathSettleTxns, mwtest.Reply{Body: `{"count":"0","data":[]}`})
+	h.start(t)
+	o := h.submit(t, false)
+	waitState(t, o.OrderNo, StateVerifying)
+	h.clock.Advance(h.timeouts.DeclineGrace + time.Second)
+	g := waitDone(t, o.OrderNo)
+	if g.State != StateFailed || g.Failure != FailureDeclined || g.ErrorCode != "card_declined" {
+		t.Fatalf("应定论被拒: %+v", g)
+	}
+	if len(mw.Requests("GET", pathAuthTxns)) != 1 {
+		t.Fatalf("应补拉 1 次: %d", len(mw.Requests("GET", pathAuthTxns)))
+	}
+}
+
+// 平台出错：真实卡池的补拉报错时不定论，耗尽后转人工。
+func TestEngineRealPoolBackfillErrorEscalates(t *testing.T) {
+	h, mw := newRealPoolHarness(t)
+	h.br.waitOutcome = outcomes(outcomeStep{out: paybrowser.OutcomeDeclined, text: "Your card was declined."})
+	mw.On("GET", pathAuthTxns, mwtest.Unknown())
+	h.start(t)
+	o := h.submit(t, false)
+	waitState(t, o.OrderNo, StateVerifying)
+	h.clock.Advance(h.timeouts.DeclineGrace + time.Second)
+	waitEvent(t, o.OrderNo, "补拉")
+	if g := mustOrder(t, o.OrderNo); g.State != StateVerifying {
+		t.Fatalf("补拉出错不应定论: %+v", g)
+	}
+	h.clock.Advance(h.timeouts.Verify)
+	g := waitDone(t, o.OrderNo)
+	if g.State != StateNeedsReview || g.ErrorCode != "evidence_unavailable" {
+		t.Fatalf("耗尽后应转待人工: %+v", g)
 	}
 }
 

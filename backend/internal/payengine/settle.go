@@ -19,8 +19,10 @@ import (
 const (
 	shotRetention  = 7 * 24 * time.Hour // 截图保留时长
 	shotCleanEvery = 24 * time.Hour     // 截图清理间隔
-	txnPageSize    = 100                // 翻交易时每页条数；卡池的分页上限更小时按实际读到的条数继续翻
-	restartMessage = "服务重启，未提交"
+	// profileCleanEvery：崩溃残留的 Chrome 用户目录里有用户会话 cookie，清得比截图勤。
+	profileCleanEvery = time.Hour
+	txnPageSize       = 100 // 翻交易时每页条数；卡池的分页上限更小时按实际读到的条数继续翻
+	restartMessage    = "服务重启，未提交"
 
 	// authClockSkew 是查授权交易时往 submitted_at 之前多看的时长。transaction_time 是平台时钟（Unix 秒），
 	// 与本机 submitted_at 可能有偏差，真实授权可能显示在提交之前。多算一笔只会多一次人工核对，
@@ -449,19 +451,31 @@ func scrubRecoveryError(err error) string {
 	return truncate(text, errorMessageLimit)
 }
 
-// shotLoop 启动时清理一次截图，之后每天一次。
-func (s *Service) shotLoop(ctx context.Context) {
+// cleanLoop 启动时清理一次截图，之后截图每天一次、浏览器残留每小时一次（残留的首次清理在 Start 里同步做）。
+func (s *Service) cleanLoop(ctx context.Context) {
 	defer s.loops.Done()
 	s.cleanShots()
-	ticker := time.NewTicker(shotCleanEvery)
-	defer ticker.Stop()
+	shots := time.NewTicker(shotCleanEvery)
+	defer shots.Stop()
+	profiles := time.NewTicker(profileCleanEvery)
+	defer profiles.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-shots.C:
 			s.cleanShots()
+		case <-profiles.C:
+			s.cleanProfiles()
 		}
+	}
+}
+
+// cleanProfiles 只在用真实浏览器时清理：注入假浏览器的测试不该碰系统临时目录，
+// 否则 go test ./... 并行时可能影响其它包正在跑的 Chrome。
+func (s *Service) cleanProfiles() {
+	if s.realBrowser {
+		paybrowser.CleanStaleProfiles()
 	}
 }
 

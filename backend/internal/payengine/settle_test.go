@@ -1599,6 +1599,10 @@ func TestStartCleansStaleProfilesOnlyWithRealBrowser(t *testing.T) {
 		if err := os.Mkdir(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
+		old := time.Now().Add(-2 * time.Hour) // R28：只有很久没变化的才算残留
+		if err := os.Chtimes(dir, old, old); err != nil {
+			t.Fatal(err)
+		}
 		return dir
 	}
 	t.Run("替身工厂不清理", func(t *testing.T) {
@@ -1616,6 +1620,20 @@ func TestStartCleansStaleProfilesOnlyWithRealBrowser(t *testing.T) {
 		h.start(t)
 		if _, err := os.Lstat(dir); !os.IsNotExist(err) {
 			t.Fatalf("应清理: %v", err)
+		}
+	})
+	t.Run("默认工厂不动刚建的目录", func(t *testing.T) { // R28：可能是同机器另一个实例正在用的
+		h := newPayHarness(t, nil)
+		tmp := t.TempDir()
+		t.Setenv("TMPDIR", tmp)
+		dir := filepath.Join(tmp, "cdk-pay-chrome-live")
+		if err := os.Mkdir(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		h.svc = New(Options{Pool: h.pool, Alert: h.alerts.add, ShotDir: h.shotDir, Timeouts: &h.timeouts})
+		h.start(t)
+		if _, err := os.Lstat(dir); err != nil {
+			t.Fatalf("不应清理: %v", err)
 		}
 	})
 }

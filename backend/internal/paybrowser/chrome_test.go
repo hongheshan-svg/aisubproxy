@@ -241,7 +241,8 @@ func TestSocketAlive(t *testing.T) {
 	}
 }
 
-// R26：崩溃残留的临时目录里有用户会话 cookie，启动时要删掉；不能跟随符号链接，也不能动别的东西。
+// R26、R28：崩溃残留的临时目录里有用户会话 cookie，要删掉；最近还有变化的目录可能是别的实例正在用的，不能动；
+// 不能跟随符号链接，也不能动别的东西。
 func TestCleanStaleProfiles(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("TMPDIR", tmp)
@@ -274,12 +275,39 @@ func TestCleanStaleProfiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// 把时间拨到两小时前。先改里层再改外层；符号链接的时间改不了，也不算数。
+	old := time.Now().Add(-2 * time.Hour)
+	age := func(paths ...string) {
+		t.Helper()
+		for _, p := range paths {
+			if err := os.Chtimes(p, old, old); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	age(filepath.Join(stale, "Default"), stale)
+
+	// 刚建的目录：另一个实例刚启动的浏览器
+	fresh := filepath.Join(tmp, "cdk-pay-chrome-fresh")
+	if err := os.Mkdir(fresh, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// 目录本身很久没变，但第一层内容刚写过：另一个实例正在跑的浏览器
+	active := filepath.Join(tmp, "cdk-pay-chrome-active")
+	if err := os.Mkdir(active, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(active, "Local State"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	age(active)
+
 	paybrowser.CleanStaleProfiles()
 
 	if _, err := os.Lstat(stale); !os.IsNotExist(err) {
 		t.Fatalf("残留目录应删除: %v", err)
 	}
-	for _, p := range []string{keep, link, plain, other} {
+	for _, p := range []string{keep, link, plain, other, fresh, active} {
 		if _, err := os.Lstat(p); err != nil {
 			t.Fatalf("%s 应保留: %v", p, err)
 		}

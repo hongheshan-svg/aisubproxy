@@ -42,6 +42,8 @@ const (
 	checkTimeout = 30 * time.Second
 
 	profilePrefix = "cdk-pay-chrome-" // 临时用户目录的名字前缀
+	// staleProfileAge：超过这么久没有变化的用户目录才算崩溃残留。一单用浏览器的时间远短于此。
+	staleProfileAge = time.Hour
 )
 
 // FindChrome 返回 Chrome 可执行文件路径。设置了 CHROME_PATH 时只认它（文件不存在直接报错，不再回落），
@@ -209,9 +211,9 @@ func (b *Browser) acceptDialog(ev any) {
 	}
 }
 
-// CleanStaleProfiles 删除系统临时目录下上次崩溃残留的 Chrome 用户目录（里面有用户会话 cookie）。
-// 只能在确定没有浏览器在跑时调用。ReadDir 不跟随符号链接（链接的 IsDir 为 false，直接跳过），
-// RemoveAll 也不会穿过目录里的链接。失败只打日志。
+// CleanStaleProfiles 删除系统临时目录下崩溃残留的 Chrome 用户目录（里面有用户会话 cookie）。
+// 只删超过 staleProfileAge 没有变化的目录：同一台机器上别的实例可能正在用同前缀的目录，随时调用都安全。
+// ReadDir 不跟随符号链接（链接的 IsDir 为 false，直接跳过），RemoveAll 也不会穿过目录里的链接。失败只打日志。
 func CleanStaleProfiles() {
 	tmp := os.TempDir()
 	entries, err := os.ReadDir(tmp)
@@ -219,14 +221,42 @@ func CleanStaleProfiles() {
 		log.Printf("[paybrowser] 读取临时目录失败: %v", err)
 		return
 	}
+	cutoff := time.Now().Add(-staleProfileAge)
 	for _, e := range entries {
 		if !e.IsDir() || !strings.HasPrefix(e.Name(), profilePrefix) {
 			continue
 		}
-		if err := os.RemoveAll(filepath.Join(tmp, e.Name())); err != nil {
+		dir := filepath.Join(tmp, e.Name())
+		if profileChangedSince(dir, cutoff) {
+			continue
+		}
+		if err := os.RemoveAll(dir); err != nil {
 			log.Printf("[paybrowser] 删除残留的 Chrome 临时目录 %s 失败: %v", e.Name(), err)
 		}
 	}
+}
+
+// profileChangedSince 报告用户目录本身或其第一层内容在 cutoff 之后是否有变化。
+// 符号链接不算（改不了时间，也不代表浏览器在跑）；读不出来按有变化算，留到下一轮。
+func profileChangedSince(dir string, cutoff time.Time) bool {
+	info, err := os.Lstat(dir)
+	if err != nil || info.ModTime().After(cutoff) {
+		return true
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return true
+	}
+	for _, e := range entries {
+		if e.Type()&os.ModeSymlink != 0 {
+			continue
+		}
+		fi, err := e.Info()
+		if err != nil || fi.ModTime().After(cutoff) {
+			return true
+		}
+	}
+	return false
 }
 
 // closeAfterStart 在调用方放弃等待后，等启动结束再关闭浏览器。

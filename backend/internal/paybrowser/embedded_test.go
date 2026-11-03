@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -132,6 +133,22 @@ func openEmbedded(t *testing.T, f *fakeEmbedded, query string) (*paybrowser.Brow
 		t.Fatalf("Open: %v", err)
 	}
 	return b, ctx
+}
+
+// embeddedBilling 是内嵌页用例的账单地址；内嵌页没有邮箱框，不给邮箱。
+var embeddedBilling = paybrowser.Billing{Name: "A B", Line1: "1 Main St", City: "Portland", State: "OR", Zip: "97201", Country: "US"}
+
+// fieldLabels 返回填表报告里各字段的中文名，并要求它们都已核对一致。
+func fieldLabels(t *testing.T, r paybrowser.FillReport) []string {
+	t.Helper()
+	var out []string
+	for _, f := range r.Fields {
+		if f.Status != "核对一致" {
+			t.Errorf("字段「%s」的状态是 %q，期望核对一致", f.Label, f.Status)
+		}
+		out = append(out, f.Label)
+	}
+	return out
 }
 
 func TestEmbeddedOpenAndReadAmount(t *testing.T) {
@@ -323,5 +340,123 @@ func TestNormalizeEmbeddedAmount(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "Payment amount 里有多个金额") {
 			t.Errorf("NormalizeEmbeddedAmount(%q) 应报「Payment amount 里有多个金额」，得到 %q, %v", raw, got, err)
 		}
+	}
+}
+
+// 内嵌页上没有地址字段（设计 §2 的摸底结果）：卡片三项照填，六个地址字段都记成「页面没有」，不报错。
+func TestEmbeddedFillWithoutAddress(t *testing.T) {
+	needChrome(t)
+	t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "")
+
+	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+		t.Fatalf("Fill: %v", err)
+	}
+	r := b.FillReport()
+	if want := []string{"国家", "州/省", "城市", "邮编", "姓名", "街道地址"}; !slices.Equal(r.Absent, want) {
+		t.Fatalf("Absent = %v，期望 %v", r.Absent, want)
+	}
+	if got, want := fieldLabels(t, r), []string{"卡号", "有效期", "CVC"}; !slices.Equal(got, want) {
+		t.Fatalf("填过的字段 = %v，期望 %v", got, want)
+	}
+	lines := strings.Join(r.Lines(), "\n")
+	for _, want := range []string{"页面没有的字段：国家、州/省、城市、邮编、姓名、街道地址", "手动地址：未点击"} {
+		if !strings.Contains(lines, want) {
+			t.Errorf("报告缺少 %q：\n%s", want, lines)
+		}
+	}
+	if st := b.PayButtonState(ctx); st != "可点击" {
+		t.Fatalf("支付按钮状态 = %q，期望可点击", st)
+	}
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("只填表不提交：仿造页收到 %d 次提交", n)
+	}
+}
+
+// 填完卡号后出现国家和邮编时照常填写并核对，只有没出现的记进 Absent。
+func TestEmbeddedFillWithAddress(t *testing.T) {
+	needChrome(t)
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "addr=1")
+
+	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+		t.Fatalf("Fill: %v", err)
+	}
+	r := b.FillReport()
+	if want := []string{"州/省", "城市", "姓名", "街道地址"}; !slices.Equal(r.Absent, want) {
+		t.Fatalf("Absent = %v，期望 %v", r.Absent, want)
+	}
+	if got, want := fieldLabels(t, r), []string{"卡号", "有效期", "CVC", "国家", "邮编"}; !slices.Equal(got, want) {
+		t.Fatalf("填过的字段 = %v，期望 %v", got, want)
+	}
+	for sel, want := range map[string]string{"#payment-countryInput": "US", "#payment-postalCodeInput": "97201"} {
+		got, err := paybrowser.FieldValue(ctx, b, sel)
+		if err != nil || got != want {
+			t.Fatalf("页面上 %s = %q, %v，期望 %q", sel, got, err, want)
+		}
+	}
+}
+
+// 必填的卡片字段找不到时照样报错放弃，不能当成可选字段记进 Absent。
+func TestEmbeddedFillRequiresCardFields(t *testing.T) {
+	needChrome(t)
+	t.Cleanup(paybrowser.SetFieldWait(2 * time.Second))
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "nocvc=1")
+
+	err := b.Fill(ctx, testCard, embeddedBilling)
+	if err == nil || !strings.Contains(err.Error(), "找不到「CVC」输入框") {
+		t.Fatalf("Fill = %v，期望报找不到「CVC」输入框", err)
+	}
+	if strings.Contains(err.Error(), testCard.Number) || strings.Contains(err.Error(), testCard.CVC) {
+		t.Fatalf("错误消息泄露了卡号或 CVC: %v", err)
+	}
+	if r := b.FillReport(); len(r.Absent) != 0 {
+		t.Fatalf("必填字段不能记进 Absent，得到 %v", r.Absent)
+	}
+	if err := b.Submit(ctx); err == nil {
+		t.Fatal("Fill 失败后 Submit 应报错")
+	}
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("Fill 失败时仿造页收到 %d 次提交", n)
+	}
+}
+
+// 「保存付款信息」默认勾着时，填表后 EnsureNoSavePayment 把它取消。
+func TestEmbeddedSavePaymentUnchecked(t *testing.T) {
+	needChrome(t)
+	t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "savepay=1")
+	const box = "#payment-savePaymentInput"
+
+	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+		t.Fatalf("Fill: %v", err)
+	}
+	if on, err := paybrowser.FieldChecked(ctx, b, box); err != nil || !on {
+		t.Fatalf("取消前 %s 勾选 = %v, %v，期望勾着", box, on, err)
+	}
+	note, err := b.EnsureNoSavePayment(ctx)
+	if err != nil || note != "已取消" {
+		t.Fatalf("EnsureNoSavePayment = %q, %v，期望已取消", note, err)
+	}
+	if on, err := paybrowser.FieldChecked(ctx, b, box); err != nil || on {
+		t.Fatalf("取消后 %s 勾选 = %v, %v，期望未勾选", box, on, err)
+	}
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("只处理勾选框，不能提交：仿造页收到 %d 次提交", n)
+	}
+}
+
+// 打开后页面又冒出第二个提交按钮时，按钮状态要报「不唯一」。
+func TestEmbeddedPayButtonStateNotUnique(t *testing.T) {
+	needChrome(t)
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "rerender=1")
+
+	time.Sleep(4 * time.Second)
+	if st := b.PayButtonState(ctx); st != "不唯一（2 个）" {
+		t.Fatalf("支付按钮状态 = %q，期望「不唯一（2 个）」", st)
 	}
 }

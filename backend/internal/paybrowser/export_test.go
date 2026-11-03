@@ -2,6 +2,7 @@ package paybrowser
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/chromedp/chromedp"
@@ -121,3 +122,31 @@ func SetPageLoadTimeout(d time.Duration) (restore func()) {
 
 // NormalizeEmbeddedAmount 把内嵌页读屏金额文字规范成「数字 + 空格 + 大写币种代码」。
 var NormalizeEmbeddedAmount = normalizeEmbeddedAmount
+
+// FieldValue 在各 frame 里找 sel 命中的第一个元素（不要求可见），返回它的 value。用来核对 iframe 里的字段。
+func FieldValue(ctx context.Context, b *Browser, sel string) (string, error) {
+	var v string
+	err := callOnFirst(ctx, b, sel, `function () { return String(this.value) }`, &v)
+	return v, err
+}
+
+// FieldChecked 在各 frame 里找 sel 命中的第一个元素（不要求可见），返回它是否勾着。
+func FieldChecked(ctx context.Context, b *Browser, sel string) (bool, error) {
+	var v bool
+	err := callOnFirst(ctx, b, sel, `function () { return !!this.checked }`, &v)
+	return v, err
+}
+
+func callOnFirst(ctx context.Context, b *Browser, sel, fn string, res any) error {
+	return b.do(ctx, func(ctx context.Context) error {
+		frames, err := b.frames(ctx)
+		if err != nil {
+			return err
+		}
+		e := b.findAny(ctx, frames, []string{sel})
+		if e == nil {
+			return fmt.Errorf("找不到 %s", sel)
+		}
+		return callOn(ctx, e.obj, fn, res)
+	})
+}

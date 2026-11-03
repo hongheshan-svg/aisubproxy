@@ -55,6 +55,7 @@ type fillState struct {
 // 顺序依据真实 Stripe Checkout 的 DOM：改国家会重绘地址字段，所以先选国家；城市、州、邮编可能要点「手动输入」才出现；
 // Link 保存默认勾选且要求手机，先取消再填邮箱，免得键入邮箱就触发 Link 验证；手机一律不填；
 // 邮箱只有可见、必填且为空时才填账号自己的；键入都可能让页面重绘，所以最后把所有字段重新核对一遍。
+// 内嵌页（PageEmbedded）只有卡片三项必填，地址字段都可选，见 fillEmbeddedAddress。
 func (b *Browser) Fill(ctx context.Context, c Card, bl Billing) error {
 	if err := c.validate(); err != nil {
 		return err
@@ -84,11 +85,45 @@ func (b *Browser) fillForm(ctx context.Context, c Card, bl Billing) error {
 		{"卡号", Sel.CardNumber, c.Number, kindCard},
 		{"有效期", Sel.Expiry, c.ExpMonth + c.ExpYear, kindCard},
 		{"CVC", Sel.CVC, c.CVC, kindCard},
-		{"国家", Sel.Country, bl.Country, kindChoice}, // 地址字段里先选国家：改国家会重绘姓名与其余地址字段
 	} {
 		if err := b.fillOne(ctx, st, f, fieldWait, false); err != nil {
 			return err
 		}
+	}
+	fillAddress := b.fillHostedAddress
+	if b.pageKind() == PageEmbedded {
+		fillAddress = b.fillEmbeddedAddress
+	}
+	if err := fillAddress(ctx, st, bl); err != nil {
+		return err
+	}
+
+	if err := b.disableLinkSave(ctx); err != nil {
+		return err
+	}
+	if err := b.fillEmail(ctx, st, bl.Email); err != nil {
+		return err
+	}
+	if err := b.disableLinkSave(ctx); err != nil { // 键入邮箱可能让页面重绘、重新勾上
+		return err
+	}
+	if err := b.checkPhone(ctx); err != nil {
+		return err
+	}
+	if err := b.checkLinkModal(ctx); err != nil {
+		return err
+	}
+	if err := b.acceptTerms(ctx); err != nil {
+		return err
+	}
+	return b.recheckFields(ctx, st.done)
+}
+
+// fillHostedAddress 填托管页的账单地址：有值的字段都必填，找不到就报错。
+func (b *Browser) fillHostedAddress(ctx context.Context, st *fillState, bl Billing) error {
+	// 地址字段里先选国家：改国家会重绘姓名与其余地址字段
+	if err := b.fillOne(ctx, st, field{"国家", Sel.Country, bl.Country, kindChoice}, fieldWait, false); err != nil {
+		return err
 	}
 
 	hideable := []field{
@@ -112,26 +147,41 @@ func (b *Browser) fillForm(ctx context.Context, c Card, bl Billing) error {
 			return err
 		}
 	}
+	return nil
+}
 
-	if err := b.disableLinkSave(ctx); err != nil {
-		return err
+// fillEmbeddedAddress 填内嵌页的账单地址（设计 §5.7）。Payment Element 上地址字段可能一个都没有，所以六项都可选：
+// 出现的照常填写，没出现的记进 FillReport.Absent，不报错。不点手动地址入口，这一步也不会点别的东西。
+// 地址字段即使有，也要等卡号填完才出现（未核实，见设计 §8），所以只有第一个要找的字段最多等 addressWait，之后每个只看当下有没有。
+// 国家排第一：改国家会重绘其余地址字段。值为空的字段同 fillOne 一样跳过，不找也不记。
+func (b *Browser) fillEmbeddedAddress(ctx context.Context, st *fillState, bl Billing) error {
+	wait := addressWait
+	for _, f := range []field{
+		{"国家", Sel.Country, bl.Country, kindChoice},
+		{"州/省", Sel.State, bl.State, kindChoice},
+		{"城市", Sel.City, bl.City, kindText},
+		{"邮编", Sel.Zip, bl.Zip, kindText},
+		{"姓名", Sel.Name, bl.Name, kindText},
+		{"街道地址", Sel.Line1, bl.Line1, kindText},
+	} {
+		if strings.TrimSpace(f.value) == "" {
+			continue
+		}
+		e, err := b.waitFind(ctx, wait, func(frames []frameRef) *elem { return b.find(ctx, frames, f.sels, false) })
+		if err != nil {
+			return err
+		}
+		wait = 0
+		if e == nil {
+			b.updateReport(func(r *FillReport) { r.Absent = append(r.Absent, f.label) })
+			continue
+		}
+		// 已经出现：交给 fillOne 重新找一次再填，页面恰好重绘时它会等字段回来
+		if err := b.fillOne(ctx, st, f, fieldWait, false); err != nil {
+			return err
+		}
 	}
-	if err := b.fillEmail(ctx, st, bl.Email); err != nil {
-		return err
-	}
-	if err := b.disableLinkSave(ctx); err != nil { // 键入邮箱可能让页面重绘、重新勾上
-		return err
-	}
-	if err := b.checkPhone(ctx); err != nil {
-		return err
-	}
-	if err := b.checkLinkModal(ctx); err != nil {
-		return err
-	}
-	if err := b.acceptTerms(ctx); err != nil {
-		return err
-	}
-	return b.recheckFields(ctx, st.done)
+	return nil
 }
 
 // revealCardForm 等卡号框出现。账号已存卡时页面先显示已存卡，点一次「新卡」入口把卡号框调出来。
@@ -516,14 +566,28 @@ func fieldHolds(ctx context.Context, e *elem, f field) (bool, error) {
 }
 
 // PayButtonState 只读地描述支付按钮当前的状态，绝不点击。试运行用它把按钮状态写进时间线。
+// 内嵌页的支付按钮只能按个数认（见 embedded.go）：主页面可见的提交按钮多于一个时报「不唯一（N 个）」。
 func (b *Browser) PayButtonState(ctx context.Context) string {
+	embedded := b.pageKind() == PageEmbedded
 	state := "未找到"
 	err := b.do(ctx, func(ctx context.Context) error {
 		frames, err := b.frames(ctx)
 		if err != nil {
 			return err
 		}
-		e := b.find(ctx, frames[:1], Sel.PayButton, false)
+		sels := Sel.PayButton
+		if embedded {
+			n, err := b.countVisible(ctx, frames[0], embeddedPayButton)
+			if err != nil {
+				return err
+			}
+			if n > 1 {
+				state = fmt.Sprintf("不唯一（%d 个）", n)
+				return nil
+			}
+			sels = []string{embeddedPayButton}
+		}
+		e := b.find(ctx, frames[:1], sels, false)
 		if e == nil {
 			return nil
 		}

@@ -38,6 +38,7 @@ func parseProxy(raw string) (string, *proxyAuth, error) {
 		return server, nil, nil
 	}
 	if scheme == "socks5" {
+		//nolint:staticcheck // ST1005：Chrome 是产品名（专有名词），错误文本保持不变
 		return "", nil, errors.New("Chrome 不支持带账号密码的 socks5 代理，请改用 http 代理")
 	}
 	return server, &proxyAuth{user: user, pass: pass, answered: map[fetch.RequestID]bool{}}, nil

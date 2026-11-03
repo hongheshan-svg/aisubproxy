@@ -75,9 +75,10 @@ func CardPlatformPing(c *gin.Context) {
 	}
 
 	msg := "card platform reachable"
-	if status == 401 {
+	switch status {
+	case 401:
 		msg = "主机可达；API Key 无效或未配置（HTTP 401）"
-	} else if status == 403 {
+	case 403:
 		msg = "主机可达；可能 IP 不在白名单（HTTP 403）— 请把下方出口 IP 加入卡台白名单"
 	}
 

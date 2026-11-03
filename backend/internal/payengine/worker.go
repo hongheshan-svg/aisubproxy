@@ -476,6 +476,8 @@ func (s *Service) check(ctx context.Context, j *job) error {
 }
 
 // createLink 是步骤 3：按套餐表创建支付会话，记下会话号与支付链接。点数单见 createCreditLink。
+// 会话带链接时不管 tag 都用这个链接（托管页）；没有链接且 tag 是 custom_checkout_session 时，用 processor_entity 和会话号拼内嵌结账页链接，
+// 拼不出来就在这里放弃。两样都没有时照旧报「未返回支付链接」。链接一律再过支付域名白名单（acceptCheckoutURL）。
 func (s *Service) createLink(ctx context.Context, j *job) error {
 	plan, _, err := ResolvePlan(j.o.PlanKey, j.o.Region, j.o.DryRun)
 	if errors.Is(err, ErrPlanUnavailable) {
@@ -492,16 +494,22 @@ func (s *Service) createLink(ctx context.Context, j *job) error {
 		return s.chatgptAbort(j, "checkout_failed", "创建支付会话失败", err)
 	}
 	j.note("checkout_session_id", co.SessionID)
-	return s.acceptCheckoutURL(ctx, j, co.SessionID, co.URL)
+	link := co.URL
+	if strings.TrimSpace(link) == "" && strings.TrimSpace(co.Tag) == chatgpt.CheckoutTagCustom {
+		if link, err = embeddedCheckoutURL(co.ProcessorEntity, co.SessionID); err != nil {
+			return err
+		}
+	}
+	return s.acceptCheckoutURL(ctx, j, co.SessionID, link)
 }
 
 // acceptCheckoutURL 校验支付链接并推进到 link_created。链接为空记 checkout_failed；
-// 不在支付域名白名单里记 checkout_url_untrusted，链接不落库、不打开。两种情况都还没取卡、没注资。
+// 不在支付域名白名单里（含点数单拿到内嵌结账页链接）记 checkout_url_untrusted，链接不落库、不打开。两种情况都还没取卡、没注资。
 func (s *Service) acceptCheckoutURL(ctx context.Context, j *job, sessionID, link string) error {
 	if strings.TrimSpace(link) == "" {
 		return abort("checkout_failed", "创建支付会话未返回支付链接")
 	}
-	if err := s.checkURL(link); err != nil {
+	if err := s.checkOrderURL(j, link); err != nil {
 		return err
 	}
 	if err := s.advance(ctx, j, StateLinkCreated, "已生成支付链接", map[string]any{"checkout_url": link}); err != nil {
@@ -511,18 +519,58 @@ func (s *Service) acceptCheckoutURL(ctx context.Context, j *job, sessionID, link
 	return nil
 }
 
-// trustedCheckoutHosts 是付款引擎允许打开的支付页域名：OpenAI 的支付域名和 Stripe 托管结账页。
-// 只认这两个主机名本身，子域名、相似域名、chatgpt.com（自定义结账页，引擎不支持）一律不认。
+// checkOrderURL 在支付域名白名单（s.checkURL）之上按单据类型收紧：点数单只走托管支付页，chatgpt.com 内嵌结账页一律不认，
+// 记 checkout_url_untrusted，说明里只写域名。建链接和打开支付页之前都走这里。
+func (s *Service) checkOrderURL(j *job, link string) error {
+	if err := s.checkURL(link); err != nil {
+		return err
+	}
+	if j.o.Kind == KindCredit && checkoutPageKind(link) == paybrowser.PageEmbedded {
+		return abort("checkout_url_untrusted", "点数单只支持托管支付页，支付链接的域名 %s 不支持，已放弃，未注资", embeddedCheckoutHost)
+	}
+	return nil
+}
+
+// embeddedCheckoutHost 是内嵌结账页的主机名。
+const embeddedCheckoutHost = "chatgpt.com"
+
+// 内嵌结账页链接 /checkout/<processor_entity>/<会话号> 两段的格式。拼链接和白名单共用：两段都不可能带「/」「.」「?」「#」、空白或转义字符。
+var (
+	processorEntityRe = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
+	checkoutSessionRe = regexp.MustCompile(`^[A-Za-z0-9_]{1,255}$`)
+)
+
+// embeddedCheckoutURL 用建会话返回的 processor_entity 和会话号拼出内嵌结账页链接 https://chatgpt.com/checkout/<processor_entity>/<会话号>。
+// 任一段不合格就返回 checkout_failed 的放弃原因，这时还没取卡、没注资、没启动浏览器。说明里不写会话号，也不写 processor_entity 原文。
+func embeddedCheckoutURL(processorEntity, sessionID string) (string, error) {
+	switch {
+	case processorEntity == "":
+		return "", abort("checkout_failed", "内嵌结账会话没有返回 processor_entity，拼不出支付链接，已放弃，未注资")
+	case !processorEntityRe.MatchString(processorEntity):
+		return "", abort("checkout_failed", "内嵌结账会话的 processor_entity 格式不合格，已放弃，未注资")
+	case !checkoutSessionRe.MatchString(sessionID):
+		return "", abort("checkout_failed", "内嵌结账会话的会话号格式不合格，已放弃，未注资")
+	}
+	return "https://" + embeddedCheckoutHost + "/checkout/" + processorEntity + "/" + sessionID, nil
+}
+
+// trustedCheckoutHosts 是付款引擎允许打开的支付页域名：OpenAI 的支付域名、Stripe 托管结账页和 chatgpt.com 内嵌结账页。
+// 只认这三个主机名本身，子域名、相似域名一律不认。
+// pay.openai.com、checkout.stripe.com 不限路径；chatgpt.com 只放行 /checkout/<processor_entity>/<会话号>：
+// 两段分别匹配 processorEntityRe、checkoutSessionRe，路径里没有转义字符，不带查询串和 # 片段（连空的「?」「#」也不行），见 embeddedCheckoutLink。
 // 这份名单只管付款；免付款探测工具另有一份更宽的名单，只用于报告，两份互不复用。
 var trustedCheckoutHosts = map[string]bool{
 	"pay.openai.com":      true,
 	"checkout.stripe.com": true,
+	embeddedCheckoutHost:  true,
 }
 
-// checkCheckoutURL 校验支付链接：必须是 https、没有账号密码、没有端口，主机名正好在 trustedCheckoutHosts 里。
+// checkCheckoutURL 校验支付链接：必须是 https、没有账号密码、没有端口，主机名正好在 trustedCheckoutHosts 里；
+// 主机名是 chatgpt.com 时另外要求是标准的内嵌结账页链接（embeddedCheckoutLink）。
 // 不通过时返回 checkout_url_untrusted 的放弃原因，说明里只写域名，绝不写完整链接（链接里带会话号）。
 func checkCheckoutURL(raw string) error {
-	u, err := url.Parse(strings.TrimSpace(raw))
+	raw = strings.TrimSpace(raw)
+	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
 		return abort("checkout_url_untrusted", "支付链接无法解析出域名，已放弃，未注资")
 	}
@@ -536,12 +584,25 @@ func checkCheckoutURL(raw string) error {
 		return abort("checkout_url_untrusted", "支付链接带端口（域名 %s），已放弃，未注资", host)
 	case !trustedCheckoutHosts[host]:
 		return abort("checkout_url_untrusted", "支付链接的域名 %s 不在支付域名白名单里，已放弃，未注资", host)
+	case host == embeddedCheckoutHost && !embeddedCheckoutLink(u, raw):
+		return abort("checkout_url_untrusted", "支付链接不是标准的内嵌结账页链接：路径不对，或带了查询串、片段（域名 %s），已放弃，未注资", host)
 	}
 	return nil
 }
 
+// embeddedCheckoutLink 判断 chatgpt.com 的链接是不是标准的内嵌结账页：没有查询串和片段（raw 里出现「?」「#」就不算，空的也一样），
+// 路径里没有转义字符（RawPath 为空），路径按「/」切开正好是 ["", "checkout", processor_entity, 会话号]，两段都匹配对应的正则。
+func embeddedCheckoutLink(u *url.URL, raw string) bool {
+	if u.RawQuery != "" || u.Fragment != "" || strings.ContainsAny(raw, "?#") || u.RawPath != "" {
+		return false
+	}
+	parts := strings.Split(u.Path, "/")
+	return len(parts) == 4 && parts[0] == "" && parts[1] == "checkout" &&
+		processorEntityRe.MatchString(parts[2]) && checkoutSessionRe.MatchString(parts[3])
+}
+
 // openPage 是步骤 4：启动浏览器（走地区代理）、注入会话 cookie、打开支付页、截整页图、读应付金额；
-// 读不出或真实付款超过上限则放弃。
+// 打不开（停在 Cloudflare 挑战页记 cf_challenge 并告警）、读不出或真实付款超过上限则放弃。
 // pageRenderWait 是打开支付页后、截图前最多等页面显示完整的时间。Stripe 先放金额再淡入，通常一两秒内完成。
 const pageRenderWait = 10 * time.Second
 
@@ -560,7 +621,7 @@ func (s *Service) openPage(ctx context.Context, j *job) error {
 		b.LockSubmit() // 试运行单：浏览器对象本身拒绝点击，不只靠流程分支
 	}
 	// 建链接时已经校验过；打开之前再拦一次，不让任何别的路径带进来的链接被打开
-	if err := s.checkURL(j.o.CheckoutURL); err != nil {
+	if err := s.checkOrderURL(j, j.o.CheckoutURL); err != nil {
 		return err
 	}
 
@@ -571,6 +632,11 @@ func (s *Service) openPage(ctx context.Context, j *job) error {
 		sctx, cancelShot := context.WithTimeout(ctx, diagTimeout)
 		defer cancelShot()
 		s.shot(sctx, j, "open-failed", paybrowser.ShotPage) // 还没填卡，允许截整页；pctx 可能已经超时
+		if errors.Is(err, paybrowser.ErrCFChallenge) {
+			// 和建会话被拦（chatgptAbort）一样：换会话没有用，要查该地区代理的出口 IP，所以单独一个错误码并告警
+			s.opts.Alert(fmt.Sprintf("付款单 %s（地区 %s）打开支付页被 Cloudflare 拦截，请检查该地区代理的出口 IP；换会话没有用。", j.o.OrderNo, j.o.Region))
+			return abort("cf_challenge", "打开支付页被 Cloudflare 拦截，请检查该地区代理的出口 IP")
+		}
 		return abort("page_failed", "打开支付页失败：%v", err)
 	}
 	if !b.WaitRendered(pctx, pageRenderWait) {
@@ -618,7 +684,7 @@ func formatMinor(v int64, currency string) string {
 // checkoutPageKind 按链接域名决定页面类型：主机名是 chatgpt.com 为内嵌页，其余（含解析失败）按托管页。
 func checkoutPageKind(raw string) paybrowser.PageKind {
 	u, err := url.Parse(raw)
-	if err != nil || strings.ToLower(u.Hostname()) != "chatgpt.com" {
+	if err != nil || strings.ToLower(u.Hostname()) != embeddedCheckoutHost {
 		return paybrowser.PageHosted
 	}
 	return paybrowser.PageEmbedded

@@ -34,7 +34,7 @@ const (
 	// creditEntryPoint 是 Codex 用量页「购买点数」路由的入口值，个人账号用它（前端 entry_point 枚举 CODEX_PURCHASE_CREDITS_ROUTE）。
 	creditEntryPoint = "codex_purchase_credits_route"
 
-	// CheckoutTagCustom 是自定义结账页（chatgpt.com 自己的页面）。引擎不支持，遇到就放弃。
+	// CheckoutTagCustom 是自定义结账页（chatgpt.com 自己的页面，即内嵌结账页）。开通单由引擎用 processor_entity 和会话号拼链接；点数单不支持，遇到就放弃。
 	CheckoutTagCustom = "custom_checkout_session"
 	// CheckoutTagHosted 是 Stripe 托管结账页。
 	CheckoutTagHosted = "hosted_checkout_session"

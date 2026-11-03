@@ -1,0 +1,81 @@
+// 用户兑换页上 MarsWallex 码（本地码）的状态展示。ZovoCard 码不走这里，保持原样。
+
+export const MW_PROVIDER = 'marswallex'
+
+export function isMarsWallex(provider: unknown): boolean {
+  return String(provider || '').toLowerCase() === MW_PROVIDER
+}
+
+const STATUS_TEXT: Record<string, string> = {
+  queued: '排队中',
+  running: '处理中',
+  completed: '已完成',
+  failed_precharge: '未扣款，兑换失败',
+  declined: '付款被拒',
+  failed: '兑换失败',
+  review: '待人工核对',
+  cancelled: '已取消',
+}
+
+export function mwStatusText(status: string): string {
+  const s = String(status || '').toLowerCase()
+  return STATUS_TEXT[s] ?? (status || '—')
+}
+
+export type MwOutcomeKind = 'running' | 'success' | 'retry' | 'manual' | 'failed'
+export interface MwOutcome { kind: MwOutcomeKind; text: string; attemptsLeft?: number }
+
+interface OrderLike { can_retry?: boolean; attempts_left?: number }
+
+/**
+ * 结果页的结论：
+ * - failed_precharge 且还有次数：未扣款，可以重新兑换
+ * - failed_precharge 但次数用完：转人工，不要再提交
+ * - declined / review：付款被拒或待核对，转人工，不能重兑
+ */
+export function mwOutcome(status: string, order?: OrderLike | null): MwOutcome {
+  const s = String(status || '').toLowerCase()
+  const left = typeof order?.attempts_left === 'number' ? order.attempts_left : undefined
+  switch (s) {
+    case 'completed':
+      return { kind: 'success', text: '开通完成，请到 ChatGPT 账号确认套餐。' }
+    case 'queued':
+    case 'running':
+      return { kind: 'running', text: '正在处理，请不要重复提交，页面会自动刷新结果。' }
+    case 'failed_precharge': {
+      const canRetry = order?.can_retry !== false && (left === undefined || left > 0)
+      if (canRetry) {
+        return {
+          kind: 'retry', attemptsLeft: left,
+          text: `这次兑换没有成功，也没有扣款。可以重新兑换${left !== undefined ? `（还剩 ${left} 次机会）` : ''}。`,
+        }
+      }
+      return { kind: 'manual', text: '重新兑换的次数已用完，已转人工处理。请联系发码方，不要再重复提交。' }
+    }
+    case 'declined':
+      return { kind: 'manual', text: '支付被银行拒绝，已转人工处理。请联系发码方，不要再重复提交。' }
+    case 'review':
+      return { kind: 'manual', text: '结果需要人工核对，请联系发码方，不要再重复提交。' }
+    case 'failed':
+    case 'cancelled':
+      return { kind: 'failed', text: '兑换没有成功。请联系发码方，不要再重复提交。' }
+    default:
+      return { kind: 'running', text: '' }
+  }
+}
+
+/** 兑换请求被拒（没有建单）时应停在确认页显示原因，而不是跳去结果页轮询一个不存在的单。 */
+export function redeemRejectedBeforeOrder(status: number, data: any): boolean {
+  if (status === 409) return false // 已有在途或已完成的单，去结果页看进度
+  if (status >= 200 && status < 300) return false
+  if (data && (data.order || data.status)) return false
+  return status === 400 || status === 403 || status === 404 || status === 429 || status === 503
+}
+
+const STAGE_TEXT: Record<string, string> = {
+  queued: '排队', credential_check: '校验凭证', checkout: '生成支付页', card_funding: '给卡注资', payment: '支付', subscription: '确认订阅',
+}
+
+export function mwStageText(stage: string): string {
+  return STAGE_TEXT[String(stage || '').toLowerCase()] ?? (stage || '')
+}

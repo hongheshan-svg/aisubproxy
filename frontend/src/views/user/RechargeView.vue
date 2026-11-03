@@ -19,7 +19,13 @@
         <input v-model="code" class="input mono" placeholder="SXC-XXXX-XXXX-XXXX-XXXX" @keyup.enter="doPreview" />
         <div v-if="error" class="alert alert-error">{{ error }}</div>
         <div v-if="previewInfo" class="rounded-xl bg-soft p-4 text-sm space-y-1">
-          <div>套餐：<b>{{ targetPlan ? planLabel(targetPlan) : '—' }}</b></div>
+          <div class="flex flex-wrap items-center gap-2">
+            <span>套餐：<b>{{ targetPlan ? planLabel(targetPlan) : '—' }}</b></span>
+            <el-tag v-if="isMW" size="small" type="info" data-testid="channel-tag">由 MarsWallex 通道处理</el-tag>
+            <el-tag v-if="isMW && noSubscriptionOnly" size="small" type="warning" data-testid="no-sub-tag">仅限无订阅账号</el-tag>
+          </div>
+          <div v-if="isMW && previewInfo.region" class="text-muted">付款地区：{{ previewInfo.region }}</div>
+          <div v-if="isMW && typeof previewInfo.attempts_left === 'number'" class="text-muted">剩余可兑换次数：{{ previewInfo.attempts_left }}</div>
           <div class="text-muted">{{ previewInfo.message || '码有效，可继续' }}</div>
         </div>
         <button class="btn-primary w-full" :disabled="busy" @click="doPreview">{{ busy ? '校验中…' : '预览 / 下一步' }}</button>
@@ -28,13 +34,18 @@
       <!-- 2 preflight -->
       <div v-show="step === 2" class="card space-y-4">
         <h2 class="text-xl font-bold text-ink">{{ isGrok ? t('grok.credential') : isXPremiumPlan(targetPlan) ? t('xPremium.credential') : 'ChatGPT 凭证' }}</h2>
-        <div v-if="!isXPremiumPlan(targetPlan) && !isGrok" class="flex gap-2">
+        <div v-if="!isXPremiumPlan(targetPlan) && !isGrok && !isMW" class="flex gap-2">
           <button type="button" class="btn-secondary !py-1" :class="{ 'ring-2': credMode === 'session' }" @click="credMode = 'session'">Session</button>
           <button type="button" class="btn-secondary !py-1" :class="{ 'ring-2': credMode === 'mailbox' }" @click="credMode = 'mailbox'">邮箱</button>
         </div>
         <template v-if="credMode === 'session'">
           <p v-if="isGrok" class="text-sm text-muted">{{ t('grok.hint') }}</p>
           <p v-else-if="isXPremiumPlan(targetPlan)" class="text-sm text-muted">{{ t('xPremium.hint') }}</p>
+          <p v-else-if="isMW" class="text-sm text-muted">打开
+            <a class="app-link" href="https://chatgpt.com/api/auth/session" target="_blank" rel="noopener">chatgpt.com/api/auth/session</a>
+            复制<strong>完整 JSON</strong>（必须含 <code>sessionToken</code>）。此通道只支持 Session，不支持邮箱密码。
+            <span v-if="noSubscriptionOnly" class="block mt-1 font-semibold text-warn">此码仅限没有订阅的账号，已有订阅的账号会兑换失败。</span>
+          </p>
           <p v-else class="text-sm text-muted">打开
             <a class="app-link" href="https://chatgpt.com/api/auth/session" target="_blank" rel="noopener">chatgpt.com/api/auth/session</a>
             复制<strong>完整 JSON</strong>（必须含 <code>sessionToken</code>）。已禁用纯 Access Token。
@@ -57,8 +68,17 @@
         <h2 class="text-xl font-bold text-ink">确认兑换</h2>
         <p class="text-sm text-muted">将提交兑换请求；结果不确定或 review 时请勿重复提交，请轮询结果。</p>
 
+        <div v-if="isMW" class="rounded-xl border p-4 space-y-2" style="border-color: var(--brd); background: var(--surface-2, var(--soft))" data-testid="mw-account">
+          <div class="flex flex-wrap items-center gap-2">
+            <strong class="text-ink text-base">{{ account.email || '账号已验证' }}</strong>
+            <el-tag size="small" type="info">MarsWallex 通道</el-tag>
+          </div>
+          <div class="text-sm text-muted">目标套餐：<b class="text-ink">{{ planLabel(targetPlan) }}</b><span v-if="previewInfo?.region">，付款地区 {{ previewInfo.region }}</span></div>
+          <div class="text-sm text-muted">账号是否已有订阅要到兑换时才会核对；已有订阅的账号会兑换失败，且不会扣款。</div>
+          <div v-if="noSubscriptionOnly" class="text-sm font-semibold text-warn">此码仅限没有订阅的账号。</div>
+        </div>
         <!-- 与卡台直充预检一致：邮箱 + 订阅事实 -->
-        <div v-if="account.checked" class="rounded-xl border p-4 space-y-3" style="border-color: var(--brd); background: var(--surface-2, var(--soft))">
+        <div v-else-if="account.checked" class="rounded-xl border p-4 space-y-3" style="border-color: var(--brd); background: var(--surface-2, var(--soft))">
           <div class="flex flex-wrap items-center gap-2">
             <strong class="text-ink text-base">{{ account.email || '账号已验证' }}</strong>
             <el-tag size="small" :type="subscriptionStatusTag">{{ subscriptionStatusText }}</el-tag>
@@ -142,8 +162,9 @@
         <h2 class="text-xl font-bold text-ink">兑换进度</h2>
 
         <div class="flex flex-wrap items-center gap-2">
-          <el-tag :type="statusTagType(resultStatus)" size="large">{{ resultStatus || '—' }}</el-tag>
-          <span v-if="resultStage" class="text-sm text-muted mono">阶段 {{ resultStage }}</span>
+          <el-tag :type="statusTagType(resultStatus)" size="large">{{ isMW ? mwStatusText(resultStatus) : (resultStatus || '—') }}</el-tag>
+          <el-tag v-if="isMW" size="small" type="info">MarsWallex 通道</el-tag>
+          <span v-if="resultStage" class="text-sm text-muted mono">阶段 {{ isMW ? mwStageText(resultStage) : resultStage }}</span>
           <span v-if="polling" class="text-sm text-muted">
             <span class="inline-block animate-pulse">●</span> 实时轮询中（约 3s）
           </span>
@@ -157,7 +178,7 @@
             <span class="text-muted shrink-0">兑换账号</span>
             <span class="mono text-ink text-right break-all">{{ displayResultEmail || '—' }}</span>
           </div>
-          <div class="flex justify-between gap-3 items-center">
+          <div v-if="!isMW" class="flex justify-between gap-3 items-center">
             <span class="text-muted shrink-0">银行卡</span>
             <span class="mono text-ink">
               <template v-if="resultCardLastFour">•••• {{ resultCardLastFour }}</template>
@@ -203,7 +224,7 @@
           </ol>
         </div>
         <div v-else-if="polling" class="text-sm text-muted">
-          已提交，等待卡台返回步骤明细…
+          {{ isMW ? '已受理，正在处理…' : '已提交，等待卡台返回步骤明细…' }}
         </div>
 
         <details class="text-xs text-muted">
@@ -212,10 +233,16 @@
         </details>
 
         <div v-if="error" class="alert alert-error">{{ error }}</div>
-        <div v-if="isTerminal(resultStatus) && resultStatus !== 'completed'" class="alert alert-error">
-          兑换未成功。若状态为 review/pending 请勿重复提交；可联系发码方或稍后用同一设备再查结果。
-        </div>
-        <div v-if="resultStatus === 'completed'" class="alert alert-success">开通完成，请到 ChatGPT 账号确认套餐。</div>
+        <template v-if="isMW">
+          <div v-if="mwResult.text" class="alert" :class="mwAlertClass" data-testid="mw-outcome" role="status">{{ mwResult.text }}</div>
+          <button v-if="mwResult.kind === 'retry'" class="btn-primary" :disabled="busy" data-testid="mw-retry" @click="retryRedeem">重新兑换</button>
+        </template>
+        <template v-else>
+          <div v-if="isTerminal(resultStatus) && resultStatus !== 'completed'" class="alert alert-error">
+            兑换未成功。若状态为 review/pending 请勿重复提交；可联系发码方或稍后用同一设备再查结果。
+          </div>
+          <div v-if="resultStatus === 'completed'" class="alert alert-success">开通完成，请到 ChatGPT 账号确认套餐。</div>
+        </template>
         <button class="btn-secondary" @click="resetAll">再兑一张</button>
       </div>
     </div>
@@ -232,6 +259,7 @@ import UserPageHeader from '../../components/UserPageHeader.vue'
 import RedeemModeTabs from '../../components/RedeemModeTabs.vue'
 import { dialog } from '../../lib/dialog'
 import { planLabel, planSatisfied as isSatisfied } from '../../lib/plan'
+import { isMarsWallex, mwOutcome, mwStageText, mwStatusText, redeemRejectedBeforeOrder } from '../../lib/mwredeem'
 
 const { t } = useI18n({ useScope: 'global' })
 const route = useRoute()
@@ -393,6 +421,15 @@ watch(
   { deep: true },
 )
 
+// MarsWallex 码（本地码）：预览或结果响应带 provider=marswallex。其余码保持原流程不动。
+const isMW = computed(() => isMarsWallex(previewInfo.value?.provider || resultBody.value?.provider))
+const noSubscriptionOnly = computed(() =>
+  previewInfo.value?.requires_no_subscription === true || targetPlan.value === 'pro_20x')
+const mwResult = computed(() => mwOutcome(resultStatus.value, resultBody.value?.order || resultBody.value?.data?.order))
+const mwAlertClass = computed(() => ({
+  success: 'alert-success', running: 'alert-info', retry: 'alert-warning', manual: 'alert-error', failed: 'alert-error',
+}[mwResult.value.kind]))
+
 const resultPretty = computed(() => JSON.stringify(resultBody.value, null, 2))
 
 const targetPlan = computed(() => {
@@ -476,6 +513,7 @@ function invalidatePreflight() {
   clearAccount()
 }
 watch([code, sessionRaw, email, password, credMode], invalidatePreflight, { flush: 'sync' })
+watch(isMW, (v) => { if (v) credMode.value = 'session' })
 
 const alreadySatisfied = computed(() => {
   if (!account.value.checked || !targetPlan.value) return false
@@ -895,6 +933,12 @@ async function doRedeem() {
         ? { redemption_token: redemptionToken.value, credential: { mode: 'session', session: grokSession.value }, client_request_id }
         : { redemption_token: redemptionToken.value, preflight_token: preflightToken.value, client_request_id }),
     })
+    // MarsWallex 码被拒（熔断、未就绪、预检失效等）没有建单：停在确认页显示原因，不跳去轮询一个不存在的单
+    if (isMW.value && redeemRejectedBeforeOrder(r.status, data)) {
+      error.value = data?.error || data?.msg || data?.message || '兑换被拒绝，请稍后再试'
+      if (r.status === 400) preflightToken.value = '' // 预检已失效，需要回到上一步重新预检
+      return
+    }
     applyResultPayload(data)
     if (!r.ok && r.status !== 202) {
       error.value = data?.error || data?.msg || data?.message || '兑换被拒绝'
@@ -907,6 +951,16 @@ async function doRedeem() {
   } finally {
     busy.value = false
   }
+}
+
+// 未扣款失败且还有次数：回到凭证步骤重新预检，再兑换（同一张码，不换码）
+function retryRedeem() {
+  if (busy.value) return
+  if (pollTimer) clearInterval(pollTimer)
+  polling.value = false
+  invalidatePreflight()
+  error.value = ''
+  step.value = 2
 }
 
 function startPoll() {

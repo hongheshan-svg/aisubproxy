@@ -91,6 +91,24 @@ func TestPayRoutesRegistered(t *testing.T) {
 }
 
 // 付款接口必须在 admin 组内：走真实路由和中间件，无凭证一律 401，防止路由被挪出鉴权。
+func TestAgentExchangeAdminRoutesRequireAdminAuth(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Setenv("WEB_DIR", "")
+	r := gin.New()
+	setupRoutes(r)
+	for _, c := range []struct{ method, path string }{
+		{"GET", "/api/v1/admin/cardplatform/agent-exchanges"},
+		{"POST", "/api/v1/admin/cardplatform/agent-exchanges/1/resolve"},
+	} {
+		req := httptest.NewRequest(c.method, c.path, nil)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s 无凭证应 401，实际 %d", c.method, c.path, w.Code)
+		}
+	}
+}
+
 func TestPayRoutesRequireAdminAuth(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	t.Setenv("WEB_DIR", "")
@@ -101,6 +119,7 @@ func TestPayRoutesRequireAdminAuth(t *testing.T) {
 		{"POST", "/orders"}, {"GET", "/orders"}, {"GET", "/orders/" + no},
 		{"POST", "/orders/" + no + "/resolve"}, {"GET", "/orders/" + no + "/shots/01-form.png"},
 		{"GET", "/config"}, {"PUT", "/config"}, {"GET", "/proxies"}, {"PUT", "/proxies"}, {"POST", "/browser-check"},
+		{"GET", "/breaker"}, {"POST", "/breaker/resume"},
 	} {
 		req := httptest.NewRequest(c.method, "/api/v1/admin/pay"+c.path, nil)
 		w := httptest.NewRecorder()

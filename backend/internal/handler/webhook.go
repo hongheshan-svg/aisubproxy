@@ -74,6 +74,7 @@ func CardPlatformWebhook(c *gin.Context) {
 	// 本站 CDK 状态：兑换完成 → consumed（避免列表仍显示「未使用」）
 	if strings.HasPrefix(strings.ToLower(eventType), "gpt_direct.") {
 		applyCDKStatusFromWebhook(payload, eventType)
+		clearSessionFromWebhook(payload, eventType)
 	}
 	// 卡健康：失败/成功终态观察（同卡多邮箱失败 → 拉黑）
 	if strings.HasPrefix(strings.ToLower(eventType), "gpt_direct.") {
@@ -107,6 +108,16 @@ func applyCDKStatusFromWebhook(payload map[string]interface{}, eventType string)
 		}
 	}
 	_ = db.UpdateCardplatformCDKStatus(cdkID, st)
+}
+
+// clearSessionFromWebhook 兑换完成事件：清空该码绑定的用户会话。
+func clearSessionFromWebhook(payload map[string]interface{}, eventType string) {
+	if !strings.Contains(strings.ToLower(eventType), "completed") {
+		return
+	}
+	if code, ok := db.LookupCardplatformCDKCode(anyToInt64(payload["cdk_id"]), strAny(payload["code_prefix"])); ok {
+		clearSessionAfterCompleted(code, "")
+	}
 }
 
 func webhookIdemKey(p map[string]interface{}, eventType string) string {
@@ -178,10 +189,10 @@ func AdminListWebhooks(c *gin.Context) {
 	}
 	sec, _ := db.GetSetting("webhook_secret")
 	c.JSON(http.StatusOK, gin.H{
-		"events":                out,
-		"webhook_url":           urlHint,
-		"webhook_secret_set":    strings.TrimSpace(sec) != "",
-		"webhook_secret_hint":   maskSecret(sec),
+		"events":              out,
+		"webhook_url":         urlHint,
+		"webhook_secret_set":  strings.TrimSpace(sec) != "",
+		"webhook_secret_hint": maskSecret(sec),
 	})
 }
 

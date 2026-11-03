@@ -294,6 +294,12 @@ func createTables() error {
 	if err := MigratePay(); err != nil {
 		return fmt.Errorf("migrate pay: %w", err)
 	}
+	if err := MigrateAgentExchanges(); err != nil {
+		return err
+	}
+	if err := MigrateCDKSessions(); err != nil {
+		return fmt.Errorf("migrate cdk sessions: %w", err)
+	}
 	return nil
 }
 
@@ -711,104 +717,6 @@ func BindCDKRedemptionToken(cdkCode, redemptionToken string) error {
 			updated_at = CURRENT_TIMESTAMP
 	`, code, tok)
 	return err
-}
-
-// BindCDKSession 预检/兑换时写入 session（可按码或 redemption_token 关联）
-func BindCDKSession(cdkCode, redemptionToken, sessionPayload string) error {
-	if DB == nil {
-		return fmt.Errorf("db not ready")
-	}
-	code := normalizeCDKCode(cdkCode)
-	tok := strings.TrimSpace(redemptionToken)
-	sess := strings.TrimSpace(sessionPayload)
-	if sess == "" {
-		return nil
-	}
-	// 优先已知码
-	if code != "" {
-		_, err := DB.Exec(`
-			INSERT INTO cdk_session_bindings (cdk_code, session_payload, redemption_token, updated_at)
-			VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-			ON CONFLICT(cdk_code) DO UPDATE SET
-				session_payload = excluded.session_payload,
-				redemption_token = COALESCE(NULLIF(excluded.redemption_token,''), cdk_session_bindings.redemption_token),
-				updated_at = CURRENT_TIMESTAMP
-		`, code, sess, tok)
-		return err
-	}
-	// 仅有 token：更新已绑定行
-	if tok != "" {
-		res, err := DB.Exec(`
-			UPDATE cdk_session_bindings
-			SET session_payload = ?, updated_at = CURRENT_TIMESTAMP
-			WHERE redemption_token = ?
-		`, sess, tok)
-		if err != nil {
-			return err
-		}
-		if n, _ := res.RowsAffected(); n > 0 {
-			return nil
-		}
-		// 尚无行：用 token 伪作 key 前缀保存（账单页仍建议用完整码）
-		_, err = DB.Exec(`
-			INSERT INTO cdk_session_bindings (cdk_code, session_payload, redemption_token, updated_at)
-			VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-		`, "RT:"+tok, sess, tok)
-		return err
-	}
-	return nil
-}
-
-// GetSessionByCDK 账单查询：凭卡密取绑定 session
-func GetSessionByCDK(cdkCode string) (string, error) {
-	if DB == nil {
-		return "", fmt.Errorf("db not ready")
-	}
-	code := normalizeCDKCode(cdkCode)
-	if code == "" {
-		return "", nil
-	}
-	var sess string
-	err := DB.QueryRow(`
-		SELECT session_payload FROM cdk_session_bindings
-		WHERE cdk_code = ? AND TRIM(session_payload) != ''
-	`, code).Scan(&sess)
-	if err == sql.ErrNoRows {
-		return "", nil
-	}
-	return sess, err
-}
-
-// CDKBinding 本地码 ↔ token ↔ session 绑定（公开兑换进度/账单依赖）
-type CDKBinding struct {
-	CDKCode         string
-	RedemptionToken string
-	SessionPayload  string
-	UpdatedAt       string
-}
-
-// GetBindingByCDK 按卡密取绑定（session 可为空：仅 preview 过）
-func GetBindingByCDK(cdkCode string) (*CDKBinding, error) {
-	if DB == nil {
-		return nil, fmt.Errorf("db not ready")
-	}
-	code := normalizeCDKCode(cdkCode)
-	if code == "" {
-		return nil, nil
-	}
-	var b CDKBinding
-	err := DB.QueryRow(`
-		SELECT cdk_code, COALESCE(redemption_token,''), COALESCE(session_payload,''), COALESCE(updated_at,'')
-		FROM cdk_session_bindings
-		WHERE cdk_code = ?
-	`, code).Scan(&b.CDKCode, &b.RedemptionToken, &b.SessionPayload, &b.UpdatedAt)
-	if err == sql.ErrNoRows {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	return &b, nil
 }
 
 // FindCodeByRedemptionToken 预检绑 session 时反查完整卡密
@@ -1277,27 +1185,6 @@ func LookupStoredCDKByCode(code string) (upstreamID int64, plan, prefix, status 
 		return 0, "", "", "", false
 	}
 	return upstreamID, plan, prefix, status, true
-}
-
-func AgentCDKAlreadyExchanged(codeHash string) bool {
-	if DB == nil || codeHash == "" {
-		return false
-	}
-	var n int
-	_ = DB.QueryRow(`SELECT COUNT(*) FROM agent_cdk_exchanges WHERE old_code_hash = ?`, codeHash).Scan(&n)
-	return n > 0
-}
-
-func RecordAgentCDKExchange(oldHash string, oldID, newID int64, oldPrefix, newPrefix, plan string, orderID int64, orderStatus, ip string) error {
-	if DB == nil {
-		return fmt.Errorf("db not init")
-	}
-	_, err := DB.Exec(`
-		INSERT INTO agent_cdk_exchanges
-		(old_code_hash, old_upstream_id, new_upstream_id, old_code_prefix, new_code_prefix, plan, order_id, order_status, ip, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-	`, oldHash, oldID, newID, oldPrefix, newPrefix, plan, orderID, orderStatus, ip)
-	return err
 }
 
 // ---- 自动选卡权重配置 ----

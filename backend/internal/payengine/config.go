@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/tuzi/cdk-recharge-system/internal/cardpool"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 )
 
@@ -116,6 +117,11 @@ func contains(list []string, s string) bool {
 
 // SavePlanTable 校验后保存套餐表。
 func SavePlanTable(p []PlanConf) error {
+	// 注资金额不能超过单笔上限，否则这个套餐的单子每张都会在注资时被拒
+	pol, err := cardpool.LoadPolicy()
+	if err != nil {
+		return fmt.Errorf("读取卡池策略失败，暂不能保存套餐: %w", err)
+	}
 	seen := map[string]bool{}
 	for _, pc := range p {
 		if !contains(PlanKeys, pc.Key) {
@@ -131,6 +137,9 @@ func SavePlanTable(p []PlanConf) error {
 			}
 			if rc.CapMinor < 0 || rc.FundCents < 0 {
 				return fmt.Errorf("%w: %s/%s 金额不能为负", ErrBadRequest, pc.Key, r)
+			}
+			if rc.FundCents > pol.MaxFundCents {
+				return fmt.Errorf("%w: %s/%s 注资金额 %d 分超过单笔上限 %d 分", ErrBadRequest, pc.Key, r, rc.FundCents, pol.MaxFundCents)
 			}
 			if !currencyRe.MatchString(rc.Currency) {
 				return fmt.Errorf("%w: %s/%s 币种须为 3 位大写字母", ErrBadRequest, pc.Key, r)

@@ -67,6 +67,10 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	// 启动付款引擎：Start 内含同步的重启恢复，这里返回后 HTTP 才会开始监听（Run 在 New 之后）
 	pay.Start(ctx)
 
+	// CDK 链路后台维护：清理到期或已完成订单的用户会话
+	handler.SetOpsAlert(alertSender("cdk", notify.SendText))
+	handler.StartOpsMaintenance(ctx)
+
 	return &Server{
 		engine: engine,
 		cfg:    cfg,
@@ -284,6 +288,8 @@ func setupRoutes(r *gin.Engine) {
 			admin.GET("/pay/proxies", handler.AdminPayGetProxies)
 			admin.PUT("/pay/proxies", handler.AdminPayPutProxies)
 			admin.POST("/pay/browser-check", handler.AdminPayBrowserCheck)
+			admin.GET("/pay/breaker", handler.AdminPayBreakerStatus)
+			admin.POST("/pay/breaker/resume", handler.AdminPayBreakerResume)
 
 			// 卡台 Open API：实时价格 / 余额 / 发码 / 列码 / CDK 订单
 			admin.GET("/cardplatform/ping", handler.CardPlatformPing)
@@ -301,6 +307,8 @@ func setupRoutes(r *gin.Engine) {
 			admin.PUT("/cardplatform/cdks/:id/note", handler.CardPlatformSetCDKNote)
 			admin.POST("/cardplatform/cdks/:id/disable", handler.CardPlatformDisableCDK)
 			admin.POST("/cardplatform/cdks/:id/enable", handler.CardPlatformEnableCDK)
+			admin.GET("/cardplatform/agent-exchanges", handler.AdminListAgentExchanges)
+			admin.POST("/cardplatform/agent-exchanges/:id/resolve", handler.AdminResolveAgentExchange)
 			admin.GET("/cardplatform/cdk-orders", handler.CardPlatformListCDKOrders)
 			admin.GET("/cardplatform/cdk-orders/:id", handler.CardPlatformGetCDKOrder)
 			admin.DELETE("/cardplatform/cards/:id", handler.CardPlatformDeleteCard)

@@ -271,10 +271,8 @@ func lookupOneCDK(ctx context.Context, code, deviceID string) cdkLookupResult {
 	}
 
 	if bind, berr := db.GetBindingByCDK(code); berr == nil && bind != nil {
-		if resp.AccountEmail == "" && strings.TrimSpace(bind.SessionPayload) != "" {
-			if em := extractEmailFromSession(bind.SessionPayload); em != "" {
-				resp.AccountEmail = em
-			}
+		if resp.AccountEmail == "" {
+			resp.AccountEmail = bind.AccountEmail
 		}
 		if tok := strings.TrimSpace(bind.RedemptionToken); tok != "" {
 			cli := cardplatform.NewFromSettings()
@@ -300,6 +298,7 @@ func lookupOneCDK(ctx context.Context, code, deviceID string) cdkLookupResult {
 					os := strings.ToLower(orderStatus)
 					switch {
 					case os == "completed" || os == "success" || os == "done" || os == "paid":
+						clearSessionAfterCompleted(code, tok)
 						redeemOK = true
 						resp.Status, resp.Used = "used", true
 						resp.CanResubmit = false

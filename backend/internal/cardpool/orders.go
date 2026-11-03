@@ -280,21 +280,33 @@ func (s *Service) insertPending(ctx context.Context, o *Order) error {
 	o.OutOrderNo = newOutOrderNo(o.Kind, now)
 	o.State = StatePending
 	o.CreatedAt, o.UpdatedAt = now.Unix(), now.Unix()
-	res, err := db.DB.ExecContext(ctx, `INSERT INTO mw_card_orders (out_order_no, kind, card_id, card_holder_id, product_id,
-		amount_cents, currency, target_status, state, requested_by, note, buy_currency, payer_account_no, payee_account_no,
-		created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		o.OutOrderNo, o.Kind, o.CardID, o.CardHolderID, o.ProductID, o.AmountCents, o.Currency, o.TargetStatus,
-		o.State, o.RequestedBy, o.Note, o.BuyCurrency, o.PayerAccountNo, o.PayeeAccountNo, o.CreatedAt, o.UpdatedAt)
+	res, err := db.DB.ExecContext(ctx, `INSERT INTO mw_card_orders (`+orderInsertCols+`)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, o.insertArgs()...)
 	if err != nil {
-		if isWalletInflightConflict(err) {
-			return fmt.Errorf("%w: 已有在途的%s，请先处理", ErrInflight, kindNames[o.Kind])
-		}
-		if isInflightConflict(err) {
-			return fmt.Errorf("%w: 卡 %s 已有在途的转入或转出单", ErrCardBusy, o.CardID)
-		}
-		return err
+		return insertOrderErr(o, err)
 	}
 	o.ID, err = res.LastInsertId()
+	return err
+}
+
+// orderInsertCols 与 insertArgs 一一对应。
+const orderInsertCols = `out_order_no, kind, card_id, card_holder_id, product_id,
+	amount_cents, currency, target_status, state, requested_by, note, buy_currency, payer_account_no, payee_account_no,
+	created_at, updated_at`
+
+func (o *Order) insertArgs() []any {
+	return []any{o.OutOrderNo, o.Kind, o.CardID, o.CardHolderID, o.ProductID, o.AmountCents, o.Currency, o.TargetStatus,
+		o.State, o.RequestedBy, o.Note, o.BuyCurrency, o.PayerAccountNo, o.PayeeAccountNo, o.CreatedAt, o.UpdatedAt}
+}
+
+// insertOrderErr 把写单据的错误转成在途冲突；其它错误原样返回。
+func insertOrderErr(o *Order, err error) error {
+	if isWalletInflightConflict(err) {
+		return fmt.Errorf("%w: 已有在途的%s，请先处理", ErrInflight, kindNames[o.Kind])
+	}
+	if isInflightConflict(err) {
+		return fmt.Errorf("%w: 卡 %s 已有在途的转入或转出单", ErrCardBusy, o.CardID)
+	}
 	return err
 }
 
@@ -404,6 +416,13 @@ func (s *Service) submitApply(ctx context.Context, p applyParams) (*Order, error
 	if err != nil {
 		return nil, badRequest(err.Error())
 	}
+	// 带金额的开卡也是往卡上放钱，和注资同一套上限；存量策略的开卡金额可能已经高于上限
+	var pol Policy
+	if p.AmountCents > 0 {
+		if pol, err = s.checkFundLimit("开卡金额", p.AmountCents, p.By); err != nil {
+			return nil, err
+		}
+	}
 	// 先取客户端：配置错误不留下 pending 单据
 	c, err := s.opts.Client()
 	if err != nil {
@@ -411,7 +430,12 @@ func (s *Service) submitApply(ctx context.Context, p applyParams) (*Order, error
 	}
 	o := &Order{Kind: KindApply, CardHolderID: p.HolderID, ProductID: p.ProductID, AmountCents: p.AmountCents,
 		Currency: p.Currency, RequestedBy: p.By}
-	if err := s.insertPending(ctx, o); err != nil {
+	if p.AmountCents > 0 {
+		err = s.insertPendingFund(ctx, o, pol)
+	} else {
+		err = s.insertPending(ctx, o)
+	}
+	if err != nil {
 		return nil, err
 	}
 	if err := s.abortIfCanceled(ctx, o.OutOrderNo); err != nil {
@@ -454,12 +478,24 @@ func (s *Service) submitTransfer(ctx context.Context, kind, cardID string, amoun
 	if err != nil {
 		return nil, badRequest(err.Error())
 	}
+	// 只限转入：转出是把钱收回来，回收不能被上限卡住
+	var pol Policy
+	if kind == KindRecharge {
+		if pol, err = s.checkFundLimit("注资", amountCents, by); err != nil {
+			return nil, err
+		}
+	}
 	c, err := s.opts.Client()
 	if err != nil {
 		return nil, err
 	}
 	o := &Order{Kind: kind, CardID: cardID, AmountCents: amountCents, Currency: currency, RequestedBy: by}
-	if err := s.insertPending(ctx, o); err != nil {
+	if kind == KindRecharge {
+		err = s.insertPendingFund(ctx, o, pol)
+	} else {
+		err = s.insertPending(ctx, o)
+	}
+	if err != nil {
 		return nil, err
 	}
 	if err := s.abortIfCanceled(ctx, o.OutOrderNo); err != nil {

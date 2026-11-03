@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -10,10 +11,10 @@ import (
 
 // 允许写入 site_settings 的公开安全键（无密钥）
 var publicSettingKeys = map[string]bool{
-	"brand_name":  true,
-	"brand_sub":   true,
-	"skin":        true,
-	"theme_mode":  true,
+	"brand_name": true,
+	"brand_sub":  true,
+	"skin":       true,
+	"theme_mode": true,
 }
 
 // 密钥类键：只接受写入，读出脱敏
@@ -63,6 +64,7 @@ func AdminGetSettings(c *gin.Context) {
 		}
 	}
 	out["agent_swap_password_configured"] = agentSwapPasswordConfigured()
+	out["agent_swap_daily_limit"] = agentSwapDailyLimit()
 	c.JSON(http.StatusOK, out)
 }
 
@@ -78,6 +80,8 @@ type adminSettingsBody struct {
 	WebhookSecret  *string `json:"webhook_secret"`
 	// 代理失败换码密码（明文一次写入，存 bcrypt；空=不改）
 	AgentSwapPassword *string `json:"agent_swap_password"`
+	// 同一换码密码每个北京日最多换多少张（默认 20，必须大于 0；不传不改）
+	AgentSwapDailyLimit *int `json:"agent_swap_daily_limit"`
 }
 
 // AdminPutSettings PUT /api/v1/admin/settings
@@ -101,6 +105,12 @@ func AdminPutSettings(c *gin.Context) {
 			return nil
 		}
 		return db.SetSetting(key, v)
+	}
+
+	// 先校验再写：非法值不能带着其它设置项一起存进去一半
+	if body.AgentSwapDailyLimit != nil && *body.AgentSwapDailyLimit <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "代理换码每日上限必须大于 0"})
+		return
 	}
 
 	allowedSkins := map[string]bool{
@@ -130,6 +140,12 @@ func AdminPutSettings(c *gin.Context) {
 	_ = setIf("telegram_token", body.TelegramToken, 200)
 	_ = setIf("telegram_chat_id", body.TelegramChatID, 64)
 	_ = setIf("webhook_secret", body.WebhookSecret, 200)
+	if body.AgentSwapDailyLimit != nil {
+		if err := db.SetSetting(agentSwapDailyLimitKey, strconv.Itoa(*body.AgentSwapDailyLimit)); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "保存失败"})
+			return
+		}
+	}
 	if body.AgentSwapPassword != nil {
 		pw := strings.TrimSpace(*body.AgentSwapPassword)
 		if pw != "" {

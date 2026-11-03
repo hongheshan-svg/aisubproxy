@@ -326,8 +326,8 @@ func isDigits(s string, lo, hi int) bool {
 	return true
 }
 
-// fillField 按字段类型填写并核对。
-func fillField(ctx context.Context, e *elem, f field) error {
+// fillField 按字段类型填写并核对。选中输入框用 focusField：内嵌页上点之前先看落点。
+func (b *Browser) fillField(ctx context.Context, e *elem, f field) error {
 	if f.kind == kindChoice {
 		var tag string
 		if err := callOn(ctx, e.obj, `function () { return this.tagName }`, &tag); err != nil {
@@ -338,7 +338,7 @@ func fillField(ctx context.Context, e *elem, f field) error {
 		}
 		f.kind = kindText
 	}
-	if err := focus(ctx, e); err != nil {
+	if err := b.focusField(ctx, e); err != nil {
 		return fmt.Errorf("无法选中「%s」输入框: %w", f.label, err)
 	}
 	if f.kind == kindCard {

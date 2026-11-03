@@ -312,8 +312,10 @@ func normalizeEmbeddedAmount(raw string) (string, error) {
 	nums := amountRe.FindAllString(m[1], -1)
 	switch {
 	case len(nums) == 0:
+		//nolint:staticcheck // ST1005：Payment amount 是 Stripe 读屏文字里的原词，照原样写便于对照页面
 		return "", errors.New("Payment amount 里没有金额数字")
 	case len(nums) > 1:
+		//nolint:staticcheck // ST1005：同上
 		return "", errors.New("Payment amount 里有多个金额，无法确定应付金额")
 	}
 	return nums[0] + " " + strings.ToUpper(m[2]), nil

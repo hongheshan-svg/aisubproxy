@@ -4,8 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
+	"unicode"
+
+	"github.com/chromedp/cdproto/cdp"
 )
 
 const (
@@ -21,11 +25,16 @@ var (
 	emailSettle = time.Second      // 键入邮箱后留给页面反应的时间：可能重绘、重新勾上 Link 或弹 Link 验证
 )
 
+const (
+	suggestRetryWait = 2 * time.Second // 点了一条联想后等这么久还没展开，就换下一个 frame 里的联想再点一次
+	suggestMaxClicks = 2               // 地址联想最多点这么多次，每次换一个 frame
+)
+
 // suggestionSels 是地址联想的选项。2026-11-04 实测：联想在单独的下拉 iframe 里，地址 iframe 里也有一份，都是 role=option。
 var suggestionSels = []string{`[role="option"]`}
 
-// errSubmitControl 表示按文字找到的入口其实是提交控件。
-var errSubmitControl = errors.New("入口是提交控件，不能点")
+// errSubmitControl 表示要点的目标（按文字找到的入口、地址联想的选项）其实是提交控件。
+var errSubmitControl = errors.New("目标是提交控件，拒绝点击")
 
 // submitControlJS 判断元素是不是提交控件或在提交控件里。入口文字可能写在支付按钮上。
 const submitControlJS = `function () {
@@ -213,11 +222,11 @@ func (b *Browser) fillEmbeddedAddress(ctx context.Context, st *fillState, bl Bil
 	if err := one(field{"姓名", Sel.Name, bl.Name, kindText}); err != nil {
 		return err
 	}
-	folded, ok, err := b.foldedWithoutEntry(ctx, st, hideable)
+	folded, err := b.foldedWithoutEntry(ctx, st, hideable)
 	if err != nil {
 		return err
 	}
-	if ok {
+	if len(folded) > 0 {
 		if err := b.expandBySuggestion(ctx, bl.Line1, folded); err != nil {
 			return err
 		}
@@ -233,36 +242,44 @@ func (b *Browser) fillEmbeddedAddress(ctx context.Context, st *fillState, bl Bil
 	return b.checkAbsent(ctx, absent)
 }
 
-// foldedWithoutEntry 返回城市、州/省、邮编里第一个有值、DOM 里有却不可见的字段，前提是页面上没有手动地址入口、也没点过：
-// 有入口时由 fillOne 去点（同托管页）；点过入口、字段还在展开途中时也交给 fillOne 等。
-func (b *Browser) foldedWithoutEntry(ctx context.Context, st *fillState, hideable []field) (field, bool, error) {
+// foldedWithoutEntry 返回城市、州/省、邮编里有值、DOM 里有却不可见（折叠着）的字段，前提是页面上没有手动地址入口、也没点过：
+// 有入口时由 fillOne 去点（同托管页）；点过入口、字段还在展开途中时也交给 fillOne 等。不需要用地址联想展开时返回空。
+func (b *Browser) foldedWithoutEntry(ctx context.Context, st *fillState, hideable []field) ([]field, error) {
 	if st.revealClick > 0 {
-		return field{}, false, nil
+		return nil, nil
 	}
 	frames, err := b.frames(ctx)
 	if err != nil {
-		return field{}, false, err
+		return nil, err
 	}
+	var folded []field
 	for _, f := range hideable {
-		if strings.TrimSpace(f.value) == "" || b.find(ctx, frames, f.sels, false) != nil || b.findAny(ctx, frames, f.sels) == nil {
-			continue
+		if strings.TrimSpace(f.value) != "" && b.find(ctx, frames, f.sels, false) == nil && b.findAny(ctx, frames, f.sels) != nil {
+			folded = append(folded, f)
 		}
-		if b.findText(ctx, frames, Sel.ManualAddressOption) != nil {
-			return field{}, false, nil
-		}
-		return f, true, nil
 	}
-	return field{}, false, nil
+	if len(folded) > 0 && b.findText(ctx, frames, Sel.ManualAddressOption) != nil {
+		return nil, nil
+	}
+	return folded, nil
 }
 
 // expandBySuggestion 用地址联想展开折叠的城市、州、邮编（设计 §5.7）。2026-11-04 实测：内嵌页上没有手动地址入口，
 // 按 Tab、点别的输入框都不展开；在街道里逐字键入（可信键盘事件）后几秒内出现 Google 地址联想，点一条才展开。
-// 所以这里清空街道后逐字键入 line1，不按 Esc（会关掉联想），也绝不按回车（Stripe 输入框里回车可能触发提交）；
-// 等联想出现后按 frame 顺序、每个 frame 取第一个可见选项，用 clickOption 点（落点必须是承载它的 iframe，且不是提交控件），
-// 点不成就试下一个。点中后等 folded 变成可见。联想会改写街道、城市、州、邮编，由调用方之后用自己的值覆盖。
-func (b *Browser) expandBySuggestion(ctx context.Context, line1 string, folded field) error {
-	if strings.TrimSpace(line1) == "" {
+//   - 街道值有控制字符就不键入：逐字键入会把 \n、\r 当回车发出去。
+//   - 选中街道框（focusField，内嵌页上先看落点）、清空后逐字键入。不按 Esc（会关掉联想），也绝不按回车（Stripe 输入框里回车可能触发提交）。
+//   - 最多等 suggestWait，按 frame 顺序（跳过主页面）每个 frame 取第一个可见选项，用 clickOption 点，点不成就试下一个、下一轮再试。
+//   - 点中后等 folded 全部展开：每个都可见，而且落点检查（landsInOwnFrame）通过，之后点它们才不会落到主页面上。
+//     suggestRetryWait 内没展开，换一个没点过的 frame 里的联想再点一次（最多 suggestMaxClicks 次）；等满 addressWait 仍没展开就报错。
+//   - 填表报告记下点的是第几个 iframe 里的选项（按 frame 顺序数，主页面不算）。
+//
+// 联想会改写街道、城市、州、邮编，由调用方之后用自己的值覆盖。
+func (b *Browser) expandBySuggestion(ctx context.Context, line1 string, folded []field) error {
+	switch {
+	case strings.TrimSpace(line1) == "":
 		return errors.New("账单地址没有街道，无法用地址联想展开城市、州、邮编")
+	case strings.IndexFunc(line1, unicode.IsControl) >= 0:
+		return errors.New("账单街道含控制字符，无法用地址联想展开城市、州、邮编")
 	}
 	street, err := b.waitFind(ctx, fieldWait, func(frames []frameRef) *elem { return b.find(ctx, frames, Sel.Line1, false) })
 	if err != nil {
@@ -271,7 +288,7 @@ func (b *Browser) expandBySuggestion(ctx context.Context, line1 string, folded f
 	if street == nil {
 		return errors.New("找不到「街道地址」输入框，无法展开城市、州、邮编")
 	}
-	if err := focus(ctx, street); err != nil {
+	if err := b.focusField(ctx, street); err != nil {
 		return fmt.Errorf("无法选中「街道地址」输入框: %w", err)
 	}
 	if err := clearInput(ctx, street); err != nil {
@@ -281,38 +298,76 @@ func (b *Browser) expandBySuggestion(ctx context.Context, line1 string, folded f
 		return fmt.Errorf("键入「街道地址」失败: %w", err)
 	}
 
-	var refused error // 最近一次没点成的原因，只写进错误说明
-	picked, err := b.poll(ctx, suggestWait, func(frames []frameRef) bool {
-		for _, f := range frames {
-			opt := b.find(ctx, []frameRef{f}, suggestionSels, false)
-			if opt == nil {
-				continue
+	var (
+		clicked []cdp.FrameID // 点过选项的 frame
+		nos     []string      // 它们是第几个 iframe，只写进报告
+		refused error         // 最近一次没点成的原因，只写进错误说明
+	)
+	pick := func(limit time.Duration) (bool, error) {
+		return b.poll(ctx, limit, func(frames []frameRef) bool {
+			for i, f := range frames[1:] { // 主页面上的选项 clickOption 一律不点，不必去滚动主页面
+				if slices.Contains(clicked, f.id) {
+					continue
+				}
+				opt := b.find(ctx, []frameRef{f}, suggestionSels, false)
+				if opt == nil {
+					continue
+				}
+				if refused = b.clickOption(ctx, frames, opt); refused == nil {
+					clicked = append(clicked, f.id)
+					nos = append(nos, fmt.Sprint(i+1))
+					return true
+				}
 			}
-			if refused = b.clickOption(ctx, frames, opt); refused == nil {
-				return true
+			return false
+		})
+	}
+	expanded := func(limit time.Duration) (bool, error) {
+		return b.poll(ctx, limit, func(frames []frameRef) bool {
+			for _, f := range folded {
+				e := b.find(ctx, frames, f.sels, false)
+				if e == nil {
+					return false
+				}
+				if _, _, err := b.landsInOwnFrame(ctx, frames, e); err != nil {
+					return false
+				}
 			}
-		}
-		return false
-	})
+			return true
+		})
+	}
+
+	ok, err := pick(suggestWait)
 	if err != nil {
 		return err
 	}
-	if !picked {
+	if !ok {
 		const msg = "地址联想没有出现，无法展开城市、州、邮编"
 		if refused != nil {
 			return fmt.Errorf("%s（看到过选项但没点成：%w）", msg, refused)
 		}
 		return errors.New(msg)
 	}
-
-	shown, err := b.poll(ctx, addressWait, func(frames []frameRef) bool { return b.find(ctx, frames, folded.sels, false) != nil })
+	first := min(suggestRetryWait, addressWait)
+	shown, err := expanded(first)
 	if err != nil {
 		return err
 	}
+	if !shown && len(clicked) < suggestMaxClicks {
+		// 只看当下：第一下点的可能是不起作用的那份（真实页面地址 iframe 里也有一份选项），联想没收起时换一个 frame 再点
+		if _, err := pick(0); err != nil {
+			return err
+		}
+		if shown, err = expanded(addressWait - first); err != nil {
+			return err
+		}
+	}
+	where := "第 " + strings.Join(nos, "、") + " 个 iframe 的选项"
 	if !shown {
+		b.updateReport(func(r *FillReport) { r.ManualAddress = "已点地址联想（未展开）：" + where })
 		return errors.New("选了地址联想后城市、州、邮编仍未展开")
 	}
-	b.updateReport(func(r *FillReport) { r.ManualAddress = "已选地址联想" })
+	b.updateReport(func(r *FillReport) { r.ManualAddress = "已选地址联想：" + where })
 	return nil
 }
 
@@ -401,7 +456,7 @@ func (b *Browser) fillOne(ctx context.Context, st *fillState, f field, wait time
 	if e == nil {
 		return fmt.Errorf("找不到「%s」输入框", f.label)
 	}
-	if err := fillField(ctx, e, f); err != nil {
+	if err := b.fillField(ctx, e, f); err != nil {
 		return err
 	}
 	st.done = append(st.done, f)
@@ -565,7 +620,7 @@ func (b *Browser) fillEmail(ctx context.Context, st *fillState, email string) er
 		return errors.New("支付页的邮箱框必填且为空，但不能编辑")
 	}
 	f := field{"邮箱", Sel.Email, email, kindText}
-	if err := fillField(ctx, e, f); err != nil {
+	if err := b.fillField(ctx, e, f); err != nil {
 		return err
 	}
 	st.done = append(st.done, f)

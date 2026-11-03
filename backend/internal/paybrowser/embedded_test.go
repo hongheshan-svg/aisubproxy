@@ -471,8 +471,8 @@ func TestEmbeddedFillPicksSuggestion(t *testing.T) {
 	if got := fieldLabels(t, r); !slices.Equal(got, want) {
 		t.Fatalf("填过的字段 = %v，期望 %v", got, want)
 	}
-	if lines := strings.Join(r.Lines(), "\n"); !strings.Contains(lines, "手动地址：已选地址联想") {
-		t.Errorf("报告缺少「手动地址：已选地址联想」：\n%s", lines)
+	if lines := strings.Join(r.Lines(), "\n"); !strings.Contains(lines, "手动地址：已选地址联想：第 1 个 iframe 的选项") {
+		t.Errorf("报告缺少「手动地址：已选地址联想：第 1 个 iframe 的选项」：\n%s", lines)
 	}
 	for sel, want := range map[string]string{
 		"#billingAddress-addressLine1Input":       "1 Main St",
@@ -517,6 +517,110 @@ func TestEmbeddedFillSuggestionDoesNotExpand(t *testing.T) {
 	err := b.Fill(ctx, testCard, embeddedBilling)
 	if err == nil || !strings.Contains(err.Error(), "仍未展开") {
 		t.Fatalf("Fill = %v，期望报仍未展开", err)
+	}
+	const want = "手动地址：已点地址联想（未展开）：第 1 个 iframe 的选项"
+	if lines := strings.Join(b.FillReport().Lines(), "\n"); !strings.Contains(lines, want) {
+		t.Errorf("报告缺少「%s」：\n%s", want, lines)
+	}
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("Fill 失败时仿造页收到 %d 次提交", n)
+	}
+}
+
+// 第一个 frame 里的联想点了没展开（真实页面上地址 iframe 里也有一份选项）：再点下一个 frame（下拉框）里的，最多点两次。
+func TestEmbeddedFillSuggestionSecondFrame(t *testing.T) {
+	needChrome(t)
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "addr=suggest-decoy")
+
+	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+		t.Fatalf("Fill: %v", err)
+	}
+	r := b.FillReport()
+	const want = "手动地址：已选地址联想：第 1、2 个 iframe 的选项"
+	if lines := strings.Join(r.Lines(), "\n"); !strings.Contains(lines, want) {
+		t.Errorf("报告缺少「%s」：\n%s", want, lines)
+	}
+	wantFields := []string{"卡号", "有效期", "CVC", "国家", "姓名", "街道地址", "城市", "州/省", "邮编"}
+	if got := fieldLabels(t, r); !slices.Equal(got, wantFields) {
+		t.Fatalf("填过的字段 = %v，期望 %v", got, wantFields)
+	}
+	if got, err := paybrowser.FieldValue(ctx, b, "#billingAddress-localityInput"); err != nil || got != "Portland" {
+		t.Fatalf("页面上城市 = %q, %v，期望 Portland", got, err)
+	}
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("只填表不提交：仿造页收到 %d 次提交", n)
+	}
+}
+
+// payClicks 返回 clip=1 时主页面支付按钮收到的可信点击次数。
+func payClicks(t *testing.T, ctx context.Context, b *paybrowser.Browser) string {
+	t.Helper()
+	time.Sleep(300 * time.Millisecond) // 点击触发的提交是异步的，留点时间让它落地
+	v, err := paybrowser.FieldValue(ctx, b, "#pay-clicks")
+	if err != nil {
+		t.Fatalf("读支付按钮点击次数: %v", err)
+	}
+	return v
+}
+
+// 字段在 iframe 可视区下沿以下、iframe 内又滚不动（真实页面 iframe 带 scrolling="no"、内文档比 iframe 高）：
+// 按坐标点会点到主页面上紧贴 iframe 下沿的支付按钮。内嵌页上点字段前先看落点，不对就不发鼠标事件、直接设焦点。
+func TestEmbeddedFillFocusOutsideFrame(t *testing.T) {
+	needChrome(t)
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "addr=1&clip=1")
+
+	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+		t.Fatalf("Fill: %v", err)
+	}
+	if got, want := fieldLabels(t, b.FillReport()), []string{"卡号", "有效期", "CVC", "国家", "邮编"}; !slices.Equal(got, want) {
+		t.Fatalf("填过的字段 = %v，期望 %v", got, want)
+	}
+	if got, err := paybrowser.FieldValue(ctx, b, "#payment-postalCodeInput"); err != nil || got != "97201" {
+		t.Fatalf("页面上邮编 = %q, %v，期望 97201", got, err)
+	}
+	if n := payClicks(t, ctx, b); n != "0" {
+		t.Fatalf("填表时支付按钮收到 %s 次点击，期望 0", n)
+	}
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("只填表不提交：仿造页收到 %d 次提交", n)
+	}
+}
+
+// 选了联想后城市、州、邮编虽然可见，但在 iframe 可视区下沿以下、点下去会落到主页面：不算展开，报错放弃，不点它们。
+func TestEmbeddedFillSuggestionExpandsOutsideFrame(t *testing.T) {
+	needChrome(t)
+	t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "addr=suggest&clip=1")
+
+	err := b.Fill(ctx, testCard, embeddedBilling)
+	if err == nil || !strings.Contains(err.Error(), "仍未展开") {
+		t.Fatalf("Fill = %v，期望报仍未展开", err)
+	}
+	if n := payClicks(t, ctx, b); n != "0" {
+		t.Fatalf("填表时支付按钮收到 %s 次点击，期望 0", n)
+	}
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("Fill 失败时仿造页收到 %d 次提交", n)
+	}
+}
+
+// 街道值里有控制字符时不键入：逐字键入会把 \n、\r 当回车发出去，回车在 Stripe 输入框里可能触发提交。
+func TestEmbeddedFillStreetControlChars(t *testing.T) {
+	needChrome(t)
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "addr=suggest")
+
+	bl := embeddedBilling
+	bl.Line1 = "1 Main St\n"
+	err := b.Fill(ctx, testCard, bl)
+	if err == nil || !strings.Contains(err.Error(), "账单街道含控制字符") {
+		t.Fatalf("Fill = %v，期望报账单街道含控制字符", err)
+	}
+	if got, err := paybrowser.FieldValue(ctx, b, "#billingAddress-addressLine1Input"); err != nil || got != "" {
+		t.Fatalf("街道框 = %q, %v，期望什么都没键入", got, err)
 	}
 	if n := len(f.payments()); n != 0 {
 		t.Fatalf("Fill 失败时仿造页收到 %d 次提交", n)
@@ -571,6 +675,7 @@ func TestClickOptionRefusesNonIframeTarget(t *testing.T) {
 		{"主页面上的选项", "#main-option", "#main-clicks", "不是 iframe，没有点击"},
 		{"被别的 iframe 盖住的选项", "#covered-option", "#covered-clicks", "落点是别的 iframe，没有点击"},
 		{"选项是提交按钮", "#submit-option", "#submit-clicks", "是提交控件"},
+		{"选项还在移动", "#moving-option", "#moving-clicks", "位置还在变，没有点击"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			err := paybrowser.ClickOption(ctx, b, c.option)

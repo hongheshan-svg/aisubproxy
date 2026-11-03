@@ -390,52 +390,78 @@ func click(ctx context.Context, e *elem) error {
 	return chromedp.MouseClickXY((x0+x1)/2, (y0+y1)/2).Do(ctx)
 }
 
-// clickOption 点 iframe 里的下拉选项（地址联想），点之前过两道检查，任一不过就不点、返回错误：
-//   - 落点：在主页面上看选项中心那一点是什么元素，必须是承载这个选项的 iframe（选项所在 frame 或它的祖先）。
-//     真实页面上地址 iframe 只露出上半截，选项可能在 iframe 可视区之外；getContentQuads 不按 iframe 裁剪，
-//     算出的坐标可能落在主页面别的元素上，而支付按钮就在主页面。主页面上的选项因此一律不点。
-//   - 选项本身不是提交控件（同 clickReveal）。
+const (
+	landSettle    = 50 * time.Millisecond // 落点检查时两次读位置的间隔
+	landTolerance = 1.0                   // 两次读到的中心点相差不超过这么多像素，才算没在移动
+)
+
+// landsInOwnFrame 把元素滚进视野，求它中心点在主页面可视区里的坐标，确认鼠标点下去会落在它自己所在的 iframe 上，返回这个坐标。
+//   - 隔 landSettle 读两次位置，相差超过 landTolerance 说明还在移动，不通过。
+//   - 在主页面上用 elementFromPoint 看那一点：必须是 iframe 元素，而且是元素所在 frame 或它的上层。主页面上的元素一律不通过。
 //
+// 内嵌页的 iframe 可能只露出一部分（2026-11-04 实测地址 iframe 带 scrolling="no"、内文档比 iframe 高），
+// getContentQuads 不按 iframe 裁剪，算出的坐标可能在 iframe 外面、落到主页面别的元素上，而支付按钮就在主页面。
 // frames 是 b.frames 的结果，第一个是主页面。
-func (b *Browser) clickOption(ctx context.Context, frames []frameRef, e *elem) error {
+func (b *Browser) landsInOwnFrame(ctx context.Context, frames []frameRef, e *elem) (x, y float64, err error) {
 	if err := dom.ScrollIntoViewIfNeeded().WithObjectID(e.obj).Do(ctx); err != nil {
-		return err
+		return 0, 0, err
 	}
-	x0, y0, x1, y1, err := bounds(ctx, e)
+	center := func() (float64, float64, error) {
+		x0, y0, x1, y1, err := bounds(ctx, e)
+		return (x0 + x1) / 2, (y0 + y1) / 2, err
+	}
+	x0, y0, err := center()
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
-	x, y := (x0+x1)/2, (y0+y1)/2
+	if err := sleep(ctx, landSettle); err != nil {
+		return 0, 0, err
+	}
+	if x, y, err = center(); err != nil {
+		return 0, 0, err
+	}
+	if math.Abs(x-x0) > landTolerance || math.Abs(y-y0) > landTolerance {
+		return 0, 0, errors.New("位置还在变，没有点击")
+	}
 
 	r, err := b.eval(ctx, frames[0], fmt.Sprintf("document.elementFromPoint(%f, %f)", x, y))
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	if r.ObjectID == "" {
-		return errors.New("选项的点击落点不在页面上，没有点击")
+		return 0, 0, errors.New("点击落点不在页面上，没有点击")
 	}
 	hit := &elem{frame: frames[0], obj: r.ObjectID}
 	var tag string
 	if err := callOn(ctx, hit.obj, `function () { return this.tagName }`, &tag); err != nil {
-		return err
+		return 0, 0, err
 	}
 	if tag != "IFRAME" {
-		return fmt.Errorf("选项的点击落点是主页面上的 %s，不是 iframe，没有点击", strings.ToLower(tag))
+		return 0, 0, fmt.Errorf("点击落点是主页面上的 %s，不是 iframe，没有点击", strings.ToLower(tag))
 	}
 	id, err := contentFrame(ctx, hit)
 	if err != nil {
-		return err
+		return 0, 0, err
 	}
 	if !slices.ContainsFunc(subtree(frames, id), func(f frameRef) bool { return f.id == e.frame.id }) {
-		return errors.New("选项的点击落点是别的 iframe，没有点击")
+		return 0, 0, errors.New("点击落点是别的 iframe，没有点击")
 	}
+	return x, y, nil
+}
 
+// clickOption 点 iframe 里的下拉选项（地址联想）。先确认选项本身不是提交控件（同 clickReveal），
+// 再过 landsInOwnFrame，落点检查紧挨着鼠标点击；任一不过就不点、返回错误。主页面上的选项一律不点。
+func (b *Browser) clickOption(ctx context.Context, frames []frameRef, e *elem) error {
 	var isSubmit bool
 	if err := callOn(ctx, e.obj, submitControlJS, &isSubmit); err != nil {
 		return err
 	}
 	if isSubmit {
 		return errSubmitControl
+	}
+	x, y, err := b.landsInOwnFrame(ctx, frames, e)
+	if err != nil {
+		return err
 	}
 	return chromedp.MouseClickXY(x, y).Do(ctx)
 }
@@ -445,6 +471,27 @@ func focus(ctx context.Context, e *elem) error {
 	if err := click(ctx, e); err != nil {
 		return err
 	}
+	return ensureFocus(ctx, e)
+}
+
+// focusField 选中要填写的输入框。托管页同 focus。内嵌页上先过 landsInOwnFrame，通过才用鼠标点；
+// 不通过（落点不在它自己的 iframe 上、还在移动、读不出位置）就不发任何鼠标事件，直接用 DOM.focus 设焦点。
+func (b *Browser) focusField(ctx context.Context, e *elem) error {
+	if b.pageKind() != PageEmbedded {
+		return focus(ctx, e)
+	}
+	if frames, err := b.frames(ctx); err == nil {
+		if x, y, err := b.landsInOwnFrame(ctx, frames, e); err == nil {
+			if err := chromedp.MouseClickXY(x, y).Do(ctx); err != nil {
+				return err
+			}
+		}
+	}
+	return ensureFocus(ctx, e)
+}
+
+// ensureFocus 确认焦点在输入框上，不在就用 DOM.focus 直接设（不发鼠标事件）。
+func ensureFocus(ctx context.Context, e *elem) error {
 	const focused = `function () { return this.ownerDocument.hasFocus() && this.ownerDocument.activeElement === this }`
 	var ok bool
 	if err := callOn(ctx, e.obj, focused, &ok); err != nil || ok {

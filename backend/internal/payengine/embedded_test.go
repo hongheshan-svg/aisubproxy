@@ -203,7 +203,7 @@ func TestEmbeddedRealOrderEnsuresNoSavePayment(t *testing.T) {
 			if c.want == 1 {
 				seq := b.order()
 				fill, save, submit := slices.Index(seq, "Fill"), slices.Index(seq, "EnsureNoSavePayment"), slices.Index(seq, "Submit")
-				if !(fill < save && save < submit) {
+				if fill >= save || save >= submit {
 					t.Fatalf("应在填表之后、点支付之前确认: %v", seq)
 				}
 			}

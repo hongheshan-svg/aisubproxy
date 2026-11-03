@@ -180,6 +180,7 @@ func noSavePayment(ctx context.Context, b FormBrowser) error {
 type creditEvidence struct {
 	approved, pending bool   // 授权窗口内该卡有成功授权、有未定论的授权
 	amountOK          bool   // 有一笔成功授权的金额与支付页金额在容差内
+	authMatched       string // 相符的那笔授权的金额与币种（如 "-565.00 PHP"），写进成功依据
 	conflict          string // 成功授权的币种或金额与支付页对不上（非空即转人工）
 	authErr           error
 
@@ -192,6 +193,9 @@ type creditEvidence struct {
 // verifyCredit 确认一张点数单。不看 plan_type，按设计 §5.2 依次判断：
 //   - 成功授权的币种或金额与支付页对不上：证据冲突，立即转人工；
 //   - 成功：页面结果为成功，并且该卡有金额相符的成功授权；有余额快照时还要求余额增加了点数；
+//   - 也算成功（页面认不出）：页面结果是 unknown（不是被拒、校验错误），该卡有金额相符的成功授权，
+//     并且余额快照可读、这次也读到了余额、余额 ≥ 快照 + 点数。真实 Stripe 页成功后多半直接跳走，页面认不出成功；
+//     这两条都是付款之外独立的证据，同时满足才放宽。快照没取到、这次读不到余额、余额增加不足都不放宽；
 //   - 期限未到：下次再查；
 //   - 页面显示被拒或校验错误：余额已增加算证据冲突，其余照开通单的被拒流程定论（余额当作账号证据）；
 //   - 其余到期：转人工，说明里列出各项证据。
@@ -219,6 +223,8 @@ func (s *Service) verifyCredit(ctx context.Context, j *job) {
 		s.verifyEscalate(ctx, j, "evidence_conflict", "证据冲突："+ev.conflict)
 	case pageOK && ev.authErr == nil && ev.amountOK && balanceOK:
 		s.creditSucceeded(ctx, j, gpt, clientErr, ev)
+	case creditUnknownPageProven(o, ev):
+		s.creditSucceeded(ctx, j, gpt, clientErr, ev)
 	case now < until:
 		s.verifyReschedule(ctx, j)
 	case isDeclinedOutcome(o.PageOutcome):
@@ -234,6 +240,14 @@ func (s *Service) verifyCredit(ctx context.Context, j *job) {
 		}
 		s.verifyEscalate(ctx, j, code, "确认超时："+creditEvidenceText(o, ev)+"。请人工核对后定论")
 	}
+}
+
+// creditUnknownPageProven 是页面认不出结果时的成功条件：只对点数单、只对 unknown（被拒、校验错误、3DS 等都不算），
+// 授权相符且余额按快照增加了点数，两条都要有；授权冲突在调用前已经转人工。
+func creditUnknownPageProven(o *Order, ev creditEvidence) bool {
+	return o.Kind == KindCredit && o.PageOutcome == string(paybrowser.OutcomeUnknown) &&
+		ev.authErr == nil && ev.amountOK &&
+		ev.balanceNeeded && ev.balErr == nil && ev.credited
 }
 
 // creditEvidenceText 把各项证据写成一句话，转人工时给管理员看。
@@ -270,7 +284,7 @@ func creditEvidenceText(o *Order, ev creditEvidence) string {
 // creditEvidence 查授权交易与点数余额。gpt 为 nil 时 clientErr 是建客户端失败的原因，只影响余额这一项。
 func (s *Service) creditEvidence(ctx context.Context, j *job, gpt ChatGPT, clientErr error) creditEvidence {
 	var ev creditEvidence
-	ev.approved, ev.pending, ev.amountOK, ev.conflict, ev.authErr = s.creditAuth(ctx, j.pool, j.o)
+	ev.approved, ev.pending, ev.amountOK, ev.authMatched, ev.conflict, ev.authErr = s.creditAuth(ctx, j.pool, j.o)
 	if strings.TrimSpace(j.o.CreditBalanceBefore) == "" {
 		return ev
 	}
@@ -299,10 +313,10 @@ func (s *Service) creditEvidence(ctx context.Context, j *job, gpt ChatGPT, clien
 
 // creditAuth 翻完该卡在授权窗口内的交易（口径同 verifyAuth：只看 AUTH 与 SETTLE，approved 算成功，failed 不算，其余都算未定论），
 // 另外核对每一笔成功授权的币种与金额：按支付页币种取交易金额（交易币种对不上时取账单币种），与支付页金额的差在容差内才算相符。
-// 任何一笔成功授权对不上都记 conflict：钱的去向和页面说的不一致，只能人工看。
-func (s *Service) creditAuth(ctx context.Context, pool Pool, o *Order) (approved, pending, amountOK bool, conflict string, err error) {
+// 任何一笔成功授权对不上都记 conflict：钱的去向和页面说的不一致，只能人工看。matched 是第一笔相符授权的金额与币种。
+func (s *Service) creditAuth(ctx context.Context, pool Pool, o *Order) (approved, pending, amountOK bool, matched, conflict string, err error) {
 	if o.CardID == "" {
-		return false, false, false, "", errors.New("单据没有记录卡")
+		return false, false, false, "", "", errors.New("单据没有记录卡")
 	}
 	var since int64
 	if o.SubmittedAt != nil {
@@ -310,7 +324,7 @@ func (s *Service) creditAuth(ctx context.Context, pool Pool, o *Order) (approved
 	}
 	list, err := s.txnsSince(ctx, pool, o.CardID, since)
 	if err != nil {
-		return false, false, false, "", err
+		return false, false, false, "", "", err
 	}
 	for _, t := range list {
 		if !strings.EqualFold(t.Kind, "AUTH") && !strings.EqualFold(t.Kind, "SETTLE") {
@@ -323,14 +337,24 @@ func (s *Service) creditAuth(ctx context.Context, pool Pool, o *Order) (approved
 				if conflict == "" {
 					conflict = why
 				}
-			} else {
+			} else if !amountOK {
 				amountOK = true
+				matched = txnAmountText(t, o)
 			}
 		case !strings.EqualFold(t.Status, "failed"):
 			pending = true
 		}
 	}
-	return approved, pending, amountOK, conflict, nil
+	return approved, pending, amountOK, matched, conflict, nil
+}
+
+// txnAmountText 是一笔授权按支付页币种取的金额与币种（取法同 txnAmountMismatch），写进成功依据。
+func txnAmountText(t cardpool.Transaction, o *Order) string {
+	amount, cur := t.TxnAmount, strings.TrimSpace(t.TxnCurrency)
+	if !strings.EqualFold(cur, o.Currency) {
+		amount, cur = t.BillingAmount, strings.TrimSpace(t.BillingCurrency)
+	}
+	return strings.TrimSpace(amount) + " " + strings.ToUpper(cur)
 }
 
 // txnAmountMismatch 核对一笔成功授权的币种与金额；相符返回空串。容差为支付页金额的 1%，至少 1 个最小单位。
@@ -413,6 +437,10 @@ func (s *Service) creditSucceeded(ctx context.Context, j *job, gpt ChatGPT, clie
 	msg := "点数付款成功：支付页显示成功，该卡有金额相符的成功授权"
 	if ev.balanceNeeded {
 		msg += "，点数余额增加了 " + ev.delta
+	}
+	if j.o.PageOutcome != string(paybrowser.OutcomeSuccess) {
+		// 页面认不出时靠授权与余额两条独立证据定的成功，依据写清楚，供日后核对
+		msg = fmt.Sprintf("点数付款成功（页面未识别；授权 %s 相符；余额 +%s，快照 %s）", ev.authMatched, ev.delta, j.o.CreditBalanceBefore)
 	}
 	set := map[string]any{"error_code": "", "error_message": "", "card_saved": saved}
 	if !s.verifyConclude(ctx, j, StateSucceeded, "info", msg, cardpool.Outcome{Result: cardpool.ResultSuccess}, set) {

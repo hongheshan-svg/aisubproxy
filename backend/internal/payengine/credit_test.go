@@ -8,6 +8,7 @@ import (
 
 	"github.com/tuzi/cdk-recharge-system/internal/cardpool"
 	"github.com/tuzi/cdk-recharge-system/internal/chatgpt"
+	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/paybrowser"
 )
 
@@ -345,10 +346,116 @@ func TestCreditBalanceNotIncreasedNeedsReview(t *testing.T) {
 	}
 }
 
-// 支付页没有显示成功（真实 Stripe 页成功后多半直接跳走，认不出成功）：授权、余额都到位也不自动定成功，到期转人工，说明里列出证据。
-func TestCreditPageUnknownNeedsReview(t *testing.T) {
+// 支付页认不出结果（真实 Stripe 页成功后多半直接跳走）：授权相符、且余额按快照增加了点数，两条同时满足才自动定成功，
+// 不用等期限；成功依据写进时间线，resolved_by 为空，计入点数码的发码门槛。
+func TestCreditPageUnknownProvenSucceeds(t *testing.T) {
 	h := newCreditHarness(t)
 	h.br.waitOutcome = outcomes(outcomeStep{out: paybrowser.OutcomeUnknown})
+	h.creditTxns(approvedPHP("565.00"))
+	h.balances("0", "250")
+	h.start(t)
+	o := h.submitCredit(t, false, false)
+	g := waitDone(t, o.OrderNo)
+	if g.State != StateSucceeded || g.PageOutcome != string(paybrowser.OutcomeUnknown) || g.ResolvedBy != "" || g.ErrorCode != "" || g.Failure != "" {
+		t.Fatalf("授权与余额都到位应自动成功: %+v", g)
+	}
+	if g.CardSaved != CardSavedNo || g.RenewalState != RenewalNone {
+		t.Fatalf("成功后照常核对已存卡、不关续费: %+v", g)
+	}
+	waitEvent(t, o.OrderNo, "点数付款成功（页面未识别；授权 565.00 PHP 相符；余额 +250.00，快照 0）")
+	assertReleases(t, h, cardpool.ResultSuccess)
+	if ok, err := db.HasRealSucceededPayOrder(ctx, testProvider, db.PayKindCredit); err != nil || !ok {
+		t.Fatalf("这样定的成功单应计入点数码门槛: %v %v", ok, err)
+	}
+	if len(h.alerts.Texts()) != 0 {
+		t.Fatalf("不应告警: %v", h.alerts.Texts())
+	}
+}
+
+// 支付页认不出结果时，授权与余额缺一条（或余额读不出、增加不足、没有快照）都不放宽：期限内一直等，到期转人工（verify_timeout），说明里列出证据。
+func TestCreditPageUnknownWithoutBothNeedsReview(t *testing.T) {
+	snapshotThenErr := func(n int) (chatgpt.CreditBalanceInfo, error) {
+		if n == 1 {
+			return chatgpt.CreditBalanceInfo{Available: true, Balance: "0"}, nil
+		}
+		return chatgpt.CreditBalanceInfo{}, errors.New("boom")
+	}
+	snapshotThenMissing := func(n int) (chatgpt.CreditBalanceInfo, error) {
+		if n == 1 {
+			return chatgpt.CreditBalanceInfo{Available: true, Balance: "0"}, nil
+		}
+		return chatgpt.CreditBalanceInfo{Available: false}, nil
+	}
+	noSnapshot := func(n int) (chatgpt.CreditBalanceInfo, error) {
+		if n == 1 {
+			return chatgpt.CreditBalanceInfo{Available: false}, nil
+		}
+		return chatgpt.CreditBalanceInfo{Available: true, Balance: "250"}, nil
+	}
+	cases := []struct {
+		name    string
+		txns    []cardpool.Transaction
+		balance func(int) (chatgpt.CreditBalanceInfo, error)
+		before  string // 期望的余额快照
+		want    string // 说明里应有的证据
+	}{
+		{"只有授权、余额没变", []cardpool.Transaction{approvedPHP("565.00")}, func(n int) (chatgpt.CreditBalanceInfo, error) {
+			return chatgpt.CreditBalanceInfo{Available: true, Balance: "100"}, nil
+		}, "100", "点数余额没有增加 250"},
+		{"只有余额增加、没有授权", nil, nil, "0", "该卡没有成功授权"},
+		{"授权还在处理中、余额增加", []cardpool.Transaction{{TransactionID: "t1", Status: "pending", TxnAmount: "565.00", TxnCurrency: "PHP"}}, nil, "0", "该卡的授权还在处理中"},
+		{"读余额出错", []cardpool.Transaction{approvedPHP("565.00")}, snapshotThenErr, "0", "点数余额查不到"},
+		{"余额接口这次没返回余额", []cardpool.Transaction{approvedPHP("565.00")}, snapshotThenMissing, "0", "点数余额查不到"},
+		{"余额增加不足", []cardpool.Transaction{approvedPHP("565.00")}, func(n int) (chatgpt.CreditBalanceInfo, error) {
+			if n == 1 {
+				return chatgpt.CreditBalanceInfo{Available: true, Balance: "0"}, nil
+			}
+			return chatgpt.CreditBalanceInfo{Available: true, Balance: "249.99"}, nil
+		}, "0", "点数余额没有增加 250（变化 249.99）"},
+		{"没有余额快照", []cardpool.Transaction{approvedPHP("565.00")}, noSnapshot, "", "没有余额快照"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := newCreditHarness(t)
+			h.br.waitOutcome = outcomes(outcomeStep{out: paybrowser.OutcomeUnknown})
+			h.creditTxns(c.txns...) // 没有交易时卡池返回空列表（不是查询出错）
+			if c.balance != nil {
+				h.gpt.balanceFn = c.balance
+			} else {
+				h.balances("0", "250")
+			}
+			h.start(t)
+			o := h.submitCredit(t, false, false)
+			waitState(t, o.OrderNo, StateVerifying)
+			if c.before != "" {
+				waitCalls(t, h, "CreditBalance", 3) // 快照 1 次 + 至少两轮确认
+			} else {
+				time.Sleep(30 * time.Millisecond)
+			}
+			if g := mustOrder(t, o.OrderNo); g.State != StateVerifying || g.CreditBalanceBefore != c.before {
+				t.Fatalf("缺一条证据不能自动定成功，期限内应继续等: %+v", g)
+			}
+			h.clock.Advance(h.timeouts.Verify + time.Second)
+			g := waitDone(t, o.OrderNo)
+			if g.State != StateNeedsReview || g.ErrorCode != "verify_timeout" || g.ResolvedBy != "" {
+				t.Fatalf("应到期转人工: %+v", g)
+			}
+			for _, want := range []string{"支付页没有显示成功", c.want} {
+				if !strings.Contains(g.ErrorMessage, want) {
+					t.Fatalf("说明里应有 %q: %s", want, g.ErrorMessage)
+				}
+			}
+			if ok, err := db.HasRealSucceededPayOrder(ctx, testProvider, db.PayKindCredit); err != nil || ok {
+				t.Fatalf("转人工的单不计入门槛: %v %v", ok, err)
+			}
+		})
+	}
+}
+
+// 页面显示被拒但授权相符、余额也增加了：不走放宽规则，证据冲突转人工。
+func TestCreditDeclinedWithProofNeedsReview(t *testing.T) {
+	h := newCreditHarness(t)
+	h.br.waitOutcome = outcomes(outcomeStep{out: paybrowser.OutcomeDeclined, text: "Your card was declined."})
 	h.creditTxns(approvedPHP("565.00"))
 	h.balances("0", "250")
 	h.start(t)
@@ -356,17 +463,35 @@ func TestCreditPageUnknownNeedsReview(t *testing.T) {
 	waitState(t, o.OrderNo, StateVerifying)
 	waitCalls(t, h, "CreditBalance", 3)
 	if g := mustOrder(t, o.OrderNo); g.State != StateVerifying {
-		t.Fatalf("页面没有显示成功不能自动定成功: %+v", g)
+		t.Fatalf("页面被拒不能自动定成功: %+v", g)
+	}
+	h.clock.Advance(h.timeouts.DeclineGrace + time.Second)
+	g := waitDone(t, o.OrderNo)
+	if g.State != StateNeedsReview || g.ErrorCode != "evidence_conflict" {
+		t.Fatalf("应证据冲突转人工: %+v", g)
+	}
+}
+
+// 放宽规则只对点数单生效：订阅开通单页面认不出、卡上有成功授权，账号没开通照旧到期转人工，也不去读点数余额。
+func TestSubscriptionPageUnknownUnaffected(t *testing.T) {
+	h := newPayHarness(t, nil)
+	h.br.waitOutcome = outcomes(outcomeStep{out: paybrowser.OutcomeUnknown})
+	h.creditTxns(cardpool.Transaction{TransactionID: "t1", Status: "approved", TxnAmount: "1120.00", TxnCurrency: "PHP"})
+	h.balances("0", "250")
+	h.start(t)
+	o := h.submit(t, false)
+	waitState(t, o.OrderNo, StateVerifying)
+	waitCalls(t, h, "Account", 3)
+	if g := mustOrder(t, o.OrderNo); g.State != StateVerifying {
+		t.Fatalf("订阅单账号没开通不能定成功: %+v", g)
 	}
 	h.clock.Advance(h.timeouts.Verify + time.Second)
 	g := waitDone(t, o.OrderNo)
-	if g.State != StateNeedsReview || g.ErrorCode != "verify_timeout" {
-		t.Fatalf("应转人工: %+v", g)
+	if g.State != StateNeedsReview || g.ErrorCode != "verify_timeout" || g.Kind != KindSubscription {
+		t.Fatalf("订阅单应照旧到期转人工: %+v", g)
 	}
-	for _, want := range []string{"支付页没有显示成功", "该卡有金额相符的成功授权", "点数余额增加了 250"} {
-		if !strings.Contains(g.ErrorMessage, want) {
-			t.Fatalf("说明里应有 %q: %s", want, g.ErrorMessage)
-		}
+	if n := h.gpt.count("CreditBalance"); n != 0 {
+		t.Fatalf("订阅单不读点数余额: %d", n)
 	}
 }
 

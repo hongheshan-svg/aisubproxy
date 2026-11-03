@@ -17,9 +17,9 @@ func NetworkEgress(c *gin.Context) {
 	cfg := cardplatform.LoadConfig()
 	ip, source, err := detectEgressIP(c.Request.Context())
 	out := gin.H{
-		"card_site_base":   cfg.SiteBase,
-		"openapi_base":     cfg.OpenAPIBase(),
-		"public_cdk_base":  cfg.PublicCDKBase(),
+		"card_site_base":     cfg.SiteBase,
+		"openapi_base":       cfg.OpenAPIBase(),
+		"public_cdk_base":    cfg.PublicCDKBase(),
 		"api_key_configured": strings.TrimSpace(cfg.APIKey) != "",
 		"presets": []gin.H{
 			{"id": "prod", "label": "生产", "site_base": "https://zovocard.com", "openapi": "https://zovocard.com/openapi/v1", "cdk": "https://zovocard.com/api/v1/cdk"},

@@ -26,7 +26,7 @@ func TestAccountAndCardRequests(t *testing.T) {
 				return c.CreateAccount(context.Background(), CreateAccountRequest{AccountName: "SubA", OutAccountNo: "SUB1"})
 			},
 			method: "POST", escPath: "/portal/api/v1/accounts",
-			body:  `{"data":{"account_name":"SubA","out_account_no":"SUB1"}}`,
+			body:  `{"account_name":"SubA","out_account_no":"SUB1"}`,
 			reply: `{"data":{"account_no":"9","account_name":"SubA","out_account_no":"SUB1","status":"ACTIVE","create_time":1766123535}}`,
 			check: func(t *testing.T, got any) {
 				r := got.(*SubAccount)
@@ -42,7 +42,7 @@ func TestAccountAndCardRequests(t *testing.T) {
 				return c.CreateAccount(context.Background(), CreateAccountRequest{AccountName: "S", OutAccountNo: "O", Purpose: &p})
 			},
 			method: "POST", escPath: "/portal/api/v1/accounts",
-			body: `{"data":{"account_name":"S","out_account_no":"O","purpose":"SHARED_ACCOUNT"}}`,
+			body: `{"account_name":"S","out_account_no":"O","purpose":"SHARED_ACCOUNT"}`,
 		},
 		{
 			name: "ListAccounts",

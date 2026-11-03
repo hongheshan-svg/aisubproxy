@@ -125,15 +125,22 @@ type Browser struct {
 	closeOnce   sync.Once
 
 	// 以下状态由填卡、提交等后续步骤维护，受 mu 保护。
-	mu          sync.Mutex
-	cardTouched bool                 // 已开始往页面键入卡号：此后页面上可能有卡号，禁止整页截图
-	filled      bool                 // 已填入卡片与地址
-	submitted   bool                 // 已点击支付；之后绝不再次点击
-	answered    map[cdp.FrameID]bool // 已填过验证码的 3DS 框，WaitOutcome 不再把它当成新的验证
-	beforeClick map[string]bool      // 点击支付前页面上已有的提示文字，WaitOutcome 不把它们当成付款结果
+	mu           sync.Mutex
+	cardTouched  bool                 // 已开始往页面键入卡号：此后页面上可能有卡号，禁止整页截图
+	filled       bool                 // 已填入卡片与地址
+	submitted    bool                 // 已开始点击支付（点击之前置位）；之后绝不再次点击
+	submitLocked bool                 // 调用过 LockSubmit；之后绝不点击
+	answered     map[cdp.FrameID]bool // 已填过验证码的 3DS 框，WaitOutcome 不再把它当成新的验证
+	beforeClick  map[string]bool      // 点击支付前页面上已有的提示文字，WaitOutcome 不把它们当成付款结果
+	report       FillReport           // 本次 Fill 的字段命中与核对结果，不含值
+	notices      []string             // 还没取走的未识别提示，已脱敏
+	noticeSeen   map[string]bool      // 记过的未识别提示，同一条只给一次
+	lastNotice   string               // 最后一条未识别提示，等到超时时作为说明返回
 
 	worldMu sync.Mutex
 	worlds  map[cdp.FrameID]runtime.ExecutionContextID // 各 frame 里本包专用的隔离执行环境
+
+	clickPay func(context.Context, *elem) error // 仅供测试：替换点支付按钮的动作，用来模拟点击中途出错
 }
 
 // Launch 启动一个全新的 Chrome：临时用户目录，不带自动化标记，按 o 配置代理。

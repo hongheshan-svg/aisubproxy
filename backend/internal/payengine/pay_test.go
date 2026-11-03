@@ -269,6 +269,106 @@ func TestSettleAfterSubmitNeverNotSubmitted(t *testing.T) {
 	}
 }
 
+// PF-8：浏览器能证明按钮没被点击时才记 not_submitted，并清掉 submitted_at，释放租约，不告警，不进确认。
+func TestSubmitNotClickedAbandons(t *testing.T) {
+	h := newPayHarness(t, nil)
+	h.br.submit = func() error { return errors.New("找不到支付按钮") }
+	h.br.lockSubmit = func() bool { return false }
+	h.start(t)
+	o := h.submit(t, false)
+	g := waitDone(t, o.OrderNo)
+	assertNotSubmitted(t, g, "submit_not_clicked")
+	if g.SubmittedAt != nil || g.VerifyUntil != nil || g.PageOutcome != "" {
+		t.Fatalf("没点击的单不应留下提交痕迹: %+v", g)
+	}
+	assertReleases(t, h, cardpool.ResultAborted)
+	assertSubmitCount(t, h, 1)
+	if a := h.alerts.Texts(); len(a) != 0 {
+		t.Fatalf("不应告警: %v", a)
+	}
+	if !strings.Contains(g.ErrorMessage, "找不到支付按钮") {
+		t.Fatalf("应留下原因: %+v", g)
+	}
+	if b := theBrowser(t, h); b.count("LockSubmit") != 1 || b.count("WaitOutcome") != 0 || b.count("Close") != 1 {
+		t.Fatalf("应锁定 1 次、不等结果、关闭浏览器: %d %d %d", b.count("LockSubmit"), b.count("WaitOutcome"), b.count("Close"))
+	}
+	waitEvent(t, o.OrderNo, "支付按钮没有被点击 地址：")
+}
+
+// PF-8：不能证明没点击（点击过程中出错）就必须走确认，绝不记 not_submitted，也绝不再点一次。
+func TestSubmitClickAttemptedNeverNotSubmitted(t *testing.T) {
+	h := newPayHarness(t, nil)
+	h.br.submit = func() error { return errors.New("点击支付按钮失败: CDP 连接断开") }
+	h.br.lockSubmit = func() bool { return true }
+	h.start(t)
+	o := h.submit(t, false)
+	g := waitState(t, o.OrderNo, StateVerifying)
+	if g.Failure != "" || g.SubmittedAt == nil || g.PageOutcome != "unknown" || !strings.Contains(g.ErrorMessage, "CDP 连接断开") {
+		t.Fatalf("应转确认，不记未提交: %+v", g)
+	}
+	assertSubmitCount(t, h, 1)
+	if b := theBrowser(t, h); b.count("LockSubmit") != 1 {
+		t.Fatalf("应锁定 1 次: %d", b.count("LockSubmit"))
+	}
+	h.clock.Advance(h.timeouts.Verify + time.Second)
+	if g = waitDone(t, o.OrderNo); g.State != StateNeedsReview || g.Failure != "" {
+		t.Fatalf("查不到开通应转待人工: %+v", g)
+	}
+	assertSubmitCount(t, h, 1)
+}
+
+// PF-8：Submit 成功后，后面任何错误都不再问 LockSubmit：标志早已置位，也不会走「没点击」这条路。
+func TestErrorAfterSubmitNeverAsksLock(t *testing.T) {
+	h := newPayHarness(t, nil)
+	h.br.waitOutcome = outcomes(outcomeStep{err: errors.New("Chrome 崩溃了")})
+	h.br.lockSubmit = func() bool { return false } // 就算它说没点击也不能信：这里根本不该问
+	h.start(t)
+	o := h.submit(t, false)
+	g := waitState(t, o.OrderNo, StateVerifying)
+	if g.Failure != "" || g.SubmittedAt == nil {
+		t.Fatalf("应转确认: %+v", g)
+	}
+	if n := theBrowser(t, h).count("LockSubmit"); n != 0 {
+		t.Fatalf("Submit 成功后不应再问: %d", n)
+	}
+}
+
+// 服务停止时不收尾，哪怕能证明没点击：单据留给重启恢复转确认，这是安全方向。
+func TestNotClickedDuringShutdownLeftForRecovery(t *testing.T) {
+	h := newPayHarness(t, nil)
+	at := h.clock.Now().Unix()
+	o := presetOrder(t, "a@x.com", StateSubmitted, map[string]any{"submitted_at": at, "card_id": testCardID, "lease_token": testLeaseToken})
+	stopped, cancel := context.WithCancel(ctx)
+	cancel()
+	h.svc.settle(stopped, &job{o: o}, &notClickedError{err: errors.New("超时")})
+	g := mustOrder(t, o.OrderNo)
+	if g.State != StateSubmitted || g.SubmittedAt == nil || g.Failure != "" || len(h.pool.released()) != 0 {
+		t.Fatalf("应留给重启恢复: %+v", g)
+	}
+}
+
+// 记「没点击」写库失败时单据还是 submitted，由确认协程接管，不会卡住，也不会被当成未提交。
+func TestNotClickedWriteFailureAdopted(t *testing.T) {
+	h := newPayHarness(t, nil)
+	at := h.clock.Now().Unix()
+	o := presetOrder(t, "a@x.com", StateSubmitted, map[string]any{"submitted_at": at, "card_id": testCardID, "lease_token": testLeaseToken})
+	stale := *o
+	stale.State = StateFilling // 内存里的状态过期，写库的条件更新必然失败
+	h.svc.settle(ctx, &job{o: &stale}, &notClickedError{err: errors.New("找不到支付按钮")})
+	g := mustOrder(t, o.OrderNo)
+	if g.State != StateSubmitted || g.SubmittedAt == nil || g.Failure != "" {
+		t.Fatalf("写库失败应保持原状: %+v", g)
+	}
+	if a := h.alerts.Texts(); len(a) != 1 || !strings.Contains(a[0], o.OrderNo) {
+		t.Fatalf("应告警 1 次: %v", a)
+	}
+	h.svc.recovered.Store(true)
+	h.svc.adoptSubmitted(ctx)
+	if g = mustOrder(t, o.OrderNo); g.State != StateVerifying || g.Failure != "" {
+		t.Fatalf("应由确认协程接管: %+v", g)
+	}
+}
+
 // R16、R25：连转 verifying 也写不进去时单据保持原状，告警一次（文本脱敏），留给确认协程接管。
 func TestSettleAfterSubmitWriteFailureAlerts(t *testing.T) {
 	h := newPayHarness(t, nil)

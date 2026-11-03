@@ -2,6 +2,7 @@ package paybrowser
 
 import (
 	"context"
+	"time"
 
 	"github.com/chromedp/chromedp"
 )
@@ -40,6 +41,48 @@ func ScanBeforeClick(ctx context.Context, b *Browser) (map[string]bool, error) {
 	}))
 	return got, err
 }
+
+// ShortenFillWaits 缩短地址字段的等待时限，返回恢复函数。用来测「一直等不到」的情形，免得每个用例等满 15 秒。
+func ShortenFillWaits(address time.Duration) (restore func()) {
+	old := addressWait
+	addressWait = address
+	return func() { addressWait = old }
+}
+
+// SetDeclineSettle 设置判到被拒后再看的时长，返回恢复函数。多数用例不关心它，TestMain 统一缩短。
+func SetDeclineSettle(d time.Duration) (restore func()) {
+	old := declineSettle
+	declineSettle = d
+	return func() { declineSettle = old }
+}
+
+// SetEmailSettle 设置键入邮箱后的等待，TestMain 统一缩短。
+func SetEmailSettle(d time.Duration) { emailSettle = d }
+
+// SetFieldWait 设置等字段和支付按钮的时限，返回恢复函数。用来测「一直等不到」的情形。
+func SetFieldWait(d time.Duration) (restore func()) {
+	old := fieldWait
+	fieldWait = d
+	return func() { fieldWait = old }
+}
+
+// FailClick 让点支付按钮的动作出错。afterMouse 为 true 时鼠标已经发出去才报错，为 false 时什么都没发就报错。
+func FailClick(b *Browser, afterMouse bool, err error) {
+	b.clickPay = func(ctx context.Context, e *elem) error {
+		if afterMouse {
+			if cerr := click(ctx, e); cerr != nil {
+				return cerr
+			}
+		}
+		return err
+	}
+}
+
+// MaskPageText 抹掉页面文字里的邮箱和长数字串。
+var MaskPageText = maskPageText
+
+// SafeLocation 只留地址的主机和路径。
+var SafeLocation = safeLocation
 
 // InstallHintFor 返回当前部署方式下的安装提示。
 var InstallHintFor = installHint

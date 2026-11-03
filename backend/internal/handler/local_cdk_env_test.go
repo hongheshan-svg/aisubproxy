@@ -119,6 +119,21 @@ func (b *localFakeBrowser) WaitOutcome(context.Context, time.Duration) (paybrows
 
 func (b *localFakeBrowser) EnterOTP(context.Context, string) error { return nil }
 
+func (b *localFakeBrowser) FillReport() paybrowser.FillReport { return paybrowser.FillReport{} }
+
+func (b *localFakeBrowser) PayButtonState(context.Context) string { return "enabled" }
+
+func (b *localFakeBrowser) Diagnose(context.Context) []string { return nil }
+
+// LockSubmit 返回此前是否开始过点击。
+func (b *localFakeBrowser) LockSubmit() bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.submits > 0
+}
+
+func (b *localFakeBrowser) Notices() []string { return nil }
+
 func (b *localFakeBrowser) Shot(_ context.Context, name string, _ paybrowser.ShotScope) (string, error) {
 	return name + ".png", nil
 }

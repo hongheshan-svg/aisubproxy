@@ -26,6 +26,7 @@ var (
 	boFill     = bo{state: StateFailed, failure: FailureNotSubmitted, code: "fill_failed"}
 	boSens     = bo{state: StateFailed, failure: FailureNotSubmitted, code: "card_sensitive_failed"}
 	boExpiry   = bo{state: StateFailed, failure: FailureNotSubmitted, code: "card_expiry_invalid"}
+	boNoClick  = bo{state: StateFailed, failure: FailureNotSubmitted, code: "submit_not_clicked"}
 	boSession  = bo{state: StateFailed, failure: FailureNotSubmitted, code: "session_invalid"}
 	boFund     = bo{state: StateFailed, failure: FailureNotSubmitted, code: "fund_failed"}
 	boSubs     = bo{state: StateFailed, failure: FailureNotSubmitted, code: "already_subscribed"}
@@ -92,6 +93,8 @@ func TestBreakerTrips(t *testing.T) {
 		{"成功清零提交后失败", []bo{boDeclined, boDeclined, boSuccess, boDeclined, boDeclined}, false, "", 2, 0, 0},
 		{"连续 3 单填表失败", []bo{boFill, boFill, boFill}, true, BreakerReasonFill, 0, 3, 2},
 		{"三种填表失败码都算", []bo{boFill, boSens, boExpiry}, true, BreakerReasonFill, 0, 3, 2},
+		{"连续找不到支付按钮也算", []bo{boNoClick, boNoClick, boNoClick}, true, BreakerReasonFill, 0, 3, 2},
+		{"试运行填表失败不计入", []bo{{state: StateFailed, failure: FailureNotSubmitted, code: "dry_run_fill_failed", dryRun: true}, {state: StateFailed, failure: FailureNotSubmitted, code: "dry_run_fill_failed", dryRun: true}, {state: StateFailed, failure: FailureNotSubmitted, code: "dry_run_fill_failed", dryRun: true}}, false, "", 0, 0, 0},
 		{"提交过的单清零填表失败", []bo{boFill, boFill, boSuccess, boFill}, false, "", 0, 1, 0},
 		{"提交后失败也清零填表失败", []bo{boFill, boFill, boDeclined, boFill}, false, "", 1, 1, 0},
 		{"填表失败不清零提交后失败", []bo{boDeclined, boDeclined, boFill, boDeclined}, true, BreakerReasonSubmit, 3, 0, 3},

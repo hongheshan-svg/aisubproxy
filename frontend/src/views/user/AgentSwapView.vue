@@ -1,13 +1,7 @@
 <template>
-  <div class="min-h-screen bg-canvas px-4 py-10">
-    <div class="mx-auto w-full max-w-md space-y-4">
-      <div class="card space-y-1">
-        <h1 class="text-xl font-bold text-ink">卡密补发</h1>
-        <p class="text-sm text-muted">
-          仅限<strong>充值失败且未扣款</strong>的卡密。验证通过后将作废旧码并下发一张同套餐新码。
-        </p>
-      </div>
-
+  <div class="u-page">
+    <UserPageHeader compact title="卡密补发" subtitle="仅限充值失败且未扣款的卡密。验证通过后将作废旧码并下发一张同套餐新码。" />
+    <div class="u-main mx-auto w-full max-w-md space-y-4">
       <div class="card space-y-4">
         <div>
           <label class="text-xs text-muted">代理密码</label>
@@ -70,6 +64,7 @@
 import { ref } from 'vue'
 import { dialog } from '../../lib/dialog'
 import { copyToClipboard } from '../../lib/clipboard'
+import UserPageHeader from '../../components/UserPageHeader.vue'
 
 const password = ref('')
 const code = ref('')

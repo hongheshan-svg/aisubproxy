@@ -35,13 +35,24 @@ func Init(cfg *config.DatabaseConfig) error {
 		dbPath = p
 	}
 	log.Printf("使用数据库: %s", dbPath)
-	db, err := sql.Open("sqlite3", dbPath)
+	// WAL 让读不阻塞写；busy_timeout 让并发写等待锁而不是立刻报 database is locked。
+	// 参数写在 DSN 里，对连接池里每一个连接都生效（busy_timeout 是连接级设置）。
+	// _txlock=immediate：事务一开始就拿写锁，避免读后升级写时的 SQLITE_BUSY（busy_timeout 管不了这种死锁）。
+	dsn := dbPath + "?_journal_mode=WAL&_busy_timeout=10000&_synchronous=NORMAL&_txlock=immediate"
+	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return err
 	}
 
 	if err := db.Ping(); err != nil {
 		return err
+	}
+	var journalMode string
+	if err := db.QueryRow(`PRAGMA journal_mode`).Scan(&journalMode); err != nil {
+		return err
+	}
+	if !strings.EqualFold(journalMode, "wal") {
+		log.Printf("⚠️  SQLite journal_mode 为 %s，未切换到 WAL，并发写入时可能出现 database is locked", journalMode)
 	}
 
 	db.SetMaxOpenConns(25)

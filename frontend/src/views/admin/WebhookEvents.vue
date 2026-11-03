@@ -48,7 +48,7 @@
           <tr>
             <th>ID</th>
             <th>类型</th>
-            <th>幂等键</th>
+            <th>事件标识</th>
             <th>时间</th>
             <th>摘要</th>
           </tr>

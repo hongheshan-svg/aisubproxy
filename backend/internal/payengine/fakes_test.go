@@ -223,6 +223,11 @@ type browserFactory struct {
 	submit      func() error
 	waitOutcome func(c context.Context, n int) (paybrowser.Outcome, string, error)
 	enterOTP    func(string) error
+	notices     func() []string // 未设置时没有提示
+	openErr     error           // 非 nil 时 Open 返回它
+	report      paybrowser.FillReport
+	diagnose    func(context.Context) []string // 未设置时返回一行固定文字
+	lockSubmit  func() bool                    // 未设置时返回 true：不能证明没点击，这是安全方向
 
 	mu         sync.Mutex
 	proxies    []string
@@ -298,7 +303,25 @@ func (b *fakeBrowser) Open(ctx context.Context, url string, cookies []paybrowser
 			return ctx.Err()
 		}
 	}
-	return nil
+	return b.f.openErr
+}
+
+func (b *fakeBrowser) FillReport() paybrowser.FillReport {
+	b.hit("FillReport")
+	return b.f.report
+}
+
+func (b *fakeBrowser) PayButtonState(context.Context) string {
+	b.hit("PayButtonState")
+	return "可点击"
+}
+
+func (b *fakeBrowser) Diagnose(c context.Context) []string {
+	b.hit("Diagnose")
+	if b.f.diagnose != nil {
+		return b.f.diagnose(c)
+	}
+	return []string{"地址：example.test/pay"}
 }
 
 func (b *fakeBrowser) ReadAmount(_ context.Context, currency string) (int64, string, error) {
@@ -322,12 +345,28 @@ func (b *fakeBrowser) Submit(context.Context) error {
 	return errFakeUnset
 }
 
+func (b *fakeBrowser) LockSubmit() bool {
+	b.hit("LockSubmit")
+	if b.f.lockSubmit != nil {
+		return b.f.lockSubmit()
+	}
+	return true
+}
+
 func (b *fakeBrowser) WaitOutcome(c context.Context, timeout time.Duration) (paybrowser.Outcome, string, error) {
 	b.hit("WaitOutcome", timeout)
 	if b.f.waitOutcome != nil {
 		return b.f.waitOutcome(c, b.count("WaitOutcome"))
 	}
 	return paybrowser.OutcomeUnknown, "", errFakeUnset
+}
+
+func (b *fakeBrowser) Notices() []string {
+	b.hit("Notices")
+	if b.f.notices != nil {
+		return b.f.notices()
+	}
+	return nil
 }
 
 func (b *fakeBrowser) EnterOTP(_ context.Context, otp string) error {

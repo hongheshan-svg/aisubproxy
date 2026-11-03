@@ -578,3 +578,52 @@ func TestWaitOrder(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+// 每日待人工汇总：北京时间 09:00 之后有待办时每个北京日发一次，09:00 之前不发，没有待办不发。
+func TestDailyReviewSummaryOncePerBeijingDay(t *testing.T) {
+	s, _, clock, log := newTestService(t)
+	now := clock.Now().Unix()
+	insertOrder(t, Order{Kind: KindRecharge, CardID: "c1", AmountCents: 100, Currency: "USD", State: StateNeedsReview, CreatedAt: now})
+
+	// 2026-10-28 00:30 UTC 为北京 08:30，还没到 09:00
+	clock.Set(time.Date(2026, 10, 28, 0, 30, 0, 0, time.UTC))
+	if err := s.dailyReviewSummary(context.Background()); err != nil || log.Count() != 0 {
+		t.Fatalf("09:00 前不应汇总: err=%v alerts=%v", err, log.Texts())
+	}
+
+	// 北京 12:00：发一次
+	clock.Set(time.Date(2026, 10, 28, 4, 0, 0, 0, time.UTC))
+	if err := s.dailyReviewSummary(context.Background()); err != nil || log.Count() != 1 {
+		t.Fatalf("09:00 后应汇总一次: err=%v alerts=%v", err, log.Texts())
+	}
+	if err := s.dailyReviewSummary(context.Background()); err != nil || log.Count() != 1 {
+		t.Fatalf("同一北京日不应重复: err=%v alerts=%v", err, log.Texts())
+	}
+
+	// 次日北京 12:00：再发一次
+	clock.Advance(24 * time.Hour)
+	if err := s.dailyReviewSummary(context.Background()); err != nil || log.Count() != 2 {
+		t.Fatalf("次日应再汇总一次: err=%v alerts=%v", err, log.Texts())
+	}
+}
+
+func TestDailyReviewSummarySilentWithoutItems(t *testing.T) {
+	s, _, clock, log := newTestService(t)
+	clock.Set(time.Date(2026, 10, 28, 4, 0, 0, 0, time.UTC))
+	if err := s.dailyReviewSummary(context.Background()); err != nil || log.Count() != 0 {
+		t.Fatalf("没有待办不应告警: err=%v alerts=%v", err, log.Texts())
+	}
+}
+
+// 转入、转出失败原因：平台文字里的长数字串（疑似卡号）要抹掉；为空回退原文案。
+func TestTransferFailReason(t *testing.T) {
+	if got := transferFailReason("余额不足，卡 4111 1111 1111 1111 请核对"); strings.Contains(got, "4111") || !strings.Contains(got, "余额不足") {
+		t.Fatalf("应抹掉卡号: %q", got)
+	}
+	if got := transferFailReason("  "); got != "平台返回 FAIL" {
+		t.Fatalf("空原因应回退: %q", got)
+	}
+	if got := transferFailReason(strings.Repeat("字", 300)); len([]rune(got)) > 201 {
+		t.Fatalf("应截断: %d", len([]rune(got)))
+	}
+}

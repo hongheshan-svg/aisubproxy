@@ -31,7 +31,8 @@ type Cookie struct{ Name, Value, Domain string }
 type Card struct{ Number, ExpMonth, ExpYear, CVC string }
 
 // Billing 是账单地址，Country 为两位国家代码。某项为空时不填（有些国家的地址表单没有州或邮编）。
-type Billing struct{ Name, Line1, City, State, Zip, Country string }
+// Email 是账号自己的邮箱，只有页面上的邮箱框可见、必填且为空时才填，绝不写进日志或事件。
+type Billing struct{ Name, Line1, City, State, Zip, Country, Email string }
 
 // Outcome 是提交后页面给出的结果。
 type Outcome string
@@ -42,6 +43,8 @@ const (
 	OutcomeFormRejected Outcome = "form_rejected" // 页面提示是表单校验错误，这笔付款多半没有发到发卡行
 	OutcomeChallenge    Outcome = "challenge"     // 出现 3DS 验证框，需要验证码
 	OutcomeUnknown      Outcome = "unknown"       // 等到超时，页面没有给出可识别的结果
+	// OutcomeNotice 只用于给提示文字分类：认不出、或者只是过程提示。WaitOutcome 不返回它，记下后继续等
+	OutcomeNotice Outcome = "notice"
 )
 
 // ShotScope 是截图范围。
@@ -57,6 +60,8 @@ var (
 	ErrAlreadySubmitted = errors.New("已经点击过支付，不能再次提交")
 	// ErrShotForbidden 表示页面上可能有卡号，禁止整页截图。
 	ErrShotForbidden = errors.New("已开始填卡，禁止整页截图")
+	// ErrSubmitLocked 表示调用过 LockSubmit；这个浏览器再也不会点支付。
+	ErrSubmitLocked = errors.New("支付已锁定，不能点击")
 )
 
 const (
@@ -64,7 +69,6 @@ const (
 	pollInterval    = 250 * time.Millisecond
 
 	formWait     = 30 * time.Second       // 等卡号框出现（含点开「新卡」入口）
-	fieldWait    = 10 * time.Second       // 卡号框出现后，等其余各字段、支付按钮、验证码框
 	keyDelay     = 35 * time.Millisecond  // 卡号类字段逐字键入的间隔
 	slowKeyDelay = 70 * time.Millisecond  // 文本核对不符时逐字重打的间隔
 	settleDelay  = 200 * time.Millisecond // 按 Esc 后等地址联想收起再核对
@@ -72,13 +76,27 @@ const (
 	msgLimit     = 500                    // 页面提示文字最多保留的字数
 
 	preClickScanWait = 2 * time.Second // 点击前收集已有提示的时限，卡住时当作没有提示，不耽误点击
+	noticeLimit      = 20              // 一单最多记这么多条不同的未识别提示，防止页面刷屏
+)
+
+var (
+	// fieldWait 是卡号框出现后，等其余各字段、支付按钮、验证码框的时限。
+	fieldWait = 10 * time.Second
+	// declineSettle 是判到被拒或校验错误后再看一会儿的时长：文字之后紧跟着 3DS 或成功的，以后者为准。
+	declineSettle = 5 * time.Second
 )
 
 // 页面提示的分类词，都是小写，按「含有」匹配。真实拒付文字可能出现在任何错误容器里，所以只看文字、不看选择器。
+// 这些词都没有在真实拒付页上核实过（设计文档 §12.7），所以宁可少认：认不出只是多等，认错了可能把已扣款的单定成失败。
 var (
+	// lost、has expired 不能单独用：「Connection lost」「Your session has expired」都不是拒付
 	declineWords = []string{
-		"declin", "insufficient", "do not honor", "try a different", "incorrect", "has expired",
-		"stolen", "lost", "fraud", "unable to process", "could not be processed",
+		"declin", "insufficient", "do not honor", "try a different", "incorrect", "card has expired", "expired card",
+		"stolen", "reported lost", "lost card", "fraud", "unable to process", "could not be processed",
+	}
+	// progressWords 是过程提示，要排在校验词前面：「Authentication required」含 required，但它是在等 3DS，不是校验错误
+	progressWords = []string{
+		"processing", "please wait", "authenticat", "verifying", "verification", "redirect", "confirming", "one moment",
 	}
 	formErrorWords = []string{"incomplete", "required", "invalid", "not valid", "please enter", "please fill", "in the past"}
 )
@@ -188,58 +206,6 @@ type field struct {
 	kind  fieldKind
 }
 
-// Fill 填入卡片与账单地址。页面先显示账号已存的卡时，先点「新卡」入口。
-// 不填 Stripe Link 的邮箱与手机（会触发 Link 验证）。任一字段找不到时报错，错误消息只含中文字段名。
-func (b *Browser) Fill(ctx context.Context, c Card, bl Billing) error {
-	if err := c.validate(); err != nil {
-		return err
-	}
-	b.mu.Lock() // 正在整页截图时等它截完，再往页面里键入卡号
-	b.cardTouched = true
-	b.filled = false
-	b.mu.Unlock()
-
-	fields := []field{
-		{"卡号", Sel.CardNumber, c.Number, kindCard},
-		{"有效期", Sel.Expiry, c.ExpMonth + c.ExpYear, kindCard},
-		{"CVC", Sel.CVC, c.CVC, kindCard},
-		{"国家", Sel.Country, bl.Country, kindChoice}, // 地址字段里先选国家：改国家会重绘姓名与其余地址字段
-		{"姓名", Sel.Name, bl.Name, kindText},
-		{"街道地址", Sel.Line1, bl.Line1, kindText},
-		{"城市", Sel.City, bl.City, kindText},
-		{"州/省", Sel.State, bl.State, kindChoice},
-		{"邮编", Sel.Zip, bl.Zip, kindText},
-	}
-	err := b.do(ctx, func(ctx context.Context) error {
-		if err := b.revealCardForm(ctx); err != nil {
-			return err
-		}
-		for _, f := range fields {
-			if strings.TrimSpace(f.value) == "" {
-				continue
-			}
-			e, err := b.waitFind(ctx, fieldWait, func(frames []frameRef) *elem { return b.find(ctx, frames, f.sels, false) })
-			if err != nil {
-				return err
-			}
-			if e == nil {
-				return fmt.Errorf("找不到「%s」输入框", f.label)
-			}
-			if err := fillField(ctx, e, f); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("填卡失败: %w", err)
-	}
-	b.mu.Lock()
-	b.filled = true
-	b.mu.Unlock()
-	return nil
-}
-
 // validate 在碰页面之前检查卡片格式。错误消息不含值。
 func (c Card) validate() error {
 	month, _ := strconv.Atoi(c.ExpMonth)
@@ -266,29 +232,6 @@ func isDigits(s string, lo, hi int) bool {
 		}
 	}
 	return true
-}
-
-// revealCardForm 等卡号框出现。账号已存卡时页面先显示已存卡，点一次「新卡」入口把卡号框调出来。
-func (b *Browser) revealCardForm(ctx context.Context) error {
-	clicked := false
-	e, err := b.waitFind(ctx, formWait, func(frames []frameRef) *elem {
-		if e := b.find(ctx, frames, Sel.CardNumber, false); e != nil {
-			return e
-		}
-		if !clicked {
-			if opt := b.findText(ctx, frames, Sel.NewCardOption); opt != nil && click(ctx, opt) == nil {
-				clicked = true
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-	if e == nil {
-		return errors.New("找不到「卡号」输入框")
-	}
-	return nil
 }
 
 // fillField 按字段类型填写并核对。
@@ -396,13 +339,30 @@ func chooseOption(ctx context.Context, e *elem, f field) error {
 	return nil
 }
 
+// payEnabledJS 判断支付按钮能不能点。
+const payEnabledJS = `function () { return !this.disabled && this.getAttribute('aria-disabled') !== 'true' }`
+
+// LockSubmit 锁定提交，返回此前是否开始过点击。调用之后 Submit 只会返回错误，绝不点击。
+//
+// 判断和锁定在同一把锁里完成，所以返回 false 严格证明：这个浏览器从未点击支付，以后也不会。
+// 只有这种情况才能记「未提交」。标志在点击之前置位，所以返回 true 不代表真的点到了，只代表不能排除，必须走确认。
+func (b *Browser) LockSubmit() (clickAttempted bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.submitLocked = true
+	return b.submitted
+}
+
 // Submit 点击主页面上的支付按钮。必须先 Fill 成功；先记下「已提交」再点击，此后再调用返回 ErrAlreadySubmitted 且不点击。
 func (b *Browser) Submit(ctx context.Context) error {
 	b.mu.Lock()
-	submitted, filled := b.submitted, b.filled
+	submitted, filled, locked := b.submitted, b.filled, b.submitLocked
 	b.mu.Unlock()
 	if submitted {
 		return ErrAlreadySubmitted
+	}
+	if locked {
+		return ErrSubmitLocked
 	}
 	if !filled {
 		return errors.New("尚未填卡，不能提交")
@@ -417,7 +377,7 @@ func (b *Browser) Submit(ctx context.Context) error {
 			}
 			seen = true
 			var enabled bool
-			if callOn(ctx, e.obj, `function () { return !this.disabled && this.getAttribute('aria-disabled') !== 'true' }`, &enabled) != nil || !enabled {
+			if callOn(ctx, e.obj, payEnabledJS, &enabled) != nil || !enabled {
 				return nil
 			}
 			return e
@@ -432,16 +392,24 @@ func (b *Browser) Submit(ctx context.Context) error {
 			return errors.New("找不到支付按钮")
 		}
 		before := b.scanBeforeClick(ctx)
-		// 先记下已提交再点击：点击中途出错也绝不再点第二次
+		// 先记下已提交再点击：点击中途出错也绝不再点第二次。从这里开始，任何错误都不能当成「没点击」（见 LockSubmit）
 		b.mu.Lock()
 		if b.submitted {
 			b.mu.Unlock()
 			return ErrAlreadySubmitted
 		}
+		if b.submitLocked {
+			b.mu.Unlock()
+			return ErrSubmitLocked
+		}
 		b.submitted = true
 		b.beforeClick = before
 		b.mu.Unlock()
-		if err := click(ctx, btn); err != nil {
+		pay := click
+		if b.clickPay != nil {
+			pay = b.clickPay
+		}
+		if err := pay(ctx, btn); err != nil {
 			return fmt.Errorf("点击支付按钮失败: %w", err)
 		}
 		return nil
@@ -449,7 +417,8 @@ func (b *Browser) Submit(ctx context.Context) error {
 }
 
 // WaitOutcome 等提交后的页面结果，返回结果与页面提示文字（最多 500 字）。
-// 到 timeout 仍无可识别的结果时返回 OutcomeUnknown、不报错；父 ctx 取消时返回取消错误。已填过验证码的 3DS 框不再算作新的验证。
+// 认不出的提示只记下（见 Notices）、继续等。到 timeout 仍无可识别的结果时返回 OutcomeUnknown 和最后一条这样的提示、不报错；
+// 父 ctx 取消时返回取消错误。已填过验证码的 3DS 框不再算作新的验证。
 // timeout 约束其中所有 CDP 调用：poll 只在两轮之间看时间，而页面脚本死循环时单次调用根本不会返回。
 func (b *Browser) WaitOutcome(ctx context.Context, timeout time.Duration) (Outcome, string, error) {
 	wctx, cancel := context.WithTimeout(ctx, timeout)
@@ -460,6 +429,9 @@ func (b *Browser) WaitOutcome(ctx context.Context, timeout time.Duration) (Outco
 			out, msg = b.outcome(c, frames)
 			return out != OutcomeUnknown
 		})
+		if err == nil && (out == OutcomeDeclined || out == OutcomeFormRejected) {
+			out, msg = b.settleOutcome(c, out, msg)
+		}
 		return err
 	})
 	switch {
@@ -468,16 +440,41 @@ func (b *Browser) WaitOutcome(ctx context.Context, timeout time.Duration) (Outco
 	case ctx.Err() != nil:
 		return OutcomeUnknown, "", fmt.Errorf("等待支付结果失败: %w", ctx.Err())
 	case err == nil || wctx.Err() != nil:
-		return OutcomeUnknown, "", nil
+		return OutcomeUnknown, b.lastNoticeText(), nil
 	}
 	return OutcomeUnknown, "", fmt.Errorf("等待支付结果失败: %w", err)
 }
 
-// outcome 检查一轮页面：成功优先，其次是点击后才出现的提示（全部看一遍，有一条算被拒就是被拒，否则算校验错误），
-// 最后是未处理过的 3DS 框。
+// settleOutcome 判到被拒或校验错误后再看 declineSettle：文字之后紧跟着出现 3DS 或成功的，以后者为准，
+// 否则会关掉浏览器，3DS 就走不下去了。校验错误之后又出现拒付文字的，按被拒。
+func (b *Browser) settleOutcome(ctx context.Context, out Outcome, msg string) (Outcome, string) {
+	sctx, cancel := context.WithTimeout(ctx, declineSettle)
+	defer cancel()
+	_, _ = b.poll(sctx, declineSettle, func(frames []frameRef) bool {
+		o, m := b.outcome(sctx, frames)
+		switch {
+		case o == OutcomeChallenge || o == OutcomeSuccess:
+			out, msg = o, m
+			return true
+		case o == OutcomeDeclined && out == OutcomeFormRejected:
+			out, msg = o, m
+		}
+		return false
+	})
+	return out, msg
+}
+
+// outcome 检查一轮页面：成功优先，其次是未处理过的 3DS 框，最后才看点击后才出现的提示
+// （全部看一遍，有一条算被拒就是被拒，其次算校验错误，其余只记下、继续等）。
+// 3DS 要先于提示：页面可能同时显示过程提示，提示判成结果就会关掉浏览器，验证走不下去。
 func (b *Browser) outcome(ctx context.Context, frames []frameRef) (Outcome, string) {
 	if e := b.find(ctx, frames, Sel.Success, false); e != nil {
 		return OutcomeSuccess, truncateMessage(innerText(ctx, e))
+	}
+	if e := b.find(ctx, frames, Sel.ChallengeFrame, false); e != nil {
+		if id, err := contentFrame(ctx, e); err == nil && !b.isAnswered(id) {
+			return OutcomeChallenge, ""
+		}
 	}
 	b.mu.Lock()
 	before := b.beforeClick // 赋值之后不再修改，出锁后只读
@@ -487,35 +484,68 @@ func (b *Browser) outcome(ctx context.Context, frames []frameRef) (Outcome, stri
 		if before[t] {
 			continue
 		}
-		if classifyPageError(t) == OutcomeDeclined {
+		switch classifyPageError(t) {
+		case OutcomeDeclined:
 			return OutcomeDeclined, truncateMessage(t)
-		}
-		if formError == "" {
-			formError = t
+		case OutcomeFormRejected:
+			if formError == "" {
+				formError = t
+			}
+		default:
+			b.noteNotice(t)
 		}
 	}
 	if formError != "" {
 		return OutcomeFormRejected, truncateMessage(formError)
 	}
-	if e := b.find(ctx, frames, Sel.ChallengeFrame, false); e != nil {
-		if id, err := contentFrame(ctx, e); err == nil && !b.isAnswered(id) {
-			return OutcomeChallenge, ""
-		}
-	}
 	return OutcomeUnknown, ""
 }
 
-// classifyPageError 按文字判断页面提示的类别，不区分大小写：先认被拒，再认表单校验错误，其余按被拒走确认流程。
+// classifyPageError 按文字判断页面提示的类别，不区分大小写：先认被拒，再认过程提示，再认表单校验错误，其余都是认不出（OutcomeNotice）。
 // 被拒要先判断：同时含两类词的文字（如拒付原因里提到邮编无效）不能当成校验错误，否则会少算发卡行的拒付。
+// 认不出的文字绝不能当结果：判成被拒只等 2 分钟就关浏览器，已扣款的单可能被定成失败，3DS 也走不下去；不认识的语言同理。
 func classifyPageError(text string) Outcome {
 	lower := strings.ToLower(text)
 	switch {
 	case containsAny(lower, declineWords):
 		return OutcomeDeclined
+	case containsAny(lower, progressWords):
+		return OutcomeNotice
 	case containsAny(lower, formErrorWords):
 		return OutcomeFormRejected
 	}
-	return OutcomeDeclined
+	return OutcomeNotice
+}
+
+// noteNotice 记下一条认不出的提示：脱敏、去重、限量。页面文字可能夹带邮箱、卡号，出了这里就要进时间线。
+func (b *Browser) noteNotice(text string) {
+	text = truncateMessage(maskPageText(text))
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.lastNotice = text
+	if b.noticeSeen[text] || len(b.noticeSeen) >= noticeLimit {
+		return
+	}
+	if b.noticeSeen == nil {
+		b.noticeSeen = map[string]bool{}
+	}
+	b.noticeSeen[text] = true
+	b.notices = append(b.notices, text)
+}
+
+func (b *Browser) lastNoticeText() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.lastNotice
+}
+
+// Notices 取走还没取过的未识别提示（已脱敏、去重、限量）。同一条文字一单只给一次。
+func (b *Browser) Notices() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := b.notices
+	b.notices = nil
+	return out
 }
 
 func containsAny(s string, words []string) bool {

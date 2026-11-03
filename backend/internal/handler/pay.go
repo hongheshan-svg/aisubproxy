@@ -83,14 +83,15 @@ func bindPayJSON(c *gin.Context, dst any) bool {
 	return true
 }
 
-// AdminPaySubmit 建一张付款单据（测试或真实付款，由 dry_run 决定）。session 可以是 JSON 字符串，也可以直接是会话对象。
+// AdminPaySubmit 建一张付款单据（测试或真实付款，由 dry_run、dry_run_fill 决定）。session 可以是 JSON 字符串，也可以直接是会话对象。
 func AdminPaySubmit(c *gin.Context) {
 	payRoute(func(c *gin.Context, s *payengine.Service) {
 		var req struct {
-			PlanKey string          `json:"plan_key"`
-			Region  string          `json:"region"`
-			Session json.RawMessage `json:"session"`
-			DryRun  bool            `json:"dry_run"`
+			PlanKey    string          `json:"plan_key"`
+			Region     string          `json:"region"`
+			Session    json.RawMessage `json:"session"`
+			DryRun     bool            `json:"dry_run"`
+			DryRunFill bool            `json:"dry_run_fill"`
 		}
 		if !bindPayJSON(c, &req) {
 			return
@@ -105,18 +106,19 @@ func AdminPaySubmit(c *gin.Context) {
 			session = str
 		}
 		o, err := s.Submit(c.Request.Context(), payengine.Request{
-			PlanKey:   strings.TrimSpace(req.PlanKey),
-			Region:    strings.TrimSpace(req.Region),
-			Session:   session,
-			Source:    "admin_test",
-			SourceRef: adminName(c),
-			DryRun:    req.DryRun,
+			PlanKey:    strings.TrimSpace(req.PlanKey),
+			Region:     strings.TrimSpace(req.Region),
+			Session:    session,
+			Source:     "admin_test",
+			SourceRef:  adminName(c),
+			DryRun:     req.DryRun,
+			DryRunFill: req.DryRunFill,
 		})
 		if err != nil {
 			payFail(c, err)
 			return
 		}
-		auditAdmin(c, "pay_test_submit", fmt.Sprintf("plan=%s region=%s dry_run=%t order_no=%s", o.PlanKey, o.Region, o.DryRun, o.OrderNo))
+		auditAdmin(c, "pay_test_submit", fmt.Sprintf("plan=%s region=%s dry_run=%t dry_run_fill=%t order_no=%s", o.PlanKey, o.Region, o.DryRun, o.DryRunFill, o.OrderNo))
 		c.JSON(http.StatusOK, gin.H{"order_no": o.OrderNo, "order": o})
 	})(c)
 }

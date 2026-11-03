@@ -1,6 +1,20 @@
 package paybrowser
 
-import "fmt"
+import (
+	"fmt"
+	"regexp"
+)
+
+var (
+	maskEmailRE  = regexp.MustCompile(`[A-Za-z0-9._%+\-]+@[A-Za-z0-9\-]+(?:\.[A-Za-z0-9\-]+)*`)
+	maskDigitsRE = regexp.MustCompile(`\d(?:[ \t\-]*\d){6,}`)
+)
+
+// maskPageText 抹掉页面文字里的邮箱和长数字串（卡号、手机号之类），写进时间线之前都要过一遍。
+func maskPageText(s string) string {
+	s = maskEmailRE.ReplaceAllString(s, "***@***")
+	return maskDigitsRE.ReplaceAllString(s, "***")
+}
 
 // FieldCheck 是一个字段的填写结果。绝不含值。
 type FieldCheck struct {

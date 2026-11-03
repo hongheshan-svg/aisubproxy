@@ -49,6 +49,7 @@ type Browser interface {
 	Fill(context.Context, paybrowser.Card, paybrowser.Billing) error
 	Submit(context.Context) error
 	WaitOutcome(context.Context, time.Duration) (paybrowser.Outcome, string, error)
+	Notices() []string // 取走等结果期间记下的未识别提示（已脱敏、去重）
 	EnterOTP(context.Context, string) error
 	Shot(context.Context, string, paybrowser.ShotScope) (string, error)
 	Close()

@@ -49,6 +49,19 @@ func ShortenFillWaits(address time.Duration) (restore func()) {
 	return func() { addressWait = old }
 }
 
+// SetDeclineSettle 设置判到被拒后再看的时长，返回恢复函数。多数用例不关心它，TestMain 统一缩短。
+func SetDeclineSettle(d time.Duration) (restore func()) {
+	old := declineSettle
+	declineSettle = d
+	return func() { declineSettle = old }
+}
+
+// SetEmailSettle 设置键入邮箱后的等待，TestMain 统一缩短。
+func SetEmailSettle(d time.Duration) { emailSettle = d }
+
+// MaskPageText 抹掉页面文字里的邮箱和长数字串。
+var MaskPageText = maskPageText
+
 // InstallHintFor 返回当前部署方式下的安装提示。
 var InstallHintFor = installHint
 

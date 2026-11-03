@@ -132,6 +132,9 @@ type Browser struct {
 	answered    map[cdp.FrameID]bool // 已填过验证码的 3DS 框，WaitOutcome 不再把它当成新的验证
 	beforeClick map[string]bool      // 点击支付前页面上已有的提示文字，WaitOutcome 不把它们当成付款结果
 	report      FillReport           // 本次 Fill 的字段命中与核对结果，不含值
+	notices     []string             // 还没取走的未识别提示，已脱敏
+	noticeSeen  map[string]bool      // 记过的未识别提示，同一条只给一次
+	lastNotice  string               // 最后一条未识别提示，等到超时时作为说明返回
 
 	worldMu sync.Mutex
 	worlds  map[cdp.FrameID]runtime.ExecutionContextID // 各 frame 里本包专用的隔离执行环境

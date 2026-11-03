@@ -223,6 +223,7 @@ type browserFactory struct {
 	submit      func() error
 	waitOutcome func(c context.Context, n int) (paybrowser.Outcome, string, error)
 	enterOTP    func(string) error
+	notices     func() []string // 未设置时没有提示
 
 	mu         sync.Mutex
 	proxies    []string
@@ -328,6 +329,14 @@ func (b *fakeBrowser) WaitOutcome(c context.Context, timeout time.Duration) (pay
 		return b.f.waitOutcome(c, b.count("WaitOutcome"))
 	}
 	return paybrowser.OutcomeUnknown, "", errFakeUnset
+}
+
+func (b *fakeBrowser) Notices() []string {
+	b.hit("Notices")
+	if b.f.notices != nil {
+		return b.f.notices()
+	}
+	return nil
 }
 
 func (b *fakeBrowser) EnterOTP(_ context.Context, otp string) error {

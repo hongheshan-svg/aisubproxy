@@ -46,7 +46,7 @@ func pageOutcomeNote(out paybrowser.Outcome) string {
 	case paybrowser.OutcomeDeclined:
 		return "支付页显示被拒，等待授权推送后定论"
 	case paybrowser.OutcomeFormRejected:
-		return "支付页显示表单校验未通过，等待授权推送后定论"
+		return "支付页显示表单校验未通过，继续确认是否开通"
 	}
 	return "支付页没有明确结果，确认是否开通"
 }
@@ -174,6 +174,9 @@ func (s *Service) waitOutcome(ctx context.Context, j *job) (paybrowser.Outcome, 
 	wctx, cancel := context.WithTimeout(ctx, s.t.SubmitResult+s.t.OutcomeMargin)
 	defer cancel()
 	out, text, err := j.browser.WaitOutcome(wctx, s.t.SubmitResult)
+	for _, n := range j.browser.Notices() {
+		s.event(ctx, j, "warn", "支付页提示（未识别，继续等待）："+truncate(j.scrub(n), errorMessageLimit), "")
+	}
 	if err != nil && wctx.Err() != nil && ctx.Err() == nil {
 		return out, text, errors.New("等待页面结果超时")
 	}

@@ -43,6 +43,8 @@ const (
 	OutcomeFormRejected Outcome = "form_rejected" // 页面提示是表单校验错误，这笔付款多半没有发到发卡行
 	OutcomeChallenge    Outcome = "challenge"     // 出现 3DS 验证框，需要验证码
 	OutcomeUnknown      Outcome = "unknown"       // 等到超时，页面没有给出可识别的结果
+	// OutcomeNotice 只用于给提示文字分类：认不出、或者只是过程提示。WaitOutcome 不返回它，记下后继续等
+	OutcomeNotice Outcome = "notice"
 )
 
 // ShotScope 是截图范围。
@@ -73,13 +75,23 @@ const (
 	msgLimit     = 500                    // 页面提示文字最多保留的字数
 
 	preClickScanWait = 2 * time.Second // 点击前收集已有提示的时限，卡住时当作没有提示，不耽误点击
+	noticeLimit      = 20              // 一单最多记这么多条不同的未识别提示，防止页面刷屏
 )
 
+// declineSettle 是判到被拒或校验错误后再看一会儿的时长：文字之后紧跟着 3DS 或成功的，以后者为准。
+var declineSettle = 5 * time.Second
+
 // 页面提示的分类词，都是小写，按「含有」匹配。真实拒付文字可能出现在任何错误容器里，所以只看文字、不看选择器。
+// 这些词都没有在真实拒付页上核实过（设计文档 §12.7），所以宁可少认：认不出只是多等，认错了可能把已扣款的单定成失败。
 var (
+	// lost、has expired 不能单独用：「Connection lost」「Your session has expired」都不是拒付
 	declineWords = []string{
-		"declin", "insufficient", "do not honor", "try a different", "incorrect", "has expired",
-		"stolen", "lost", "fraud", "unable to process", "could not be processed",
+		"declin", "insufficient", "do not honor", "try a different", "incorrect", "card has expired", "expired card",
+		"stolen", "reported lost", "lost card", "fraud", "unable to process", "could not be processed",
+	}
+	// progressWords 是过程提示，要排在校验词前面：「Authentication required」含 required，但它是在等 3DS，不是校验错误
+	progressWords = []string{
+		"processing", "please wait", "authenticat", "verifying", "verification", "redirect", "confirming", "one moment",
 	}
 	formErrorWords = []string{"incomplete", "required", "invalid", "not valid", "please enter", "please fill", "in the past"}
 )
@@ -378,7 +390,8 @@ func (b *Browser) Submit(ctx context.Context) error {
 }
 
 // WaitOutcome 等提交后的页面结果，返回结果与页面提示文字（最多 500 字）。
-// 到 timeout 仍无可识别的结果时返回 OutcomeUnknown、不报错；父 ctx 取消时返回取消错误。已填过验证码的 3DS 框不再算作新的验证。
+// 认不出的提示只记下（见 Notices）、继续等。到 timeout 仍无可识别的结果时返回 OutcomeUnknown 和最后一条这样的提示、不报错；
+// 父 ctx 取消时返回取消错误。已填过验证码的 3DS 框不再算作新的验证。
 // timeout 约束其中所有 CDP 调用：poll 只在两轮之间看时间，而页面脚本死循环时单次调用根本不会返回。
 func (b *Browser) WaitOutcome(ctx context.Context, timeout time.Duration) (Outcome, string, error) {
 	wctx, cancel := context.WithTimeout(ctx, timeout)
@@ -389,6 +402,9 @@ func (b *Browser) WaitOutcome(ctx context.Context, timeout time.Duration) (Outco
 			out, msg = b.outcome(c, frames)
 			return out != OutcomeUnknown
 		})
+		if err == nil && (out == OutcomeDeclined || out == OutcomeFormRejected) {
+			out, msg = b.settleOutcome(c, out, msg)
+		}
 		return err
 	})
 	switch {
@@ -397,16 +413,41 @@ func (b *Browser) WaitOutcome(ctx context.Context, timeout time.Duration) (Outco
 	case ctx.Err() != nil:
 		return OutcomeUnknown, "", fmt.Errorf("等待支付结果失败: %w", ctx.Err())
 	case err == nil || wctx.Err() != nil:
-		return OutcomeUnknown, "", nil
+		return OutcomeUnknown, b.lastNoticeText(), nil
 	}
 	return OutcomeUnknown, "", fmt.Errorf("等待支付结果失败: %w", err)
 }
 
-// outcome 检查一轮页面：成功优先，其次是点击后才出现的提示（全部看一遍，有一条算被拒就是被拒，否则算校验错误），
-// 最后是未处理过的 3DS 框。
+// settleOutcome 判到被拒或校验错误后再看 declineSettle：文字之后紧跟着出现 3DS 或成功的，以后者为准，
+// 否则会关掉浏览器，3DS 就走不下去了。校验错误之后又出现拒付文字的，按被拒。
+func (b *Browser) settleOutcome(ctx context.Context, out Outcome, msg string) (Outcome, string) {
+	sctx, cancel := context.WithTimeout(ctx, declineSettle)
+	defer cancel()
+	_, _ = b.poll(sctx, declineSettle, func(frames []frameRef) bool {
+		o, m := b.outcome(sctx, frames)
+		switch {
+		case o == OutcomeChallenge || o == OutcomeSuccess:
+			out, msg = o, m
+			return true
+		case o == OutcomeDeclined && out == OutcomeFormRejected:
+			out, msg = o, m
+		}
+		return false
+	})
+	return out, msg
+}
+
+// outcome 检查一轮页面：成功优先，其次是未处理过的 3DS 框，最后才看点击后才出现的提示
+// （全部看一遍，有一条算被拒就是被拒，其次算校验错误，其余只记下、继续等）。
+// 3DS 要先于提示：页面可能同时显示过程提示，提示判成结果就会关掉浏览器，验证走不下去。
 func (b *Browser) outcome(ctx context.Context, frames []frameRef) (Outcome, string) {
 	if e := b.find(ctx, frames, Sel.Success, false); e != nil {
 		return OutcomeSuccess, truncateMessage(innerText(ctx, e))
+	}
+	if e := b.find(ctx, frames, Sel.ChallengeFrame, false); e != nil {
+		if id, err := contentFrame(ctx, e); err == nil && !b.isAnswered(id) {
+			return OutcomeChallenge, ""
+		}
 	}
 	b.mu.Lock()
 	before := b.beforeClick // 赋值之后不再修改，出锁后只读
@@ -416,35 +457,68 @@ func (b *Browser) outcome(ctx context.Context, frames []frameRef) (Outcome, stri
 		if before[t] {
 			continue
 		}
-		if classifyPageError(t) == OutcomeDeclined {
+		switch classifyPageError(t) {
+		case OutcomeDeclined:
 			return OutcomeDeclined, truncateMessage(t)
-		}
-		if formError == "" {
-			formError = t
+		case OutcomeFormRejected:
+			if formError == "" {
+				formError = t
+			}
+		default:
+			b.noteNotice(t)
 		}
 	}
 	if formError != "" {
 		return OutcomeFormRejected, truncateMessage(formError)
 	}
-	if e := b.find(ctx, frames, Sel.ChallengeFrame, false); e != nil {
-		if id, err := contentFrame(ctx, e); err == nil && !b.isAnswered(id) {
-			return OutcomeChallenge, ""
-		}
-	}
 	return OutcomeUnknown, ""
 }
 
-// classifyPageError 按文字判断页面提示的类别，不区分大小写：先认被拒，再认表单校验错误，其余按被拒走确认流程。
+// classifyPageError 按文字判断页面提示的类别，不区分大小写：先认被拒，再认过程提示，再认表单校验错误，其余都是认不出（OutcomeNotice）。
 // 被拒要先判断：同时含两类词的文字（如拒付原因里提到邮编无效）不能当成校验错误，否则会少算发卡行的拒付。
+// 认不出的文字绝不能当结果：判成被拒只等 2 分钟就关浏览器，已扣款的单可能被定成失败，3DS 也走不下去；不认识的语言同理。
 func classifyPageError(text string) Outcome {
 	lower := strings.ToLower(text)
 	switch {
 	case containsAny(lower, declineWords):
 		return OutcomeDeclined
+	case containsAny(lower, progressWords):
+		return OutcomeNotice
 	case containsAny(lower, formErrorWords):
 		return OutcomeFormRejected
 	}
-	return OutcomeDeclined
+	return OutcomeNotice
+}
+
+// noteNotice 记下一条认不出的提示：脱敏、去重、限量。页面文字可能夹带邮箱、卡号，出了这里就要进时间线。
+func (b *Browser) noteNotice(text string) {
+	text = truncateMessage(maskPageText(text))
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.lastNotice = text
+	if b.noticeSeen[text] || len(b.noticeSeen) >= noticeLimit {
+		return
+	}
+	if b.noticeSeen == nil {
+		b.noticeSeen = map[string]bool{}
+	}
+	b.noticeSeen[text] = true
+	b.notices = append(b.notices, text)
+}
+
+func (b *Browser) lastNoticeText() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.lastNotice
+}
+
+// Notices 取走还没取过的未识别提示（已脱敏、去重、限量）。同一条文字一单只给一次。
+func (b *Browser) Notices() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	out := b.notices
+	b.notices = nil
+	return out
 }
 
 func containsAny(s string, words []string) bool {

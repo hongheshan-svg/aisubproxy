@@ -301,26 +301,29 @@ func formRejectedHarness(t *testing.T) *harness {
 	return h
 }
 
-// I-1：页面校验没过的单，处理和被拒一样（等宽限、查证据），只有最终定论不同：不计入健康度，不让配置问题停用卡产品。
+// MO-02：校验错误的词表没核实过，文字可能分错，所以等满 Verify 再查证据，不是 2 分钟。
+// 证据干净时才定失败，定论和被拒不同：不计入健康度，不让配置问题停用卡产品。
 func TestFormRejectedConcludes(t *testing.T) {
 	h := formRejectedHarness(t)
 	h.start(t)
 	start := h.clock.Now().Unix()
 	o := h.submit(t, false)
 	g := waitState(t, o.OrderNo, StateVerifying)
-	if g.PageOutcome != "form_rejected" || g.VerifyUntil == nil || *g.VerifyUntil != start+int64(h.timeouts.DeclineGrace/time.Second) {
-		t.Fatalf("校验错误应记 page_outcome 并只等 DeclineGrace: %+v", g)
+	if g.PageOutcome != "form_rejected" || g.VerifyUntil == nil || *g.VerifyUntil != start+int64(h.timeouts.Verify/time.Second) {
+		t.Fatalf("校验错误应记 page_outcome 并等满 Verify: %+v", g)
 	}
 	if g.ErrorMessage != postalIncomplete {
 		t.Fatalf("应记下页面文字: %+v", g)
 	}
 	waitEvent(t, o.OrderNo, "校验未通过")
 	waitAccountCalls(t, h, 2)
+	h.clock.Advance(h.timeouts.DeclineGrace + time.Second) // 过了被拒的宽限也不定论
+	waitAccountCalls(t, h, h.gpt.count("Account")+2)
 	if got := mustOrder(t, o.OrderNo); got.State != StateVerifying || len(h.pool.released()) != 0 {
-		t.Fatalf("宽限期内不应定论: %+v", got)
+		t.Fatalf("Verify 之内不应定论: %+v", got)
 	}
 
-	h.clock.Advance(h.timeouts.DeclineGrace + time.Second)
+	h.clock.Advance(h.timeouts.Verify)
 	g = waitDone(t, o.OrderNo)
 	if g.State != StateFailed || g.Failure != FailureDeclined || g.ErrorCode != "form_rejected" ||
 		g.ErrorMessage != "页面校验未通过："+postalIncomplete || g.SessionSealed != "" {
@@ -340,7 +343,7 @@ func TestFormRejectedButApprovedAuthNeedsReview(t *testing.T) {
 	h.start(t)
 	o := h.submit(t, false)
 	waitState(t, o.OrderNo, StateVerifying)
-	h.clock.Advance(h.timeouts.DeclineGrace + time.Second)
+	h.clock.Advance(h.timeouts.Verify + time.Second)
 	g := waitDone(t, o.OrderNo)
 	if g.State != StateNeedsReview || g.ErrorCode != "evidence_conflict" || g.Failure != "" {
 		t.Fatalf("有成功授权应转待人工: %+v", g)
@@ -362,7 +365,7 @@ func TestFormRejectedButAccountOpenedSucceeds(t *testing.T) {
 	assertReleases(t, h, cardpool.ResultSuccess)
 }
 
-// 证据一直不全时和被拒一样转人工，不定论失败。
+// 证据不全时转人工，不定论失败。校验错误已经等满 Verify，到期就转，不再多等一个 Verify（MaxPayDuration 才不用变）。
 func TestFormRejectedEvidenceUnavailableEscalates(t *testing.T) {
 	h := formRejectedHarness(t)
 	h.pool.listTxns = func(cardpool.TxnFilter) ([]cardpool.Transaction, int, error) {
@@ -371,17 +374,51 @@ func TestFormRejectedEvidenceUnavailableEscalates(t *testing.T) {
 	h.start(t)
 	o := h.submit(t, false)
 	waitState(t, o.OrderNo, StateVerifying)
-	h.clock.Advance(h.timeouts.DeclineGrace + time.Second)
-	waitEvent(t, o.OrderNo, "读交易表失败")
-	if g := mustOrder(t, o.OrderNo); g.State != StateVerifying {
-		t.Fatalf("上限之前应继续等: %+v", g)
-	}
-	h.clock.Advance(h.timeouts.Verify)
+	h.clock.Advance(h.timeouts.Verify + time.Second)
 	g := waitDone(t, o.OrderNo)
 	if g.State != StateNeedsReview || g.ErrorCode != "evidence_unavailable" || g.Failure != "" {
-		t.Fatalf("超过上限应转待人工: %+v", g)
+		t.Fatalf("证据不全应转待人工: %+v", g)
 	}
+	waitEvent(t, o.OrderNo, "读交易表失败")
 	assertReleases(t, h, cardpool.ResultAborted)
+}
+
+// MO-02：页面结果不明（认不出的提示）走满 Verify，提示文字留作说明，没有开通就转人工，绝不定失败。
+func TestUnrecognizedNoticeNeverConcludesFailed(t *testing.T) {
+	const notice = "Something went wrong."
+	h := newPayHarness(t, nil)
+	h.br.waitOutcome = outcomes(outcomeStep{out: paybrowser.OutcomeUnknown, text: notice})
+	h.br.notices = func() []string { return []string{notice} }
+	h.start(t)
+	start := h.clock.Now().Unix()
+	o := h.submit(t, false)
+	g := waitState(t, o.OrderNo, StateVerifying)
+	if g.PageOutcome != "unknown" || g.ErrorMessage != notice || g.VerifyUntil == nil || *g.VerifyUntil != start+int64(h.timeouts.Verify/time.Second) {
+		t.Fatalf("认不出的提示应按结果不明等满 Verify，并留下文字: %+v", g)
+	}
+	waitEvent(t, o.OrderNo, "支付页提示（未识别，继续等待）："+notice)
+	h.clock.Advance(h.timeouts.Verify + time.Second)
+	g = waitDone(t, o.OrderNo)
+	if g.State != StateNeedsReview || g.ErrorCode != "verify_timeout" || g.Failure != "" {
+		t.Fatalf("应转待人工: %+v", g)
+	}
+	assertSubmitCount(t, h, 1)
+}
+
+// 未识别提示写进时间线之前再过一遍 scrub。
+func TestNoticeEventScrubbed(t *testing.T) {
+	h := newPayHarness(t, nil)
+	h.br.waitOutcome = outcomes(outcomeStep{out: paybrowser.OutcomeUnknown})
+	h.br.notices = func() []string { return []string{"card " + testCardNoSpaced + " failed"} }
+	h.start(t)
+	o := h.submit(t, false)
+	waitState(t, o.OrderNo, StateVerifying)
+	waitEvent(t, o.OrderNo, "card *** failed")
+	for _, e := range eventStates(t, o.OrderNo) {
+		if strings.Contains(e.Message, testCardNoSpaced) {
+			t.Fatalf("时间线含完整卡号: %+v", e)
+		}
+	}
 }
 
 // 过长的页面文字加上前缀后仍受 error_message 上限约束。
@@ -391,7 +428,7 @@ func TestFormRejectedMessageTruncated(t *testing.T) {
 	h.start(t)
 	o := h.submit(t, false)
 	waitState(t, o.OrderNo, StateVerifying)
-	h.clock.Advance(h.timeouts.DeclineGrace + time.Second)
+	h.clock.Advance(h.timeouts.Verify + time.Second)
 	g := waitDone(t, o.OrderNo)
 	if n := len([]rune(g.ErrorMessage)); n > errorMessageLimit || !strings.HasPrefix(g.ErrorMessage, "页面校验未通过：") {
 		t.Fatalf("error_message 应有前缀且不超过 %d 字: %d %q", errorMessageLimit, n, g.ErrorMessage)
@@ -405,7 +442,7 @@ func TestFormRejectedMessageScrubbed(t *testing.T) {
 	h.start(t)
 	o := h.submit(t, false)
 	waitState(t, o.OrderNo, StateVerifying)
-	h.clock.Advance(h.timeouts.DeclineGrace + time.Second)
+	h.clock.Advance(h.timeouts.Verify + time.Second)
 	g := waitDone(t, o.OrderNo)
 	if strings.Contains(g.ErrorMessage, testCardNoSpaced) || !strings.Contains(g.ErrorMessage, "***") {
 		t.Fatalf("文字应脱敏: %q", g.ErrorMessage)
@@ -441,7 +478,7 @@ func TestBackfillFindsApprovedAuthNeedsReview(t *testing.T) {
 			h.start(t)
 			o := h.submit(t, false)
 			waitState(t, o.OrderNo, StateVerifying)
-			h.clock.Advance(h.timeouts.DeclineGrace + time.Second)
+			h.clock.Advance(h.timeouts.Verify + time.Second) // 盖住两种结果的 verify_until：被拒 DeclineGrace，校验错误 Verify
 			g := waitDone(t, o.OrderNo)
 			if g.State != StateNeedsReview || g.ErrorCode != "evidence_conflict" || g.Failure != "" {
 				t.Fatalf("补拉后才出现成功授权应转待人工: %+v", g)

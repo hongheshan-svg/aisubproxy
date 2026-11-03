@@ -27,6 +27,13 @@ import (
 
 const sessionCookie = "__Secure-next-auth.session-token"
 
+// TestMain 缩短与业务判断无关的等待，这个包的用例都开真实 Chrome，时间要省着用。
+func TestMain(m *testing.M) {
+	paybrowser.SetDeclineSettle(300 * time.Millisecond)
+	paybrowser.SetEmailSettle(200 * time.Millisecond)
+	os.Exit(m.Run())
+}
+
 // payRecord 是仿造页提交到 /pay 的全部字段。
 type payRecord struct {
 	Method, Number, Expiry, CVC            string
@@ -396,7 +403,6 @@ func TestClassifyPageError(t *testing.T) {
 		"Your card has insufficient funds.":                         paybrowser.OutcomeDeclined,
 		"Your card's security code is incorrect.":                   paybrowser.OutcomeDeclined,
 		"Your card has been declined. Please try a different card.": paybrowser.OutcomeDeclined,
-		"Processing error":                                          paybrowser.OutcomeDeclined,
 		"Your card has expired.":                                    paybrowser.OutcomeDeclined,
 		"Do not honor":                                              paybrowser.OutcomeDeclined,
 		"This card was reported lost.":                              paybrowser.OutcomeDeclined,
@@ -408,10 +414,19 @@ func TestClassifyPageError(t *testing.T) {
 		// 同时含两类词时按被拒算：判断顺序不能反，真拒付不能被当成校验错误
 		"Your card was declined: the postal code is invalid.": paybrowser.OutcomeDeclined,
 		"Your card number is incorrect or invalid.":           paybrowser.OutcomeDeclined,
-		// 认不出的文字和原来一样按被拒走确认流程
-		"":                      paybrowser.OutcomeDeclined,
-		"Something went wrong.": paybrowser.OutcomeDeclined,
-		"您的银行卡被拒绝":              paybrowser.OutcomeDeclined,
+		// 认不出的文字不是结果（MO-02）。原来一律按被拒：只等 2 分钟就关浏览器，已扣款的单可能被定成失败，3DS 也走不下去
+		"":                      paybrowser.OutcomeNotice,
+		"Something went wrong.": paybrowser.OutcomeNotice,
+		"Processing error":      paybrowser.OutcomeNotice,
+		"您的银行卡被拒绝":              paybrowser.OutcomeNotice, // 词表没有核实过中文拒付文字，不猜
+		// 过程提示：含 required 也不算校验错误
+		"Authentication required": paybrowser.OutcomeNotice,
+		"Verification required.":  paybrowser.OutcomeNotice,
+		"Processing your payment": paybrowser.OutcomeNotice,
+		"Please wait...":          paybrowser.OutcomeNotice,
+		// 收紧的拒付词：这些都不是发卡行拒付
+		"Connection lost.":         paybrowser.OutcomeNotice,
+		"Your session has expired": paybrowser.OutcomeNotice,
 	}
 	for text, want := range cases {
 		if got := paybrowser.ClassifyPageError(text); got != want {
@@ -445,7 +460,6 @@ func TestPageErrorAfterClickClassified(t *testing.T) {
 		{"两条校验错误取第一条", checkoutQuery("fielderror", incomplete, "fielderror", "Your card number is invalid."), paybrowser.OutcomeFormRejected, incomplete},
 		{"卡片 iframe 里的校验错误", checkoutQuery("cardfielderror", incomplete), paybrowser.OutcomeFormRejected, incomplete},
 		{"卡片 iframe 里的真拒付", checkoutQuery("cardfielderror", declined), paybrowser.OutcomeDeclined, declined},
-		{"认不出的文字仍按被拒", checkoutQuery("fielderror", "Processing error"), paybrowser.OutcomeDeclined, "Processing error"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -460,6 +474,133 @@ func TestPageErrorAfterClickClassified(t *testing.T) {
 				t.Fatalf("前端校验没过时仿造页不应收到提交: %d", n)
 			}
 		})
+	}
+}
+
+// MO-02：认不出的文字只记下、继续等，之后的真结果照常识别。超时的话把它当说明返回，不当结果。
+func TestUnrecognizedNoticeKeepsWaiting(t *testing.T) {
+	eachCheckout(t, func(t *testing.T, k checkoutKind) {
+		f := newFakeCheckout(t)
+		b, ctx := openKind(t, f, k, checkoutQuery("notice", "Processing error", "noticedelay", "1500", "mode", "decline"), paybrowser.LaunchOptions{})
+		fillAndSubmit(t, b, ctx)
+
+		got, msg, err := b.WaitOutcome(ctx, 800*time.Millisecond)
+		if err != nil || got != paybrowser.OutcomeUnknown || msg != "Processing error" {
+			t.Fatalf("WaitOutcome = %q, %q, %v，期望 unknown 并带上提示文字", got, msg, err)
+		}
+		if n := strings.Join(b.Notices(), "\n"); n != "Processing error" {
+			t.Fatalf("Notices = %q", n)
+		}
+		if n := b.Notices(); len(n) != 0 {
+			t.Fatalf("同一条提示只给一次: %q", n)
+		}
+		if msg := waitOutcome(t, b, ctx, paybrowser.OutcomeDeclined); msg != "Your card was declined." {
+			t.Fatalf("被拒消息 = %q", msg)
+		}
+	})
+}
+
+// MO-02：认不出的提示之后才出现 3DS 框，要能等到；原来会判成被拒并关浏览器。
+func TestNoticeThenChallenge(t *testing.T) {
+	eachCheckout(t, func(t *testing.T, k checkoutKind) {
+		f := newFakeCheckout(t)
+		b, ctx := openKind(t, f, k, checkoutQuery("notice", "Something went wrong.", "noticedelay", "1000", "mode", "3ds"), paybrowser.LaunchOptions{})
+		fillAndSubmit(t, b, ctx)
+		waitOutcome(t, b, ctx, paybrowser.OutcomeChallenge)
+	})
+}
+
+// 3DS 框和提示同时在时先判 3DS。
+func TestChallengeBeforeText(t *testing.T) {
+	for _, notice := range []string{"Your card was declined.", "Your postal code is incomplete.", "Authentication required"} {
+		t.Run(notice, func(t *testing.T) {
+			needChrome(t)
+			f := newFakeCheckout(t)
+			b, ctx := openKind(t, f, stripeCheckout, checkoutQuery("notice", notice, "mode", "3ds"), paybrowser.LaunchOptions{})
+			fillAndSubmit(t, b, ctx)
+			waitOutcome(t, b, ctx, paybrowser.OutcomeChallenge)
+		})
+	}
+}
+
+// 拒付文字之后紧跟着出现 3DS 框：再看一会儿的窗口要能改判，否则浏览器一关验证就走不下去了。
+func TestDeclineTextThenChallengeInSettleWindow(t *testing.T) {
+	needChrome(t)
+	t.Cleanup(paybrowser.SetDeclineSettle(4 * time.Second))
+	f := newFakeCheckout(t)
+	b, ctx := openKind(t, f, stripeCheckout, checkoutQuery("notice", "Your card was declined.", "noticedelay", "1000", "mode", "3ds"), paybrowser.LaunchOptions{})
+	fillAndSubmit(t, b, ctx)
+	waitOutcome(t, b, ctx, paybrowser.OutcomeChallenge)
+}
+
+// 校验错误之后又出现拒付文字：按被拒，不能少算发卡行的拒付。
+func TestFormErrorThenDeclineInSettleWindow(t *testing.T) {
+	needChrome(t)
+	t.Cleanup(paybrowser.SetDeclineSettle(4 * time.Second))
+	f := newFakeCheckout(t)
+	b, ctx := openKind(t, f, stripeCheckout, checkoutQuery("notice", "Your postal code is incomplete.", "noticedelay", "500", "mode", "decline"), paybrowser.LaunchOptions{})
+	fillAndSubmit(t, b, ctx)
+	if msg := waitOutcome(t, b, ctx, paybrowser.OutcomeDeclined); msg != "Your card was declined." {
+		t.Fatalf("被拒消息 = %q", msg)
+	}
+}
+
+// 不认识的语言不算被拒。词表没有核实过中文拒付文字，猜错的代价是把已扣款的单定成失败。
+func TestNonEnglishNoticeNotDeclined(t *testing.T) {
+	needChrome(t)
+	f := newFakeCheckout(t)
+	b, ctx := openKind(t, f, stripeCheckout, checkoutQuery("notice", "您的银行卡被拒绝", "mode", "none"), paybrowser.LaunchOptions{})
+	fillAndSubmit(t, b, ctx)
+	got, msg, err := b.WaitOutcome(ctx, time.Second)
+	if err != nil || got != paybrowser.OutcomeUnknown || msg != "您的银行卡被拒绝" {
+		t.Fatalf("WaitOutcome = %q, %q, %v，期望 unknown", got, msg, err)
+	}
+}
+
+// 提示文字进时间线之前先脱敏。
+func TestNoticeMasked(t *testing.T) {
+	needChrome(t)
+	f := newFakeCheckout(t)
+	const notice = "Contact buyer@example.com about 4242 4242 4242 4242"
+	b, ctx := openKind(t, f, stripeCheckout, checkoutQuery("notice", notice, "mode", "none"), paybrowser.LaunchOptions{})
+	fillAndSubmit(t, b, ctx)
+	_, msg, err := b.WaitOutcome(ctx, time.Second)
+	if err != nil || strings.Contains(msg, "buyer@") || strings.Contains(msg, "4242") {
+		t.Fatalf("WaitOutcome 的说明未脱敏: %q, %v", msg, err)
+	}
+	if n := strings.Join(b.Notices(), "\n"); strings.Contains(n, "buyer@") || strings.Contains(n, "4242") || !strings.Contains(n, "***@***") {
+		t.Fatalf("Notices 未脱敏: %q", n)
+	}
+}
+
+func TestMaskPageText(t *testing.T) {
+	cases := map[string]string{
+		"a.b+c@mail.example.com 你好":  "***@*** 你好",
+		"card 4242-4242 4242 4242 x": "card *** x",
+		"tel 13800138000":            "tel ***",
+		"₱1,120.00 due in 30 days":   "₱1,120.00 due in 30 days",
+		"Order 123456":               "Order 123456",
+	}
+	for in, want := range cases {
+		if got := paybrowser.MaskPageText(in); got != want {
+			t.Errorf("MaskPageText(%q) = %q，期望 %q", in, got, want)
+		}
+	}
+}
+
+// 真实DOM仿造页上，点了支付但前端校验拦下：form_rejected，没有发出扣款。
+func TestFormRejectedOnStripePage(t *testing.T) {
+	needChrome(t)
+	f := newFakeCheckout(t)
+	const incomplete = "Your postal code is incomplete."
+	b, ctx := openKind(t, f, stripeCheckout, checkoutQuery("fielderror", incomplete), paybrowser.LaunchOptions{})
+	fillAndSubmit(t, b, ctx)
+	if msg := waitOutcome(t, b, ctx, paybrowser.OutcomeFormRejected); msg != incomplete {
+		t.Fatalf("提示文字 = %q", msg)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if n, pays := f.submitClicks.Load(), len(f.payments()); n != 1 || pays != 0 {
+		t.Fatalf("应点到 1 次、没有发 /pay，实际点了 %d 次，/pay %d 次", n, pays)
 	}
 }
 

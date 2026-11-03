@@ -24,8 +24,10 @@ package paybrowser
 //   - 点击之后的一切：Success、DeclineText 的文字容器（只证实 .FieldError 这个 class 存在）、ChallengeFrame、OTPInput、OTPSubmit
 //   - Success：演示页没有 #payment-success；真实 Stripe Checkout 成功后多半直接跳走，认不出成功时走确认阶段查账号
 //
-// 注意 ChallengeFrame 的 iframe[src*="challenge"] 可能命中 hCaptcha 的 iframe。提示文字之前先判 3DS，所以误判的后果是
-// 把人机验证当成 3DS 去等验证码（见设计文档 §12），只影响走确认的快慢，不会重复付款。
+// ChallengeFrame 只列有依据的 3DS 候选：Stripe 的 stripe-challenge-frame（名字），和地址里带 three-ds 的 iframe。
+// 以前还有 src*="challenge" 与 src*="3ds"，前者会命中 Stripe 内嵌的 hCaptcha（HCaptchaInvisible 里有 src 含 challenge 的 iframe，
+// 风控把它弄可见时），提示文字之前先判 3DS，于是把人机验证当成 3DS 去白等 5 分钟验证码（PF-5）。两个宽泛候选已去掉。
+// 第一笔真实付款看到 3DS 截图后，把真实 iframe 的名字或地址补进来；认不出 3DS 框的后果是走确认阶段，不会重复付款。
 var Sel = struct {
 	// 卡片字段（Stripe Checkout 在主文档，Payment Element 在 iframe）
 	CardNumber, Expiry, CVC []string
@@ -104,10 +106,7 @@ var Sel = struct {
 	// 不用 .SubmitButton--complete：它可能只表示表单已填完。认不出成功只是多等一会儿，再靠查账号定论；误判成功会立刻关掉浏览器
 	Success:     []string{`#payment-success`, `[data-testid="payment-success"]`},
 	DeclineText: []string{`#payment-error`, `[role="alert"]`, `.p-FieldError`, `.FieldError`},
-	ChallengeFrame: []string{
-		`iframe[name="stripe-challenge-frame"]`, `iframe[src*="three-ds"]`,
-		`iframe[src*="3ds"]`, `iframe[src*="challenge"]`,
-	},
+	ChallengeFrame: []string{`iframe[name="stripe-challenge-frame"]`, `iframe[src*="three-ds"]`},
 	OTPInput: []string{
 		`input[autocomplete="one-time-code"]`, `input[name="challengeDataEntry"]`,
 		`input[name*="otp" i]`, `input[id*="otp" i]`,

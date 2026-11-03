@@ -523,6 +523,49 @@ func TestChallengeBeforeText(t *testing.T) {
 	}
 }
 
+// PF-5：可见的 hCaptcha（iframe 地址含 challenge）不是 3DS 框。原来的宽泛候选会把它当成 3DS，白等验证码。
+func TestVisibleCaptchaIsNotChallenge(t *testing.T) {
+	needChrome(t)
+	for name, q := range map[string]string{
+		"只有验证码框":    checkoutQuery("captcha", "1", "mode", "none"),
+		"验证码框加提示文字": checkoutQuery("captcha", "1", "mode", "none", "notice", "Please try again."),
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFakeCheckout(t)
+			b, ctx := openKind(t, f, stripeCheckout, q, paybrowser.LaunchOptions{})
+			fillAndSubmit(t, b, ctx)
+			got, _, err := b.WaitOutcome(ctx, 3*time.Second)
+			if err != nil || got != paybrowser.OutcomeUnknown {
+				t.Fatalf("WaitOutcome = %q, %v，期望 unknown（不是 challenge）", got, err)
+			}
+			if _, err := b.Shot(ctx, "captcha", paybrowser.ShotChallenge); err == nil {
+				t.Fatal("没有 3DS 框时不应截到验证框")
+			}
+		})
+	}
+}
+
+// PF-5：去掉宽泛候选之后，真实 3DS 用的候选还在：按 name 识别、只按 src 里的 three-ds 识别，
+// 以及页面上同时有人机验证框时仍认出真正的 3DS 框并能截图。
+func TestRealChallengeCandidatesStillMatch(t *testing.T) {
+	needChrome(t)
+	for name, q := range map[string]string{
+		"stripe-challenge-frame": checkoutQuery("mode", "3ds"),
+		"src 含 three-ds":         checkoutQuery("mode", "3ds", "challengeby", "src"),
+		"同时有人机验证框":               checkoutQuery("mode", "3ds", "captcha", "1"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFakeCheckout(t)
+			b, ctx := openKind(t, f, stripeCheckout, q, paybrowser.LaunchOptions{ShotDir: t.TempDir()})
+			fillAndSubmit(t, b, ctx)
+			waitOutcome(t, b, ctx, paybrowser.OutcomeChallenge)
+			if _, err := b.Shot(ctx, "challenge", paybrowser.ShotChallenge); err != nil {
+				t.Fatalf("应能截到 3DS 框: %v", err)
+			}
+		})
+	}
+}
+
 // 拒付文字之后紧跟着出现 3DS 框：再看一会儿的窗口要能改判，否则浏览器一关验证就走不下去了。
 func TestDeclineTextThenChallengeInSettleWindow(t *testing.T) {
 	needChrome(t)

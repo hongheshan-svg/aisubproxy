@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	fhttp "github.com/bogdanfinn/fhttp"
+	"github.com/bogdanfinn/fhttp/cookiejar"
 	tls_client "github.com/bogdanfinn/tls-client"
 	"github.com/bogdanfinn/tls-client/profiles"
 
@@ -30,10 +31,13 @@ var ErrUnauthorized = errors.New("ChatGPT 会话未授权或已失效")
 // 出口 IP 被拦，换会话没有用，要检查该地区代理的出口 IP。它不能当作账号状态的任何证据。
 var ErrBlocked = errors.New("请求被 Cloudflare 拦截，请检查该地区代理的出口 IP")
 
-// Client 是带 TLS 指纹的 ChatGPT 客户端，每个实例独立连接（可走独立代理）。
+// Client 是带 TLS 指纹的 ChatGPT 客户端，每个实例独立连接（可走独立代理），
+// 并有自己的设备号和 cookie（见 browser_identity.go）。
 type Client struct {
-	BaseURL string
-	http    tls_client.HttpClient
+	BaseURL  string
+	http     tls_client.HttpClient
+	jar      *cookiejar.Jar
+	deviceID string
 }
 
 // New 创建客户端；proxyURL 为空则直连，仅接受 http、https、socks5。
@@ -60,7 +64,11 @@ func New(proxyURL string) (*Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("创建 HTTP 客户端失败: %w", err)
 	}
-	return &Client{BaseURL: defaultBaseURL, http: h}, nil
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return nil, fmt.Errorf("创建 cookie 存储失败: %w", err)
+	}
+	return &Client{BaseURL: defaultBaseURL, http: h, jar: jar, deviceID: newDeviceID()}, nil
 }
 
 func (c *Client) do(ctx context.Context, method, path string, headers map[string]string, cookies []Cookie, body []byte) ([]byte, error) {
@@ -84,11 +92,18 @@ func (c *Client) do(ctx context.Context, method, path string, headers map[string
 	for _, ck := range cookies {
 		req.AddCookie(&fhttp.Cookie{Name: ck.Name, Value: ck.Value})
 	}
+	scoped := browserScoped(path) && c.jar != nil
+	if scoped {
+		c.applyBrowserIdentity(req, path, cookies)
+	}
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("请求 ChatGPT 失败: %w", err)
 	}
 	defer resp.Body.Close()
+	if scoped {
+		c.jar.SetCookies(req.URL, resp.Cookies())
+	}
 	b, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("读取 ChatGPT 响应失败: %w", err)
@@ -219,14 +234,16 @@ func firstString(vals ...interface{}) string {
 type Checkout struct{ SessionID, URL string }
 
 // CreateCheckout 创建订阅支付会话。
+// planCheckoutBody 是开通订阅建结账会话的请求体；自动付款和免付款探测共用，保证探测的请求和真实下单一致。
+func planCheckoutBody(planName, country, currency string) map[string]interface{} {
+	return map[string]interface{}{
+		"plan_name":       planName,
+		"billing_details": map[string]string{"country": country, "currency": currency},
+	}
+}
+
 func (c *Client) CreateCheckout(ctx context.Context, s Session, planName, country, currency string) (Checkout, error) {
-	payload, err := json.Marshal(map[string]interface{}{
-		"plan_name": planName,
-		"billing_details": map[string]string{
-			"country":  country,
-			"currency": currency,
-		},
-	})
+	payload, err := json.Marshal(planCheckoutBody(planName, country, currency))
 	if err != nil {
 		return Checkout{}, err
 	}

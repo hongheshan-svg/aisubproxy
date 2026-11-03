@@ -222,32 +222,18 @@ func parseProbeCheckout(b []byte) (ProbeCheckout, error) {
 }
 
 // ModeCheckout 为没有订阅的账号建一次 Plus 开通结账会话（只建会话，不付款）。
-// redirect 为 true 时额外带 checkout_ui_mode:"redirect"。
-func (p *Probe) ModeCheckout(ctx context.Context, s Session, planName, country, currency string, redirect bool) (ProbeCheckout, error) {
-	body := map[string]interface{}{
-		"plan_name":       planName,
-		"billing_details": map[string]string{"country": country, "currency": currency},
-	}
-	if redirect {
-		body["checkout_ui_mode"] = "redirect"
-	}
-	return p.postCheckout(ctx, bearer(s), body)
+// 请求体和请求头与自动付款的 CreateCheckout 完全相同。
+func (p *Probe) ModeCheckout(ctx context.Context, s Session, planName, country, currency string) (ProbeCheckout, error) {
+	return p.postCheckout(ctx, bearer(s), planCheckoutBody(planName, country, currency))
 }
 
+// probeCreditQuantity 是探测建点数会话用的数量（最小档 250 点）。
+const probeCreditQuantity = 250
+
 // CreditCheckout 为有生效订阅的账号建一次 250 点的点数结账会话（只建会话，不付款）。
-func (p *Probe) CreditCheckout(ctx context.Context, s Session, accountID string, redirect bool) (ProbeCheckout, error) {
-	body := map[string]interface{}{
-		"entry_point": "codex_purchase_credits_route",
-		"credit_purchase_data": map[string]interface{}{
-			"account_id": accountID,
-			"quantity":   250,
-			"unit":       "credit",
-		},
-	}
-	if redirect {
-		body["checkout_ui_mode"] = "redirect"
-	}
-	return p.postCheckout(ctx, accountHeaders(s, accountID), body)
+// 请求体和请求头与自动付款的 CreateCreditCheckout 完全相同。
+func (p *Probe) CreditCheckout(ctx context.Context, s Session, accountID string) (ProbeCheckout, error) {
+	return p.postCheckout(ctx, accountScopedHeaders(s, accountID, true), creditCheckoutBody(accountID, probeCreditQuantity))
 }
 
 func (p *Probe) postCheckout(ctx context.Context, headers map[string]string, body map[string]interface{}) (ProbeCheckout, error) {

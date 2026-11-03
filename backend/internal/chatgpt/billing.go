@@ -109,6 +109,15 @@ type CreditCheckoutResult struct {
 // 头带 ChatGPT-Account-ID 与 X-OpenAI-Expected-Account-Id。前端还会带几项完整性头（我们造不出来），服务器是否要求要在测试账号上确认。
 // 不带 billing_details：点数按账号现有的计费币种报价，改币种由引擎在 checking 拦下。
 // 订阅开通用的 CreateCheckout 请求体不变。
+// creditCheckoutBody 是买点数建结账会话的请求体；自动付款和免付款探测共用，保证探测的请求和真实下单一致。
+func creditCheckoutBody(accountID string, quantity int) map[string]interface{} {
+	return map[string]interface{}{
+		"credit_purchase_data": map[string]interface{}{"account_id": accountID, "quantity": quantity, "unit": "credit"},
+		"entry_point":          creditEntryPoint,
+		"checkout_ui_mode":     "redirect",
+	}
+}
+
 func (c *Client) CreateCreditCheckout(ctx context.Context, s Session, accountID string, quantity int) (CreditCheckoutResult, error) {
 	id, err := requireAccountID(accountID)
 	if err != nil {
@@ -117,11 +126,7 @@ func (c *Client) CreateCreditCheckout(ctx context.Context, s Session, accountID 
 	if quantity <= 0 {
 		return CreditCheckoutResult{}, errors.New("点数数量必须大于 0")
 	}
-	payload, err := json.Marshal(map[string]interface{}{
-		"credit_purchase_data": map[string]interface{}{"account_id": id, "quantity": quantity, "unit": "credit"},
-		"entry_point":          creditEntryPoint,
-		"checkout_ui_mode":     "redirect",
-	})
+	payload, err := json.Marshal(creditCheckoutBody(id, quantity))
 	if err != nil {
 		return CreditCheckoutResult{}, err
 	}

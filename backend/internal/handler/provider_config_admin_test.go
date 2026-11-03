@@ -56,8 +56,9 @@ func TestAdminListProviders(t *testing.T) {
 	if localBody(t, m["products"]) != `[{"key":"gpt","label":"ChatGPT"},{"key":"x","label":"X Premium"},{"key":"grok","label":"Grok"},{"key":"claude","label":"Claude"}]` {
 		t.Fatalf("产品线: %v", m["products"])
 	}
-	if m["default"] != "zovocard" || localBody(t, m["by_product"]) != "{}" || localBody(t, m["warnings"]) != "[]" ||
-		localBody(t, m["effective"]) != `{"claude":"zovocard","gpt":"zovocard","grok":"zovocard","x":"zovocard"}` {
+	// 出厂配置：全局默认 MarsWallex，它不做的 X、Grok、Claude 单独选 ZovoCard
+	if m["default"] != "marswallex" || localBody(t, m["by_product"]) != `{"claude":"zovocard","grok":"zovocard","x":"zovocard"}` || localBody(t, m["warnings"]) != "[]" ||
+		localBody(t, m["effective"]) != `{"claude":"zovocard","gpt":"marswallex","grok":"zovocard","x":"zovocard"}` {
 		t.Fatalf("配置: %v", m)
 	}
 	r := localJSON(t, e.do("GET", "/admin/providers/readiness", ""))
@@ -123,7 +124,7 @@ func TestAdminPutProviderConfig(t *testing.T) {
 		!strings.Contains(localBody(t, nr[0]), "需要一笔系统自动确认成功的真实付款") {
 		t.Fatalf("not_ready: %v", nr)
 	}
-	if a := localAudit(t); !strings.Contains(a, "provider_config_update default zovocard→zovocard by_product -→gpt=marswallex") {
+	if a := localAudit(t); !strings.Contains(a, "provider_config_update default marswallex→zovocard by_product claude=zovocard,grok=zovocard,x=zovocard→gpt=marswallex") {
 		t.Fatalf("审计: %s", a)
 	}
 	got := localJSON(t, e.do("GET", "/admin/providers", ""))

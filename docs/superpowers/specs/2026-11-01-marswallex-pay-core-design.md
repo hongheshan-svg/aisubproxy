@@ -66,7 +66,7 @@ CDK 到充值的后端已经接通：可以在后台选择默认发码服务商�
 
 | 内容 | 位置 | 要点 |
 |---|---|---|
-| 服务商选择 | `internal/provider` | 默认发码服务商存在 `site_settings` 的 `cdk_default_provider`，初始值 `zovocard`。切换只影响新发的码，写审计，绝不自动换服务商重试 |
+| 服务商选择 | `internal/provider` | 默认发码服务商存在 `site_settings` 的 `cdk_default_provider`，初始值 `zovocard`（2026-11-03 起出厂默认改为 MarsWallex，见卡服务商注册表设计 §3.3）。切换只影响新发的码，写审计，绝不自动换服务商重试 |
 | 按码分流 | `internal/provider`、`handler/cardplatform_cdk.go` | 码前缀 `MW-`、令牌前缀 `mwt_` 的请求由本站处理，其余和原来一样转发 ZovoCard，响应不变 |
 | 本地码表 | `db/local_cdk.go` 的 `local_cdks` | 只存哈希和前缀。完整码只在发码响应里出现一次。旧表 `cd_keys` 不复用 |
 | 码状态派生 | `db.DeriveLocalCDK` | 不写码状态，从 `pay_orders` 派生，人工启停是唯一存在码表里的状态 |

@@ -12,6 +12,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
+	"github.com/tuzi/cdk-recharge-system/internal/provider"
 )
 
 // MO-07：发码幂等键由客户端提供，服务端缺头拒绝；兜底找回只认本次请求开始之后创建的码。
@@ -75,6 +76,10 @@ func newIssueRouter(t *testing.T, f *issueFake) *gin.Engine {
 		t.Fatal(e)
 	}
 	if e := db.SetSetting("card_api_key", "fixture-key"); e != nil {
+		t.Fatal(e)
+	}
+	// 这组测的是 ZovoCard 上游发码；出厂默认 GPT 用 MarsWallex，这里显式选 ZovoCard
+	if e := db.SetSetting(provider.SettingDefault, string(provider.ZovoCard)); e != nil {
 		t.Fatal(e)
 	}
 	gin.SetMode(gin.TestMode)

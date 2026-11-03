@@ -66,8 +66,14 @@ func TestCardPoolOptionsWiresProviderGate(t *testing.T) {
 		t.Fatal("原有选项不能丢")
 	}
 	ctx := context.Background()
+	if on, err := opts.MarsWallexSelected(ctx); err != nil || !on {
+		t.Fatalf("出厂配置 GPT 用 MarsWallex，应选用: %v %v", on, err)
+	}
+	if err := provider.SaveDefault(provider.ZovoCard); err != nil {
+		t.Fatal(err)
+	}
 	if on, err := opts.MarsWallexSelected(ctx); err != nil || on {
-		t.Fatalf("初始默认是 zovocard，应未选用: %v %v", on, err)
+		t.Fatalf("切到 ZovoCard 后应未选用: %v %v", on, err)
 	}
 	if err := provider.SaveDefault(provider.MarsWallex); err != nil {
 		t.Fatal(err)

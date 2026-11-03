@@ -46,6 +46,9 @@ async function render(comp: any, props: Record<string, unknown> = {}, url = '/',
   installElement(app)
   // SSR 下 el-table 不渲染表头；要看列标题时，把表格换成直接输出各列 label 的替身
   if (stubTable) {
+    // 先删掉 installElement 注册的真组件，再注册替身，避免重复注册警告（不能用 warnHandler 吞警告）
+    delete (app._context.components as any).ElTable
+    delete (app._context.components as any).ElTableColumn
     app.component('ElTable', { render() { return h('div', (this as any).$slots.default?.()) } })
     app.component('ElTableColumn', { props: ['label'], render() { return h('span', { class: 'col' }, (this as any).label) } })
   }

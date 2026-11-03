@@ -4,7 +4,7 @@
       <div class="font-semibold">Codex 点数</div>
       <p class="text-xs text-muted mt-1">
         点数按用户账号的计费币种付款，码的地区必须和账号计费币种一致。预期金额只用来核对配置；
-        付款时支付页金额低于最低金额、或超过上限，都会在注资前放弃。上限和最低金额不能互相倒挂。
+        付款时支付页金额低于最低金额、或超过上限，都会在注资前放弃。最低金额不能高于预期金额或上限，上限不能低于预期金额。
         PH 默认每 250 点 {{ phPer250 }}，最低金额等于预期金额，上限为预期金额的 112%。注资金额没有默认值，请按汇率换算后填写。
       </p>
     </div>
@@ -53,7 +53,7 @@
 </template>
 
 <script setup lang="ts">
-// 付款配置里的 Codex 点数档：每档每个地区可配预期金额、上限和注资。编辑的是父组件的表单（同一份 plansForm），随「保存」一起提交。
+// 付款配置里的 Codex 点数档：每档每个地区可配预期金额、最低金额、上限和注资。编辑的是父组件的表单（同一份 plansForm），随「保存」一起提交。
 import { computed, reactive } from 'vue'
 import {
   applyCreditDefaultPH, capBelowExpect, creditDefaultPH, currencyDigits, floorProblem, formatMinor, isCreditPlan, toMinor,

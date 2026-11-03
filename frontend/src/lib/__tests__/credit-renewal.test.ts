@@ -93,7 +93,7 @@ describe('点数档的付款配置', () => {
     expect(back.kind).toBe('')
   })
 
-  it('PH 恢复默认金额：只改 PH 的币种、预期和上限，不动启用和注资', () => {
+  it('PH 恢复默认金额：只改 PH 的币种、预期、最低金额和上限，不动启用和注资', () => {
     const form = planToForm({
       ...creditPlan, key: 'credit1000', credit_quantity: 1000,
       regions: { ...creditPlan.regions, PH: { enabled: false, currency: 'USD', expect_minor: 1, floor_minor: 1, cap_minor: 2, fund_cents: 4500 } },

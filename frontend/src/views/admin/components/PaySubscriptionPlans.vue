@@ -27,6 +27,7 @@
         <el-table-column label="应付金额上限" min-width="170">
           <template #default="{ row }">
             <el-input-number v-model="row.cap" size="small" :min="0" :precision="currencyDigits(row.currency)" :controls="false" style="width: 130px" />
+            <div v-if="rowCapBelow(row)" class="text-xs text-warn">上限低于预期金额，保存会被拒绝</div>
           </template>
         </el-table-column>
         <el-table-column label="注资（美元）" min-width="150">
@@ -45,7 +46,7 @@
 <script setup lang="ts">
 // 付款配置里的订阅套餐：每个地区可配预期金额、最低金额、上限和注资。编辑的是父组件的表单（同一份 plansForm），随「保存」一起提交。
 import { computed, reactive } from 'vue'
-import { currencyDigits, floorProblem, isCreditPlan, toMinor, type FormPlan, type FormRow } from '../../../lib/pay'
+import { capBelowExpect, currencyDigits, floorProblem, isCreditPlan, toMinor, type FormPlan, type FormRow } from '../../../lib/pay'
 
 const plans = defineModel<FormPlan[]>({ required: true })
 const subscriptionPlans = computed(() => plans.value.filter((p) => !isCreditPlan(p)))
@@ -57,6 +58,11 @@ function visibleRows(p: FormPlan) {
 }
 function hiddenCount(p: FormPlan) {
   return p.rows.length - visibleRows(p).length
+}
+
+function rowCapBelow(row: FormRow) {
+  const cur = row.currency.trim().toUpperCase()
+  return capBelowExpect(toMinor(row.cap || 0, cur), toMinor(row.expect || 0, cur))
 }
 
 function rowFloorProblem(row: FormRow) {

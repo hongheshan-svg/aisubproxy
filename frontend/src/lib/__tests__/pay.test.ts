@@ -115,7 +115,11 @@ describe('最低金额', () => {
   }
 
   it('planToForm 再 formToPlan 往返后 floor_minor 不变（USD 与 JPY）', () => {
-    const back = formToPlan(planToForm(plan, REGIONS))
+    const form = planToForm(plan, REGIONS)
+    // 直接断言表单值：USD 2 位小数、JPY 0 位，抓得到两边对称算错的情况
+    expect(form.rows.find((r) => r.region === 'PH')!.floor).toBe(18.5)
+    expect(form.rows.find((r) => r.region === 'JP')!.floor).toBe(2800)
+    const back = formToPlan(form)
     expect(back.regions.PH.floor_minor).toBe(1850)
     expect(back.regions.JP.floor_minor).toBe(2800)
     expect(back.regions.US.floor_minor).toBe(0)

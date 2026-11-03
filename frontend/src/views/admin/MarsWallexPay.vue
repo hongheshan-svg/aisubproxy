@@ -320,7 +320,7 @@ import { authFetch } from '../../lib/api'
 import { dialog } from '../../lib/dialog'
 import { errText, fmtTs } from '../../lib/cardpool'
 import {
-  STATES, failureText, formToPlan, formatMinor, isCreditPlan, isTerminal, pageOutcomeLabel, payApi, planToForm, proxyTestText, stateLabel,
+  STATES, failureText, formToPlan, formatMinor, isTerminal, pageOutcomeLabel, payApi, planToForm, proxyTestText, stateLabel,
   payBlockReason, type FormPlan, type PlanConf, type ProxyTestResult,
 } from '../../lib/pay'
 import { loadRegistry, providerLabel, registry } from '../../lib/provider'

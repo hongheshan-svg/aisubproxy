@@ -227,6 +227,7 @@ type browserFactory struct {
 	openErr     error           // 非 nil 时 Open 返回它
 	report      paybrowser.FillReport
 	diagnose    func(context.Context) []string // 未设置时返回一行固定文字
+	lockSubmit  func() bool                    // 未设置时返回 true：不能证明没点击，这是安全方向
 
 	mu         sync.Mutex
 	proxies    []string
@@ -337,6 +338,14 @@ func (b *fakeBrowser) Submit(context.Context) error {
 		return b.f.submit()
 	}
 	return errFakeUnset
+}
+
+func (b *fakeBrowser) LockSubmit() bool {
+	b.hit("LockSubmit")
+	if b.f.lockSubmit != nil {
+		return b.f.lockSubmit()
+	}
+	return true
 }
 
 func (b *fakeBrowser) WaitOutcome(c context.Context, timeout time.Duration) (paybrowser.Outcome, string, error) {

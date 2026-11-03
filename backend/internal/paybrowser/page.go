@@ -60,6 +60,8 @@ var (
 	ErrAlreadySubmitted = errors.New("已经点击过支付，不能再次提交")
 	// ErrShotForbidden 表示页面上可能有卡号，禁止整页截图。
 	ErrShotForbidden = errors.New("已开始填卡，禁止整页截图")
+	// ErrSubmitLocked 表示调用过 LockSubmit；这个浏览器再也不会点支付。
+	ErrSubmitLocked = errors.New("支付已锁定，不能点击")
 )
 
 const (
@@ -67,7 +69,6 @@ const (
 	pollInterval    = 250 * time.Millisecond
 
 	formWait     = 30 * time.Second       // 等卡号框出现（含点开「新卡」入口）
-	fieldWait    = 10 * time.Second       // 卡号框出现后，等其余各字段、支付按钮、验证码框
 	keyDelay     = 35 * time.Millisecond  // 卡号类字段逐字键入的间隔
 	slowKeyDelay = 70 * time.Millisecond  // 文本核对不符时逐字重打的间隔
 	settleDelay  = 200 * time.Millisecond // 按 Esc 后等地址联想收起再核对
@@ -78,8 +79,12 @@ const (
 	noticeLimit      = 20              // 一单最多记这么多条不同的未识别提示，防止页面刷屏
 )
 
-// declineSettle 是判到被拒或校验错误后再看一会儿的时长：文字之后紧跟着 3DS 或成功的，以后者为准。
-var declineSettle = 5 * time.Second
+var (
+	// fieldWait 是卡号框出现后，等其余各字段、支付按钮、验证码框的时限。
+	fieldWait = 10 * time.Second
+	// declineSettle 是判到被拒或校验错误后再看一会儿的时长：文字之后紧跟着 3DS 或成功的，以后者为准。
+	declineSettle = 5 * time.Second
+)
 
 // 页面提示的分类词，都是小写，按「含有」匹配。真实拒付文字可能出现在任何错误容器里，所以只看文字、不看选择器。
 // 这些词都没有在真实拒付页上核实过（设计文档 §12.7），所以宁可少认：认不出只是多等，认错了可能把已扣款的单定成失败。
@@ -337,13 +342,27 @@ func chooseOption(ctx context.Context, e *elem, f field) error {
 // payEnabledJS 判断支付按钮能不能点。
 const payEnabledJS = `function () { return !this.disabled && this.getAttribute('aria-disabled') !== 'true' }`
 
+// LockSubmit 锁定提交，返回此前是否开始过点击。调用之后 Submit 只会返回错误，绝不点击。
+//
+// 判断和锁定在同一把锁里完成，所以返回 false 严格证明：这个浏览器从未点击支付，以后也不会。
+// 只有这种情况才能记「未提交」。标志在点击之前置位，所以返回 true 不代表真的点到了，只代表不能排除，必须走确认。
+func (b *Browser) LockSubmit() (clickAttempted bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.submitLocked = true
+	return b.submitted
+}
+
 // Submit 点击主页面上的支付按钮。必须先 Fill 成功；先记下「已提交」再点击，此后再调用返回 ErrAlreadySubmitted 且不点击。
 func (b *Browser) Submit(ctx context.Context) error {
 	b.mu.Lock()
-	submitted, filled := b.submitted, b.filled
+	submitted, filled, locked := b.submitted, b.filled, b.submitLocked
 	b.mu.Unlock()
 	if submitted {
 		return ErrAlreadySubmitted
+	}
+	if locked {
+		return ErrSubmitLocked
 	}
 	if !filled {
 		return errors.New("尚未填卡，不能提交")
@@ -373,16 +392,24 @@ func (b *Browser) Submit(ctx context.Context) error {
 			return errors.New("找不到支付按钮")
 		}
 		before := b.scanBeforeClick(ctx)
-		// 先记下已提交再点击：点击中途出错也绝不再点第二次
+		// 先记下已提交再点击：点击中途出错也绝不再点第二次。从这里开始，任何错误都不能当成「没点击」（见 LockSubmit）
 		b.mu.Lock()
 		if b.submitted {
 			b.mu.Unlock()
 			return ErrAlreadySubmitted
 		}
+		if b.submitLocked {
+			b.mu.Unlock()
+			return ErrSubmitLocked
+		}
 		b.submitted = true
 		b.beforeClick = before
 		b.mu.Unlock()
-		if err := click(ctx, btn); err != nil {
+		pay := click
+		if b.clickPay != nil {
+			pay = b.clickPay
+		}
+		if err := pay(ctx, btn); err != nil {
 			return fmt.Errorf("点击支付按钮失败: %w", err)
 		}
 		return nil

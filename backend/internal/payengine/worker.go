@@ -213,6 +213,13 @@ func abort(code, format string, a ...any) error {
 	return &stepFailure{code: code, msg: fmt.Sprintf(format, a...)}
 }
 
+// notClickedError 表示支付按钮确实没被点击，以后也不会被点：由浏览器点击前置位的标志证明（见 Browser.LockSubmit）。
+// 只有 submitAndWait 能造出它。
+type notClickedError struct{ err error }
+
+func (e *notClickedError) Error() string { return e.err.Error() }
+func (e *notClickedError) Unwrap() error { return e.err }
+
 // chatgptAbort 把 ChatGPT 调用失败转成放弃原因；未授权一律按会话失效处理。
 func chatgptAbort(code, what string, err error) error {
 	if errors.Is(err, chatgpt.ErrUnauthorized) {
@@ -289,16 +296,19 @@ func (s *Service) process(ctx context.Context, o *Order) bool {
 }
 
 // settle 按 run 的结果收尾。一旦单据写入过 submitted_at，任何错误（放弃原因也好、意外错误也好）都转 verifying 交给确认协程：
-// 已点支付的单子记成「未提交」，用户会重复付款。提交之前的错误释放租约并以 failed / not_submitted 结束，
-// 其中意外错误（如写库失败）记 internal_error，免得单据卡在中间状态。写库再失败就告警：
-// 已提交的单由确认协程接管（adoptSubmitted），提交前的单要等重启恢复。
+// 已点支付的单子记成「未提交」，用户会重复付款。唯一的例外是 notClickedError：浏览器能严格证明按钮没被点击。
+// 提交之前的错误释放租约并以 failed / not_submitted 结束，其中意外错误（如写库失败）记 internal_error，免得单据卡在中间状态。
+// 写库再失败就告警：已提交的单由确认协程接管（adoptSubmitted），提交前的单要等重启恢复。
 // 服务停止时不收尾：单据与租约都留给重启恢复。
 func (s *Service) settle(ctx context.Context, j *job, err error) {
 	var f *stepFailure
+	var notClicked *notClickedError
 	switch {
 	case err == nil:
 	case ctx.Err() != nil:
 		log.Printf("[payengine] 单据 %s 在 %s 时服务停止，留待重启后处理", j.o.OrderNo, j.o.State)
+	case errors.As(err, &notClicked):
+		s.abandonNotClicked(ctx, j, notClicked)
 	case j.o.SubmittedAt != nil:
 		msg := truncate(j.scrub(err.Error()), errorMessageLimit)
 		log.Printf("[payengine] 单据 %s 提交后在 %s 时出错，转确认: %s", j.o.OrderNo, j.o.State, msg)
@@ -331,6 +341,16 @@ func (s *Service) abandon(ctx context.Context, j *job, f *stepFailure) {
 			s.opts.Alert(fmt.Sprintf("付款单 %s 放弃时写库失败，单据不收敛，该账号下单会一直报在途：%s", j.o.OrderNo, detail))
 		}
 	}
+}
+
+// abandonNotClicked 处理已记下提交时间、但按钮确实没被点击的单：和提交前放弃一样收尾，并清掉 submitted_at，
+// 否则这单看起来像提交过。写库失败时单据还是 submitted，由确认协程接管，那是安全方向。
+func (s *Service) abandonNotClicked(ctx context.Context, j *job, e *notClickedError) {
+	if j.browser != nil {
+		s.notePageDiag(ctx, j, j.browser, "支付按钮没有被点击")
+	}
+	j.note("submitted_at", nil)
+	s.abandon(ctx, j, &stepFailure{code: "submit_not_clicked", msg: "支付按钮没有被点击：" + e.Error()})
 }
 
 // release 释放租约并上报用卡结果。租约已失效（到期被卡池收回等）或其它错误都只记 warn 事件，不重试：

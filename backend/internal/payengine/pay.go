@@ -170,6 +170,9 @@ func (s *Service) submitAndWait(ctx context.Context, j *job) (paybrowser.Outcome
 	sctx, cancel := context.WithTimeout(ctx, s.t.SubmitResult)
 	defer cancel()
 	if err := j.browser.Submit(sctx); err != nil {
+		if !j.browser.LockSubmit() {
+			return paybrowser.OutcomeUnknown, "", &notClickedError{err: err}
+		}
 		return paybrowser.OutcomeUnknown, "", fmt.Errorf("点击支付时出错：%w", err)
 	}
 	out, text, err := s.waitOutcome(ctx, j)

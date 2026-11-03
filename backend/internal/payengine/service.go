@@ -57,6 +57,7 @@ type FormBrowser interface {
 type Browser interface {
 	FormBrowser
 	Submit(context.Context) error
+	LockSubmit() bool // 锁定提交，返回此前是否开始过点击；返回 false 才能证明没点击
 	WaitOutcome(context.Context, time.Duration) (paybrowser.Outcome, string, error)
 	Notices() []string // 取走等结果期间记下的未识别提示（已脱敏、去重）
 	EnterOTP(context.Context, string) error

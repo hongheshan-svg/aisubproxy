@@ -37,7 +37,7 @@
         </div>
       </div>
       <div v-if="blockReason" class="text-sm text-warn">{{ blockReason }}</div>
-      <div v-if="needsBrowser && running" class="text-sm text-muted">含浏览器探测，可能要一两分钟，请不要关闭页面。</div>
+      <div v-if="needsBrowser && running" class="text-sm text-muted">含浏览器探测，可能要几分钟，结果会逐项出现；离开本页不会中断探测，回来后会接着显示。</div>
       <div>
         <el-button type="primary" :loading="running" :disabled="!!blockReason" @click="run">开始探测</el-button>
       </div>
@@ -45,7 +45,8 @@
 
     <section v-if="current" class="card space-y-3" aria-live="polite">
       <div class="flex flex-wrap items-center justify-between gap-2">
-        <h3 class="text-base font-semibold">本次结果 <span class="text-muted text-sm">#{{ current.id || '未保存' }}</span></h3>
+        <h3 class="text-base font-semibold">本次结果 <span class="text-muted text-sm">#{{ current.id }}</span>
+          <el-tag v-if="current.status === 'running'" size="small" type="warning">运行中，已完成 {{ current.results.length }} 项</el-tag></h3>
         <div class="flex items-center gap-2 text-sm">
           <span>成功 {{ counts.ok }}</span><span>失败 {{ counts.fail }}</span><span>跳过 {{ counts.skipped }}</span>
           <el-button size="small" @click="copyText(current)">复制为文本</el-button>
@@ -97,7 +98,7 @@ import { dialog } from '../../../lib/dialog'
 import { fmtTs } from '../../../lib/cardpool'
 import { payApi } from '../../../lib/pay'
 import {
-  PROBE_CHECKS, PROBE_REGIONS, probeBlockReason, probeCounts, probeErrorText, probeKindLabel, probeNeedsBrowser,
+  PROBE_CHECKS, PROBE_REGIONS, pollProbe, probeBlockReason, probeCounts, probeErrorText, probeKindLabel, probeNeedsBrowser,
   probeStatusLabel, probeStatusTag, probeToText,
   type ProbeRecord, type ProbeResult,
 } from '../../../lib/payprobe'
@@ -143,21 +144,42 @@ const blockReason = computed(() => probeBlockReason(session.value, checks.value,
 const needsBrowser = computed(() => probeNeedsBrowser(checks.value))
 const counts = computed(() => probeCounts(current.value?.results || []))
 
+// 轮询：提交后每 2 秒读一次，逐项显示；跑完、出错或离开页面都会停止
+let pollToken = 0
+function stopPolling() { pollToken++ }
+
+async function follow(id: number) {
+  const token = ++pollToken
+  running.value = true
+  const how = await pollProbe(
+    () => payApi<ProbeRecord>('/probe/' + id),
+    (rec) => { current.value = rec },
+    () => token !== pollToken,
+  )
+  if (token !== pollToken) return // 被新的轮询取代，或页面已离开
+  running.value = false
+  if (how === 'error') dialog.toast('读取探测进度失败，可稍后在历史记录里查看', 'err')
+  else {
+    const st = current.value?.status
+    dialog.toast(st === 'done' ? '探测完成' : `探测未完整结束${current.value?.error ? '：' + current.value.error : ''}`, st === 'done' ? 'ok' : 'warn')
+  }
+  loadHistory()
+}
+
 async function run() {
   if (blockReason.value) return
   running.value = true
   const body = { session: session.value, checks: checks.value, region: region.value || undefined }
   // 会话一发出就清空：它不该在页面上多停留
   session.value = ''
-  const r = await payApi<ProbeRecord>('/probe', 'POST', body)
-  running.value = false
+  const r = await payApi<{ id: number; status: string }>('/probe', 'POST', body)
   if (!r.ok) {
+    running.value = false
     dialog.toast(probeErrorText(r.status, r.data), 'err')
     return
   }
-  current.value = r.data
-  dialog.toast('探测完成', 'ok')
-  loadHistory()
+  current.value = { id: r.data.id, status: 'running', created_at: Math.floor(Date.now() / 1000), results: [] }
+  follow(r.data.id)
 }
 
 // ---------- 历史 ----------
@@ -172,6 +194,9 @@ async function loadHistory() {
   histLoading.value = false
   if (!r.ok) { histError.value = (r.data as any)?.error || '历史记录读取失败'; return }
   history.value = r.data.probes || []
+  // 页面刷新或切走再回来时，若有仍在跑的探测，接着轮询
+  const live = history.value.find((p) => p.status === 'running')
+  if (live && !running.value) { current.value = live; follow(live.id) }
 }
 
 async function copyText(rec: ProbeRecord) {
@@ -209,7 +234,7 @@ async function openShot(path: string) {
 }
 
 onMounted(loadHistory)
-onUnmounted(clearShot)
+onUnmounted(() => { stopPolling(); clearShot() })
 </script>
 
 <style scoped>

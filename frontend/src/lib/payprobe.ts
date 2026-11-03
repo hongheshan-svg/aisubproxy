@@ -11,8 +11,13 @@ export interface ProbeResult {
   details?: Record<string, unknown>
 }
 
+export type ProbeRunStatus = 'running' | 'done' | 'failed'
+
 export interface ProbeRecord {
   id: number
+  status?: ProbeRunStatus
+  finished_at?: number
+  error?: string
   created_at: number
   admin?: string
   region?: string
@@ -104,4 +109,35 @@ export function probeCounts(results: ProbeResult[]): { ok: number; fail: number;
   const c = { ok: 0, fail: 0, skipped: 0 }
   for (const r of results || []) if (r.status in c) c[r.status as ProbeStatus]++
   return c
+}
+
+export const PROBE_POLL_MS = 2000
+
+/**
+ * 轮询一次探测直到跑完（status 不再是 running）。每轮先等 intervalMs 再查，逐次回调当前记录，方便边跑边显示。
+ * shouldStop 为真（页面离开、被取代）时立刻停止；连续 3 次读取失败也停止，避免一直打接口。
+ * getOnce、sleep 可注入，便于不依赖定时器单测。返回结束原因。
+ */
+export async function pollProbe(
+  getOnce: () => Promise<{ ok: boolean; data: any }>,
+  onUpdate: (rec: ProbeRecord) => void,
+  shouldStop: () => boolean,
+  sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
+  intervalMs = PROBE_POLL_MS,
+): Promise<'finished' | 'stopped' | 'error'> {
+  let fails = 0
+  while (!shouldStop()) {
+    await sleep(intervalMs)
+    if (shouldStop()) break
+    const r = await getOnce()
+    if (shouldStop()) break
+    if (!r.ok) {
+      if (++fails >= 3) return 'error'
+      continue
+    }
+    fails = 0
+    onUpdate(r.data as ProbeRecord)
+    if (r.data?.status !== 'running') return 'finished'
+  }
+  return 'stopped'
 }

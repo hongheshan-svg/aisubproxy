@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  PROBE_CHECKS, probeBlockReason, probeCounts, probeErrorText, probeNeedsBrowser, probeOrderChecks, probeStatusLabel, probeToText,
+  PROBE_CHECKS, pollProbe, probeBlockReason, probeCounts, probeErrorText, probeNeedsBrowser, probeOrderChecks, probeStatusLabel, probeToText,
 } from '../payprobe'
 import { PAGE_TABS } from '../adminui'
 
@@ -64,5 +64,69 @@ describe('payprobe lib', () => {
     const tabs = PAGE_TABS['/ops/marswallex-pay']
     expect(tabs.map((t) => t.name)).toContain('probe')
     expect(tabs.find((t) => t.name === 'probe')?.label).toBe('免付款探测')
+  })
+
+  describe('pollProbe', () => {
+    const noSleep = () => Promise.resolve()
+
+    it('轮询直到 done，逐次回调，跑完后不再请求', async () => {
+      const seq = [
+        { status: 'running', results: [] },
+        { status: 'running', results: [{ key: 'account' }] },
+        { status: 'done', results: [{ key: 'account' }, { key: 'subscriptions' }] },
+      ]
+      let calls = 0
+      const seen: number[] = []
+      const how = await pollProbe(
+        async () => ({ ok: true, data: seq[Math.min(calls++, seq.length - 1)] }),
+        (rec) => seen.push(rec.results.length),
+        () => false,
+        noSleep,
+      )
+      expect(how).toBe('finished')
+      expect(calls).toBe(3)
+      expect(seen).toEqual([0, 1, 2])
+    })
+
+    it('failed 也算结束', async () => {
+      const how = await pollProbe(async () => ({ ok: true, data: { status: 'failed', error: '超时', results: [] } }), () => {}, () => false, noSleep)
+      expect(how).toBe('finished')
+    })
+
+    it('每轮间隔 2 秒', async () => {
+      const waits: number[] = []
+      await pollProbe(async () => ({ ok: true, data: { status: 'done', results: [] } }), () => {}, () => false, async (ms) => { waits.push(ms) })
+      expect(waits).toEqual([2000])
+    })
+
+    it('页面离开（shouldStop）后立刻停止，不再请求', async () => {
+      let stop = false
+      let calls = 0
+      const how = await pollProbe(
+        async () => { calls++; stop = true; return { ok: true, data: { status: 'running', results: [] } } },
+        () => {},
+        () => stop,
+        noSleep,
+      )
+      expect(how).toBe('stopped')
+      expect(calls).toBe(1)
+      // 一开始就要求停止：一次都不请求
+      calls = 0
+      expect(await pollProbe(async () => { calls++; return { ok: true, data: {} } }, () => {}, () => true, noSleep)).toBe('stopped')
+      expect(calls).toBe(0)
+    })
+
+    it('连续 3 次读取失败后停止；中间成功会清零计数', async () => {
+      let calls = 0
+      expect(await pollProbe(async () => { calls++; return { ok: false, data: {} } }, () => {}, () => false, noSleep)).toBe('error')
+      expect(calls).toBe(3)
+      const oks = [false, false, true, false, false, true]
+      let i = 0
+      const how = await pollProbe(
+        async () => { const ok = oks[i++]; return { ok, data: { status: i >= 6 ? 'done' : 'running', results: [] } } },
+        () => {}, () => false, noSleep,
+      )
+      expect(how).toBe('finished')
+    })
   })
 })

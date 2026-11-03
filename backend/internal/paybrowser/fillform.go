@@ -440,10 +440,12 @@ func (b *Browser) checkAbsent(ctx context.Context, absent []field) error {
 
 // revealCardForm 等卡号框出现。账号已存卡时页面先显示已存卡，点一次「新卡」入口把卡号框调出来。
 // 账号邮箱注册过 Stripe Link 时页面先显示「Confirm it’s you」验证码框并藏起卡号框，点一次「Pay without Link」跳过；
-// 同框的「Text a code」会给账号主人发验证码，绝不点。入口都用 clickEntry 点：内嵌页上落点不对就不点，算没点成，照原逻辑接着等或报错。
+// 同框的「Text a code」会给账号主人发验证码，绝不点。入口都用 clickEntry 点：内嵌页上落点不对就不点，算没点成，照原逻辑接着等或报错；
+// 报告和错误写明入口找到了但没点，以及原因（refusedNote），不说成「页面上没有」。
 func (b *Browser) revealCardForm(ctx context.Context) error {
 	newCard, skippedLink, found := false, false, false
 	var linkSeen time.Time
+	var skipWhy, newCardWhy string // 内嵌页上入口找到了但没点的原因
 	_, err := b.poll(ctx, formWait, func(frames []frameRef) bool {
 		if b.find(ctx, frames, Sel.CardNumber, false) != nil {
 			found = true
@@ -453,16 +455,22 @@ func (b *Browser) revealCardForm(ctx context.Context) error {
 			if linkSeen.IsZero() {
 				linkSeen = time.Now()
 			}
-			if opt := b.findText(ctx, frames, Sel.PayWithoutLinkOption); opt != nil && b.clickEntry(ctx, frames, opt) == nil {
-				skippedLink = true
-				b.noteLinkVerify("已点「Pay without Link」")
-				return false
+			if opt := b.findText(ctx, frames, Sel.PayWithoutLinkOption); opt != nil {
+				err := b.clickEntry(ctx, frames, opt)
+				if err == nil {
+					skippedLink = true
+					b.noteLinkVerify("已点「Pay without Link」")
+					return false
+				}
+				skipWhy = b.refusedNote(err)
 			}
 			return time.Since(linkSeen) >= linkSkipWait // 验证框挡着，卡号框不会自己出现，不必等满
 		}
 		if !newCard {
-			if opt := b.findText(ctx, frames, Sel.NewCardOption); opt != nil && b.clickEntry(ctx, frames, opt) == nil {
-				newCard = true
+			if opt := b.findText(ctx, frames, Sel.NewCardOption); opt != nil {
+				err := b.clickEntry(ctx, frames, opt)
+				newCard = err == nil
+				newCardWhy = b.refusedNote(err)
 			}
 		}
 		return false
@@ -472,12 +480,18 @@ func (b *Browser) revealCardForm(ctx context.Context) error {
 		return err
 	case found:
 		return nil
+	case !linkSeen.IsZero() && !skippedLink && skipWhy != "":
+		b.noteLinkVerify("要求验证身份，「Pay without Link」没点（" + skipWhy + "）")
+		//nolint:staticcheck // ST1005：Stripe Link 是产品名（专有名词）
+		return fmt.Errorf("Stripe Link 要求验证身份，「Pay without Link」点不了（%s），已放弃", skipWhy)
 	case !linkSeen.IsZero() && !skippedLink:
 		b.noteLinkVerify("要求验证身份，找不到「Pay without Link」")
 		//nolint:staticcheck // ST1005：Stripe Link 是产品名（专有名词）
 		return errors.New("Stripe Link 要求验证身份，页面上没有「Pay without Link」，已放弃")
 	case skippedLink:
 		return errors.New("点了「Pay without Link」后仍找不到「卡号」输入框")
+	case newCardWhy != "":
+		return fmt.Errorf("找不到「卡号」输入框（「新卡」入口没点：%s）", newCardWhy)
 	}
 	return errors.New("找不到「卡号」输入框")
 }
@@ -533,13 +547,20 @@ func (b *Browser) revealAddress(ctx context.Context, st *fillState, hideable []f
 	return nil
 }
 
-// tryReveal 点手动地址入口：没有入口、点过太多次、离上次太近都不点。入口是提交控件时绝不点；内嵌页上落点不对也不点（clickEntry）。
+// tryReveal 点手动地址入口：没有入口、点过太多次、离上次太近都不点。入口是提交控件时绝不点；内嵌页上落点不对也不点（clickEntry），
+// 一次都没点成时报告写「没点（原因）」。
 func (b *Browser) tryReveal(ctx context.Context, frames []frameRef, st *fillState) {
 	if st.revealClick >= revealMaxClicks || (st.revealClick > 0 && time.Since(st.revealLast) < revealGap) {
 		return
 	}
 	opt := b.findText(ctx, frames, Sel.ManualAddressOption)
-	if opt == nil || b.clickEntry(ctx, frames, opt) != nil {
+	if opt == nil {
+		return
+	}
+	if err := b.clickEntry(ctx, frames, opt); err != nil {
+		if why := b.refusedNote(err); why != "" && st.revealClick == 0 {
+			b.updateReport(func(r *FillReport) { r.ManualAddress = "没点（" + why + "）" })
+		}
 		return
 	}
 	st.revealClick++
@@ -566,23 +587,26 @@ func readCheck(ctx context.Context, e *elem) (checkState, error) {
 }
 
 // setCheck 把勾选框点到 want：先用鼠标点（clickBox：内嵌页上落点不对就不点），不生效再用脚本点，返回最后读到的状态。
-// 调用方先确认它当前不是 want，再按返回的状态核对。
-func (b *Browser) setCheck(ctx context.Context, e *elem, want bool) (checkState, error) {
+// 调用方先确认它当前不是 want，再按返回的状态核对。内嵌页上鼠标没点、改用了脚本点时，how 是「改用脚本点击（原因）」，写进报告。
+func (b *Browser) setCheck(ctx context.Context, e *elem, want bool) (st checkState, how string, err error) {
 	read := func() (checkState, error) {
 		if err := sleep(ctx, settleDelay); err != nil {
 			return checkState{}, err
 		}
 		return readCheck(ctx, e)
 	}
-	_ = b.clickBox(ctx, e) // 点不到（内嵌页上落点不对时不点）也没关系，下面看结果，再用脚本点
-	st, err := read()
-	if err != nil || st.Checked == want {
-		return st, err
+	why := b.refusedNote(b.clickBox(ctx, e)) // 点不到（内嵌页上落点不对时不点）也没关系，下面看结果，再用脚本点
+	if st, err = read(); err != nil || st.Checked == want {
+		return st, "", err
+	}
+	if why != "" {
+		how = "改用脚本点击（" + why + "）"
 	}
 	if err := callOn(ctx, e.obj, `function () { this.click() }`, nil); err != nil {
-		return st, err
+		return st, how, err
 	}
-	return read()
+	st, err = read()
+	return st, how, err
 }
 
 // disableLinkSave 取消「Save my information with Link」：勾着就要求手机，还可能弹 Link 验证。
@@ -609,20 +633,22 @@ func (b *Browser) disableLinkSave(ctx context.Context) error {
 		b.noteLink("未勾选，无需取消")
 		return nil
 	}
-	if st, err = b.setCheck(ctx, e, false); err != nil {
+	st, how, err := b.setCheck(ctx, e, false)
+	if err != nil {
 		return fmt.Errorf("取消 Link 保存失败: %w", err)
 	}
 	if st.Checked {
+		b.updateReport(func(r *FillReport) { r.LinkSave = joinNote("取消不掉", how) })
 		return errors.New("取消不掉「Save my information with Link」")
 	}
-	b.updateReport(func(r *FillReport) { r.LinkSave = "已取消" })
+	b.updateReport(func(r *FillReport) { r.LinkSave = joinNote("已取消", how) })
 	return nil
 }
 
 // noteLink 记下 Link 的状态。已经取消过的不覆盖：第二次检查时它理应是未勾选。
 func (b *Browser) noteLink(status string) {
 	b.updateReport(func(r *FillReport) {
-		if r.LinkSave != "已取消" {
+		if !strings.HasPrefix(r.LinkSave, "已取消") {
 			r.LinkSave = status
 		}
 	})
@@ -735,14 +761,15 @@ func (b *Browser) acceptTerms(ctx context.Context) error {
 		note("页面已勾选")
 		return nil
 	}
-	if st, err = b.setCheck(ctx, e, true); err != nil {
+	st, how, err := b.setCheck(ctx, e, true)
+	if err != nil {
 		return fmt.Errorf("勾选「同意条款」失败: %w", err)
 	}
 	if !st.Checked {
-		note("勾不上")
+		note(joinNote("勾不上", how))
 		return errors.New("勾不上「同意条款」")
 	}
-	note("已勾选")
+	note(joinNote("已勾选", how))
 	return nil
 }
 

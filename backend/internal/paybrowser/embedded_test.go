@@ -645,7 +645,8 @@ func TestEmbeddedFillSuggestionExpandsOutsideFrame(t *testing.T) {
 
 // 卡片 iframe 在主页面首屏下方，iframe 里元素的「滚进可视区」又没带动主页面（2026-11-04 实测：落点检查报「点击落点不在页面上」；
 // 仿造页用 fold=1 模拟，见 checkout-embedded.html）：坐标超出主页面视口，落点检查一律不过。
-// 落点检查要先用脚本把主页面滚到让元素居中：字段照常用鼠标点，联想能点中并展开，支付按钮 0 次点击。
+// 落点检查要先用脚本把主页面滚到让元素居中（iframe 外面没有别的滚动容器，滚的是 document.scrollingElement）：
+// 字段照常用鼠标点，联想能点中并展开，支付按钮 0 次点击。
 func TestEmbeddedFillBelowFold(t *testing.T) {
 	needChrome(t)
 	f := newFakeEmbedded(t)
@@ -660,6 +661,35 @@ func TestEmbeddedFillBelowFold(t *testing.T) {
 	}
 	if strings.Contains(lines, "直接设焦点") {
 		t.Errorf("首屏下方的字段滚进可视区后应能用鼠标点，不该直接设焦点：\n%s", lines)
+	}
+	if got, err := paybrowser.FieldValue(ctx, b, "#billingAddress-postalCodeInput"); err != nil || got != "97201" {
+		t.Fatalf("页面上邮编 = %q, %v，期望 97201", got, err)
+	}
+	if n := payClicks(t, ctx, b); n != "0" {
+		t.Fatalf("填表时支付按钮收到 %s 次点击，期望 0", n)
+	}
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("只填表不提交：仿造页收到 %d 次提交", n)
+	}
+}
+
+// 实页结构（2026-11-04 06:33 实测）：主页面 html、body 不滚动，滚动容器是 main，卡片 iframe 在 main 的首屏以下，
+// iframe 里元素的滚入又不带动 main（仿造页 fold=main）。window.scrollBy 滚不动；落点检查要滚「装着这个 iframe 的滚动容器」：
+// 字段照常用鼠标点，联想能点中并展开，支付按钮 0 次点击。
+func TestEmbeddedFillBelowFoldInScroller(t *testing.T) {
+	needChrome(t)
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "addr=suggest&fold=main")
+
+	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+		t.Fatalf("Fill: %v", err)
+	}
+	lines := strings.Join(b.FillReport().Lines(), "\n")
+	if !strings.Contains(lines, "手动地址：已选地址联想：第 1 个 iframe 的选项") {
+		t.Errorf("报告缺少「手动地址：已选地址联想：第 1 个 iframe 的选项」：\n%s", lines)
+	}
+	if strings.Contains(lines, "直接设焦点") {
+		t.Errorf("滚动容器里首屏以下的字段滚进可视区后应能用鼠标点，不该直接设焦点：\n%s", lines)
 	}
 	if got, err := paybrowser.FieldValue(ctx, b, "#billingAddress-postalCodeInput"); err != nil || got != "97201" {
 		t.Fatalf("页面上邮编 = %q, %v，期望 97201", got, err)
@@ -818,13 +848,18 @@ func TestEmbeddedCheckboxesOutsideFrame(t *testing.T) {
 	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
 		t.Fatalf("Fill: %v", err)
 	}
-	r := b.FillReport()
-	if r.LinkSave != "已取消" || r.Terms != "已勾选" {
-		t.Fatalf("Link 保存 = %q，同意条款 = %q，期望已取消、已勾选", r.LinkSave, r.Terms)
-	}
 	note, err := b.EnsureNoSavePayment(ctx)
 	if err != nil || note != "已取消" {
 		t.Fatalf("EnsureNoSavePayment = %q, %v，期望已取消", note, err)
+	}
+	// 报告写明没用鼠标点、改用脚本点击，以及落点检查的原因
+	const how = "；改用脚本点击（点击落点"
+	r := b.FillReport()
+	for name, got := range map[string]string{"Link 保存": r.LinkSave, "同意条款": r.Terms, "保存付款信息": r.SavePayment} {
+		want := map[string]string{"Link 保存": "已取消", "同意条款": "已勾选", "保存付款信息": "已取消"}[name] + how
+		if !strings.HasPrefix(got, want) || strings.Contains(got, "没有点击") {
+			t.Errorf("%s = %q，期望以「%s」开头、写明原因", name, got, want)
+		}
 	}
 	for sel, want := range map[string]bool{
 		"#enableStripePass":              false,
@@ -853,8 +888,8 @@ func TestEmbeddedManualEntryOutsideFrame(t *testing.T) {
 	if err := b.Fill(ctx, testCard, embeddedBilling); err == nil {
 		t.Fatal("手动地址入口点不到时 Fill 应报错")
 	}
-	if got := b.FillReport().ManualAddress; got != "未点击" {
-		t.Errorf("手动地址 = %q，期望未点击", got)
+	if got := b.FillReport().ManualAddress; !strings.HasPrefix(got, "没点（点击落点") {
+		t.Errorf("手动地址 = %q，期望写明没点和落点检查的原因", got)
 	}
 	if n := payClicks(t, ctx, b); n != "0" {
 		t.Fatalf("填表时支付按钮收到 %s 次点击，期望 0", n)
@@ -911,8 +946,11 @@ func TestEmbeddedPayWithoutLinkOutsideFrame(t *testing.T) {
 	showLinkVerify(t, ctx, b)
 
 	err := b.Fill(ctx, testCard, embeddedBilling)
-	if err == nil || !strings.Contains(err.Error(), "要求验证身份") {
-		t.Fatalf("Fill = %v，期望报 Link 要求验证身份", err)
+	if err == nil || !strings.Contains(err.Error(), "要求验证身份，「Pay without Link」点不了（点击落点") {
+		t.Fatalf("Fill = %v，期望报 Link 要求验证身份、「Pay without Link」点不了并写明原因", err)
+	}
+	if got := b.FillReport().LinkVerify; !strings.HasPrefix(got, "要求验证身份，「Pay without Link」没点（点击落点") {
+		t.Errorf("Link 验证 = %q，期望写明「Pay without Link」没点和原因", got)
 	}
 	if n := payClicks(t, ctx, b); n != "0" {
 		t.Fatalf("填表时支付按钮收到 %s 次点击，期望 0", n)

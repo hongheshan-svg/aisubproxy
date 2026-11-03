@@ -391,29 +391,77 @@ func click(ctx context.Context, e *elem) error {
 }
 
 const (
-	landSettle    = 50 * time.Millisecond // 落点检查时两次读位置的间隔
-	landTolerance = 1.0                   // 两次读到的中心点相差不超过这么多像素，才算没在移动
-	landEdge      = 10.0                  // 中心点离主页面可视区边缘不足这么多像素，就先用脚本滚主页面
+	landSettle       = 50 * time.Millisecond  // 落点检查时两次读位置的间隔
+	landScrollSettle = 150 * time.Millisecond // 落点检查真的滚动过时，读位置前多等这么久，让页面跟上
+	landTolerance    = 1.0                    // 两次读到的中心点相差不超过这么多像素，才算没在移动
+	landEdge         = 10.0                   // 中心点离主页面可视区边缘不足这么多像素，就先用脚本滚动
 )
 
-// scrollMainJS 在主页面上把点 (x, y) 挪到可视区中部：点在可视区外、或离边缘不足 edge 像素时，用 window.scrollBy 滚主页面
-// （只是脚本滚动，不发鼠标、键盘事件），返回滚了没有。可视区宽高取 innerWidth/innerHeight 与 documentElement 的
-// clientWidth/clientHeight（不含滚动条）中较小的。
-const scrollMainJS = `((x, y, edge) => {
+// scrollIntoMainViewJS 以主页面上的元素（装着目标的顶层 iframe）为 this，把主页面可视区里的点 (x, y) 挪到可视区中部。
+// 点在可视区外、或离边缘不足 edge 像素时才滚：从 this 往上找可滚动的祖先（overflow 为 auto 或 scroll，且内容比框高或宽），
+// 由近到远逐个 scrollBy，近的滚到头还差的交给更外一层，最后是 document.scrollingElement。只是脚本滚动，不发鼠标、键盘事件。
+// 返回滚了没有。可视区宽高取 innerWidth/innerHeight 与 documentElement 的 clientWidth/clientHeight（不含滚动条）中较小的。
+const scrollIntoMainViewJS = `function (x, y, edge) {
 	const de = document.documentElement
 	const w = Math.min(innerWidth, de.clientWidth || innerWidth)
 	const h = Math.min(innerHeight, de.clientHeight || innerHeight)
-	const dx = x < edge || x >= w - edge ? x - w / 2 : 0
-	const dy = y < edge || y >= h - edge ? y - h / 2 : 0
+	let dx = x < edge || x >= w - edge ? x - w / 2 : 0
+	let dy = y < edge || y >= h - edge ? y - h / 2 : 0
 	if (!dx && !dy) return false
-	window.scrollBy({ left: dx, top: dy, behavior: 'instant' })
-	return true
-})`
+	const can = o => o === 'auto' || o === 'scroll'
+	const boxes = []
+	for (let el = this.parentElement; el; el = el.parentElement) {
+		const s = getComputedStyle(el)
+		if ((can(s.overflowY) && el.scrollHeight > el.clientHeight) || (can(s.overflowX) && el.scrollWidth > el.clientWidth)) boxes.push(el)
+	}
+	const root = document.scrollingElement || de
+	if (!boxes.includes(root)) boxes.push(root)
+	let moved = false
+	for (const box of boxes) {
+		if (Math.abs(dx) < 1 && Math.abs(dy) < 1) break
+		const top = box.scrollTop, left = box.scrollLeft
+		box.scrollBy({ left: dx, top: dy, behavior: 'instant' })
+		const my = box.scrollTop - top, mx = box.scrollLeft - left
+		if (my || mx) moved = true
+		dy -= my
+		dx -= mx
+	}
+	return moved
+}`
+
+// scrollAnchor 返回主页面上「装着元素的顶层 iframe」元素的句柄：沿 frame 的父链往上，找到父 frame 是主页面的那一层，
+// 取它在主页面里的 iframe 元素。元素本身就在主页面时返回它自己。
+func (b *Browser) scrollAnchor(ctx context.Context, frames []frameRef, e *elem) (runtime.RemoteObjectID, error) {
+	main := frames[0]
+	if e.frame.id == main.id {
+		return e.obj, nil
+	}
+	f := e.frame
+	for f.parent != main.id {
+		i := slices.IndexFunc(frames, func(p frameRef) bool { return p.id == f.parent })
+		if i < 0 {
+			return "", errors.New("找不到元素所在 iframe 的上层")
+		}
+		f = frames[i]
+	}
+	owner, _, err := dom.GetFrameOwner(f.id).Do(ctx)
+	if err != nil {
+		return "", err
+	}
+	obj, err := dom.ResolveNode().WithBackendNodeID(owner).WithExecutionContextID(main.ctx).WithObjectGroup(objectGroup).Do(ctx)
+	if err != nil {
+		b.forgetWorld(main.id)
+		return "", err
+	}
+	return obj.ObjectID, nil
+}
 
 // landsInOwnFrame 把元素滚进视野，求它中心点在主页面可视区里的坐标，确认鼠标点下去会落在它自己所在的 iframe 上，返回这个坐标。
-//   - 先 ScrollIntoViewIfNeeded。中心点仍在主页面可视区外、或离边缘不足 landEdge 时，再用 scrollMainJS 把主页面滚到让它居中：
-//     2026-11-04 实测卡片 iframe 在首屏下方时，iframe 里元素的滚入没有带动主页面，坐标在主页面视口以外，落点检查一律不过。
-//     滚完仍在视口外，下面的 elementFromPoint 读不到元素，照旧不通过。
+//   - 先 ScrollIntoViewIfNeeded，读一次中心点。中心点仍在主页面可视区外、或离边缘不足 landEdge 时，
+//     从装着它的顶层 iframe 往上找滚动容器，用 scrollIntoMainViewJS 滚到让它居中；真滚动过就等 landScrollSettle 再重新读。
+//     依据 2026-11-04 实测：卡片、地址 iframe 在首屏以下，iframe 里元素的滚入不带动主页面；主页面的 html 滚不动，
+//     真正的滚动容器是 main（overflow-y: auto），所以只滚 window 也没用。滚完仍在视口外，下面的 elementFromPoint
+//     读不到元素，照旧不通过。
 //   - 隔 landSettle 读两次位置，相差超过 landTolerance 说明还在移动，不通过。
 //   - 在主页面上用 elementFromPoint 看那一点：必须是 iframe 元素，而且是元素所在 frame 或它的上层。主页面上的元素一律不通过。
 //
@@ -432,11 +480,18 @@ func (b *Browser) landsInOwnFrame(ctx context.Context, frames []frameRef, e *ele
 	if err != nil {
 		return 0, 0, err
 	}
-	r, err := b.eval(ctx, frames[0], fmt.Sprintf("%s(%f, %f, %f)", scrollMainJS, x0, y0, landEdge))
+	anchor, err := b.scrollAnchor(ctx, frames, e)
 	if err != nil {
 		return 0, 0, err
 	}
-	if string(r.Value) == "true" {
+	var moved bool
+	if err := callOn(ctx, anchor, scrollIntoMainViewJS, &moved, x0, y0, landEdge); err != nil {
+		return 0, 0, err
+	}
+	if moved {
+		if err := sleep(ctx, landScrollSettle); err != nil {
+			return 0, 0, err
+		}
 		if x0, y0, err = center(); err != nil {
 			return 0, 0, err
 		}
@@ -451,7 +506,8 @@ func (b *Browser) landsInOwnFrame(ctx context.Context, frames []frameRef, e *ele
 		return 0, 0, errors.New("位置还在变，没有点击")
 	}
 
-	if r, err = b.eval(ctx, frames[0], fmt.Sprintf("document.elementFromPoint(%f, %f)", x, y)); err != nil {
+	r, err := b.eval(ctx, frames[0], fmt.Sprintf("document.elementFromPoint(%f, %f)", x, y))
+	if err != nil {
 		return 0, 0, err
 	}
 	if r.ObjectID == "" {
@@ -518,6 +574,17 @@ func (b *Browser) clickEntry(ctx context.Context, frames []frameRef, e *elem) er
 	return b.clickOption(ctx, frames, e)
 }
 
+// landReason 把没用鼠标点的原因（落点检查、提交控件检查的错误）写成报告里的短句：去掉「，没有点击」，不含任何值。
+func landReason(err error) string { return strings.TrimSuffix(err.Error(), "，没有点击") }
+
+// refusedNote 返回内嵌页上入口、勾选框没用鼠标点的原因（landReason）；没出错或是托管页时返回空，托管页的报告不变。
+func (b *Browser) refusedNote(err error) string {
+	if err == nil || b.pageKind() != PageEmbedded {
+		return ""
+	}
+	return landReason(err)
+}
+
 // focus 点击输入框；点完焦点仍不在它上面时直接设焦点。
 func focus(ctx context.Context, e *elem) error {
 	if err := click(ctx, e); err != nil {
@@ -546,7 +613,7 @@ func (b *Browser) focusField(ctx context.Context, e *elem) (direct string, err e
 	set, err := ensureFocus(ctx, e)
 	switch {
 	case lerr != nil:
-		direct = strings.TrimSuffix(lerr.Error(), "，没有点击")
+		direct = landReason(lerr)
 	case set:
 		direct = "鼠标点了，焦点没过去"
 	}

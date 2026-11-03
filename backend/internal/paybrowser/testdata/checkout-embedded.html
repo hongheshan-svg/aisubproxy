@@ -33,7 +33,12 @@
                     在主页面上落空，只有主页面脚本 window.scrollBy 能滚。真实结账页上滚入没有带动主页面，
                     本机 Chrome 的 CDP 滚入默认会一路滚到主页面（未激活、scrolling="no"、平滑滚动、overflow: hidden
                     都试过，照样滚），所以用这个办法模拟
-    clip=1 或 fold=1 时，支付按钮收到可信点击，#pay-clicks（hidden）加一
+    fold=main       仿 2026-11-04 06:33 实页结构：html、body 高 100%，自己不滚动（document.scrollingElement 是 html，
+                    scrollHeight = clientHeight）；真正的滚动容器是 main（height: 100%; overflow-y: auto），
+                    main 最上面放 1200px 占位块，卡片 iframe 和支付按钮都在 main 的首屏以下。
+                    main 设 scroll-padding-top: 3000px，让 iframe 里元素的滚入在 main 上落空（同 fold=1 的说明），
+                    只有对 main 本身的脚本 scrollBy 能滚；window.scrollBy 滚不动任何东西
+    clip=1、fold=1、fold=main 时，支付按钮收到可信点击，#pay-clicks（hidden）加一
     linkverify=1    卡片 iframe 回 linkverify-shown 消息（它弹出了 Link 验证框）时，#link-state（hidden）设为 shown
     其余参数原样传给卡片 iframe（amount、currency、nocurrency、noamount、savepay、linksave、terms、linkverify、addr、clip、low，
     见 card-embedded.html）
@@ -76,14 +81,22 @@
     cardFrame.style.height = '380px'
     pay.style.cssText = 'display: block; width: 100%; height: 80px; margin: 0'
   }
-  if (q.get('fold') === '1') {
+  var fold = q.get('fold')
+  if (fold === '1' || fold === 'main') {
     var spacer = document.createElement('div')
     spacer.style.height = '1200px'
     var mainCol = document.querySelector('main')
     mainCol.insertBefore(spacer, mainCol.firstChild)
-    document.documentElement.style.scrollPaddingTop = '3000px'
+    if (fold === 'main') {
+      var foldStyle = document.createElement('style')
+      foldStyle.textContent = 'html, body { height: 100%; } body { margin: 0 auto; } main { height: 100%; overflow-y: auto; }'
+      document.head.appendChild(foldStyle)
+      mainCol.style.scrollPaddingTop = '3000px'
+    } else {
+      document.documentElement.style.scrollPaddingTop = '3000px'
+    }
   }
-  if (q.get('clip') === '1' || q.get('fold') === '1') {
+  if (q.get('clip') === '1' || fold === '1' || fold === 'main') {
     var payClicks = document.createElement('input')
     payClicks.type = 'hidden'
     payClicks.id = 'pay-clicks'

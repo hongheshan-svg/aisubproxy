@@ -7,6 +7,7 @@ import (
 	"math/rand/v2"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/tuzi/cdk-recharge-system/internal/cardpool"
 	"github.com/tuzi/cdk-recharge-system/internal/paybrowser"
@@ -91,6 +92,10 @@ func (s *Service) fundCard(ctx context.Context, j *job) error {
 	j.holderName = strings.TrimSpace(info.HolderFirstName + " " + info.HolderLastName)
 	if j.holderName == "" {
 		return abort("card_info_failed", "该卡没有持卡人姓名，无法填写账单信息")
+	}
+	// 姓名要逐字键入账单表单，含控制字符（\n、\r 会被当成回车）时填表必然被拒；在注资之前拦下，不先把钱转进卡里。错误不带姓名
+	if strings.IndexFunc(j.holderName, unicode.IsControl) >= 0 {
+		return abort("card_info_failed", "该卡持卡人姓名含控制字符，无法填写账单信息")
 	}
 	// fund_cents 是美元分，而 Fund 按卡币种下单：不是美元卡就会充错金额。选卡已按币种过滤，这里是最后一道防线
 	if !strings.EqualFold(strings.TrimSpace(info.Currency), fundCurrency) {

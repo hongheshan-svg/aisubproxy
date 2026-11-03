@@ -27,7 +27,7 @@ import (
 const InstallHint = "curl -fsSL https://raw.githubusercontent.com/hongheshan-svg/aisubproxy/master/deploy/install.sh | sudo bash -s -- --browser-deps"
 
 // DockerInstallHint 是 Docker 部署的处理方法：容器里没有安装脚本可跑，浏览器依赖在镜像里。
-const DockerInstallHint = "Docker 部署的浏览器依赖在镜像里：请用仓库的 docker-compose.yml 重建镜像（docker compose up -d --build），它带有 security_opt；自己 docker run 的请加 --security-opt seccomp=deploy/chrome-seccomp.json"
+const DockerInstallHint = "Docker 部署的浏览器依赖在镜像里：请在部署目录重跑 deploy/docker-deploy.sh，它会换上这一版的 docker-compose.yml（带 security_opt）并重建容器；自己 docker run 的请加 --security-opt seccomp=deploy/chrome-seccomp.json"
 
 // installHint 按部署方式给出提示：镜像里设了 CDK_DEPLOY_MODE=docker。
 func installHint() string {

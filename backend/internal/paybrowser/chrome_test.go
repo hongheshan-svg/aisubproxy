@@ -161,7 +161,7 @@ func TestInstallHintByDeployMode(t *testing.T) {
 	if !strings.Contains(paybrowser.InstallHint, "install.sh | sudo bash -s -- --browser-deps") {
 		t.Errorf("InstallHint 应是可直接执行的 curl 命令: %s", paybrowser.InstallHint)
 	}
-	for _, want := range []string{"docker compose up -d --build", "seccomp"} {
+	for _, want := range []string{"docker-deploy.sh", "seccomp"} {
 		if !strings.Contains(paybrowser.DockerInstallHint, want) {
 			t.Errorf("DockerInstallHint 缺少 %q: %s", want, paybrowser.DockerInstallHint)
 		}

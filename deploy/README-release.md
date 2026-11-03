@@ -7,7 +7,12 @@
 1. 在 Linux amd64 上编译含 SQLite 的静态程序和前端；
 2. 打包 `cdk-bundle-linux-amd64.tgz`（内含 `cdk-recharge` + `web/` + `VERSION`）；
 3. 生成 `.sha256`；
-4. 用 ed25519 私钥签名，生成 `.sig`。
+4. 用 ed25519 私钥签名，生成 `.sig`；
+5. 用同一个已签名的发布包构建 Docker 镜像，推送到 `ghcr.io/hongheshan-svg/aisubproxy:X.Y.Z` 和 `:X.Y`（不带 `v`）。
+
+在这之前，它会先跑一遍完整的 CI（测试、构建、Docker 冒烟），并确认标签指向的提交在 master 上；任何一项不通过都不会发布。发布包和镜像都成功后才创建 Release。
+
+第一次推送镜像后，到 GitHub 仓库的 Packages 页把 `aisubproxy` 包设为 Public，否则服务器拉取镜像需要登录。
 
 发版步骤：
 
@@ -66,7 +71,9 @@ curl -fsSL https://raw.githubusercontent.com/hongheshan-svg/aisubproxy/master/de
 
 ### Docker 部署
 
-- 镜像已内置 `chromium`、`xvfb`、字体和 `cdk-chrome` 用户，`CHROME_PATH=/usr/bin/chromium`。升级：`git pull` 后 `docker compose up -d --build`（镜像约增大 400MB）。
+- 镜像已内置 `chromium`、`xvfb`、字体和 `cdk-chrome` 用户，`CHROME_PATH=/usr/bin/chromium`。镜像约 1.4GB。
+- 安装和换版本：`deploy/docker-deploy.sh [--domain 域名] [--version X.Y.Z]`。脚本会下载这一版的 `docker-compose.yml` 等部署文件，补齐 `.env` 里缺少的密钥，然后拉取镜像并启动。版本号写进 `.env` 的 `CDK_VERSION`，之后直接 `docker compose up -d` 也是这个版本。
+- 程序在容器里以 root 运行，启动 Chrome 时降权到 `cdk-chrome` 并保留沙箱。
 - Chrome 带沙箱运行需要创建用户命名空间，而 Docker 默认的 seccomp 配置不放行 `clone`、`unshare`，所以 `docker-compose.yml` 给 `cdk` 服务加了 `security_opt: ["seccomp=./deploy/chrome-seccomp.json"]`。自己 `docker run` 的要加 `--security-opt seccomp=deploy/chrome-seccomp.json`。
 - `deploy/chrome-seccomp.json` 来自 `moby/profiles` 的 `seccomp/default.json`，末尾追加了一条 `{"names":["clone","unshare"],"action":"SCMP_ACT_ALLOW"}`。代价：容器内进程可以创建用户命名空间，比 Docker 默认配置宽松，但远小于 `seccomp=unconfined`；没有加 `SYS_ADMIN`，也没有关闭 Chrome 沙箱。
 
@@ -80,12 +87,20 @@ curl -fsSL https://raw.githubusercontent.com/hongheshan-svg/aisubproxy/master/de
 4. 把当前程序、前端、`VERSION` 和数据库快照（`VACUUM INTO`）备份到 `updates/backup-时间戳/`，只保留最新 3 份；
 5. 替换文件，然后原地重启进程。
 
-Docker 部署会自动禁用在线更新，因为容器重建后会退回镜像里的版本。Docker 部署要升级，请拉取新代码后重建镜像。
+Docker 部署也支持在线更新：
+- 镜像里的文件不动，新版本写到数据卷的 `runtime/` 目录（`/app/data/runtime/`），备份放在 `/app/data/updates/`。
+- 每次启动时，如果 `runtime/` 里的版本比镜像新，就切换过去运行。删掉容器重建后仍然生效。
+- 新版本连续 3 次启动失败时，自动退回镜像自带的版本，并发出告警。
+- 之后换成更新或相同版本的镜像时，自动删除 `runtime/`，改用镜像里的版本。
+- 设置 `UPDATE_ENABLED=0` 可关闭在线更新（两种部署都适用）。
 
 ## 回滚
 
 ```bash
+# systemd 部署
 sudo /opt/cdk-recharge/cdk-recharge rollback && sudo systemctl restart cdk-recharge
+# Docker 部署（回滚的是数据卷里在线升级的版本）
+docker exec cdk-recharge /app/cdk-recharge rollback && docker restart cdk-recharge
 ```
 
 - 用最新一份备份恢复程序、前端和 `VERSION`，出问题的版本移到 `updates/failed-*/`。

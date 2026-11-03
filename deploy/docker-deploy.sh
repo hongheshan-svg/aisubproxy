@@ -227,6 +227,6 @@ echo "    cd ${INSTALL_DIR}"
 echo "    $DC logs -f                       # 查看日志"
 echo "    $DC restart                       # 重启"
 echo "    $DC down                          # 停止"
-echo "    升级: 重跑本脚本，或 CDK_VERSION=X.Y.Z $DC pull && CDK_VERSION=X.Y.Z $DC up -d"
+echo "    升级: 重跑本脚本（指定版本加 --version X.Y.Z），或在后台「版本更新」一键升级"
 echo "    docker exec cdk-recharge /app/cdk-recharge rollback && docker restart cdk-recharge   # 回滚在线升级"
 echo

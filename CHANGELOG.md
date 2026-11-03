@@ -123,7 +123,7 @@
   - 脚本会用这一版的 `docker-compose.yml` 覆盖原文件（旧文件备份成 `docker-compose.yml.bak`）。自己改过 compose 的，升级后对照备份把改动合并回来。
   - 数据卷不变，容器名仍是 `cdk-recharge`。
   - 新的 compose 会把 `APP_MASTER_KEY` 传进容器。部署目录里的 `.env` 没有这个值时，脚本会生成一个。**请备份 `.env`**：主密钥丢了，已保存的 MarsWallex 密钥就无法解密。
-  - 手动换版本：`CDK_VERSION=X.Y.Z docker compose pull && docker compose up -d`。镜像版本号不带 `v`。
+  - 换到指定版本：重跑脚本并加 `--version X.Y.Z`（镜像版本号不带 `v`）。脚本会把版本写进 `.env` 的 `CDK_VERSION`，之后直接 `docker compose up -d` 也是这个版本。
   - 镜像约 1.4GB，其中主要是 Chrome 和中文字体。
   - 自己用 `docker run` 启动的，需要加上 `--security-opt seccomp=deploy/chrome-seccomp.json`。
 - **服务器内存建议 ≥ 2GB**（自动付款并发为 1）。

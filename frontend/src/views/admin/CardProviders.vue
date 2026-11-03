@@ -44,7 +44,7 @@
     </section>
 
     <section class="grid gap-4 lg:grid-cols-2">
-      <ProviderCard v-for="p in reg?.providers || []" :key="p.name" :info="p" :readiness="rd?.providers?.[p.name]" :loading="loading" />
+      <ProviderCard v-for="p in reg?.providers || []" :key="p.name" class="min-w-0" :info="p" :readiness="rd?.providers?.[p.name]" :loading="loading" />
     </section>
 
     <section class="card space-y-3">

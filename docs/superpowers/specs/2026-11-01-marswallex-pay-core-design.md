@@ -128,23 +128,28 @@ CDK 与兑换入口（B）；升级、点数、续费绑卡、宽限期（C）�
 | 1 | `queued` | `Submit` 校验套餐 × 地区；会话须带 sessionToken 和邮箱（纯 accessToken 不收）；会话加密入库；入队 | 直接返回错误，不建单 |
 | 2 | `checking` | 刷新 access token，查账号；已有有效订阅则拒绝（升级属 C）；记下 account_id | `failed` / `not_submitted` |
 | 3 | `link_created` | 按套餐表创建支付会话，记下 `checkout_session_id` 与链接 | 同上 |
-| 4 | `opening` | 占用浏览器名额：启动 Chrome（按地区走代理）→ 注入会话 cookie → 打开支付页 → 读出应付金额与币种。币种不符、金额超过 `cap_minor` 或读不出则放弃。**试运行到此结束**，进入 `previewed` | 同上 |
+| 4 | `opening` | 占用浏览器名额：启动 Chrome（按地区走代理）→ 注入会话 cookie → 打开支付页 → 读出应付金额与币种。币种不符、金额超过 `cap_minor` 或读不出则放弃。**试运行（`dry_run`）到此结束**，进入 `previewed`；试运行到填表（`dry_run_fill`）见第 6 步后的说明 | 同上 |
 | 5 | `funding` | `Acquire`（`PlanKey`、`OrderRef = order_no`、邮箱）→ `Fund(fund_cents)` → `WaitOrder` 最多 3 分钟 | 放弃，`Release(aborted)`；注资结果不明的由卡池对账收敛 |
-| 6 | `filling` | `Sensitive` 取卡号 → 填卡号、有效期、CVC、持卡人英文名、免税州地址。页面若出现已存卡，选「新卡」；不填 Stripe Link 的邮箱与手机 | 放弃，`Release(aborted)` |
-| 7 | `submitted` | 记 `submitted_at` 后点「支付」。之后任何情况都不再点第二次 | — |
+| 6 | `filling` | `Sensitive` 取卡号 → 填卡号、有效期、CVC、持卡人英文名、免税州地址。页面若出现已存卡，选「新卡」。城市、邮编、州默认隐藏时先展开手动地址；取消「Save my information with Link」；手机一律不填，取消不掉 Link 或仍要求手机就放弃；邮箱只有可见、必填且为空时才填账号自己的邮箱，不写进事件 | 放弃，`Release(aborted)`，不点支付 |
+| 7 | `submitted` | 记 `submitted_at` 后点「支付」。之后任何情况都不再点第二次。只有点击前置位的内存标志能证明没点击（如按钮一直没出现）时才记 `failed` / `not_submitted`（`submit_not_clicked`），标志置位之后的任何错误都走确认 | — |
 | 8 | `requires_3ds` | 出现 3DS 验证框：`WaitOTP(card_id, submitted_at)` 最多 5 分钟 → 填入 → 提交 | 转第 9 步 |
 | 9 | `verifying` | 关闭浏览器。每 15 秒查一次账号，最多 10 分钟，套餐类型变为 `expect_plan_type` 即成功。参考依据：支付页显示的成功或拒绝、卡池收到的该卡在 `submitted_at` 之后的授权交易 | 见下 |
 
 终态：`succeeded`、`failed`、`needs_review`、`previewed`（试运行完成）。
+
+试运行到填表（`dry_run_fill`，隐含 `dry_run`）：第 4 步之后转 `filling`，用 Stripe 公开测试卡 `4242424242424242` 走完填表，把各字段命中与核对结果、支付按钮状态写入时间线（不写卡号、不写邮箱），以 `previewed` 结束；失败记 `failed` / `not_submitted`（`dry_run_fill_failed`）。不碰卡池：不调 `Acquire`、`Fund`、`Sensitive`。走不到点支付的保证是结构性的：填表函数只拿到没有 `Submit` 的接口；浏览器创建后立即锁定，对象本身拒绝点击；这个流程不调用 `pay`；`pay` 入口拒绝试运行单。`dry_run` 列存 0（真实付款）、1（试运行到读金额）、2（试运行到填表）。
 
 确认阶段的定论：
 
 | 情况 | 结果 |
 |---|---|
 | 账号已是目标套餐 | `succeeded` |
-| 支付页明确显示被拒，再等 2 分钟（让授权推送到达）后该卡没有成功授权、账号也未开通 | `failed` / `declined` |
+| 支付页提示命中拒付词，再等 2 分钟（让授权推送到达）后该卡没有成功授权、账号也未开通 | `failed` / `declined` |
+| 支付页提示命中校验词（`form_rejected`）：前端拦下，多半没有发出扣款。词表未核实，文字可能分错，所以等满 10 分钟确认，该卡没有成功授权、账号也未开通才定论 | `failed` / `declined`（`form_rejected`），`Release(aborted)`；证据不足转 `needs_review` |
 | 10 分钟内既未开通又无明确拒绝（超时、浏览器崩溃、提示不明） | `needs_review`，Telegram 告警 |
 | 支付页显示被拒，但该卡有成功授权 | `needs_review`（证据冲突，交人工） |
+
+认不出的页面文字既不算被拒也不算校验错误，只记一条事件并继续等待。等待时先判成功，再判 3DS，最后才看提示文字。
 
 卡的释放（确认阶段结束后，或提交前放弃时立即）：成功 → `Release(success)`；被拒 → `Release(failed, 拒绝原因)`，计入健康度；提交前放弃或待人工 → `Release(aborted)`，不计入健康度。释放后卡池照常转出余额并回收。卡池租约时长低于 25 分钟时，配置页给出提示（第 5–9 步最长约 22 分钟）。
 
@@ -181,7 +186,7 @@ CDK 与兑换入口（B）；升级、点数、续费绑卡、宽限期（C）�
 
 | 方法与路径 | 用途 |
 |---|---|
-| `POST /orders` | 测试兑换：`{session, plan_key, region, dry_run}`；同账号进行中返回 409 |
+| `POST /orders` | 测试兑换：`{session, plan_key, region, dry_run, dry_run_fill}`（`dry_run_fill` 隐含 `dry_run`）；同账号进行中返回 409 |
 | `GET /orders?state=&page=&page_size=` | 订单列表 |
 | `GET /orders/:no` | 单据、时间线、该卡在提交后的授权交易 |
 | `POST /orders/:no/resolve` | 人工定论 `{result: succeeded\|failed, note}`，只允许 `needs_review` 状态 |
@@ -212,7 +217,7 @@ CDK 与兑换入口（B）；升级、点数、续费绑卡、宽限期（C）�
 | 部分 | 方法 |
 |---|---|
 | `chatgpt` | httptest 模拟 ChatGPT 的账号查询、token 刷新、创建支付会话（基础地址可注入） |
-| `paybrowser` | httptest 提供仿造支付页（卡号字段在 iframe 中、金额汇总、3DS 验证框、成功与被拒两种结果），用真 Chrome 跑；找不到 Chrome 时自动跳过 |
+| `paybrowser` | httptest 提供两份仿造支付页，用真 Chrome 跑，核心用例两份都跑；找不到 Chrome 时自动跳过。`checkout.html` 是 Payment Element 形态（卡号字段在 iframe 中，取自原型，没有实物转储）；`checkout-stripe.html` 照官方演示页的真实 DOM 写（字段在主文档，地址默认隐藏，有 Stripe Link 区块） |
 | `payengine` | 假 ChatGPT 客户端与假浏览器（接口注入），加真实卡池与 `mwtest` 模拟服务器。覆盖：顺利付款；要 3DS；被拒；金额超上限放弃（不选卡、不注资）；注资结果不明放弃；提交后浏览器崩溃，确认阶段查到开通 → 成功，查不到 → 待人工；被拒但有成功授权 → 待人工；重启恢复各状态；同账号进行中冲突；终态清空会话；试运行不碰卡池 |
 | handler | 路由注册、鉴权、409、只写代理、人工定论只限待人工 |
 | 前端 | Vitest 单元测试，加一次 Playwright 浏览器冒烟 |
@@ -220,7 +225,7 @@ CDK 与兑换入口（B）；升级、点数、续费绑卡、宽限期（C）�
 ### 11.2 生产验收（每一步用户确认后再做）
 
 1. 服务器执行 `--browser-deps`，「浏览器自检」通过且为有界面模式。
-2. 用测试账号对每个「套餐 × 地区」试运行，核实 §12 各项，按实际价格填套餐表。
+2. 用测试账号对每个「套餐 × 地区」试运行，核实 §12 各项，按实际价格填套餐表。其中至少一次用 `dry_run_fill`：在真实支付页上走完填表、不点支付，看时间线里的字段命中。
 3. 第一笔真实付款：最便宜的组合。
 4. 逐个放开其余组合。
 
@@ -228,19 +233,26 @@ CDK 与兑换入口（B）；升级、点数、续费绑卡、宽限期（C）�
 
 需要用户提供一个测试用 ChatGPT 账号会话。
 
-1. 创建支付会话的接口地址、请求体、返回字段，支付页地址形态（`pay.openai.com` 或 `chatgpt.com/checkout/…`）。
-2. 各套餐的 `chatgpt_plan_name`（Go 尤其未知）与开通后的 `plan_type`（`expect_plan_type`）。
-3. 各地区是否需要对应地区的出口 IP 才能拿到该地区价格。
-4. 支付页各字段与金额汇总的选择器。
-5. MarsWallex 发卡行 3DS 页面结构与成功页标志（只能在第一笔真实付款时看到）。
+**核实状态（2026-11-03）：** 下面标「部分核实」的依据是 Stripe 官方测试模式的 Checkout 演示页，用与 `paybrowser.Launch` 相同的 Chrome 参数打开，只读 DOM，没有提交。它证明的是 Stripe Checkout 这种页面长什么样，**不能证明 ChatGPT 的真实支付页就是这种页**。其余各项都没有核实。真实页面用 `dry_run_fill` 和测试账号核实，时间线会写出每个字段命中了哪个选择器。
+
+1. **未核实。** 创建支付会话的接口地址、请求体、返回字段，支付页地址形态（`pay.openai.com` 或 `chatgpt.com/checkout/…`）。
+2. **未核实。** 各套餐的 `chatgpt_plan_name`（Go 尤其未知）与开通后的 `plan_type`（`expect_plan_type`）。
+3. **未核实。** 各地区是否需要对应地区的出口 IP 才能拿到该地区价格。
+4. **部分核实。** 支付页各字段与金额汇总的选择器。
+   - 已在演示页核实：`#cardNumber`、`#cardExpiry`、`#cardCvc`；`#shipping*` 地址字段；手动地址入口文字「Enter address manually」；城市、邮编、州默认带 `HiddenInput` 且不可见；`#email`（`type=text`）、`#phoneNumber`、`#enableStripePass`、`iframe[name="link-login"]`；`.SubmitButton`、`data-testid=hosted-payment-submit-button`；金额元素。
+   - 未核实：`#billing*` 与 `autocomplete="billing *"`（按同一组件只换前缀推断，演示页只有 shipping）；Payment Element 的 `payment-*`、`billingAddress-*`（取自原型，没有实物转储）；手动地址入口的非英文文字；城市等字段要点入口才出现，还是过一会儿自己出现（两种现有证据不一致，代码两种都兼容）；页面同时显示 shipping 和 billing 时只填 billing，会被前端校验拦下（不扣款）。
+   - 真实页面如果是原生页，还需要「点套餐卡片、点 Subscribe」的流程。没有证据，没有实现，要有测试账号才能做。
+   - 内嵌 Checkout（字段在 iframe、金额和按钮也在 iframe）不支持：金额和支付按钮只在主文档找，这种页面在打开页面这一步就会放弃，不会先注资。
+5. **未核实。** MarsWallex 发卡行 3DS 页面结构与成功页标志（只能在第一笔真实付款时看到）。
 
 实现时按猜测写的部分，也要一并核实（`internal/paybrowser/selectors.go`）：
 
-6. 付款成功的真实标志。`Sel.Success` 目前只有占位选择器，认不出时等满 2 分钟再靠查账号定论，不会误判，但会慢。
-7. 点击后页面会出现哪些 `[role="alert"]` 文字（如「Processing your payment…」、3DS 提示、非英文文案）。不在词表里的文字一律按被拒处理，并立刻结束等待、关闭浏览器；要补进 `classifyPageError`。
-8. 真实拒付文字和校验错误文字分别长什么样，确认 `classifyPageError` 能分开。
-9. `.SubmitButton` 是否就是真实支付按钮、是否延迟渲染。它暂时不可见时会回落到别的 submit 按钮，白白用掉唯一一次提交，确认后考虑去掉回落项。
-10. Go 的 `chatgpt_plan_name` 与 Pro 5x 的 `expect_plan_type` 核实后写进代码默认值（`planDefaults`）：配置页没有这两项的输入框。
+6. **未核实。** 付款成功的真实标志。`Sel.Success` 目前只有占位选择器，演示页也没有 `#payment-success`；真实 Stripe Checkout 成功后多半直接跳走。认不出时等满 2 分钟再靠查账号定论，不会误判，但会慢。
+7. **未核实，但猜错的后果已经变小。** 点击后页面会出现哪些 `[role="alert"]` 文字（如「Processing your payment…」、3DS 提示、非英文文案）。现在不在词表里的文字只记事件并继续等待，不算被拒、不关浏览器；时间线的「支付页提示（未识别，继续等待）」就是要收集的样本。
+8. **未核实。** 真实拒付文字和校验错误文字分别长什么样，确认 `classifyPageError` 能分开。只证实 `.FieldError` 这个 class 存在。校验文字因此等满 10 分钟确认，不走 2 分钟宽限。
+9. **部分核实。** `.SubmitButton` 在演示页就是支付按钮；真实页面是否如此、是否延迟渲染，未核实。它暂时不可见时会回落到别的 submit 按钮，白白用掉唯一一次提交，确认后考虑去掉回落项。
+10. **未核实。** Go 的 `chatgpt_plan_name` 与 Pro 5x 的 `expect_plan_type` 核实后写进代码默认值（`planDefaults`）：配置页没有这两项的输入框。
+11. **未核实。** `ChallengeFrame` 的 `iframe[src*="challenge"]` 可能命中 hCaptcha 的 iframe。提示文字之前先判 3DS，所以误判的后果是把人机验证当成 3DS 去等验证码，只影响走确认的快慢，不会重复付款。
 
 ## 13. 风险
 

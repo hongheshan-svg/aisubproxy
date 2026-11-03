@@ -300,6 +300,9 @@ func createTables() error {
 	if err := MigrateCDKSessions(); err != nil {
 		return fmt.Errorf("migrate cdk sessions: %w", err)
 	}
+	if err := MigrateLocalCDKs(); err != nil {
+		return fmt.Errorf("migrate local cdks: %w", err)
+	}
 	return nil
 }
 

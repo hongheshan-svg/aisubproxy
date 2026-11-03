@@ -5,7 +5,7 @@
 #   docker build --target release -t xxx .     （需先把发布包解压到 ./dist）
 
 # ===== 构建阶段 1：前端 =====
-FROM node:24-alpine AS frontend
+FROM node:26-alpine AS frontend
 WORKDIR /src/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci --no-audit --no-fund

@@ -52,11 +52,44 @@
 | `Submit(ctx, Request{PlanKey, Region, Session, Source, SourceRef, DryRun}) (*Order, error)` | 校验并建单入队，立即返回。错误：`ErrPlanUnavailable`（套餐 × 地区未启用或金额未配）、`ErrBadSession`（会话无法解析、缺 sessionToken 或邮箱）、`ErrInflight`（同账号已有进行中单据） |
 | `Get(ctx, orderNo) (*Order, []Event, error)` | 单据与时间线 |
 
-B 如何得知单据结束（按 `source_ref` 查询或注册结束回调）留到 B 设计。
+B 如何得知单据结束：不用回调，码的状态按 `source='cdk' AND source_ref=<码 ID>` 从 `pay_orders` 派生，见 §3.3。
 
 ### 3.2 不在本子项目范围
 
-CDK 与兑换入口（B）；升级、点数、续费绑卡、宽限期（C）；自动重付；账号登录或二次验证；资金对账报表。
+CDK 与兑换入口（B，后端已实现，见 §3.3）；升级、点数、续费绑卡、宽限期（C）；自动重付；账号登录或二次验证；资金对账报表。
+
+### 3.3 子项目 B 的后端现状
+
+CDK 到充值的后端已经接通：可以在后台选择默认发码服务商，发 MarsWallex 码，用户在现有兑换页走完预览、预检、兑换、查进度。`payengine` 内部没有改，CDK 只是 `Submit` 的调用方（`Source="cdk"`）。
+
+**已实现：**
+
+| 内容 | 位置 | 要点 |
+|---|---|---|
+| 服务商选择 | `internal/provider` | 默认发码服务商存在 `site_settings` 的 `cdk_default_provider`，初始值 `zovocard`。切换只影响新发的码，写审计，绝不自动换服务商重试 |
+| 按码分流 | `internal/provider`、`handler/cardplatform_cdk.go` | 码前缀 `MW-`、令牌前缀 `mwt_` 的请求由本站处理，其余和原来一样转发 ZovoCard，响应不变 |
+| 本地码表 | `db/local_cdk.go` 的 `local_cdks` | 只存哈希和前缀。完整码只在发码响应里出现一次。旧表 `cd_keys` 不复用 |
+| 码状态派生 | `db.DeriveLocalCDK` | 不写码状态，从 `pay_orders` 派生，人工启停是唯一存在码表里的状态 |
+| 一码一单 | 唯一部分索引 `uq_pay_orders_cdk_one` | 同一张码除「确认没点过支付的失败」外只能有一张真实单。进程内的码锁在它前面挡一层 |
+| 重兑上限 | `db.MaxLocalCDKReRedeems = 3` | 只有 `failed` + `not_submitted` + 没有提交时间的单能重兑，最多 3 次，之后转人工。换码继承次数 |
+| 就绪检查 | `handler/provider_readiness.go` | 配置、主密钥、引擎、熔断、卡池、主钱包、可用卡、当日额度、硬门槛。发码、预检、兑换共用，不通过时不建单、不占用码 |
+| 发码硬门槛 | `db.HasRealSucceededPayOrder` | 必须已有一笔 `dry_run = 0` 且 `succeeded` 的单才能发 MarsWallex 码。试运行单不算 |
+| 跨服务商互斥 | `handler/provider_guard.go` | 同账号不能同时走两家，两个方向都查，再加进程内账号锁 |
+| 自动补卡的闸 | `cardpool/readiness.go` | 未选用 MarsWallex 时暂停补卡并每日告警，策略 `replenish_when_unselected` 可放开。对账、回收、Webhook、补拉不受影响 |
+| 预检令牌 | `handler/local_cdk.go` | 会话封进 secretbox 密文交回前端，不落库，30 分钟过期，绑定这张码 |
+| 公开响应 | `handler/local_cdk.go` | 全部由白名单生成，不含卡信息、代理、内部错误和时间线原文 |
+| 日志脱敏 | `server/access_log.go` | 访问日志和崩溃日志遮掉查询串里的 `code`、`cdk_code`、`token` |
+| 后台接口 | `handler/local_cdk_admin.go` | 默认服务商读写、就绪检查（含能力矩阵）、发码、列表、禁用、启用 |
+| 旧表清理 | `db/local_cdk.go` | 启动时清空 `recharge_tasks.session_json`（这张表的处理器都没有路由），回收含明文的页 |
+
+**还差：**
+
+- 前端后台页：默认服务商切换、就绪检查展示、MarsWallex 发码界面（`pro_20x` 要标注「仅限无订阅账号」）、码列表。用户兑换页的协议没变，字段和状态值都对照 `RechargeView.vue` 核对过，但还没有在页面上实际走过；MarsWallex 码的预览里多了 `plan_note`、`attempts_left`，页面可以按需展示。
+- 第一笔真实付款。没有它就过不了发码硬门槛，要先在后台用测试兑换跑通一笔（§12 的待核实项也要一起确认）。
+- 子项目 C：MarsWallex 码的宽限期恢复目前直接返回 400，升级、点数、续费绑卡都没有做。
+- `pro_20x` 现在只能开给无订阅账号，有订阅的账号会在 `check` 阶段被拒（不花钱）。
+- 码列表整表读入后在 Go 里派生和分页，码多了要优化。
+- 进程内的码锁和账号锁只在单实例部署下有效。多实例时一码一单仍由唯一索引保证，但跨服务商互斥的时间窗会变大。
 
 ## 4. 套餐表与配置
 

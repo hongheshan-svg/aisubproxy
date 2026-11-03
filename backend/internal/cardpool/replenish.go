@@ -91,6 +91,9 @@ func (s *Service) replenishOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if allowed, err := s.replenishAllowed(ctx, pol); err != nil || !allowed {
+		return err
+	}
 	ids := make([]string, 0, len(pol.ProductTargets))
 	for id, t := range pol.ProductTargets {
 		if t.Target > 0 {

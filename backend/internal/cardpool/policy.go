@@ -44,6 +44,8 @@ type Policy struct {
 	MaxFundCents      int64 `json:"max_fund_cents"`       // 单笔注资上限
 	MaxWalletOpCents  int64 `json:"max_wallet_op_cents"`  // 单笔钱包转账、兑换上限
 	DailyFundCapCents int64 `json:"daily_fund_cap_cents"` // 单日注资累计上限（北京日）
+	// ReplenishWhenUnselected 为真时，MarsWallex 没被选用也照常自动补卡（用于预热卡池）。默认暂停，免得白花开卡费。
+	ReplenishWhenUnselected bool `json:"replenish_when_unselected"`
 }
 
 // DefaultPolicy 返回默认策略；map 与切片为空但非 nil。

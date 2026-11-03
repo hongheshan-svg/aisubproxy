@@ -179,7 +179,6 @@ func TestIssueRejectsUnsupportedProductForMarsWallex(t *testing.T) {
 	for _, body := range []string{
 		`{"plan":"premium_monthly","product":"x","count":1,"funding_confirmed":true,"region":"PH"}`,
 		`{"plan":"plus_monthly","count":1,"funding_confirmed":true,"region":"PH"}`, // 推断成 X
-		`{"plan":"credit250","count":1,"funding_confirmed":true,"region":"PH"}`,
 		`{"plan":"claude_pro","count":1,"funding_confirmed":true,"region":"PH"}`,
 		`{"plan":"plus","product":"grok","count":1,"funding_confirmed":true,"region":"PH"}`,
 		`{"plan":"pro_20x_renew","count":1,"funding_confirmed":true,"region":"PH"}`,

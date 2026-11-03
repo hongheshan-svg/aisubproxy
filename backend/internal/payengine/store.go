@@ -246,6 +246,18 @@ func collectOrders(rows *sql.Rows) ([]Order, error) {
 
 // listOrders 按 id 倒序分页列出单据；state 为空不筛选。size 默认 20、上限 100。返回总数。
 func listOrders(ctx context.Context, state string, page, size int) ([]Order, int, error) {
+	return listOrdersBy(ctx, OrderFilter{State: state}, page, size)
+}
+
+// OrderFilter 是单据列表的筛选条件，空字段不筛选。
+type OrderFilter struct {
+	State   string // 单据状态
+	Renewal string // 续费进度（renewal_state）
+	Kind    string // 单据种类
+}
+
+// listOrdersBy 按筛选条件、id 倒序分页列出单据；返回总数。
+func listOrdersBy(ctx context.Context, f OrderFilter, page, size int) ([]Order, int, error) {
 	if size <= 0 {
 		size = 20
 	}
@@ -255,9 +267,16 @@ func listOrders(ctx context.Context, state string, page, size int) ([]Order, int
 	if page < 1 {
 		page = 1
 	}
-	where, args := "", []any{}
-	if state != "" {
-		where, args = " WHERE state = ?", append(args, state)
+	var conds []string
+	args := []any{}
+	for _, c := range []struct{ col, val string }{{"state", f.State}, {"renewal_state", f.Renewal}, {"kind", f.Kind}} {
+		if c.val != "" {
+			conds, args = append(conds, c.col+" = ?"), append(args, c.val)
+		}
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = " WHERE " + strings.Join(conds, " AND ")
 	}
 	var total int
 	if err := db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM pay_orders`+where, args...).Scan(&total); err != nil {

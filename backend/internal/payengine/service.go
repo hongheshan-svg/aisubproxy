@@ -55,6 +55,8 @@ type FormBrowser interface {
 	FillReport() paybrowser.FillReport     // 最近一次 Fill 的字段命中与核对结果，不含值
 	PayButtonState(context.Context) string // 只读支付按钮的状态，绝不点击
 	Diagnose(context.Context) []string     // 定位页面问题的几行文字，已脱敏
+	// EnsureNoSavePayment 确认「保存付款信息」类勾选框没有勾选（勾着就取消），返回处理结果；确认不了报错。只动勾选框，绝不点支付。
+	EnsureNoSavePayment(context.Context) (string, error)
 	Shot(context.Context, string, paybrowser.ShotScope) (string, error)
 	Close()
 }
@@ -285,19 +287,20 @@ func (s *Service) Submit(ctx context.Context, r Request) (*Order, error) {
 		return nil, fmt.Errorf("加密会话失败: %w", err)
 	}
 	o := &Order{
-		Provider:      prov,
-		Kind:          PlanKind(r.PlanKey),
-		Source:        r.Source,
-		SourceRef:     r.SourceRef,
-		DryRun:        dryRun,
-		DryRunFill:    r.DryRunFill,
-		PlanKey:       r.PlanKey,
-		Region:        r.Region,
-		Currency:      rc.Currency,
-		CapMinor:      rc.CapMinor,
-		FundCents:     rc.FundCents,
-		AccountEmail:  sess.Email,
-		SessionSealed: sealed,
+		Provider:       prov,
+		Kind:           PlanKind(r.PlanKey),
+		CreditQuantity: CreditQuantity(r.PlanKey),
+		Source:         r.Source,
+		SourceRef:      r.SourceRef,
+		DryRun:         dryRun,
+		DryRunFill:     r.DryRunFill,
+		PlanKey:        r.PlanKey,
+		Region:         r.Region,
+		Currency:       rc.Currency,
+		CapMinor:       rc.CapMinor,
+		FundCents:      rc.FundCents,
+		AccountEmail:   sess.Email,
+		SessionSealed:  sealed,
 	}
 	if err := insertOrder(ctx, o); err != nil {
 		return nil, err
@@ -335,6 +338,11 @@ func (s *Service) Get(ctx context.Context, no string) (*Order, []Event, error) {
 // List 按 id 倒序分页列出单据，state 为空不筛选；返回总数。
 func (s *Service) List(ctx context.Context, state string, page, size int) ([]Order, int, error) {
 	return listOrders(ctx, state, page, size)
+}
+
+// ListBy 按筛选条件（状态、续费进度、种类）分页列出单据，id 倒序；返回总数。
+func (s *Service) ListBy(ctx context.Context, f OrderFilter, page, size int) ([]Order, int, error) {
+	return listOrdersBy(ctx, f, page, size)
 }
 
 // Resolve 人工定论一张待人工的单据：result 为 succeeded 或 failed，note 去空白后不能为空，否则返回 ErrBadRequest。

@@ -44,6 +44,10 @@ type localFakeGPT struct {
 	accountCalls   int
 	checkouts      int
 	cancels        int
+	// creditReady 为 true 时账号是可以买点数的个人 Plus 账号（计费币种 PHP、没有欠费）
+	creditReady   bool
+	creditBuys    int
+	creditBalance string // 非空时余额接口可用，返回它
 }
 
 func (g *localFakeGPT) Refresh(_ context.Context, s *chatgpt.Session) error {
@@ -60,6 +64,11 @@ func (g *localFakeGPT) Account(context.Context, chatgpt.Session) (chatgpt.Accoun
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.accountCalls++
+	if g.creditReady {
+		no := false
+		return chatgpt.Account{AccountID: "acc-1", PlanType: "plus", HasActiveSubscription: true, Structure: "personal",
+			BillingCurrency: "PHP", IsDelinquent: &no}, nil
+	}
 	if g.subscribedFrom > 0 && g.accountCalls >= g.subscribedFrom {
 		return chatgpt.Account{AccountID: "acc-1", PlanType: "plus", HasActiveSubscription: true}, nil
 	}
@@ -77,6 +86,7 @@ func (g *localFakeGPT) CreateCreditCheckout(context.Context, chatgpt.Session, st
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.checkouts++
+	g.creditBuys++
 	return chatgpt.CreditCheckoutResult{Tag: chatgpt.CheckoutTagHosted, SessionID: "cs_live_credit", URL: "https://checkout.stripe.com/c/pay/cs_live_credit"}, nil
 }
 
@@ -100,7 +110,19 @@ func (g *localFakeGPT) SavedCards(context.Context, chatgpt.Session, string) ([]c
 }
 
 func (g *localFakeGPT) CreditBalance(context.Context, chatgpt.Session, string) (chatgpt.CreditBalanceInfo, error) {
-	return chatgpt.CreditBalanceInfo{}, nil
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.creditBalance == "" {
+		return chatgpt.CreditBalanceInfo{}, nil
+	}
+	return chatgpt.CreditBalanceInfo{Available: true, Balance: g.creditBalance}, nil
+}
+
+// creditBuyCount 是建点数结账会话的次数。
+func (g *localFakeGPT) creditBuyCount() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.creditBuys
 }
 
 func (g *localFakeGPT) cancelCount() int {
@@ -140,6 +162,7 @@ type localFakeBrowser struct {
 	submitErr     error // Submit 返回它时按钮没被点到
 	amountChanges bool  // 填表之后金额变了
 	filled        bool
+	savePayChecks int // EnsureNoSavePayment 的调用次数
 }
 
 func (b *localFakeBrowser) setAmountChanges(on bool) {
@@ -204,6 +227,14 @@ func (b *localFakeBrowser) EnterOTP(context.Context, string) error { return nil 
 func (b *localFakeBrowser) FillReport() paybrowser.FillReport { return paybrowser.FillReport{} }
 
 func (b *localFakeBrowser) PayButtonState(context.Context) string { return "enabled" }
+
+// EnsureNoSavePayment 记次数：只有点数单会调用。
+func (b *localFakeBrowser) EnsureNoSavePayment(context.Context) (string, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.savePayChecks++
+	return "页面没有", nil
+}
 
 func (b *localFakeBrowser) Diagnose(context.Context) []string { return nil }
 

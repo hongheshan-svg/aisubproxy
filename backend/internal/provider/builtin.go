@@ -29,8 +29,8 @@ func (z zovoCard) Supports(product, _ string) bool {
 	return slices.Contains(z.Products(), normProduct(product))
 }
 
-// marsWallex 供卡·本站付款。能力直接取自付款引擎实际实现的流程（payengine.PlanKeys，现在是 GPT 五档新开通），
-// 引擎以后支持升级、Codex 点数时这里自动跟着扩展，不另外维护清单。
+// marsWallex 供卡·本站付款。能力直接取自付款引擎实际实现的流程（payengine.SupportedPlanKeys：GPT 五档新开通、Codex 点数六档），
+// 引擎以后支持升级时这里自动跟着扩展，不另外维护清单。
 type marsWallex struct{}
 
 func (marsWallex) Name() Name          { return MarsWallex }
@@ -40,13 +40,18 @@ func (marsWallex) Products() []string  { return []string{"gpt"} }
 func (marsWallex) CodePrefix() string  { return "MW-" }
 func (marsWallex) TokenPrefix() string { return "mwt_" }
 func (marsWallex) Supports(product, plan string) bool {
-	return normProduct(product) == "gpt" && slices.Contains(payengine.PlanKeys, strings.TrimSpace(plan))
+	return normProduct(product) == "gpt" && slices.Contains(payengine.SupportedPlanKeys(), strings.TrimSpace(plan))
 }
 
 // PlanNote pro_20x 在 ZovoCard 是「Plus 升级 Pro」，在 MarsWallex 是新开通，同名不同义，必须标出来。
+// 点数档只卖给已订阅 Plus 或 Pro 的账号，按账号计费币种付款（设计 2026-11-03 §5.1）。
 func (marsWallex) PlanNote(plan string) string {
-	if strings.TrimSpace(plan) == "pro_20x" {
+	plan = strings.TrimSpace(plan)
+	switch {
+	case plan == "pro_20x":
 		return "仅限无订阅账号"
+	case payengine.PlanKind(plan) == payengine.KindCredit:
+		return "仅限已订阅 Plus 或 Pro 的账号，按账号计费币种付款"
 	}
 	return ""
 }
@@ -63,8 +68,9 @@ type Capability struct {
 
 // Capabilities 由各服务商的 Supports 生成，界面不用另写一份。列出全部已注册的服务商。
 func Capabilities() []Capability {
-	rows := make([]Capability, 0, len(payengine.PlanKeys)+4)
-	for _, p := range payengine.PlanKeys {
+	// 点数各档合成一行 credit*，订阅开通逐档列出
+	rows := make([]Capability, 0, len(payengine.SubscriptionPlanKeys)+4)
+	for _, p := range payengine.SubscriptionPlanKeys {
 		rows = append(rows, Capability{Product: "gpt", Plan: p, samplePlan: p})
 	}
 	rows = append(rows,

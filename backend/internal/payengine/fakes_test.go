@@ -285,6 +285,7 @@ type browserFactory struct {
 	report      paybrowser.FillReport
 	diagnose    func(context.Context) []string // 未设置时返回一行固定文字
 	lockSubmit  func() bool                    // 未设置时返回 true：不能证明没点击，这是安全方向
+	savePayment func() (string, error)         // EnsureNoSavePayment 的结果；未设置时为「页面没有」
 
 	mu         sync.Mutex
 	proxies    []string
@@ -366,6 +367,14 @@ func (b *fakeBrowser) Open(ctx context.Context, url string, cookies []paybrowser
 func (b *fakeBrowser) FillReport() paybrowser.FillReport {
 	b.hit("FillReport")
 	return b.f.report
+}
+
+func (b *fakeBrowser) EnsureNoSavePayment(context.Context) (string, error) {
+	b.hit("EnsureNoSavePayment")
+	if b.f.savePayment != nil {
+		return b.f.savePayment()
+	}
+	return "页面没有", nil
 }
 
 func (b *fakeBrowser) PayButtonState(context.Context) string {

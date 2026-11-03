@@ -120,6 +120,9 @@ func (s *Service) RetryRenewal(ctx context.Context, no, by string) (*Order, erro
 		return nil, err
 	}
 	if _, err := s.renewOnce(ctx, no, true); err != nil {
+		if errors.Is(err, errRenewalBusy) {
+			return nil, fmt.Errorf("%w：%v", ErrRenewalUnavailable, err)
+		}
 		return nil, err
 	}
 	return getOrder(ctx, no)

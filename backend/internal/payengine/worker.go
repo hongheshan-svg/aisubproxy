@@ -435,7 +435,7 @@ func (s *Service) run(ctx context.Context, j *job) error {
 	return s.pay(ctx, j)
 }
 
-// check 是步骤 2：解开会话、刷新 token、查账号；已有有效订阅则放弃（升级不在本流程）。
+// check 是步骤 2：解开会话、刷新 token、查账号。开通单：已有有效订阅则放弃（升级不在本流程）；点数单的条件见 checkCredit。
 func (s *Service) check(ctx context.Context, j *job) error {
 	sess, err := openSession(j.o.SessionSealed)
 	if errors.Is(err, chatgpt.ErrBadSession) {
@@ -461,13 +461,21 @@ func (s *Service) check(ctx context.Context, j *job) error {
 		return s.chatgptAbort(j, "chatgpt_failed", "查询账号失败", err)
 	}
 	j.note("account_id", acc.AccountID)
+	j.o.AccountID = acc.AccountID
+	if j.o.Kind == KindCredit {
+		if err := s.checkCredit(ctx, j, acc); err != nil {
+			return err
+		}
+		s.snapshotCredit(ctx, j)
+		return nil
+	}
 	if acc.HasActiveSubscription {
 		return abort("already_subscribed", "账号已有有效订阅（%s），不能直接开通", acc.PlanType)
 	}
 	return nil
 }
 
-// createLink 是步骤 3：按套餐表创建支付会话，记下会话号与支付链接。
+// createLink 是步骤 3：按套餐表创建支付会话，记下会话号与支付链接。点数单见 createCreditLink。
 func (s *Service) createLink(ctx context.Context, j *job) error {
 	plan, _, err := ResolvePlan(j.o.PlanKey, j.o.Region, j.o.DryRun)
 	if errors.Is(err, ErrPlanUnavailable) {
@@ -475,6 +483,9 @@ func (s *Service) createLink(ctx context.Context, j *job) error {
 	}
 	if err != nil {
 		return abort("internal_error", "读取套餐配置失败：%v", err)
+	}
+	if j.o.Kind == KindCredit {
+		return s.createCreditLink(ctx, j)
 	}
 	co, err := j.gpt.CreateCheckout(ctx, j.sess, plan.ChatGPTPlanName, j.o.Region, j.o.Currency)
 	if err != nil {

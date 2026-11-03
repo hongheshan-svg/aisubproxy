@@ -51,7 +51,7 @@ func (s *Service) previewFill(ctx context.Context, j *job) error {
 
 	fctx, cancel := context.WithTimeout(ctx, s.t.Fill)
 	defer cancel()
-	payButton, err := fillOnly(fctx, j.browser, card, bill)
+	payButton, err := fillOnly(fctx, j.browser, card, bill, j.o.Kind == KindCredit)
 	s.noteFillReport(ctx, j, j.browser, "试运行填表")
 	if err != nil {
 		s.notePageDiag(ctx, j, j.browser, "试运行填表失败")
@@ -78,10 +78,15 @@ func (s *Service) noteRecheck(ctx context.Context, j *job) {
 	}
 }
 
-// fillOnly 填表并读支付按钮的状态。参数故意只有 FormBrowser：这里点不了支付，也碰不到卡池。
-func fillOnly(ctx context.Context, b FormBrowser, card paybrowser.Card, bill paybrowser.Billing) (payButton string, err error) {
+// fillOnly 填表并读支付按钮的状态；点数单另外确认「保存付款信息」没有勾选。参数故意只有 FormBrowser：这里点不了支付，也碰不到卡池。
+func fillOnly(ctx context.Context, b FormBrowser, card paybrowser.Card, bill paybrowser.Billing, credit bool) (payButton string, err error) {
 	if err := b.Fill(ctx, card, bill); err != nil {
 		return "", err
+	}
+	if credit {
+		if err := noSavePayment(ctx, b); err != nil {
+			return "", err
+		}
 	}
 	return b.PayButtonState(ctx), nil
 }

@@ -620,6 +620,28 @@ func TestPayShotRejectsSymlinkedOrderDir(t *testing.T) {
 	}
 }
 
+// 只传 dry_run_fill 时绝不能变成真实付款单：这个模式要真的打开支付页填表，建错就会动钱。
+func TestPaySubmitDryRunFillAloneIsNeverReal(t *testing.T) {
+	payEnv(t)
+	body := `{"plan_key":"plus","region":"PH","dry_run_fill":true,"session":` + paySession("fill@example.com") + `}`
+	w := payDo(AdminPaySubmit, "POST", "/orders", "/orders", body)
+	if w.Code != 200 {
+		t.Fatalf("应 200: %d %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Order struct {
+			DryRun     bool `json:"dry_run"`
+			DryRunFill bool `json:"dry_run_fill"`
+		} `json:"order"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if !resp.Order.DryRun || !resp.Order.DryRunFill {
+		t.Fatalf("应是试运行到填表单: %s", w.Body.String())
+	}
+}
+
 func TestPaySubmitSessionForms(t *testing.T) {
 	payEnv(t)
 	obj := `{"plan_key":"plus","region":"PH","dry_run":true,"session":` + paySession("obj@example.com") + `}`

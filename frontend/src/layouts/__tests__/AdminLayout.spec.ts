@@ -38,6 +38,7 @@ const routes = [
       { path: 'marswallex-wallet', component: Stub, meta: { title: 'MarsWallex 钱包', group: '资金与付款', icon: 'Wallet' } },
       { path: 'cardpool', component: Stub, meta: { title: '卡池', group: '资金与付款', icon: 'CreditCard' } },
       { path: 'marswallex-pay', component: Stub, meta: { title: '自动付款', group: '资金与付款', icon: 'Money' } },
+      { path: 'providers', component: Stub, meta: { title: '卡服务商', group: '服务商接入', icon: 'Coin' } },
       { path: 'integration', component: Stub, meta: { title: '卡台 ZovoCard', group: '服务商接入', icon: 'Connection' } },
       { path: 'card-selection', component: Stub, meta: { title: '卡台选卡规则', group: '服务商接入', icon: 'Operation' } },
       { path: 'webhooks', component: Stub, meta: { title: '卡台 Webhook', group: '服务商接入', icon: 'Bell' } },
@@ -65,9 +66,9 @@ async function render(path: string) {
 }
 
 describe('AdminLayout 左侧菜单', () => {
-  it('按 route.meta 渲染 13 个菜单项、4 个分组标题，且不再有顶部胶囊导航', async () => {
+  it('按 route.meta 渲染 14 个菜单项、4 个分组标题，且不再有顶部胶囊导航', async () => {
     const html = await render('/ops/cardpool')
-    expect((html.match(/class="[^"]*\bsn-item\b/g) || []).length).toBe(13)
+    expect((html.match(/class="[^"]*\bsn-item\b/g) || []).length).toBe(14)
     expect((html.match(/class="[^"]*\bsn-group\b/g) || []).length).toBe(4)
     for (const g of ['卡密业务', '资金与付款', '服务商接入', '系统']) expect(html).toContain(g)
     expect(html).not.toContain('nav-pills')
@@ -78,12 +79,26 @@ describe('AdminLayout 左侧菜单', () => {
     const html = await render('/ops/cardpool')
     expect(html).toMatch(/class="[^"]*\bsn-item\b[^"]*\bactive\b[^"]*"[^>]*aria-label="卡池"/)
     expect(html).toMatch(/class="crumb-group"[^>]*>资金与付款</)
-    expect(html).toMatch(/class="crumb-page"[^>]*>卡池</)
+    expect(html).toMatch(/class="[^"]*\bcrumb-page\b[^"]*"[^>]*>卡池</)
+  })
+
+  it('面包屑第三级：默认标签与 ?tab= 指定的标签', async () => {
+    const def = await render('/ops/cardpool')
+    expect(def).toMatch(/class="[^"]*\bcrumb-tab\b[^"]*"[^>]*>概览</)
+    const t = await render('/ops/cardpool?tab=holders')
+    expect(t).toMatch(/class="[^"]*\bcrumb-tab\b[^"]*"[^>]*>持卡人</)
+    const bad = await render('/ops/cardpool?tab=nope')
+    expect(bad).toMatch(/class="[^"]*\bcrumb-tab\b[^"]*"[^>]*>概览</)
+  })
+
+  it('没有页内标签的页面没有第三级', async () => {
+    const html = await render('/ops/providers')
+    expect(html).not.toContain('crumb-tab')
   })
 
   it('总览没有分组前缀', async () => {
     const html = await render('/ops')
-    expect(html).toMatch(/class="crumb-page"[^>]*>总览</)
+    expect(html).toMatch(/class="[^"]*\bcrumb-page\b[^"]*"[^>]*>总览</)
     expect(html).not.toContain('crumb-group')
   })
 

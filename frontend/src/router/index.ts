@@ -80,6 +80,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'marswallex-wallet', name: 'MarsWallexWallet', component: () => import('../views/admin/MarsWallexWallet.vue'), meta: { title: 'MarsWallex 钱包', group: '资金与付款', icon: 'Wallet' } },
       { path: 'cardpool', name: 'CardPool', component: () => import('../views/admin/CardPool.vue'), meta: { title: '卡池', group: '资金与付款', icon: 'CreditCard' } },
       { path: 'marswallex-pay', name: 'MarsWallexPay', component: () => import('../views/admin/MarsWallexPay.vue'), meta: { title: '自动付款', group: '资金与付款', icon: 'Money' } },
+      { path: 'providers', name: 'CardProviders', component: () => import('../views/admin/CardProviders.vue'), meta: { title: '卡服务商', group: '服务商接入', icon: 'Coin' } },
       { path: 'integration', name: 'CardIntegration', component: () => import('../views/admin/CardIntegration.vue'), meta: { title: '卡台 ZovoCard', group: '服务商接入', icon: 'Connection' } },
       { path: 'card-selection', name: 'CardSelectionConfig', component: () => import('../views/admin/CardSelectionConfig.vue'), meta: { title: '卡台选卡规则', group: '服务商接入', icon: 'Operation' } },
       { path: 'webhooks', name: 'Webhooks', component: () => import('../views/admin/WebhookEvents.vue'), meta: { title: '卡台 Webhook', group: '服务商接入', icon: 'Bell' } },

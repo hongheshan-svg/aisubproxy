@@ -99,8 +99,17 @@
             <span class="crumb-group">{{ currentMeta.group }}</span>
             <span class="crumb-sep">/</span>
           </template>
-          <span class="crumb-page">{{ currentMeta.title }}</span>
+          <span class="crumb-page" :class="{ 'crumb-link': !!crumbTab }">{{ currentMeta.title }}</span>
+          <template v-if="crumbTab">
+            <span class="crumb-sep">/</span>
+            <span class="crumb-page crumb-tab">{{ crumbTab }}</span>
+          </template>
         </nav>
+        <div class="env-badges" aria-label="当前对接环境">
+          <el-tooltip v-for="b in envBadges" :key="b.name" :content="b.url || '环境未知'" placement="bottom">
+            <span class="env-badge" :class="`env-${b.kind}`" :data-env="b.name">{{ b.name }}·{{ b.label }}</span>
+          </el-tooltip>
+        </div>
       </header>
 
       <main class="page"><router-view /></main>
@@ -135,6 +144,7 @@ import { authFetch, serverLogout } from '../lib/api'
 import { dialog } from '../lib/dialog'
 import { siteBrand } from '../theme'
 import ThemeToggle from '../components/ThemeToggle.vue'
+import { PAGE_TABS, tabCrumb, zovoEnv, marsEnv, type EnvBadge } from '../lib/adminui'
 import {
   buildNavItems, groupNavItems, readNavPref, writeNavPref, isCollapsed, MOBILE_MAX, OPS, type NavPref,
 } from '../lib/adminNav'
@@ -152,6 +162,27 @@ const currentMeta = computed(() => {
   const m = route.meta as Record<string, string>
   return { title: m.title || brand.value.name || '控制台', group: m.group || '' }
 })
+
+// 面包屑第三级：页内标签（?tab=）
+const crumbTab = computed(() => tabCrumb(PAGE_TABS, route.path, route.query.tab))
+
+// 环境徽章：资金系统要一眼看出连的是生产还是测试。读不出来就写「未知」，不能默认当生产。
+const envBadges = ref<EnvBadge[]>([])
+async function loadEnv() {
+  const unknown = (name: string): EnvBadge => ({ name, kind: 'unknown', label: '未知', url: '' })
+  let zovo = unknown('卡台')
+  let mars = unknown('MarsWallex')
+  try {
+    const r = await authFetch('/api/v1/admin/settings')
+    if (r.ok) { const d = await r.json(); zovo = zovoEnv(String(d.card_api_base || '')) }
+  } catch { /* 保持未知 */ }
+  try {
+    const r = await authFetch('/api/v1/admin/marswallex/config')
+    if (r.ok) { const d = await r.json(); mars = marsEnv(String(d.base_url || ''), d.base_url_presets) }
+  } catch { /* 保持未知 */ }
+  envBadges.value = [zovo, mars]
+}
+onMounted(loadEnv)
 
 function isActive(p: string) {
   return p === OPS ? route.path === OPS : route.path === p || route.path.startsWith(p + '/')
@@ -356,6 +387,17 @@ async function submitPwd() {
 .crumbs { display: flex; align-items: center; gap: 8px; font-size: 14px; min-width: 0; }
 .crumb-group { color: var(--ink-3); white-space: nowrap; }
 .crumb-sep { color: var(--ink-3); }
+.env-badges { margin-left: auto; display: flex; gap: 6px; align-items: center; flex-wrap: nowrap; }
+.env-badge {
+  font-size: 12px; line-height: 1; padding: 5px 8px; border-radius: 999px; white-space: nowrap;
+  border: 1px solid var(--brd); color: var(--ink-2); background: var(--surface); cursor: default;
+}
+.env-badge.env-prod { color: var(--good, #16a34a); border-color: currentColor; }
+.env-badge.env-test { color: var(--warn, #d97706); border-color: currentColor; }
+.env-badge.env-custom, .env-badge.env-unknown { color: var(--err, #dc2626); border-color: currentColor; }
+.is-mobile .env-badge { padding: 4px 6px; font-size: 11px; }
+.crumb-link { font-weight: 500; color: var(--ink-2); }
+.crumb-tab { font-weight: 600; }
 .crumb-page { font-weight: 600; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .page {
   max-width: var(--content-max, 1500px); width: 100%; margin: 0 auto;

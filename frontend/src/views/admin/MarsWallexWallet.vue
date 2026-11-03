@@ -228,6 +228,7 @@
 <script setup lang="ts">
 import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { useRouteTab } from '../../lib/useRouteTab'
 import { dialog } from '../../lib/dialog'
 import { copyToClipboard } from '../../lib/clipboard'
 import {
@@ -255,7 +256,7 @@ const STATUS_LABEL: Record<string, string> = {
   ACTIVE: '启用', DISABLED: '停用', INITIALIZING: '初始化中', FAILED: '失败', REJECTED: '已拒绝',
 }
 
-const tab = ref('accounts')
+const tab = useRouteTab('/ops/marswallex-wallet')
 let unmounted = false
 
 function acctTagType(s: string) {
@@ -583,6 +584,7 @@ onMounted(async () => {
   await loadAccounts(true)
   const main = mainAccount.value
   if (main) ser.account_no = main.account_no
+  if (tab.value !== 'accounts') onTabChange(tab.value)
 })
 onBeforeUnmount(() => {
   unmounted = true

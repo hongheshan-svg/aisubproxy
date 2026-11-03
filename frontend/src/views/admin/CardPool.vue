@@ -556,6 +556,7 @@ import ApiErrorNotice from '../../components/ApiErrorNotice.vue'
 import { mapApiError } from '../../lib/errors'
 import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { useRouteTab } from '../../lib/useRouteTab'
 import { useRouter } from 'vue-router'
 import CardholderForm from './components/CardholderForm.vue'
 import {
@@ -627,7 +628,7 @@ const ORDER_STATES = ['pending', 'processing', 'unknown', 'needs_review', 'succe
 
 const router = useRouter()
 const auth = useAuthStore()
-const tab = ref('overview')
+const tab = useRouteTab('/ops/cardpool')
 
 // ---------- 通用 ----------
 function fmtIso(s: string) {
@@ -1316,7 +1317,7 @@ async function resumeProduct(row: Health) {
 }
 
 // ---------- 标签切换 / 生命周期 ----------
-watch(tab, (t) => {
+function onTab(t: string) {
   if (t === 'overview') loadOverview()
   else if (t === 'cards') loadCards()
   else if (t === 'holders') { loadHolders(); loadSubmissions() }
@@ -1327,11 +1328,14 @@ watch(tab, (t) => {
     loadPolicy()
     loadHealth()
   }
-})
+}
+watch(tab, onTab)
 
 onMounted(() => {
   loadProducts()
-  loadOverview()
+  // 刷新后从 ?tab= 直接落在非概览标签时，加载该标签的数据
+  if (tab.value === 'overview') loadOverview()
+  else { loadOverview(); onTab(tab.value) }
 })
 
 onBeforeUnmount(() => {

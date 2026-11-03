@@ -801,6 +801,9 @@ func localCDKExchange(c *gin.Context, code, ip string) {
 	if err := db.FinishAgentCDKExchange(exID, newID, fresh.Prefix); err != nil {
 		log.Printf("[local-cdk] 换码记录 %d 收尾失败 new=%d: %v", exID, newID, err)
 		opsAlert(fmt.Sprintf("MarsWallex 换码已发出新码但写库失败：记录 %d，旧码 %d，新码 %d。占位已保留，请到后台定论。", exID, row.ID, newID))
+	} else if err := db.CompleteAgentCDKExchangeDisable(exID); err != nil {
+		// 旧码和新码在 ExchangeLocalCDK 的事务里一起换好，本地码不存在两张都能兑的时刻。这里只是记账，失败了维护循环会补上
+		log.Printf("[local-cdk] 换码记录 %d 转完成失败: %v", exID, err)
 	}
 	db.WriteAudit("agent-swap", "local_cdk_exchange",
 		fmt.Sprintf("old=%d new=%d plan=%s region=%s carried=%d", row.ID, newID, row.PlanKey, row.Region, v.FundedFailures), ip)

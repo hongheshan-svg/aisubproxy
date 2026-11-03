@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -83,7 +84,12 @@ func retryAgentExchangeDisables(now time.Time) {
 	}
 	cli := cardplatform.NewFromSettings()
 	for _, e := range list {
+		// 卡台的码 ID 一定大于 0（PublicAgentCDKExchange 查不到就拒绝了），这里只会是 MarsWallex 本地码：
+		// 旧码和新码在同一个事务里换好，没有卡台的码要禁用，补上记账就行（比如人工定论 issued 之后）
 		if e.OldUpstreamID <= 0 {
+			if err := db.CompleteAgentCDKExchangeDisable(e.ID); err != nil && !errors.Is(err, db.ErrAgentExchangeState) {
+				log.Printf("[agent-exchange] 本地码换码记录 %d 转完成失败: %v", e.ID, err)
+			}
 			continue
 		}
 		if err := finishDisableOldCode(context.Background(), cli, e.ID, e.OldUpstreamID); err != nil {

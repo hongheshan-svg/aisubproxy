@@ -63,32 +63,30 @@ func AdminPutDefaultProvider(c *gin.Context) {
 }
 
 // AdminProviderReadiness GET /api/v1/admin/providers/readiness?plan=&region=
-// 两家的就绪情况和能力矩阵。plan、region 可选，都给时只检查这一个组合。
+// 每家已注册服务商的就绪情况（含各自的 extras、warnings，供卡型另有 combos）和能力矩阵。
+// plan、region 可选，都给时供卡型只检查这一个组合。某家的检查本身出错只把这家标为未就绪。
 func AdminProviderReadiness(c *gin.Context) {
 	ctx := c.Request.Context()
 	plan := strings.TrimSpace(c.Query("plan"))
 	region := strings.ToUpper(strings.TrimSpace(c.Query("region")))
-	def, err := provider.LoadDefault()
+	cfg, err := provider.LoadConfig()
 	if err != nil {
-		log.Printf("[provider] 读取默认服务商失败: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取默认服务商失败"})
+		log.Printf("[provider] 读取服务商配置失败: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取服务商配置失败"})
 		return
 	}
-	mwp, _ := provider.Get(provider.MarsWallex)
-	mw := checkProvider(ctx, mwp, plan, region)
-	zcp, _ := provider.Get(provider.ZovoCard)
-	zc, bal := checkZovoCard(ctx)
-	_ = zcp
-	zcDetail := gin.H{}
-	if bal != nil {
-		zcDetail["balance"] = bal.Balance
-		zcDetail["spendable_balance"] = bal.SpendableBalance
+	by := cfg.ByProduct
+	if by == nil {
+		by = map[string]provider.Name{}
+	}
+	providers := gin.H{}
+	for _, p := range provider.List() {
+		providers[string(p.Name())] = checkProvider(ctx, p, plan, region).json(p.Kind())
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"default":      def,
-		"providers":    gin.H{string(provider.ZovoCard): zc, string(provider.MarsWallex): mw.Readiness},
-		"combos":       mw.Combos,
-		"zovocard":     zcDetail,
+		"default":      cfg.Default,
+		"by_product":   by,
+		"providers":    providers,
 		"capabilities": provider.Capabilities(),
 	})
 }

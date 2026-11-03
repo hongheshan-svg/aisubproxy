@@ -353,7 +353,9 @@ func setupRoutes(r *gin.Engine) {
 			admin.GET("/cardplatform/cdks", handler.CardPlatformListCDKs)
 			admin.GET("/cardplatform/cdks/stored", handler.CardPlatformListStoredCDKs)
 			admin.POST("/cardplatform/cdks", handler.CardPlatformIssueCDKs)
-			// 多卡服务商：默认发码服务商、就绪检查、本地码
+			// 卡服务商：列表与配置、默认发码服务商（旧接口）、就绪检查、本地码
+			admin.GET("/providers", handler.AdminListProviders)
+			admin.PUT("/providers/config", handler.AdminPutProviderConfig)
 			admin.GET("/providers/default", handler.AdminGetDefaultProvider)
 			admin.PUT("/providers/default", handler.AdminPutDefaultProvider)
 			admin.GET("/providers/readiness", handler.AdminProviderReadiness)

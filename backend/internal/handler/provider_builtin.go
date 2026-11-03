@@ -4,6 +4,8 @@ import (
 	"context"
 
 	"github.com/gin-gonic/gin"
+
+	"github.com/tuzi/cdk-recharge-system/internal/provider"
 )
 
 // 内置两家服务商在 handler 层的接入。
@@ -34,6 +36,8 @@ func (zovoCardAdapter) Lookup(ctx context.Context, code, device string) cdkLooku
 // Check 是卡台的就绪检查，附带卡台余额。卡台余额接口不带币种，这里原样展示数字。
 func (zovoCardAdapter) Check(ctx context.Context) providerStatus {
 	r, bal := checkZovoCard(ctx)
+	r.SetLink("api_key", provider.Link{To: "/ops/integration", Label: "去配置卡台"})
+	r.SetLink("balance", provider.Link{To: "/ops/integration", Label: "去卡台页"})
 	st := providerStatus{Readiness: r, Extras: []providerExtra{}, Warnings: []string{}}
 	if bal != nil {
 		st.Extras = append(st.Extras,
@@ -52,5 +56,10 @@ func (marsWallexAdapter) Check(ctx context.Context, plan, region string, public 
 		sync = syncWalletThrottled
 	}
 	r, combos := checkMarsWallex(ctx, plan, region, sync)
+	r.SetLink("config", provider.Link{To: "/ops/marswallex", Label: "去配置 MarsWallex"})
+	r.SetLink("breaker", provider.Link{To: "/ops/marswallex-pay", Label: "去自动付款查看"})
+	r.SetLink("card_pool", provider.Link{To: "/ops/cardpool", Label: "去卡池"})
+	r.SetLink("wallet_sync", provider.Link{To: "/ops/marswallex-wallet", Label: "去 MarsWallex 钱包"})
+	r.SetLink("plan", provider.Link{To: "/ops/marswallex-pay", Label: "去付款配置启用套餐"})
 	return providerStatus{Readiness: r, Combos: combos, Extras: []providerExtra{}, Warnings: []string{}}
 }

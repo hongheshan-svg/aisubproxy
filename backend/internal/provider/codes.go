@@ -75,6 +75,24 @@ type Check struct {
 	Detail string `json:"detail"`
 	// Raw 是底层错误的原文，只给可展开的详情和排查用，不作为页面正文。
 	Raw string `json:"raw,omitempty"`
+	// Link 是处理这一项该去的后台页面，由各家适配器自己给；没有对应页面就留空，界面不显示链接。
+	Link *Link `json:"link,omitempty"`
+}
+
+// Link 是检查项的跳转链接：To 是后台路由，Label 是链接文字。
+type Link struct {
+	To    string `json:"to"`
+	Label string `json:"label"`
+}
+
+// SetLink 给所有 key 对应的检查项挂上跳转链接。
+func (r *Readiness) SetLink(key string, l Link) {
+	for i := range r.Checks {
+		if r.Checks[i].Key == key {
+			link := l
+			r.Checks[i].Link = &link
+		}
+	}
 }
 
 // Readiness 是就绪检查的结果。Problems 为空即就绪。

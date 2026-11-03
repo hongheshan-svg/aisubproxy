@@ -192,6 +192,9 @@ func checkCardSupply(ctx context.Context, cs provider.CardSupply, plan, region s
 	default:
 		st.Readiness.Pass("first_real_payment", "首笔真实付款", "已有系统自动确认成功的真实付款")
 	}
+	if n == provider.MarsWallex {
+		st.Readiness.SetLink("first_real_payment", provider.Link{To: "/ops/marswallex-pay", Label: "去自动付款做真实付款"})
+	}
 	return st
 }
 

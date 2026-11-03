@@ -1,5 +1,5 @@
 <template>
-  <article class="card space-y-3" :class="{ 'lg:col-span-2': hasCombos }" :data-provider="info.name">
+  <article class="card space-y-3 min-w-0 overflow-hidden" :class="{ 'lg:col-span-2': hasCombos }" :data-provider="info.name">
     <div class="flex flex-wrap items-center justify-between gap-2">
       <div class="flex flex-wrap items-center gap-2 min-w-0">
         <h2 class="text-base font-semibold text-ink">{{ info.display_name || info.name }}</h2>
@@ -24,15 +24,15 @@
       <ul class="space-y-1.5 text-sm">
         <li v-for="c in readiness.checks || []" :key="c.key" class="flex gap-2 items-start">
           <span :class="c.ok ? 'text-ok' : 'text-err'" class="shrink-0 w-4" aria-hidden="true">{{ c.ok ? '✓' : '✗' }}</span>
-          <span class="min-w-0">
+          <span class="min-w-0 break-words">
             <b>{{ checkTitle(c.key, c.title) }}</b>
             <span class="text-muted"> — {{ c.detail }}</span>
             <details v-if="c.raw" class="text-xs text-muted mt-0.5">
               <summary class="cursor-pointer">详情</summary>
               <code class="break-all">{{ c.raw }}</code>
             </details>
-            <router-link v-if="!c.ok && CHECK_HINTS[c.key]?.link" :to="CHECK_HINTS[c.key].link!.to" class="ml-2 underline">
-              {{ CHECK_HINTS[c.key].link!.label }}
+            <router-link v-if="checkLink(info.name, c)" :to="checkLink(info.name, c)!.to" class="ml-2 underline" data-testid="check-link">
+              {{ checkLink(info.name, c)!.label }}
             </router-link>
           </span>
         </li>
@@ -50,7 +50,7 @@
       <div v-if="hasCombos" class="space-y-2" data-testid="combos">
         <h3 class="text-sm font-semibold text-ink">可发的套餐与地区</h3>
         <p class="text-xs text-muted">只列已启用的组合。注资金额是每张码兑换时给卡充的美元，金额上限是应付金额的上限。</p>
-        <el-table :data="readiness.combos || []" size="small" border empty-text="没有已启用的套餐与地区">
+        <div class="overflow-x-auto"><el-table :data="readiness.combos || []" size="small" border empty-text="没有已启用的套餐与地区">
           <el-table-column label="套餐" min-width="150">
             <template #default="{ row }">
               {{ row.label || row.plan }}
@@ -67,7 +67,7 @@
               <span v-if="!row.ok" class="text-xs text-muted ml-1">{{ (row.problems || []).join('；') }}</span>
             </template>
           </el-table-column>
-        </el-table>
+        </el-table></div>
       </div>
     </template>
   </article>
@@ -77,7 +77,7 @@
 import { computed } from 'vue'
 import { formatMinor } from '../../../lib/pay'
 import {
-  centsToUsd, checkTitle, CHECK_HINTS, needsFirstRealPayment, planNote,
+  centsToUsd, checkLink, checkTitle, needsFirstRealPayment, planNote,
   type ProviderInfo, type ProviderReadiness,
 } from '../../../lib/provider'
 

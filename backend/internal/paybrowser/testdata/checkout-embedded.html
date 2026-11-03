@@ -24,7 +24,7 @@
     leave=1         提交成功后跳到 /done（离开结账页）
     decline=文字    点击后主页面显示带这段文字的 [role="alert"]
     challenge=1     点击后插入 iframe[name="stripe-challenge-frame"]，指向卡片服务的 acs.html
-    rerender=1      页面加载 1.5 秒后再插入一个可见的提交按钮（模拟填表后页面重绘）
+    rerender=1      页面加载 3 秒后再插入一个可见的提交按钮（模拟填表后页面重绘）
     其余参数原样传给卡片 iframe（amount、currency、nocurrency、noamount、savepay、addr，见 card-embedded.html）
   点击提交后用 collect 消息向卡片 iframe 取字段值，POST 到本服务的 /pay，供测试断言。
 -->
@@ -70,7 +70,7 @@
   }
   if (q.get('nobutton') === '1') buttons.innerHTML = ''
   if (q.get('twobuttons') === '1') addButton()
-  if (q.get('rerender') === '1') setTimeout(addButton, 1500)
+  if (q.get('rerender') === '1') setTimeout(addButton, 3000)
 
   var form = document.getElementById('checkout-form')
   form.addEventListener('submit', function (e) {

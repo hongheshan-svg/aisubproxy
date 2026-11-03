@@ -31,6 +31,7 @@ const (
 )
 
 // embeddedAmountRe 从读屏文字里取金额原文和币种代码。币种代码后面不能再连着字母（如 usdt），宁可读不出也不误认。
+// 金额原文里只能有一段数字，见 normalizeEmbeddedAmount。
 var embeddedAmountRe = regexp.MustCompile(`Payment amount:\s*(.+?)\s+Currency:\s*([A-Za-z]{3})\b`)
 
 // embeddedAmountJS 在本 frame 里找以「Payment amount:」开头的文字，返回它所在元素的父元素里的全部文字；找不到返回空串。
@@ -218,16 +219,21 @@ func (b *Browser) readEmbeddedAmount(ctx context.Context, currency string) (int6
 	return minor, text, nil
 }
 
-// normalizeEmbeddedAmount 从读屏文字里取出金额和币种代码，规范成「金额里最后一段数字 + 空格 + 大写币种代码」，
+// normalizeEmbeddedAmount 从读屏文字里取出金额和币种代码，规范成「金额里的那一段数字 + 空格 + 大写币种代码」，
 // 如 "100.00 USD"、"1,120.00 PHP"。原来的货币符号丢掉，币种只由 Currency 后面的代码决定；读不到 Currency 就报错，不猜。
+// 金额原文按 amountRe 的口径必须正好一段数字，多段时报错。
 func normalizeEmbeddedAmount(raw string) (string, error) {
 	m := embeddedAmountRe.FindStringSubmatch(raw)
 	if m == nil {
 		return "", errors.New("读不到 Payment amount 的币种")
 	}
+	// 夹着税费、折扣之类的第二个金额时，取哪一段都可能读错（比如读成税额，绕过最低金额），宁可读不出
 	nums := amountRe.FindAllString(m[1], -1)
-	if len(nums) == 0 {
+	switch {
+	case len(nums) == 0:
 		return "", errors.New("Payment amount 里没有金额数字")
+	case len(nums) > 1:
+		return "", errors.New("Payment amount 里有多个金额，无法确定应付金额")
 	}
-	return nums[len(nums)-1] + " " + strings.ToUpper(m[2]), nil
+	return nums[0] + " " + strings.ToUpper(m[2]), nil
 }

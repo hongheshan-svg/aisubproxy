@@ -231,6 +231,10 @@ func TestEmbeddedOpenNoAmountText(t *testing.T) {
 	if errors.Is(err, paybrowser.ErrCFChallenge) {
 		t.Fatalf("读不到金额不是 Cloudflare 挑战：%v", err)
 	}
+	// 只缺读屏金额：卡片 iframe 整个没加载时也会缺金额，那种情况不能让这个用例误通过
+	if strings.Contains(err.Error(), "卡号框") || strings.Contains(err.Error(), "支付按钮") {
+		t.Fatalf("只应缺 Payment amount，卡号框和支付按钮都该找到，得到 %v", err)
+	}
 }
 
 func TestEmbeddedOpenCloudflare(t *testing.T) {
@@ -259,11 +263,40 @@ func TestEmbeddedOpenCloudflareCallerDeadline(t *testing.T) {
 	}
 }
 
+// 调用方主动取消（不是超时）时立即返回取消错误，不再读页面判断 Cloudflare。
+func TestEmbeddedOpenCanceled(t *testing.T) {
+	needChrome(t)
+	t.Cleanup(paybrowser.SetPageLoadTimeout(30 * time.Second))
+	f := newFakeEmbedded(t)
+	b := launch(t, paybrowser.LaunchOptions{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	canceledAt := make(chan time.Time, 1)
+	time.AfterFunc(time.Second, func() {
+		canceledAt <- time.Now()
+		cancel()
+	})
+	err := b.Open(ctx, f.cfURL(), paybrowser.PageEmbedded, nil)
+	took := time.Since(<-canceledAt)
+	if errors.Is(err, paybrowser.ErrCFChallenge) {
+		t.Fatalf("取消时不应判成 Cloudflare 挑战：%v", err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("取消时应返回 context.Canceled，得到 %v", err)
+	}
+	if took > 2*time.Second {
+		t.Fatalf("取消后 %v 才返回，应在 2 秒内", took)
+	}
+}
+
 // 规范化只认 Currency 后面紧跟的三个字母：缺 Currency、币种代码后面还连着字母都报错，不猜币种。
+// 金额部分只能有一段数字：夹着税费之类的第二个金额时报错，不能挑一段去比最低金额。
 func TestNormalizeEmbeddedAmount(t *testing.T) {
 	ok := []struct{ raw, want string }{
 		{"Payment amount: $100.00 Currency: usd Payment mode: Live mode. Test data not accepted.", "100.00 USD"},
 		{"Payment amount: ₱1,120.00 Currency: php", "1,120.00 PHP"},
+		{"Payment amount: 1,120.00 Currency: php", "1,120.00 PHP"},
+		{"Payment amount: US$100.00 Currency: usd", "100.00 USD"},
 		{"Payment amount: US$ 200.00 Currency: USD", "200.00 USD"},
 	}
 	for _, c := range ok {
@@ -280,6 +313,15 @@ func TestNormalizeEmbeddedAmount(t *testing.T) {
 	} {
 		if got, err := paybrowser.NormalizeEmbeddedAmount(raw); err == nil {
 			t.Errorf("NormalizeEmbeddedAmount(%q) 应报错，得到 %q", raw, got)
+		}
+	}
+	for _, raw := range []string{
+		"Payment amount: $0.00 Tax: $20.00 Currency: usd",
+		"Payment amount: $100.00 $20.00 Currency: usd",
+	} {
+		got, err := paybrowser.NormalizeEmbeddedAmount(raw)
+		if err == nil || !strings.Contains(err.Error(), "Payment amount 里有多个金额") {
+			t.Errorf("NormalizeEmbeddedAmount(%q) 应报「Payment amount 里有多个金额」，得到 %q, %v", raw, got, err)
 		}
 	}
 }

@@ -1,6 +1,6 @@
 # 订阅开通支持 ChatGPT 内嵌结账页
 
-日期：2026-11-03　状态：待审
+日期：2026-11-03　状态：已定稿，实施中
 前置：付款核心设计 `2026-11-01-marswallex-pay-core-design.md`（下文简称「A 设计」）、`2026-11-03-marswallex-credits-renewal-probe-design.md`（下文简称「点数设计」）
 
 ## 1. 背景

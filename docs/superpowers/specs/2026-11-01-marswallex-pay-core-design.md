@@ -282,12 +282,12 @@ CDK 到充值的后端已经接通：可以在后台选择默认发码服务商�
 
 实现时按猜测写的部分，也要一并核实（`internal/paybrowser/selectors.go`）：
 
-6. **未核实。** 付款成功的真实标志。`Sel.Success` 目前只有占位选择器，演示页也没有 `#payment-success`；真实 Stripe Checkout 成功后多半直接跳走。认不出时等满 2 分钟再靠查账号定论，不会误判，但会慢。
+6. **未核实。** 付款成功的真实标志。`Sel.Success` 目前只有占位选择器，演示页也没有 `#payment-success`；真实 Stripe Checkout 成功后多半直接跳走。认不出时，提交后的页面结果等满 2 分钟（`SubmitResult`）仍无可识别结果，单据记为结果不明，转入确认阶段，最长 10 分钟按账号与授权证据定论（见 §6 的确认阶段表），不会误判，但会慢。
 7. **未核实，但猜错的后果已经变小。** 点击后页面会出现哪些 `[role="alert"]` 文字（如「Processing your payment…」、3DS 提示、非英文文案）。现在不在词表里的文字只记事件并继续等待，不算被拒、不关浏览器；时间线的「支付页提示（未识别，继续等待）」就是要收集的样本。
 8. **未核实。** 真实拒付文字和校验错误文字分别长什么样，确认 `classifyPageError` 能分开。只证实 `.FieldError` 这个 class 存在。校验文字因此等满 10 分钟确认，不走 2 分钟宽限。
 9. **部分核实。** `.SubmitButton` 在演示页就是支付按钮；真实页面是否如此、是否延迟渲染，未核实。它暂时不可见时会回落到别的 submit 按钮，白白用掉唯一一次提交，确认后考虑去掉回落项。
 10. **未核实。** Go 的 `chatgpt_plan_name` 与 Pro 5x 的 `expect_plan_type` 核实后写进代码默认值（`planDefaults`）：配置页没有这两项的输入框。
-11. **未核实。** `ChallengeFrame` 的 `iframe[src*="challenge"]` 可能命中 hCaptcha 的 iframe。提示文字之前先判 3DS，所以误判的后果是把人机验证当成 3DS 去等验证码，只影响走确认的快慢，不会重复付款。
+11. **未核实，宽泛候选已删除。** `ChallengeFrame` 现在只列 `iframe[name="stripe-challenge-frame"]` 与 `iframe[src*="three-ds"]`。原来的 `iframe[src*="challenge"]` 会命中 Stripe 内嵌 hCaptcha 的 iframe（PF-5），已去掉；`src*="3ds"` 也已去掉。这两条保留的候选仍未用真实 3DS 页面核实，第一笔真实付款看到 3DS 时补全。认不出真实 3DS 框时，这一单不会填验证码，等到确认阶段后多半转人工，不会重复付款。
 
 ## 13. 风险
 

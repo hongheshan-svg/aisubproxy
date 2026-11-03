@@ -71,6 +71,13 @@
 **Chrome**
 - 以 `cdk` 身份带沙箱运行。新安装不再创建 `cdk-chrome` 用户。
 - 安装脚本的沙箱自检改为以 `cdk` 身份执行。
+- **代码改动**：`paybrowser/sandbox.go` 无论哪种身份，都把 Chrome 的 `HOME` 设成它的临时目录。现在只有 root 那条路径这么做；非 root 时沿用继承来的 `HOME`，而 `ProtectHome=true` 加上 `cdk` 没有家目录，会让它不可写。
+- **Xvfb 不受影响**：它的 socket 在 `/tmp/.X11-unix`。`PrivateTmp=true` 给服务一个独立的 `/tmp`，但 Xvfb 是程序自己启动的，和 Chrome 共用这个 `/tmp`。
+
+**命令行回滚**
+- `install.sh rollback` 改为以 `cdk` 身份执行回滚，结束后再统一修正一次安装目录的所有者。
+- 原因：用 `sudo` 以 root 执行 `cdk-recharge rollback` 会生成 root 所有的文件，之后服务写不进去。
+- 提示文案里的回滚命令改成 `sudo bash install.sh rollback`。
 
 **从 root 安装升级**
 - 检测到旧单元是 `User=root` 时，按以下顺序处理：先备份，再创建 `cdk` 用户，然后 `chown -R` 安装目录，最后重写单元并重启。
@@ -181,6 +188,7 @@ Go 版本：工作流用 `1.27.x`。依赖升级如果要求提高 go.mod 里的
   - 各语言文案里的消息语法；
   - 有没有用到 11 版删掉的 `v-t` 指令。
 - **`xlsx` 换成 SheetJS 官方 CDN 的 0.20.x 安装包**：npm 上只有 0.18.5，没有修复版。
+  - 代码只用到 `read`、`sheet_to_json`、`aoa_to_sheet`、`book_new`、`book_append_sheet`（`src/lib/batch-session.ts`），都是稳定接口。补一个用真实 xlsx 文件导入、导出的往返测试。
   - 锁文件会带完整性校验值，所以每次装到的都是同一个包。
   - Dependabot 管不到它，要人工跟进新版本。
   - 这是唯一一个不来自 registry.npmjs.org 的依赖。

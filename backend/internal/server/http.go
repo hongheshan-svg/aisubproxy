@@ -31,6 +31,9 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	if err := db.Init(&cfg.Database); err != nil {
 		return nil, err
 	}
+	// Telegram 告警：后台配置优先，没配就用环境变量；旧版明文保存的令牌先加密迁移
+	handler.MigrateLegacyTelegramToken()
+	notify.SetSettingsSource(handler.TelegramSettings)
 
 	// 生产模式、或已配置动钱上游密钥时，强制要求安全的 JWT secret，避免 token 被伪造后调用动钱接口
 	upstream, err := upstreamKeysConfigured()
@@ -90,13 +93,24 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	}, nil
 }
 
+// alertLabels 是发到 Telegram 时每条告警开头的模块名，和 Claude 的回复等其他消息区分开。
+var alertLabels = map[string]string{
+	"payengine": "付款",
+	"cardpool":  "卡池",
+	"cdk":       "CDK",
+}
+
 // alertSender 包装模块告警：先写日志（前缀标明模块；Telegram 未配置时 SendText 静默返回，告警不能因此丢失），
-// 再 HTML 转义后发送。告警里有平台错误信息、商户名、持卡人备注等不受控文本，SendText 用 parse_mode=HTML，
-// 未转义的 < 或 & 会让 Telegram 拒收整条消息。告警文本不含卡号、CVV2、验证码。
+// 再 HTML 转义、加上「【模块】」前缀后发送。告警里有平台错误信息、商户名、持卡人备注等不受控文本，SendText 用
+// parse_mode=HTML，未转义的 < 或 & 会让 Telegram 拒收整条消息。告警文本不含卡号、CVV2、验证码。
 func alertSender(prefix string, send func(string)) func(string) {
+	label := alertLabels[prefix]
+	if label == "" {
+		label = prefix
+	}
 	return func(text string) {
 		log.Printf("[%s] 告警: %s", prefix, text)
-		send(html.EscapeString(text))
+		send("【" + html.EscapeString(label) + "】" + html.EscapeString(text))
 	}
 }
 
@@ -393,6 +407,10 @@ func setupRoutes(r *gin.Engine) {
 			// 站点设置（品牌/皮肤/卡台密钥保险箱）
 			admin.GET("/settings", handler.AdminGetSettings)
 			admin.PUT("/settings", handler.AdminPutSettings)
+			// Telegram 告警：令牌加密保存、只写不读；测试消息同步发送并返回结果
+			admin.GET("/notify/telegram", handler.AdminGetTelegram)
+			admin.PUT("/notify/telegram", handler.AdminPutTelegram)
+			admin.POST("/notify/telegram/test", handler.AdminTestTelegram)
 
 			// 自动选卡权重配置
 			admin.GET("/card-selection/rules", handler.AdminGetCardSelectionRules)

@@ -165,7 +165,7 @@ func TestOTPTimeoutNeedsReview(t *testing.T) {
 	if g.State != StateNeedsReview || g.ErrorCode != "verify_timeout" || g.SessionSealed == "" || g.RenewalState != RenewalNone {
 		t.Fatalf("应转待人工: %+v", g)
 	}
-	if a := h.alerts.Texts(); len(a) != 1 || !strings.Contains(a[0], o.OrderNo) || !strings.Contains(a[0], "待人工") {
+	if a := waitAlerts(t, h, 1); len(a) != 1 || !strings.Contains(a[0], o.OrderNo) || !strings.Contains(a[0], "待人工") {
 		t.Fatalf("应告警 1 次: %v", a)
 	}
 	assertReleases(t, h, cardpool.ResultAborted)
@@ -392,6 +392,9 @@ func TestSettleAfterSubmitWriteFailureAlerts(t *testing.T) {
 	}
 }
 
+// waitAlerts 轮询到至少有 n 条告警，最多 5 秒。
+// 转人工、点数单存卡、续费失败等告警都在写完状态之后才发（写库失败就不告警），
+// 等到单据状态时告警可能还没发出：断言「有告警」都要用它，不能直接读 h.alerts。
 func waitAlerts(t *testing.T, h *harness, n int) []string {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -402,6 +405,24 @@ func waitAlerts(t *testing.T, h *harness, n int) []string {
 		time.Sleep(5 * time.Millisecond)
 	}
 	return h.alerts.Texts()
+}
+
+// waitAlertContaining 轮询到有一条告警含 sub，最多 5 秒；返回当时的全部告警。
+func waitAlertContaining(t *testing.T, h *harness, sub string) []string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		a := h.alerts.Texts()
+		for _, s := range a {
+			if strings.Contains(s, sub) {
+				return a
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("没有含 %q 的告警: %v", sub, a)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 // R25：两次转确认都失败时告警恰好一次；写库恢复后确认协程接管进 verifying 并最终定论，全程只点一次支付。

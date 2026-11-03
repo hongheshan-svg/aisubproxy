@@ -11,11 +11,10 @@ import (
 
 // 密钥类键：只接受写入，读出脱敏
 var secretSettingKeys = map[string]bool{
-	"card_api_base":    false,
-	"card_api_key":     true,
-	"webhook_secret":   true, // 卡台开发者页 whsec_…
-	"telegram_token":   true,
-	"telegram_chat_id": false,
+	"card_api_base":  false,
+	"card_api_key":   true,
+	"webhook_secret": true, // 卡台开发者页 whsec_…
+	// Telegram 告警在 telegram_settings.go 单独处理（令牌加密保存）
 	// agent_swap handled specially (hash)
 }
 
@@ -61,15 +60,13 @@ func AdminGetSettings(c *gin.Context) {
 }
 
 type adminSettingsBody struct {
-	BrandName      *string `json:"brand_name"`
-	BrandSub       *string `json:"brand_sub"`
-	Skin           *string `json:"skin"`
-	ThemeMode      *string `json:"theme_mode"`
-	CardAPIBase    *string `json:"card_api_base"`
-	CardAPIKey     *string `json:"card_api_key"`
-	TelegramToken  *string `json:"telegram_token"`
-	TelegramChatID *string `json:"telegram_chat_id"`
-	WebhookSecret  *string `json:"webhook_secret"`
+	BrandName     *string `json:"brand_name"`
+	BrandSub      *string `json:"brand_sub"`
+	Skin          *string `json:"skin"`
+	ThemeMode     *string `json:"theme_mode"`
+	CardAPIBase   *string `json:"card_api_base"`
+	CardAPIKey    *string `json:"card_api_key"`
+	WebhookSecret *string `json:"webhook_secret"`
 	// 代理失败换码密码（明文一次写入，存 bcrypt；空=不改）
 	AgentSwapPassword *string `json:"agent_swap_password"`
 	// 同一换码密码每个北京日最多换多少张（默认 20，必须大于 0；不传不改）
@@ -129,8 +126,6 @@ func AdminPutSettings(c *gin.Context) {
 	_ = setIf("brand_sub", body.BrandSub, 80)
 	_ = setIf("card_api_base", body.CardAPIBase, 200)
 	_ = setIf("card_api_key", body.CardAPIKey, 200)
-	_ = setIf("telegram_token", body.TelegramToken, 200)
-	_ = setIf("telegram_chat_id", body.TelegramChatID, 64)
 	_ = setIf("webhook_secret", body.WebhookSecret, 200)
 	if body.AgentSwapDailyLimit != nil {
 		if err := db.SetSetting(agentSwapDailyLimitKey, strconv.Itoa(*body.AgentSwapDailyLimit)); err != nil {

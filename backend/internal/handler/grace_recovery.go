@@ -3,6 +3,7 @@ package handler
 import (
 	"github.com/gin-gonic/gin"
 	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
+	"github.com/tuzi/cdk-recharge-system/internal/provider"
 	"net/http"
 	"strings"
 )
@@ -19,6 +20,11 @@ func PublicCDKGraceRecovery(c *gin.Context) {
 	if c.ShouldBindJSON(&body) != nil || !body.Confirmed || strings.TrimSpace(body.RedemptionToken) == "" ||
 		len(body.RedemptionToken) > 512 || strings.TrimSpace(body.PreflightToken) == "" || len(body.PreflightToken) > 65536 {
 		c.JSON(400, gin.H{"error": "请先检测账号并确认取消宽限期原订阅"})
+		return
+	}
+	// MarsWallex 只做无订阅账号的新开通，没有宽限期流程（子项目 C）。令牌绝不发往卡台
+	if provider.ResolveToken(body.RedemptionToken) == provider.MarsWallex {
+		c.JSON(400, gin.H{"error": "该卡密暂不支持宽限期处理"})
 		return
 	}
 	status, raw, err := cardplatform.NewFromSettings().RecoverSubscription(c.Request.Context(), body, deviceFrom(c))

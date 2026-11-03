@@ -88,7 +88,7 @@ func TestIssueProductKeepsGPTDefault(t *testing.T) {
 		// 裸 premium_* 同时是 X 和 Grok 的键：没有 product 时归 X；带 grok_ 前缀才是 Grok
 		{"", "premium_monthly"}: "x", {"", "grok_premium_monthly"}: "grok",
 		// super_monthly 同理：X 与 Grok 同名，没有 product 时归 X（X 优先判定）
-		{"", "super_monthly"}: "x",
+		{"", "super_monthly"}:       "x",
 		{"grok", "premium_monthly"}: "grok",
 	}
 	for in, want := range cases {

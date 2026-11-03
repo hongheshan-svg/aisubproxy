@@ -18,6 +18,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
+	"github.com/tuzi/cdk-recharge-system/internal/provider"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -222,6 +223,10 @@ func PublicAgentCDKExchange(c *gin.Context) {
 	code := strings.TrimSpace(req.Code)
 	if code == "" || len(code) < 10 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "请输入完整卡密"})
+		return
+	}
+	if provider.ResolveCode(code) == provider.MarsWallex {
+		localCDKExchange(c, code, ip)
 		return
 	}
 	codeHash := db.HashCDKCode(code)

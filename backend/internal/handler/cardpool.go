@@ -459,6 +459,7 @@ func AdminCardPoolPutPolicy(c *gin.Context) {
 		// 其它字段不能这样打底（map 会被合并）。读不出来时 LoadPolicy 返回默认值，正好是安全的上限。
 		cur, _ := cardpool.LoadPolicy()
 		p.MaxFundCents, p.MaxWalletOpCents, p.DailyFundCapCents = cur.MaxFundCents, cur.MaxWalletOpCents, cur.DailyFundCapCents
+		p.ReplenishWhenUnselected = cur.ReplenishWhenUnselected
 		if !bindPoolJSON(c, &p) {
 			return
 		}

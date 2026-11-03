@@ -19,6 +19,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
+	"github.com/tuzi/cdk-recharge-system/internal/provider"
 	"github.com/tuzi/cdk-recharge-system/internal/secretbox"
 )
 
@@ -117,25 +118,8 @@ func issueProduct(explicit, plan string) string {
 	return "gpt"
 }
 
-// CardPlatformIssueCDKs POST /api/v1/admin/cardplatform/cdks
-// body: { plan, count, funding_confirmed }
-func CardPlatformIssueCDKs(c *gin.Context) {
-	var req struct {
-		Plan string `json:"plan"`
-		// Product gpt / x / grok。不传按档位键推断（老前端只传 plan）。
-		Product          string `json:"product"`
-		Count            int    `json:"count"`
-		FundingConfirmed bool   `json:"funding_confirmed"`
-		// PaymentCountry 这批码兑换时用哪个地区付款。空 = 菲律宾（存量行为）。
-		// 不在本站校验取值：卡台的 payment_regions 是唯一真相源，
-		// 这里再校验一遍就等于多了一份会过期的清单。发了不支持的地区，
-		// 卡台会在发码这一步直接拒，错误原样透回给操作者。
-		PaymentCountry string `json:"payment_country"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
-		return
-	}
+// zovoCardIssueCDKs 向卡台发码。入口和服务商判断在 CardPlatformIssueCDKs。
+func zovoCardIssueCDKs(c *gin.Context, req cdkIssueRequest) {
 	plan := strings.TrimSpace(req.Plan)
 	if plan == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "plan is required"})
@@ -1001,6 +985,11 @@ func PublicCDKPreview(c *gin.Context) {
 		return
 	}
 	code := str(body["code"])
+	// 码的归属只看码本身。MW 码绝不发往卡台，也不走 BindCDKRedemptionToken（它会把完整码明文写库）
+	if provider.ResolveCode(code) == provider.MarsWallex {
+		localCDKPreview(c, code)
+		return
+	}
 	cli := cardplatform.NewFromSettings()
 	st, raw, err := cli.Preview(c.Request.Context(), code, deviceFrom(c))
 	if err != nil {
@@ -1027,6 +1016,15 @@ func PublicCDKPreflight(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
 	}
+	if isLocalCDKRequest(body) {
+		localCDKPreflight(c, body)
+		return
+	}
+	release, ok := holdZovoCardAccount(c, body)
+	if !ok {
+		return
+	}
+	defer release()
 	cli := cardplatform.NewFromSettings()
 	st, raw, err := cli.Preflight(c.Request.Context(), body, deviceFrom(c))
 	if err != nil {
@@ -1067,6 +1065,15 @@ func PublicCDKRedeem(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
 	}
+	if isLocalCDKRequest(body) {
+		localCDKRedeem(c, body)
+		return
+	}
+	release, ok := holdZovoCardAccount(c, body)
+	if !ok {
+		return
+	}
+	defer release()
 	// 有选卡配置就向卡台声明 strict，避免被卡台自己的 537872/星链级联盖过。
 	injectRedeemCardPolicy(body)
 	// 本站坏卡黑名单 → 本单排除这些卡：CDK 走 CDK 自己的选卡规则。实时读黑名单、纯选卡维度
@@ -1090,6 +1097,10 @@ func PublicCDKResult(c *gin.Context) {
 	token := strings.TrimSpace(c.Query("token"))
 	if token == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "token required"})
+		return
+	}
+	if provider.ResolveToken(token) == provider.MarsWallex {
+		localCDKResult(c, token)
 		return
 	}
 	cli := cardplatform.NewFromSettings()
@@ -1124,6 +1135,10 @@ func PublicCDKResultByCode(c *gin.Context) {
 	}
 	if code == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "code required"})
+		return
+	}
+	if provider.ResolveCode(code) == provider.MarsWallex {
+		localCDKResultByCode(c, code)
 		return
 	}
 	bind, err := db.GetBindingByCDK(code)

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
+	"github.com/tuzi/cdk-recharge-system/internal/provider"
 )
 
 // 公开批量查询上限：每条可能回源卡台 Result，避免一次打爆上游。
@@ -45,6 +47,9 @@ func LookupCDKStatus(c *gin.Context) {
 		return
 	}
 
+	if provider.ResolveCode(code) == provider.MarsWallex && !localRateCheck(c, localRateQuery) {
+		return
+	}
 	resp := lookupOneCDK(c.Request.Context(), code, deviceFrom(c))
 	if resp.Status == "unknown" {
 		c.JSON(http.StatusNotFound, gin.H{
@@ -80,6 +85,12 @@ func LookupCDKStatusBatch(c *gin.Context) {
 			"error": "一次最多查询 " + strconv.Itoa(lookupBatchMax) + " 张卡密",
 			"max":   lookupBatchMax,
 		})
+		return
+	}
+
+	// 只有批次里有本地码才计入限流：纯 ZovoCard 的批量查询行为不变
+	if slices.ContainsFunc(codes, func(code string) bool { return provider.ResolveCode(code) == provider.MarsWallex }) &&
+		!localRateCheck(c, localRateQuery) {
 		return
 	}
 
@@ -151,6 +162,9 @@ func applyLookupFailure(resp *cdkLookupResult, notes string, reusable bool) {
 }
 
 func lookupOneCDK(ctx context.Context, code, deviceID string) cdkLookupResult {
+	if provider.ResolveCode(code) == provider.MarsWallex {
+		return localCDKLookup(ctx, code)
+	}
 	resp := cdkLookupResult{CDKCode: code, Status: "unknown", Message: "未找到该卡密记录"}
 	redeemOK := false
 	reusable := false

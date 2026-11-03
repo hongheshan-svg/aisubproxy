@@ -91,11 +91,16 @@ func openStoredEmail(sealedEmail, stored string) (string, error) {
 	return "", nil
 }
 
-// BindCDKSession 预检/兑换时写入 session（可按码或 redemption_token 关联）。
+// BindCDKSession 预检/兑换时写入 session（可按码或 redemption_token 关联）。provider 是写绑定的上游服务商，必填。
 // 只写密文；主密钥缺失或不合法时返回错误且不写任何东西。调用方记日志后照常继续：兑换本身不依赖这份副本。
-func BindCDKSession(cdkCode, redemptionToken, sessionPayload string) error {
+// 已有的行不改 provider：一张码终身只属于一家。
+func BindCDKSession(provider, cdkCode, redemptionToken, sessionPayload string) error {
 	if DB == nil {
 		return fmt.Errorf("db not ready")
+	}
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		return fmt.Errorf("绑定会话缺少服务商")
 	}
 	code := normalizeCDKCode(cdkCode)
 	tok := strings.TrimSpace(redemptionToken)
@@ -119,15 +124,15 @@ func BindCDKSession(cdkCode, redemptionToken, sessionPayload string) error {
 	// 优先已知码
 	if code != "" {
 		_, err := DB.Exec(`
-			INSERT INTO cdk_session_bindings (cdk_code, session_payload, redemption_token, account_email_sealed, session_bound_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+			INSERT INTO cdk_session_bindings (cdk_code, session_payload, redemption_token, account_email_sealed, session_bound_at, provider, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 			ON CONFLICT(cdk_code) DO UPDATE SET
 				session_payload = excluded.session_payload,
 				account_email_sealed = excluded.account_email_sealed,
 				session_bound_at = excluded.session_bound_at,
 				redemption_token = COALESCE(NULLIF(excluded.redemption_token,''), cdk_session_bindings.redemption_token),
 				updated_at = CURRENT_TIMESTAMP
-		`, code, sealed, tok, email, now)
+		`, code, sealed, tok, email, now, provider)
 		return err
 	}
 	// 仅有 token：更新已绑定行
@@ -144,9 +149,9 @@ func BindCDKSession(cdkCode, redemptionToken, sessionPayload string) error {
 	}
 	// 尚无行：用 token 伪作 key 前缀保存（账单页仍建议用完整码）
 	_, err = DB.Exec(`
-		INSERT INTO cdk_session_bindings (cdk_code, session_payload, redemption_token, account_email_sealed, session_bound_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-	`, "RT:"+tok, sealed, tok, email, now)
+		INSERT INTO cdk_session_bindings (cdk_code, session_payload, redemption_token, account_email_sealed, session_bound_at, provider, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+	`, "RT:"+tok, sealed, tok, email, now, provider)
 	return err
 }
 
@@ -537,6 +542,10 @@ func migrateCDKSessionColumns() error {
 		if _, err := DB.Exec(c.ddl); err != nil {
 			return err
 		}
+	}
+	// 绑定是哪家上游写的，跨服务商互斥按它区分。加列之前只有 ZovoCard 写绑定
+	if err := addProviderColumn("cdk_session_bindings", "zovocard"); err != nil {
+		return err
 	}
 	// updated_at 是 UTC 的 "YYYY-MM-DD HH:MM:SS"。解析不出来时留 NULL，清理按已到期处理
 	if _, err := DB.Exec(`UPDATE cdk_session_bindings SET session_bound_at = CAST(strftime('%s', updated_at) AS INTEGER)

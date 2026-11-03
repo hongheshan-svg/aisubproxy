@@ -110,7 +110,7 @@ func checkMarsWallex(ctx context.Context, plan, region string, syncWallet wallet
 		r.Pass("card_pool", "卡池", "卡池已启动")
 	}
 	// 硬门槛：系统没有自动确认过一笔真实付款，就不能对外承诺这条路能走通。试运行单和人工定论的单都不算。
-	switch ok, err := db.HasRealSucceededPayOrder(ctx); {
+	switch ok, err := db.HasRealSucceededPayOrder(ctx, string(provider.MarsWallex)); {
 	case err != nil:
 		log.Printf("[provider] 查询真实付款记录失败: %v", err)
 		r.Fail("first_real_payment", "首笔真实付款", "查询真实付款记录失败，按未通过处理")

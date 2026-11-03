@@ -746,7 +746,7 @@ func localCDKExchange(c *gin.Context, code, ip string) {
 		return
 	}
 	// 新码也是新发的 MarsWallex 码，硬门槛照样要过
-	switch passed, err := db.HasRealSucceededPayOrder(ctx); {
+	switch passed, err := db.HasRealSucceededPayOrder(ctx, row.Provider); {
 	case err != nil:
 		log.Printf("[local-cdk] 查询真实付款记录失败: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试"})

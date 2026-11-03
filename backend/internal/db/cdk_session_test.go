@@ -59,7 +59,7 @@ func setBoundAt(t *testing.T, code string, at time.Time) {
 func TestCDKSessionNotStoredInPlaintext(t *testing.T) {
 	dbtest.Open(t)
 	dbtest.SetMasterKey(t)
-	if err := db.BindCDKSession(testCDK, "rt-1", testSessPlain); err != nil {
+	if err := db.BindCDKSession("zovocard", testCDK, "rt-1", testSessPlain); err != nil {
 		t.Fatal(err)
 	}
 	stored := storedSession(t, testCDK)
@@ -87,7 +87,7 @@ func TestBindCDKSessionRefusesWithoutMasterKey(t *testing.T) {
 	for _, key := range []string{"", "not-base64!"} {
 		dbtest.Open(t)
 		t.Setenv("APP_MASTER_KEY", key)
-		err := db.BindCDKSession(testCDK, "rt-1", testSessPlain)
+		err := db.BindCDKSession("zovocard", testCDK, "rt-1", testSessPlain)
 		if err == nil {
 			t.Fatalf("密钥 %q 时应拒绝写入", key)
 		}
@@ -104,16 +104,16 @@ func TestBindCDKSessionRefusesWithoutMasterKey(t *testing.T) {
 func TestBindCDKSessionByTokenIsSealed(t *testing.T) {
 	dbtest.Open(t)
 	dbtest.SetMasterKey(t)
-	if err := db.BindCDKSession("", "tok-only", testSessPlain); err != nil {
+	if err := db.BindCDKSession("zovocard", "", "tok-only", testSessPlain); err != nil {
 		t.Fatal(err)
 	}
 	if s := storedSession(t, "RT:tok-only"); strings.Contains(s, "AUDIT-SESSION") {
 		t.Fatalf("RT: 占位行不应是明文: %q", s)
 	}
-	if err := db.BindCDKRedemptionToken(testCDK, "tok-2"); err != nil {
+	if err := db.BindCDKRedemptionToken("zovocard", testCDK, "tok-2"); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.BindCDKSession("", "tok-2", testSessPlain); err != nil {
+	if err := db.BindCDKSession("zovocard", "", "tok-2", testSessPlain); err != nil {
 		t.Fatal(err)
 	}
 	if s := storedSession(t, testCDK); strings.Contains(s, "AUDIT-SESSION") || s == "" {
@@ -128,7 +128,7 @@ func TestBindCDKSessionByTokenIsSealed(t *testing.T) {
 func TestGetBindingSurvivesMissingKey(t *testing.T) {
 	dbtest.Open(t)
 	dbtest.SetMasterKey(t)
-	if err := db.BindCDKSession(testCDK, "rt-1", testSessPlain); err != nil {
+	if err := db.BindCDKSession("zovocard", testCDK, "rt-1", testSessPlain); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("APP_MASTER_KEY", "")
@@ -261,7 +261,7 @@ func TestMigrateSkipsWithoutKeyAndKeepsData(t *testing.T) {
 func TestMigrateLeavesForeignCiphertextAlone(t *testing.T) {
 	dbtest.Open(t)
 	t.Setenv("APP_MASTER_KEY", otherKey)
-	if err := db.BindCDKSession(testCDK, "rt-1", testSessPlain); err != nil {
+	if err := db.BindCDKSession("zovocard", testCDK, "rt-1", testSessPlain); err != nil {
 		t.Fatal(err)
 	}
 	before := storedSession(t, testCDK)
@@ -361,10 +361,10 @@ func TestSweepClearsExpiredButKeepsTokenAndEmail(t *testing.T) {
 	dbtest.Open(t)
 	dbtest.SetMasterKey(t)
 	now := time.Now()
-	if err := db.BindCDKSession("ZC-OLD-ONE", "rt-old", testSessPlain); err != nil {
+	if err := db.BindCDKSession("zovocard", "ZC-OLD-ONE", "rt-old", testSessPlain); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.BindCDKSession("ZC-NEW-ONE", "rt-new", testSessPlain); err != nil {
+	if err := db.BindCDKSession("zovocard", "ZC-NEW-ONE", "rt-new", testSessPlain); err != nil {
 		t.Fatal(err)
 	}
 	setBoundAt(t, "ZC-OLD-ONE", now.Add(-db.CDKSessionTTL-time.Minute))
@@ -413,7 +413,7 @@ func TestSweepClearsConsumedCodes(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, c := range []string{"zc-Done-Code-0001", "ZC-RUNNING-CODE-1"} {
-		if err := db.BindCDKSession(c, "rt-"+c, testSessPlain); err != nil {
+		if err := db.BindCDKSession("zovocard", c, "rt-"+c, testSessPlain); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -434,11 +434,11 @@ func TestPreviewDoesNotExtendSessionTTL(t *testing.T) {
 	dbtest.Open(t)
 	dbtest.SetMasterKey(t)
 	now := time.Now()
-	if err := db.BindCDKSession(testCDK, "rt-1", testSessPlain); err != nil {
+	if err := db.BindCDKSession("zovocard", testCDK, "rt-1", testSessPlain); err != nil {
 		t.Fatal(err)
 	}
 	setBoundAt(t, testCDK, now.Add(-db.CDKSessionTTL-time.Minute))
-	if err := db.BindCDKRedemptionToken(testCDK, "rt-2"); err != nil {
+	if err := db.BindCDKRedemptionToken("zovocard", testCDK, "rt-2"); err != nil {
 		t.Fatal(err)
 	}
 	if res, err := db.SweepCDKSessions(now); err != nil || res.Cleared != 1 {
@@ -448,7 +448,7 @@ func TestPreviewDoesNotExtendSessionTTL(t *testing.T) {
 		t.Fatalf("新 token 应保留: %+v %v", b, err)
 	}
 	// 用户重新提交会话才算重新计时
-	if err := db.BindCDKSession(testCDK, "", testSessPlain); err != nil {
+	if err := db.BindCDKSession("zovocard", testCDK, "", testSessPlain); err != nil {
 		t.Fatal(err)
 	}
 	if res, err := db.SweepCDKSessions(now); err != nil || res.Cleared != 0 {
@@ -478,11 +478,11 @@ func TestSweepSkipsWithoutKey(t *testing.T) {
 func TestClearDoesNotOverwriteNewerSession(t *testing.T) {
 	dbtest.Open(t)
 	dbtest.SetMasterKey(t)
-	if err := db.BindCDKSession(testCDK, "rt-1", testSessPlain); err != nil {
+	if err := db.BindCDKSession("zovocard", testCDK, "rt-1", testSessPlain); err != nil {
 		t.Fatal(err)
 	}
 	stale := storedSession(t, testCDK)
-	if err := db.BindCDKSession(testCDK, "", `{"sessionToken":"newer","user":{"email":"new@example.com"}}`); err != nil {
+	if err := db.BindCDKSession("zovocard", testCDK, "", `{"sessionToken":"newer","user":{"email":"new@example.com"}}`); err != nil {
 		t.Fatal(err)
 	}
 	cleared, err := db.ClearCDKSessionRowIf(testCDK, stale)
@@ -503,10 +503,10 @@ func TestClearDoesNotOverwriteNewerSession(t *testing.T) {
 func TestClearByCodeAndToken(t *testing.T) {
 	dbtest.Open(t)
 	dbtest.SetMasterKey(t)
-	if err := db.BindCDKSession(testCDK, "rt-1", testSessPlain); err != nil {
+	if err := db.BindCDKSession("zovocard", testCDK, "rt-1", testSessPlain); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.BindCDKSession("", "rt-only", testSessPlain); err != nil {
+	if err := db.BindCDKSession("zovocard", "", "rt-only", testSessPlain); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.ClearCDKSessionByCode(strings.ToLower(testCDK)); err != nil {

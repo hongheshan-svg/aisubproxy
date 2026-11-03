@@ -996,11 +996,11 @@ func PublicCDKPreview(c *gin.Context) {
 	// 成功时记下 code ↔ redemption_token，供后续绑定 session / 账单查卡密
 	if st >= 200 && st < 300 {
 		if tok := extractJSONString(raw, "redemption_token", "token"); tok != "" {
-			_ = db.BindCDKRedemptionToken(code, tok)
+			_ = db.BindCDKRedemptionToken(string(provider.ZovoCard), code, tok)
 		}
 		// 嵌套 data
 		if tok := extractJSONNestedString(raw, "data", "redemption_token"); tok != "" {
-			_ = db.BindCDKRedemptionToken(code, tok)
+			_ = db.BindCDKRedemptionToken(string(provider.ZovoCard), code, tok)
 		}
 	}
 	proxyPublicJSON(c, st, raw)
@@ -1043,7 +1043,7 @@ func PublicCDKPreflight(c *gin.Context) {
 	sess := extractCredentialSession(body["credential"])
 	if sess != "" && !cardplatform.IsXPremiumCredential(sess) && !cardplatform.IsGrokCredential(sess) && (code != "" || tok != "") {
 		// 这份副本只用来记账号邮箱；存不下不影响兑换（会话已随预检发给卡台），只是之后凭卡密查不到账单
-		if err := db.BindCDKSession(code, tok, sess); err != nil {
+		if err := db.BindCDKSession(string(provider.ZovoCard), code, tok, sess); err != nil {
 			log.Printf("[cdk-preflight] bind session failed code=%s tok=%s: %v", shortTok(code), shortTok(tok), err)
 			if errors.Is(err, secretbox.ErrNoMasterKey) || errors.Is(err, secretbox.ErrBadMasterKey) {
 				opsAlertDaily("cdk-session-nokey", "APP_MASTER_KEY 缺失或不合法：兑换预检的用户会话已拒绝保存（不影响兑换），这些卡密之后无法凭卡密查账单。", time.Now())

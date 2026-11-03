@@ -731,10 +731,14 @@ func normalizeCDKCode(code string) string {
 	return strings.ToUpper(strings.TrimSpace(code))
 }
 
-// BindCDKRedemptionToken preview 成功后：码 ↔ redemption_token
-func BindCDKRedemptionToken(cdkCode, redemptionToken string) error {
+// BindCDKRedemptionToken preview 成功后：码 ↔ redemption_token。provider 是上游服务商，必填；已有的行不改 provider。
+func BindCDKRedemptionToken(provider, cdkCode, redemptionToken string) error {
 	if DB == nil {
 		return fmt.Errorf("db not ready")
+	}
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		return fmt.Errorf("绑定令牌缺少服务商")
 	}
 	code := normalizeCDKCode(cdkCode)
 	tok := strings.TrimSpace(redemptionToken)
@@ -742,12 +746,12 @@ func BindCDKRedemptionToken(cdkCode, redemptionToken string) error {
 		return nil
 	}
 	_, err := DB.Exec(`
-		INSERT INTO cdk_session_bindings (cdk_code, session_payload, redemption_token, updated_at)
-		VALUES (?, '', ?, CURRENT_TIMESTAMP)
+		INSERT INTO cdk_session_bindings (cdk_code, session_payload, redemption_token, provider, updated_at)
+		VALUES (?, '', ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(cdk_code) DO UPDATE SET
 			redemption_token = excluded.redemption_token,
 			updated_at = CURRENT_TIMESTAMP
-	`, code, tok)
+	`, code, tok, provider)
 	return err
 }
 

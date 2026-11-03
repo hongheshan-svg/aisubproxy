@@ -11,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
+	"github.com/tuzi/cdk-recharge-system/internal/provider"
 )
 
 // 跨服务商互斥（PR-7）：同一个 ChatGPT 账号不能同时走两家，否则两边「已有订阅」的检查之间有时间窗，可能两边都付款。
@@ -139,7 +140,7 @@ func holdZovoCardAccount(c *gin.Context, body map[string]any) (func(), bool) {
 
 // crossProviderBlocked 是 MarsWallex 这边的互斥检查，返回该账号现在能不能走 MarsWallex。查询出错由调用方按拒绝处理。
 func crossProviderBlocked(ctx context.Context, email string) (bool, error) {
-	if bound, err := db.HasRecentCDKBindingForEmail(ctx, email, time.Now().Add(-crossProviderWindow)); err != nil || bound {
+	if bound, err := db.HasRecentCDKBindingForEmail(ctx, email, time.Now().Add(-crossProviderWindow), string(provider.MarsWallex)); err != nil || bound {
 		return bound, err
 	}
 	return db.HasOpenPayOrderForEmail(ctx, email)

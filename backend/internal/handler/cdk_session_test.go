@@ -172,7 +172,7 @@ func TestPreflightWithoutKeyDoesNotFailRedemption(t *testing.T) {
 	buf := captureLog(t)
 	alerts := captureOpsAlerts(t)
 	u := newCDKUpstream(t)
-	if err := db.BindCDKRedemptionToken(cdkSessCode, "rt-1"); err != nil {
+	if err := db.BindCDKRedemptionToken("zovocard", cdkSessCode, "rt-1"); err != nil {
 		t.Fatal(err)
 	}
 	w := cdkRequest(PublicCDKPreflight, "POST", "/preflight", preflightBody())
@@ -204,7 +204,7 @@ func TestBillingCheckByCDKNeverCallsUpstreamWithStoredSession(t *testing.T) {
 
 	t.Run("accounthub 不可用", func(t *testing.T) {
 		stubAccounthub(t, 500)
-		if err := db.BindCDKSession(cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
+		if err := db.BindCDKSession("zovocard", cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
 			t.Fatal(err)
 		}
 		w := cdkRequest(SessionBillingCheck, "POST", "/billing", `{"cdk_code":"`+cdkSessCode+`"}`)
@@ -213,7 +213,7 @@ func TestBillingCheckByCDKNeverCallsUpstreamWithStoredSession(t *testing.T) {
 		}
 	})
 	t.Run("会话里没有邮箱", func(t *testing.T) {
-		if err := db.BindCDKSession("ZC-RAW-TOKEN-CODE-1", "rt-2", "eyJhbGciOi.raw.accesstoken"); err != nil {
+		if err := db.BindCDKSession("zovocard", "ZC-RAW-TOKEN-CODE-1", "rt-2", "eyJhbGciOi.raw.accesstoken"); err != nil {
 			t.Fatal(err)
 		}
 		w := cdkRequest(SessionBillingCheck, "POST", "/billing", `{"code":"ZC-RAW-TOKEN-CODE-1"}`)
@@ -238,7 +238,7 @@ func TestBillingCheckByCDKUsesEmailAndSurvivesClear(t *testing.T) {
 	dbtest.SetMasterKey(t)
 	calls := stubBillingCheck(t)
 	stubAccounthub(t, 200)
-	if err := db.BindCDKSession(cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
+	if err := db.BindCDKSession("zovocard", cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
 		t.Fatal(err)
 	}
 	for _, clear := range []bool{false, true} {
@@ -287,7 +287,7 @@ func TestResultByCodeWorksAfterSessionCleared(t *testing.T) {
 	dbtest.Open(t)
 	dbtest.SetMasterKey(t)
 	newCDKUpstream(t)
-	if err := db.BindCDKSession(cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
+	if err := db.BindCDKSession("zovocard", cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.ClearCDKSessionByCode(cdkSessCode); err != nil {
@@ -314,7 +314,7 @@ func TestResultByCodeWorksWithoutKey(t *testing.T) {
 	dbtest.Open(t)
 	dbtest.SetMasterKey(t)
 	newCDKUpstream(t)
-	if err := db.BindCDKSession(cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
+	if err := db.BindCDKSession("zovocard", cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("APP_MASTER_KEY", "")
@@ -329,7 +329,7 @@ func TestResultByCodeClearsSessionOnlyWhenCompleted(t *testing.T) {
 	dbtest.SetMasterKey(t)
 	u := newCDKUpstream(t)
 	stubAccounthub(t, 200)
-	if err := db.BindCDKSession(cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
+	if err := db.BindCDKSession("zovocard", cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
 		t.Fatal(err)
 	}
 	for _, st := range []string{"running", "queued", "failed_precharge", "declined"} {
@@ -358,7 +358,7 @@ func TestResultByTokenClearsSessionWhenCompleted(t *testing.T) {
 	dbtest.Open(t)
 	dbtest.SetMasterKey(t)
 	u := newCDKUpstream(t)
-	if err := db.BindCDKSession("", "rt-only", cdkSessJSON()); err != nil {
+	if err := db.BindCDKSession("zovocard", "", "rt-only", cdkSessJSON()); err != nil {
 		t.Fatal(err)
 	}
 	if w := cdkRequest(PublicCDKResult, "GET", "/r?token=rt-only", ""); w.Code != 200 {
@@ -386,7 +386,7 @@ func TestWebhookCompletedClearsSession(t *testing.T) {
 	if err := db.SaveCardplatformCDKCode(77, cdkSessCode, cdkSessCode[:14], "plus", 0, "PH"); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.BindCDKSession(cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
+	if err := db.BindCDKSession("zovocard", cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
 		t.Fatal(err)
 	}
 	send := func(body string) {
@@ -419,7 +419,7 @@ func TestLookupKeepsEmailAndStatusAfterClear(t *testing.T) {
 	dbtest.Open(t)
 	dbtest.SetMasterKey(t)
 	newCDKUpstream(t)
-	if err := db.BindCDKSession(cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
+	if err := db.BindCDKSession("zovocard", cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
 		t.Fatal(err)
 	}
 	before := lookupOneCDK(context.Background(), cdkSessCode, "")
@@ -439,7 +439,7 @@ func TestLookupKeepsEmailAndStatusAfterClear(t *testing.T) {
 func TestCardHealthEmailSurvivesClear(t *testing.T) {
 	dbtest.Open(t)
 	dbtest.SetMasterKey(t)
-	if err := db.BindCDKSession(cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
+	if err := db.BindCDKSession("zovocard", cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.ClearCDKSessionByCode(cdkSessCode); err != nil {

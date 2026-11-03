@@ -55,3 +55,16 @@ func TestTraceTimeoutAndConnect(t *testing.T) {
 		t.Errorf("连不上应报错: %v", err)
 	}
 }
+
+// 测试出口遇到非 2xx 只报状态码，不带响应里的说明。
+func TestTraceHTTPErrorOnlyStatus(t *testing.T) {
+	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		w.Write([]byte(`{"detail":"upstream said something"}`))
+	}))
+	_, err := c.Trace(context.Background())
+	if err == nil || err.Error() != "HTTP 502" {
+		t.Fatalf("应只报状态码，得到 %v", err)
+	}
+}

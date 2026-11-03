@@ -100,7 +100,7 @@ func (c *Client) do(ctx context.Context, method, path string, headers map[string
 	case resp.StatusCode == 401 || resp.StatusCode == 403:
 		return nil, fmt.Errorf("%w（HTTP %d）", ErrUnauthorized, resp.StatusCode)
 	case resp.StatusCode < 200 || resp.StatusCode >= 300:
-		return nil, fmt.Errorf("ChatGPT 返回 HTTP %d", resp.StatusCode)
+		return nil, newHTTPError(resp.StatusCode, resp.Header.Get("Content-Type"), resp.Header.Get("Retry-After"), b)
 	}
 	return b, nil
 }

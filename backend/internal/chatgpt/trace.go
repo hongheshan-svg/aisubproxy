@@ -3,6 +3,7 @@ package chatgpt
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	fhttp "github.com/bogdanfinn/fhttp"
@@ -46,15 +47,17 @@ func classifyTraceErr(ctx context.Context, err error) error {
 	if errors.Is(err, ErrUnauthorized) {
 		return errors.New("被目标站点拒绝（HTTP 403）")
 	}
+	// 只报状态码，不带响应里的说明：测试出口的结果固定只给可控的文案
+	var he *HTTPError
+	if errors.As(err, &he) {
+		return fmt.Errorf("HTTP %d", he.Status)
+	}
 	msg := strings.ToLower(err.Error())
 	switch {
 	case strings.Contains(msg, "407") || strings.Contains(msg, "proxy authentication"):
 		return ErrTraceProxyAuth
 	case strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline"):
 		return ErrTraceTimeout
-	case strings.HasPrefix(err.Error(), "ChatGPT 返回 HTTP"):
-		// 该文案只含状态码
-		return errors.New(strings.TrimPrefix(err.Error(), "ChatGPT 返回 "))
 	}
 	return ErrTraceConnect
 }

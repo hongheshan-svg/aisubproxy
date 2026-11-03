@@ -34,6 +34,25 @@
       </template>
     </AdminPageHeader>
 
+    <el-tabs v-model="tab" class="cdk-tabs">
+      <el-tab-pane label="卡密" name="codes" />
+      <el-tab-pane label="代理换码核对" name="swaps" />
+    </el-tabs>
+
+    <div v-if="tab === 'codes'" class="flex flex-wrap items-center gap-3">
+      <span class="text-sm text-muted">发码服务商</span>
+      <el-radio-group v-model="provider" size="small" :disabled="issuing">
+        <el-radio-button value="zovocard">ZovoCard</el-radio-button>
+        <el-radio-button value="marswallex">MarsWallex</el-radio-button>
+      </el-radio-group>
+      <span v-if="defaultProviderError" class="text-xs text-warn">默认服务商读取失败，已先选 ZovoCard：{{ defaultProviderError }}</span>
+      <span v-else-if="defaultProvider" class="text-xs text-muted">
+        当前默认：{{ defaultProvider === 'marswallex' ? 'MarsWallex' : 'ZovoCard' }}
+        <router-link to="/ops/providers" class="underline ml-1">切换默认</router-link>
+      </span>
+    </div>
+
+    <template v-if="tab === 'codes' && provider === 'zovocard'">
     <label class="text-sm">{{ t('xPremium.product') }}
       <select v-model="directProduct" class="input !w-48" :disabled="issuing || loadingMeta" @change="loadMeta">
         <option value="gpt">ChatGPT</option><option value="x">X Premium</option><option value="grok">Grok</option><option value="claude">Claude</option>
@@ -262,6 +281,7 @@
             </button>
           </template>
         </el-table-column>
+        <el-table-column label="服务商" width="92"><template #default>ZovoCard</template></el-table-column>
         <el-table-column prop="plan" label="套餐" width="100">
           <template #default="{ row }">{{ planLabel(row.plan) }}</template>
         </el-table-column>
@@ -321,11 +341,19 @@
         />
       </div>
     </section>
+    </template>
+
+    <LocalCdkPanel v-else-if="tab === 'codes'" />
+    <AgentExchangePanel v-else-if="tab === 'swaps'" />
   </div>
 </template>
 
 <script setup lang="ts">
 import ApiErrorNotice from '../../components/ApiErrorNotice.vue'
+import LocalCdkPanel from './components/LocalCdkPanel.vue'
+import AgentExchangePanel from './components/AgentExchangePanel.vue'
+import { useRouteTab } from '../../lib/useRouteTab'
+import { adminApi } from '../../lib/provider'
 import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { useI18n } from 'vue-i18n'
 const { t } = useI18n()
@@ -335,6 +363,17 @@ import { IdempotencyKeeper } from '../../lib/idempotency'
 import { dialog } from '../../lib/dialog'
 import { copyToClipboard } from '../../lib/clipboard'
 import { isCardAttachPlan } from '../../lib/plan'
+
+const tab = useRouteTab('/ops/cdkeys')
+const provider = ref<'zovocard' | 'marswallex'>('zovocard')
+const defaultProvider = ref('')
+const defaultProviderError = ref('')
+async function loadDefaultProvider() {
+  const r = await adminApi('/providers/default')
+  if (!r.ok) { defaultProviderError.value = (r.data && r.data.error) || '网络错误'; return }
+  defaultProvider.value = r.data.provider
+  provider.value = r.data.provider === 'marswallex' ? 'marswallex' : 'zovocard'
+}
 
 const RECENT_KEY = 'cdk_recent_issued_v1'
 /** 旧版本把完整码写入 localStorage 的键。现在不再写入，只在升级时读出一次并删除（见 loadCodeCache） */
@@ -1246,6 +1285,8 @@ async function issue() {
   issuing.value = true
   try {
     const payload = {
+      // 必须明说是 ZovoCard：服务端留空时按「默认服务商」发码，默认切到 MarsWallex 后会发错
+      provider: 'zovocard',
       plan: form.plan,
       product: directProduct.value,
       count: form.count,
@@ -1396,6 +1437,7 @@ async function refreshAll() {
 }
 
 onMounted(async () => {
+  loadDefaultProvider()
   loadCodeCache()
   loadPersistedRecent()
   if (recentCodes.value.length) issueOpen.value = true
@@ -1413,6 +1455,7 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+.text-warn { color: #d97706; }
 .fold-head {
   width: 100%;
   display: flex;

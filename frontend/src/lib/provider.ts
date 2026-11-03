@@ -90,18 +90,36 @@ export function effectiveProvider(reg: Registry, product: string): string {
 }
 
 /**
+ * 在能力矩阵里找某产品某档位对应的行。精确行优先；没有时按通配行匹配：
+ * 以 * 结尾的行按前缀匹配（credit* 匹配 credit250），单独的 * 匹配任意档位，多个通配行取前缀最长的。
+ */
+export function findCapability(reg: Registry, product: string, plan: string): Registry['capabilities'][number] | undefined {
+  const rows = reg.capabilities.filter((c) => c.product === product)
+  const exact = rows.find((c) => c.plan === plan)
+  if (exact) return exact
+  let best: (typeof rows)[number] | undefined
+  let bestLen = -1
+  for (const c of rows) {
+    if (!c.plan.endsWith('*')) continue
+    const prefix = c.plan.slice(0, -1)
+    if (plan.startsWith(prefix) && prefix.length > bestLen) { best = c; bestLen = prefix.length }
+  }
+  return best
+}
+
+/**
  * 服务商是否支持某产品的某个档位。服务商的 products 不含该产品，则不支持；
- * 能力矩阵里没有这一行时（拿不到数据）视为支持，由服务端校验兜底，不在前端误拦。
+ * 能力矩阵里没有这一行（含通配行）时视为支持，由服务端校验兜底，不在前端误拦。
  */
 export function supportsPlan(reg: Registry, name: string, product: string, plan: string): boolean {
   const p = findProvider(reg, name)
   if (!p || !p.products.includes(product)) return false
-  const row = reg.capabilities.find((c) => c.product === product && c.plan === plan)
+  const row = findCapability(reg, product, plan)
   if (!row) return true
   return row.support?.[name] === true
 }
 
-/** 这个服务商在这个产品下不支持的档位（用于配置表格的小字说明）。 */
+/** 这个服务商在这个产品下不支持的档位（用于配置表格的小字说明；通配行按原样显示）。 */
 export function unsupportedPlans(reg: Registry, name: string, product: string): { plan: string; comment: string }[] {
   return reg.capabilities
     .filter((c) => c.product === product && c.support?.[name] !== true)
@@ -111,23 +129,28 @@ export function unsupportedPlans(reg: Registry, name: string, product: string): 
 export interface IssuePick { provider: string; notice: string }
 
 /**
- * 发码弹窗的预选：先取该产品的配置（没有就用全局默认）。预选那家不支持这个档位时，
- * 改选第一家支持的，并给出提示；都不支持就保留预选（让服务端拒绝并说明原因，不在前端悄悄换）。
+ * 发码弹窗的预选：先取该产品的配置（没有就用全局默认）。
+ * 预选那家不做这个产品，或不支持这个档位时，改选第一家支持的，并分别给出提示；
+ * 都不支持就保留预选（让服务端拒绝并说明原因，不在前端悄悄换）。
  */
 export function pickIssueProvider(
   reg: Registry, product: string, plan: string, labelOfPlan: (plan: string) => string = (p) => p,
 ): IssuePick {
   const pre = reg.by_product?.[product] || reg.default || reg.providers[0]?.name || ''
+  const preInfo = findProvider(reg, pre)
+  const which = reg.by_product?.[product] ? '配置为用' : '默认用'
+  const head = `${productLabel(reg, product)} ${which} ${providerLabel2(reg, pre)}，`
+  if (preInfo && !preInfo.products.includes(product)) {
+    const alt = reg.providers.find((p) => p.products.includes(product) && (!plan || supportsPlan(reg, p.name, product, plan)))
+    if (!alt) return { provider: pre, notice: '' }
+    return { provider: alt.name, notice: `${head}它不做 ${productLabel(reg, product)}，已改用 ${alt.display_name || alt.name}` }
+  }
   if (!plan || supportsPlan(reg, pre, product, plan)) return { provider: pre, notice: '' }
   const alt = reg.providers.find((p) => supportsPlan(reg, p.name, product, plan))
   if (!alt) return { provider: pre, notice: '' }
-  const row = reg.capabilities.find((c) => c.product === product && c.plan === plan)
+  const row = findCapability(reg, product, plan)
   const planText = labelOfPlan(plan) || row?.comment || plan
-  const which = reg.by_product?.[product] ? '配置为用' : '默认用'
-  return {
-    provider: alt.name,
-    notice: `${productLabel(reg, product)} ${which} ${providerLabel2(reg, pre)}，它暂不支持 ${planText}，已改用 ${alt.display_name || alt.name}`,
-  }
+  return { provider: alt.name, notice: `${head}它暂不支持 ${planText}，已改用 ${alt.display_name || alt.name}` }
 }
 
 function providerLabel2(reg: Registry, name: string): string {
@@ -175,7 +198,8 @@ export function centsToUsd(cents: number | null | undefined): string {
 
 // ---------- 就绪检查 ----------
 
-export interface ReadinessCheck { key: string; ok: boolean; detail: string; raw?: string; title?: string }
+export interface CheckLink { to: string; label: string }
+export interface ReadinessCheck { key: string; ok: boolean; detail: string; raw?: string; title?: string; link?: CheckLink }
 export interface ProviderExtra { label: string; value: string }
 export interface ProviderReadiness {
   provider: string; ok: boolean; problems: string[]; checks: ReadinessCheck[]
@@ -201,6 +225,17 @@ export const CHECK_HINTS: Record<string, CheckHint> = {
 /** 检查项标题：接口给的 title 优先，其次按 key 查表，最后显示 key。 */
 export function checkTitle(key: string, title?: string): string {
   return (title && title.trim()) || CHECK_HINTS[key]?.title || key
+}
+
+/**
+ * 检查项的跳转链接：后端给了 link 就用它；没给时只有 MarsWallex 退回按 key 查表（兼容旧后端），
+ * 别的服务商一律不显示，免得把同名 key 引到 MarsWallex 的页面。
+ */
+export function checkLink(provider: string, c: ReadinessCheck): CheckLink | undefined {
+  if (c.ok) return undefined
+  if (c.link?.to) return c.link
+  if (provider === 'marswallex') return CHECK_HINTS[c.key]?.link
+  return undefined
 }
 
 /** 首笔真实付款这一条是否未通过：需要在界面上单独、醒目地说明。 */

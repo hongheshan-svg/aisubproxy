@@ -14,7 +14,7 @@ export const registryFixture = () => ({
   warnings: [] as string[],
   capabilities: [
     { product: 'gpt', plan: 'plus', comment: 'Plus', support: { zovocard: true, marswallex: true, testcard: true } },
-    { product: 'gpt', plan: 'codex_points', comment: 'Codex 点数', support: { zovocard: true, marswallex: false, testcard: false } },
+    { product: 'gpt', plan: 'credit*', comment: 'Codex 点数', support: { zovocard: true, marswallex: false, testcard: false } },
     { product: 'x', plan: 'premium', comment: 'X Premium', support: { zovocard: true, testcard: true } },
   ],
 })

@@ -23,8 +23,8 @@ import (
 var ErrCFChallenge = errors.New("支付页停在 Cloudflare 挑战页")
 
 const (
-	// embeddedPayButton 是内嵌页的支付按钮，只在主页面找，不进 iframe。
-	embeddedPayButton = `button[type="submit"]`
+	// embeddedPayButtonSel 是内嵌页的支付按钮，只在主页面找，不进 iframe。
+	embeddedPayButtonSel = `button[type="submit"]`
 	// cfCheckWait 是打开超时后读一次页面、判断是不是 Cloudflare 挑战页的时限。
 	// 这时调用方的时限通常也到了，所以这一步不沿用调用方的时限，只受 cfCheckWait 约束；只读页面，不操作。
 	cfCheckWait = 5 * time.Second
@@ -59,9 +59,11 @@ const embeddedAmountJS = `(() => {
 // countVisibleJS 数本 frame 里 sel 命中的可见元素个数。
 const countVisibleJS = `((sel, visible) => Array.from(document.querySelectorAll(sel)).filter(visible).length)`
 
-// uniquePayButtonJS 在一次求值里数本 frame 里 sel 命中的可见元素：正好一个且可用时返回它；
-// 正好一个但不可用时返回 'disabled'；个数不是 1 时返回个数。数和取在同一次求值里，中间页面插不进别的脚本。
-const uniquePayButtonJS = `((sel, visible, enabled) => {
+// uniquePayButtonJS 在一次求值里看本 frame：路径不以 prefix 开头时返回 'left'（已离开结账页，按钮一律不认）；
+// 否则数 sel 命中的可见元素，正好一个且可用时返回它，正好一个但不可用时返回 'disabled'，个数不是 1 时返回个数。
+// 核对路径、数和取都在同一次求值里，中间页面插不进别的脚本。
+const uniquePayButtonJS = `((prefix, sel, visible, enabled) => {
+	if (!location.pathname.startsWith(prefix)) return 'left'
 	const list = Array.from(document.querySelectorAll(sel)).filter(visible)
 	if (list.length !== 1) return list.length
 	return enabled.call(list[0]) ? list[0] : 'disabled'
@@ -133,7 +135,7 @@ func (b *Browser) waitEmbedded(ctx context.Context) error {
 
 // seeEmbedded 看一轮内嵌页：卡号框、金额读屏文字、主页面的支付按钮个数。
 func (b *Browser) seeEmbedded(ctx context.Context, frames []frameRef) embeddedSeen {
-	n, err := b.countVisible(ctx, frames[0], embeddedPayButton)
+	n, err := b.countVisible(ctx, frames[0], embeddedPayButtonSel)
 	if err != nil {
 		n = -1
 	}
@@ -174,18 +176,34 @@ func (b *Browser) countVisible(ctx context.Context, f frameRef, sel string) (int
 	return n, nil
 }
 
-// embeddedPayButton 在主页面找唯一可见、可用的支付按钮，找不到返回 nil。*n 记下这次看到的可见按钮个数，读不出时为 -1。
+// embeddedPayButton 记在 *n 里的两种特殊状态；其余取值是主页面可见的提交按钮个数。
+const (
+	payButtonUnreadable = -1 // 读不出
+	payButtonLeft       = -2 // 主页面路径已不在 /checkout/ 下
+)
+
+// embeddedPayButton 在主页面找唯一可见、可用的支付按钮，找不到返回 nil。主页面已离开结账页时按钮一律不认。
+// *n 记下这次看到的可见按钮个数（唯一但不可用时为 1），或 payButtonUnreadable、payButtonLeft。
 func (b *Browser) embeddedPayButton(ctx context.Context, main frameRef, n *int) *elem {
-	*n = -1
-	r, err := b.eval(ctx, main, fmt.Sprintf("%s(%s, %s, %s)", uniquePayButtonJS, mustJSON(embeddedPayButton), visibleJS, payEnabledJS))
+	*n = payButtonUnreadable
+	expr := fmt.Sprintf("%s(%s, %s, %s, %s)", uniquePayButtonJS, mustJSON(checkoutPrefix), mustJSON(embeddedPayButtonSel), visibleJS, payEnabledJS)
+	r, err := b.eval(ctx, main, expr)
 	switch {
 	case err != nil:
 		return nil
 	case r.ObjectID != "":
 		*n = 1
-		return &elem{frame: main, obj: r.ObjectID, sel: embeddedPayButton}
-	case r.Type == runtime.TypeString: // 唯一但不可用
-		*n = 1
+		return &elem{frame: main, obj: r.ObjectID, sel: embeddedPayButtonSel}
+	case r.Type == runtime.TypeString:
+		var s string
+		if json.Unmarshal(r.Value, &s) == nil {
+			switch s {
+			case "left":
+				*n = payButtonLeft
+			case "disabled": // 唯一但不可用
+				*n = 1
+			}
+		}
 		return nil
 	}
 	var count int
@@ -195,9 +213,11 @@ func (b *Browser) embeddedPayButton(ctx context.Context, main frameRef, n *int) 
 	return nil
 }
 
-// embeddedPayButtonErr 说明内嵌页为什么没点支付。n 是最后一次看到的可见按钮个数（见 embeddedPayButton）。
+// embeddedPayButtonErr 说明内嵌页为什么没点支付。n 是最后一次看到的状态（见 embeddedPayButton）。
 func embeddedPayButtonErr(n int) error {
 	switch {
+	case n == payButtonLeft:
+		return errors.New(leftCheckoutMsg + "，没有点击")
 	case n < 0:
 		return errors.New("支付按钮读不出，没有点击")
 	case n == 1:

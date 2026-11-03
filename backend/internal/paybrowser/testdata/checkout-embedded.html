@@ -25,6 +25,7 @@
     decline=文字    点击后主页面显示带这段文字的 [role="alert"]
     challenge=1     点击后插入 iframe[name="stripe-challenge-frame"]，指向卡片服务的 acs.html
     rerender=1      页面加载 3 秒后再插入一个可见的提交按钮（模拟填表后页面重绘）
+    pushstate=1     页面加载 3 秒后用 history.pushState 换到 /auth/login（模拟 SPA 换路由离开结账页），按钮仍只有一个
     其余参数原样传给卡片 iframe（amount、currency、nocurrency、noamount、savepay、addr，见 card-embedded.html）
   点击提交后用 collect 消息向卡片 iframe 取字段值，POST 到本服务的 /pay，供测试断言。
 -->
@@ -52,7 +53,7 @@
 <script>
   var CARD_ORIGIN = '__CARD_ORIGIN__'
   var q = new URLSearchParams(location.search)
-  var own = ['twobuttons', 'nobutton', 'leave', 'decline', 'challenge', 'rerender']
+  var own = ['twobuttons', 'nobutton', 'leave', 'decline', 'challenge', 'rerender', 'pushstate']
   var cardQuery = new URLSearchParams()
   q.forEach(function (v, k) {
     if (own.indexOf(k) < 0) cardQuery.append(k, v)
@@ -71,6 +72,7 @@
   if (q.get('nobutton') === '1') buttons.innerHTML = ''
   if (q.get('twobuttons') === '1') addButton()
   if (q.get('rerender') === '1') setTimeout(addButton, 3000)
+  if (q.get('pushstate') === '1') setTimeout(function () { history.pushState({}, '', '/auth/login') }, 3000)
 
   var form = document.getElementById('checkout-form')
   form.addEventListener('submit', function (e) {

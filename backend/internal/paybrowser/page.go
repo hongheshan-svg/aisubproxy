@@ -446,7 +446,7 @@ func (b *Browser) LockSubmit() (clickAttempted bool) {
 }
 
 // Submit 点击主页面上的支付按钮。必须先 Fill 成功；先记下「已提交」再点击，此后再调用返回 ErrAlreadySubmitted 且不点击。
-// 内嵌页只点主页面上唯一可见、可用的提交按钮，点击前一刻再数一次，不是正好一个就不点、返回错误（见 embeddedPayButton）。
+// 内嵌页只在主页面仍在结账页时点唯一可见、可用的提交按钮，点击前一刻再核对一次，不满足就不点、返回错误（见 embeddedPayButton）。
 func (b *Browser) Submit(ctx context.Context) error {
 	b.mu.Lock()
 	submitted, filled, locked := b.submitted, b.filled, b.submitLocked
@@ -463,9 +463,12 @@ func (b *Browser) Submit(ctx context.Context) error {
 	embedded := b.pageKind() == PageEmbedded
 	return b.do(ctx, func(ctx context.Context) error {
 		seen := false
-		n := -1 // 内嵌页：最后一次看到的主页面可见提交按钮个数
+		n := payButtonUnreadable // 内嵌页：最后一次看到的主页面按钮状态（见 embeddedPayButton）
 		btn, err := b.waitFind(ctx, fieldWait, func(frames []frameRef) *elem {
-			if embedded { // 内嵌页的按钮只能按个数认：主页面可见的提交按钮正好一个且可用才算找到
+			if embedded { // 内嵌页的按钮只能按个数认：仍在结账页、主页面可见的提交按钮正好一个且可用才算找到
+				if n == payButtonLeft { // 看到过离开结账页，此后绝不再认按钮，等到超时报错
+					return nil
+				}
 				return b.embeddedPayButton(ctx, frames[0], &n)
 			}
 			// 只在主页面找：主页面按钮暂时不可见时，绝不能点到某个 iframe 里的 submit 按钮，白白用掉唯一一次提交
@@ -499,8 +502,8 @@ func (b *Browser) Submit(ctx context.Context) error {
 					return err
 				}
 			}
-			// 点击那一刻再数一次：scanBeforeClick 最多要 2 秒，这期间页面可能重绘出第二个按钮或换掉按钮。
-			// 只认此刻主页面上唯一可见、可用的那个，点它；不是正好一个就不置位、不点击，LockSubmit 仍能证明没点
+			// 点击那一刻再核对一次：scanBeforeClick 最多要 2 秒，这期间页面可能离开结账页、重绘出第二个按钮或换掉按钮。
+			// 只认此刻仍在结账页、主页面上唯一可见、可用的那个，点它；否则不置位、不点击，LockSubmit 仍能证明没点
 			if btn = b.embeddedPayButton(ctx, btn.frame, &n); btn == nil {
 				return embeddedPayButtonErr(n)
 			}

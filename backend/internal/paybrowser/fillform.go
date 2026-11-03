@@ -577,7 +577,7 @@ func (b *Browser) PayButtonState(ctx context.Context) string {
 		}
 		sels := Sel.PayButton
 		if embedded {
-			n, err := b.countVisible(ctx, frames[0], embeddedPayButton)
+			n, err := b.countVisible(ctx, frames[0], embeddedPayButtonSel)
 			if err != nil {
 				return err
 			}
@@ -585,7 +585,7 @@ func (b *Browser) PayButtonState(ctx context.Context) string {
 				state = fmt.Sprintf("不唯一（%d 个）", n)
 				return nil
 			}
-			sels = []string{embeddedPayButton}
+			sels = []string{embeddedPayButtonSel}
 		}
 		e := b.find(ctx, frames[:1], sels, false)
 		if e == nil {

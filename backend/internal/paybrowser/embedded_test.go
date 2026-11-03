@@ -562,8 +562,59 @@ func TestEmbeddedChallenge(t *testing.T) {
 	}
 }
 
-// 找到唯一按钮之后、点击之前页面又冒出第二个提交按钮（Review Focus 1）：点击那一刻重新数，不是 1 个就不点、不置位。
+// 找到唯一按钮之后、点击之前页面变了：点击那一刻重新核对（Review Focus 1），不通过就不置位、不点击，LockSubmit 证明没点过。
 func TestEmbeddedSubmitRechecksAtClick(t *testing.T) {
+	cases := []struct {
+		name string
+		hook func(b *paybrowser.Browser)
+		want string
+	}{
+		{"又冒出第二个按钮", func(b *paybrowser.Browser) {
+			paybrowser.RunBeforeRecheck(b, `(() => {
+				const b = document.createElement('button')
+				b.type = 'submit'
+				b.textContent = '升级至 Pro'
+				document.getElementById('buttons').appendChild(b)
+			})()`)
+		}, "支付按钮不唯一（找到 2 个），没有点击"},
+		// SPA 换路由不换文档，只看文档有没有换拦不住
+		{"换路由离开结账页", func(b *paybrowser.Browser) {
+			paybrowser.RunBeforeRecheck(b, `history.pushState({}, '', '/auth/login')`)
+		}, "页面已离开结账页，没有点击"},
+		{"按钮变成不可用", func(b *paybrowser.Browser) {
+			paybrowser.RunBeforeRecheck(b, `(() => { document.querySelector('#buttons button[type="submit"]').disabled = true })()`)
+		}, "支付按钮不可点击（可能有字段未通过页面校验），没有点击"},
+		// 整页重新加载后，找到按钮时那个文档的执行环境已经失效
+		{"复查读不出", paybrowser.ReloadBeforeRecheck, "支付按钮读不出，没有点击"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			needChrome(t)
+			t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+			f := newFakeEmbedded(t)
+			b, ctx := openEmbedded(t, f, "")
+
+			if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+				t.Fatalf("Fill: %v", err)
+			}
+			c.hook(b)
+			err := b.Submit(ctx)
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("Submit = %v，期望「%s」", err, c.want)
+			}
+			if b.LockSubmit() {
+				t.Fatal("点击前复查不通过时没有点击，LockSubmit 应返回 false")
+			}
+			time.Sleep(300 * time.Millisecond)
+			if n := len(f.payments()); n != 0 {
+				t.Fatalf("点击前复查不通过时仿造页收到 %d 次提交，期望 0 次", n)
+			}
+		})
+	}
+}
+
+// 找到按钮之后、点击之前按钮被换成另一个，但仍是唯一可用的提交按钮、仍在结账页：点新的那个，只点一次。
+func TestEmbeddedSubmitClicksReplacedButton(t *testing.T) {
 	needChrome(t)
 	t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
 	f := newFakeEmbedded(t)
@@ -572,16 +623,56 @@ func TestEmbeddedSubmitRechecksAtClick(t *testing.T) {
 	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
 		t.Fatalf("Fill: %v", err)
 	}
-	paybrowser.AddPayButtonBeforeRecheck(b)
+	// 新按钮被点到时把自己的 value 改成 clicked；旧按钮已脱离文档，点旧句柄会报错
+	paybrowser.RunBeforeRecheck(b, `(() => {
+		const old = document.querySelector('#buttons button[type="submit"]')
+		const b = document.createElement('button')
+		b.type = 'submit'
+		b.id = 'replaced'
+		b.textContent = '升级至 Pro'
+		b.addEventListener('click', () => { b.value = 'clicked' })
+		old.replaceWith(b)
+	})()`)
+	if err := b.Submit(ctx); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if v, err := paybrowser.FieldValue(ctx, b, "#replaced"); err != nil || v != "clicked" {
+		t.Fatalf("新按钮的 value = %q, %v，期望 clicked（点的应是新按钮）", v, err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for len(f.payments()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if err := b.Submit(ctx); !errors.Is(err, paybrowser.ErrAlreadySubmitted) {
+		t.Fatalf("再次 Submit = %v，期望 ErrAlreadySubmitted", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if n := len(f.payments()); n != 1 {
+		t.Fatalf("仿造页收到 %d 次提交，期望正好 1 次", n)
+	}
+}
+
+// 填表后页面用 pushState 换到结账页以外的路径，按钮仍只有一个：Submit 不认这个按钮，不点。
+func TestEmbeddedSubmitRefusesAfterLeavingCheckout(t *testing.T) {
+	needChrome(t)
+	t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+	t.Cleanup(paybrowser.SetFieldWait(2 * time.Second))
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "pushstate=1")
+
+	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+		t.Fatalf("Fill: %v", err)
+	}
+	time.Sleep(4 * time.Second)
 	err := b.Submit(ctx)
-	if err == nil || !strings.Contains(err.Error(), "支付按钮不唯一（找到 2 个），没有点击") {
-		t.Fatalf("Submit = %v，期望「支付按钮不唯一（找到 2 个），没有点击」", err)
+	if err == nil || !strings.Contains(err.Error(), "已离开结账页") {
+		t.Fatalf("Submit = %v，期望含「已离开结账页」", err)
 	}
 	if b.LockSubmit() {
-		t.Fatal("点击前复查不通过时没有点击，LockSubmit 应返回 false")
+		t.Fatal("离开结账页时没有点击，LockSubmit 应返回 false")
 	}
 	time.Sleep(300 * time.Millisecond)
 	if n := len(f.payments()); n != 0 {
-		t.Fatalf("点击前复查不通过时仿造页收到 %d 次提交，期望 0 次", n)
+		t.Fatalf("离开结账页时仿造页收到 %d 次提交，期望 0 次", n)
 	}
 }

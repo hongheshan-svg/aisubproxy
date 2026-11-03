@@ -19,6 +19,14 @@ export function todoNeedsAttention(t: TodoState<number>): boolean {
   return t.state === 'fail' || (t.state === 'ok' && t.value > 0)
 }
 
+/** 把几项分量加起来：任何一项失败或还在加载，整体就不是数字（不能把失败当 0 加进去）。 */
+export function sumTodos(parts: TodoState<number>[]): TodoState<number> {
+  const bad = parts.find((p) => p.state === 'fail')
+  if (bad && bad.state === 'fail') return { state: 'fail', error: bad.error }
+  if (parts.some((p) => p.state === 'loading')) return { state: 'loading' }
+  return { state: 'ok', value: parts.reduce((n, p) => n + (p.state === 'ok' ? p.value : 0), 0) }
+}
+
 export interface PoolOverview {
   main_balances?: { currency: string; available_balance: string }[]
   balance_error?: string

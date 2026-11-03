@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  availableCards, FAIL_TEXT, mainUsdBalance, marsEnv, pickTab, tabCrumb, todoNeedsAttention, todoText, zovoEnv, PAGE_TABS,
+  availableCards, FAIL_TEXT, sumTodos, mainUsdBalance, marsEnv, pickTab, tabCrumb, todoNeedsAttention, todoText, zovoEnv, PAGE_TABS,
 } from '../adminui'
 
 describe('待办展示：失败不能显示成 0', () => {
@@ -13,6 +13,14 @@ describe('待办展示：失败不能显示成 0', () => {
     expect(todoNeedsAttention({ state: 'fail', error: '' })).toBe(true)
     expect(todoNeedsAttention({ state: 'ok', value: 0 })).toBe(false)
     expect(todoNeedsAttention({ state: 'ok', value: 2 })).toBe(true)
+  })
+})
+
+describe('sumTodos', () => {
+  it('有一项失败整体就是失败，不当 0 相加', () => {
+    expect(sumTodos([{ state: 'ok', value: 3 }, { state: 'fail', error: 'e' }]).state).toBe('fail')
+    expect(sumTodos([{ state: 'ok', value: 3 }, { state: 'loading' }]).state).toBe('loading')
+    expect(sumTodos([{ state: 'ok', value: 3 }, { state: 'ok', value: 0 }])).toEqual({ state: 'ok', value: 3 })
   })
 })
 

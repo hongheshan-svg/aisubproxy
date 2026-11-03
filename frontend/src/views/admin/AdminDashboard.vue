@@ -15,6 +15,20 @@
       </router-link>
     </div>
 
+    <section class="space-y-2" aria-label="待办汇总">
+      <div class="flex items-center justify-between">
+        <h2 class="text-base font-semibold text-ink">待办汇总</h2>
+        <el-button size="small" :loading="todosLoading" @click="loadTodos">刷新</el-button>
+      </div>
+      <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+        <router-link v-for="t in todoCards" :key="t.key" :to="t.to" class="stat-card" :class="{ 'stat-attn': t.attn }" :data-todo="t.key">
+          <div class="text-sm text-muted">{{ t.label }}</div>
+          <div class="mt-2 text-2xl font-bold mono" :class="t.failed ? 'text-err' : 'text-ink'">{{ t.value }}</div>
+          <div class="mt-1 text-xs text-subtle">{{ t.hint }}</div>
+        </router-link>
+      </div>
+    </section>
+
     <div class="grid gap-4 lg:grid-cols-3">
       <section class="card space-y-3 lg:col-span-2">
         <h2 class="text-base font-semibold text-ink">快捷入口</h2>
@@ -54,6 +68,13 @@ import { useRouter } from 'vue-router'
 import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import ApiErrorNotice from '../../components/ApiErrorNotice.vue'
 import { authFetch } from '../../lib/api'
+import { payApi } from '../../lib/pay'
+import { poolApi } from '../../lib/cardpool'
+import { breakerReason, type Breaker } from '../../lib/payui'
+import {
+  FAIL_TEXT, availableCards, mainUsdBalance, sumTodos, todoNeedsAttention, todoText,
+  type PoolOverview, type TodoState,
+} from '../../lib/adminui'
 
 const router = useRouter()
 const stats = ref<any>({})
@@ -78,6 +99,59 @@ const statCards = computed(() => {
   ]
 })
 
+// ---------- 待办汇总：每一项单独查询，失败显示「获取失败」，绝不当成 0 ----------
+const loadingT: TodoState<any> = { state: 'loading' }
+const tReviewPay = ref<TodoState<number>>(loadingT)
+const tReviewPool = ref<TodoState<number>>(loadingT)
+const tBreaker = ref<TodoState<Breaker>>(loadingT)
+const tWebhook = ref<TodoState<number>>(loadingT)
+const tCards = ref<TodoState<number>>(loadingT)
+const tBalance = ref<TodoState<string>>(loadingT)
+const todosLoading = ref(false)
+const failMsg = (r: { status: number; data: any }, what: string): TodoState<any> =>
+  ({ state: 'fail', error: r.data?.error || `${what}（${r.status || '网络错误'}）` })
+
+async function loadTodos() {
+  todosLoading.value = true
+  ;[tReviewPay, tReviewPool, tBreaker, tWebhook, tCards, tBalance].forEach((t) => { t.value = loadingT })
+  const [orders, ov, br] = await Promise.all([
+    payApi<{ total: number }>('/orders?state=needs_review&page=1&page_size=1'),
+    poolApi<PoolOverview>('/overview'),
+    payApi<Breaker>('/breaker'),
+  ])
+  tReviewPay.value = orders.ok && Number.isFinite(orders.data?.total) ? { state: 'ok', value: orders.data.total } : failMsg(orders, '付款单')
+  if (ov.ok) {
+    tReviewPool.value = { state: 'ok', value: ov.data.needs_review ?? 0 }
+    tWebhook.value = { state: 'ok', value: ov.data.failed_events ?? 0 }
+    tCards.value = { state: 'ok', value: availableCards(ov.data) }
+    const bal = mainUsdBalance(ov.data)
+    tBalance.value = bal === null ? { state: 'fail', error: ov.data.balance_error || '没有美元余额项' } : { state: 'ok', value: bal }
+  } else {
+    const f = failMsg(ov, '卡池概览')
+    tReviewPool.value = f; tWebhook.value = f; tCards.value = f; tBalance.value = f
+  }
+  tBreaker.value = br.ok ? { state: 'ok', value: br.data } : failMsg(br, '付款熔断')
+  todosLoading.value = false
+}
+
+const todoCards = computed(() => {
+  const review = sumTodos([tReviewPay.value, tReviewPool.value])
+  const failedParts = [tReviewPay.value, tReviewPool.value].some((t) => t.state === 'fail')
+  const reviewHint = failedParts
+    ? `${tReviewPay.value.state === 'fail' ? '付款单' : ''}${tReviewPay.value.state === 'fail' && tReviewPool.value.state === 'fail' ? '、' : ''}${tReviewPool.value.state === 'fail' ? '卡池单据' : ''}查询失败`
+    : `付款单 ${todoText(tReviewPay.value)} · 卡池单据 ${todoText(tReviewPool.value)}`
+  const b = tBreaker.value
+  const brValue = b.state === 'loading' ? '…' : b.state === 'fail' ? FAIL_TEXT : b.value.reason === 'check_failed' ? FAIL_TEXT : b.value.paused ? '已暂停' : '运行中'
+  const brHint = b.state === 'ok' ? (b.value.paused ? breakerReason(b.value) || '去恢复' : '没有暂停') : b.state === 'fail' ? b.error : ''
+  return [
+    { key: 'review', label: '待人工单据', value: todoText(review), hint: reviewHint, to: '/ops/marswallex-pay?tab=orders', failed: review.state === 'fail', attn: todoNeedsAttention(review) },
+    { key: 'breaker', label: '付款是否暂停', value: brValue, hint: brHint, to: '/ops/marswallex-pay', failed: brValue === FAIL_TEXT, attn: brValue === '已暂停' || brValue === FAIL_TEXT },
+    { key: 'webhook', label: '失败 Webhook', value: todoText(tWebhook.value), hint: tWebhook.value.state === 'fail' ? tWebhook.value.error : 'MarsWallex 事件处理失败', to: '/ops/marswallex', failed: tWebhook.value.state === 'fail', attn: todoNeedsAttention(tWebhook.value) },
+    { key: 'cards', label: '可用卡数', value: todoText(tCards.value), hint: tCards.value.state === 'fail' ? tCards.value.error : '卡池里可租用的卡', to: '/ops/cardpool', failed: tCards.value.state === 'fail', attn: tCards.value.state === 'fail' || (tCards.value.state === 'ok' && tCards.value.value === 0) },
+    { key: 'balance', label: '主钱包余额', value: todoText(tBalance.value, (v) => `${v} USD`), hint: tBalance.value.state === 'fail' ? tBalance.value.error : '可用美元', to: '/ops/marswallex-wallet', failed: tBalance.value.state === 'fail', attn: tBalance.value.state === 'fail' },
+  ]
+})
+
 // 快捷入口跟侧栏同源：读路由 meta，不再单独维护一份
 const quickGroups = computed(() => {
   const root = router.options.routes.find((r) => r.path === '/ops')
@@ -93,6 +167,7 @@ const quickGroups = computed(() => {
 })
 
 onMounted(async () => {
+  loadTodos()
   statsLoading.value = true
   statsError.value = ''
   try {
@@ -125,5 +200,7 @@ onMounted(async () => {
   background: var(--surface); border: 1px solid var(--brd);
   transition: border-color .15s, transform .15s;
 }
+.stat-card.stat-attn { border-color: var(--warn, #d97706); }
+.text-err { color: #dc2626; }
 .stat-card:hover { border-color: var(--primary); transform: translateY(-1px); }
 </style>

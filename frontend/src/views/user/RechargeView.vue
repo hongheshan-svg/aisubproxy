@@ -21,7 +21,7 @@
         <div v-if="previewInfo" class="rounded-xl bg-soft p-4 text-sm space-y-1">
           <div class="flex flex-wrap items-center gap-2">
             <span>套餐：<b>{{ targetPlan ? planLabel(targetPlan) : '—' }}</b></span>
-            <el-tag v-if="isMW" size="small" type="info" data-testid="channel-tag">由 MarsWallex 通道处理</el-tag>
+            <el-tag v-if="isMW" size="small" type="info" data-testid="channel-tag">由 {{ channelName }} 通道处理</el-tag>
             <el-tag v-if="isMW && noSubscriptionOnly" size="small" type="warning" data-testid="no-sub-tag">仅限无订阅账号</el-tag>
           </div>
           <div v-if="isMW && previewInfo.region" class="text-muted">付款地区：{{ previewInfo.region }}</div>
@@ -71,7 +71,7 @@
         <div v-if="isMW" class="rounded-xl border p-4 space-y-2" style="border-color: var(--brd); background: var(--surface-2, var(--soft))" data-testid="mw-account">
           <div class="flex flex-wrap items-center gap-2">
             <strong class="text-ink text-base">{{ account.email || '账号已验证' }}</strong>
-            <el-tag size="small" type="info">MarsWallex 通道</el-tag>
+            <el-tag size="small" type="info">{{ channelName }} 通道</el-tag>
           </div>
           <div class="text-sm text-muted">目标套餐：<b class="text-ink">{{ planLabel(targetPlan) }}</b><span v-if="previewInfo?.region">，付款地区 {{ previewInfo.region }}</span></div>
           <div class="text-sm text-muted">账号是否已有订阅要到兑换时才会核对；已有订阅的账号会兑换失败，且不会扣款。</div>
@@ -163,7 +163,7 @@
 
         <div class="flex flex-wrap items-center gap-2">
           <el-tag :type="statusTagType(resultStatus)" size="large">{{ isMW ? mwStatusText(resultStatus) : (resultStatus || '—') }}</el-tag>
-          <el-tag v-if="isMW" size="small" type="info">MarsWallex 通道</el-tag>
+          <el-tag v-if="isMW" size="small" type="info">{{ channelName }} 通道</el-tag>
           <span v-if="resultStage" class="text-sm text-muted mono">阶段 {{ isMW ? mwStageText(resultStage) : resultStage }}</span>
           <span v-if="polling" class="text-sm text-muted">
             <span class="inline-block animate-pulse">●</span> 实时轮询中（约 3s）
@@ -259,7 +259,7 @@ import UserPageHeader from '../../components/UserPageHeader.vue'
 import RedeemModeTabs from '../../components/RedeemModeTabs.vue'
 import { dialog } from '../../lib/dialog'
 import { planLabel, planSatisfied as isSatisfied } from '../../lib/plan'
-import { isMarsWallex, mwOutcome, mwStageText, mwStatusText, redeemRejectedBeforeOrder } from '../../lib/mwredeem'
+import { channelLabel, isCardSupply, mwOutcome, mwStageText, mwStatusText, redeemRejectedBeforeOrder } from '../../lib/mwredeem'
 
 const { t } = useI18n({ useScope: 'global' })
 const route = useRoute()
@@ -421,8 +421,9 @@ watch(
   { deep: true },
 )
 
-// MarsWallex 码（本地码）：预览或结果响应带 provider=marswallex。其余码保持原流程不动。
-const isMW = computed(() => isMarsWallex(previewInfo.value?.provider || resultBody.value?.provider))
+// 供卡型服务商的码（本地码）：预览或结果响应带 provider_kind=card_supply。其余码（含没有 provider_kind 的上游转发）保持原流程不动。
+const isMW = computed(() => isCardSupply(previewInfo.value?.provider_kind || resultBody.value?.provider_kind))
+const channelName = computed(() => channelLabel(previewInfo.value, resultBody.value))
 const noSubscriptionOnly = computed(() =>
   previewInfo.value?.requires_no_subscription === true || targetPlan.value === 'pro_20x')
 const mwResult = computed(() => mwOutcome(resultStatus.value, resultBody.value?.order || resultBody.value?.data?.order))

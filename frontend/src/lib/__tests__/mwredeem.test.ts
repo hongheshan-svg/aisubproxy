@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isMarsWallex, mwOutcome, mwStatusText, redeemRejectedBeforeOrder } from '../mwredeem'
+import { channelLabel, isCardSupply, mwOutcome, mwStatusText, redeemRejectedBeforeOrder } from '../mwredeem'
 
 describe('mwOutcome', () => {
   it('成功、处理中', () => {
@@ -25,8 +25,25 @@ describe('mwOutcome', () => {
   it('状态中文，未知原样', () => {
     expect(mwStatusText('failed_precharge')).toBe('未扣款，兑换失败')
     expect(mwStatusText('weird')).toBe('weird')
-    expect(isMarsWallex('MarsWallex')).toBe(true)
-    expect(isMarsWallex('zovocard')).toBe(false)
+  })
+})
+
+describe('按 provider_kind 判断供卡型通道', () => {
+  it('只有 card_supply 启用本站付款界面，上游或缺失一律按上游', () => {
+    expect(isCardSupply('card_supply')).toBe(true)
+    expect(isCardSupply('upstream')).toBe(false)
+    expect(isCardSupply(undefined)).toBe(false)
+    expect(isCardSupply('')).toBe(false)
+  })
+  it('不再按服务商名判断：假的 testcard 供卡型同样启用，marswallex 名但没有 kind 不启用', () => {
+    expect(isCardSupply({ provider: 'testcard', provider_kind: 'card_supply' }.provider_kind)).toBe(true)
+    expect(isCardSupply({ provider: 'marswallex' }['provider_kind' as never])).toBe(false)
+  })
+  it('通道标签优先显示名，缺失退回 provider', () => {
+    expect(channelLabel({ provider: 'testcard', provider_display_name: 'TestCard' })).toBe('TestCard')
+    expect(channelLabel({ provider: 'testcard' })).toBe('testcard')
+    expect(channelLabel(null, { provider: 'testcard', provider_display_name: 'TestCard' })).toBe('TestCard')
+    expect(channelLabel(undefined, null)).toBe('本站')
   })
 })
 

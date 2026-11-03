@@ -1,9 +1,21 @@
-// 用户兑换页上 MarsWallex 码（本地码）的状态展示。ZovoCard 码不走这里，保持原样。
+// 用户兑换页上供卡型服务商的码（本站付款、本地码）的状态展示。上游发码型的码不走这里，保持原样。
 
-export const MW_PROVIDER = 'marswallex'
+/** 响应里的 provider_kind 为 card_supply 才启用本站付款相关界面；没有 provider_kind（上游原样转发）一律按上游处理。 */
+export function isCardSupply(kind: unknown): boolean {
+  return kind === 'card_supply'
+}
 
-export function isMarsWallex(provider: unknown): boolean {
-  return String(provider || '').toLowerCase() === MW_PROVIDER
+/** 通道标签：优先用 provider_display_name，缺失时退回 provider，再缺失显示「本站」。 */
+export function channelLabel(...infos: Array<{ provider?: unknown; provider_display_name?: unknown } | null | undefined>): string {
+  for (const i of infos) {
+    const n = String(i?.provider_display_name || '').trim()
+    if (n) return n
+  }
+  for (const i of infos) {
+    const n = String(i?.provider || '').trim()
+    if (n) return n
+  }
+  return '本站'
 }
 
 const STATUS_TEXT: Record<string, string> = {

@@ -155,7 +155,9 @@
 1. **checks**：调用 `ci.yml`（加 `workflow_call`），跑全部测试和构建。**漏洞扫描不在发版必过项里**：外部一公布新漏洞就会全部变红，与代码改动无关，不能让它卡住付款问题的紧急修复版。漏洞扫描结果靠 PR 上的显示和每周定时任务提醒。
 2. **guard**：标签对应的提交必须在 origin/master 上；`CHANGELOG.md` 必须有同名小节（沿用 `scripts/release-notes.sh`）。
 3. **native**：沿用现有的静态构建、打包和 ed25519 签名，工具链换成 Go 1.27.x 和 Node 24。
-4. **image**：
+4. **image**（等 native 完成后再跑）：
+   - 用 native 产出的发布包构建镜像，即 Dockerfile 的 `release` 目标：它与默认目标共用运行环境那一层，只是不从源码编译，直接复制发布包里的程序、前端和版本号。这样镜像里的程序与一键升级下载的发布包是同一份文件。
+   - 默认目标（Dockerfile 最后一个阶段 `runtime`）仍然从源码构建，供开发和 CI 的 `docker` job 使用。
    - 用 `docker/build-push-action` 推到 `ghcr.io/hongheshan-svg/aisubproxy`。
    - 标签打 `X.Y.Z`、`X.Y`、`latest`，平台只做 `linux/amd64`。
    - 附带构建来源证明和 SBOM。

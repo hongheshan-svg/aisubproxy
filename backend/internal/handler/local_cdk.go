@@ -217,17 +217,19 @@ func localCDKPreview(c *gin.Context, cs provider.CardSupply, code string) {
 		return
 	}
 	resp := gin.H{
-		"provider":                 row.Provider,
-		"status":                   v.Status,
-		"product":                  row.Product,
-		"plan":                     row.PlanKey,
-		"plan_type":                row.PlanKey,
-		"plan_flow":                "direct",
-		"region":                   row.Region,
-		"payment_country":          row.Region,
-		"redemption_token":         provider.TokenFor(cs, code),
-		"attempts_left":            v.AttemptsLeft,
-		"requires_no_subscription": true,
+		"provider":         row.Provider,
+		"status":           v.Status,
+		"product":          row.Product,
+		"plan":             row.PlanKey,
+		"plan_type":        row.PlanKey,
+		"plan_flow":        "direct",
+		"region":           row.Region,
+		"payment_country":  row.Region,
+		"redemption_token": provider.TokenFor(cs, code),
+		"attempts_left":    v.AttemptsLeft,
+	}
+	for k, val := range localKindFields(row.PlanKey) {
+		resp[k] = val
 	}
 	if note := cs.PlanNote(row.PlanKey); note != "" {
 		resp["plan_note"] = note
@@ -369,15 +371,41 @@ func localCDKPreflight(c *gin.Context, cs provider.CardSupply, body map[string]a
 		return
 	}
 	// 不返回 plan：前端把预检里的 plan 当成账号当前套餐。这里没查账号，当前套餐要等引擎 check 才知道
-	localReply(c, http.StatusOK, gin.H{
-		"provider":                 row.Provider,
-		"preflight_token":          token,
-		"email":                    sess.Email,
-		"account_email":            sess.Email,
-		"expires_in":               int(localPreflightTTL / time.Second),
-		"requires_no_subscription": true,
-	})
+	resp := gin.H{
+		"provider":        row.Provider,
+		"preflight_token": token,
+		"email":           sess.Email,
+		"account_email":   sess.Email,
+		"expires_in":      int(localPreflightTTL / time.Second),
+	}
+	for k, val := range localKindFields(row.PlanKey) {
+		resp[k] = val
+	}
+	localReply(c, http.StatusOK, resp)
 }
+
+// localKindFields 是预览、预检里按码的种类给出的字段：订阅开通码只给无订阅账号、到期不自动续费；
+// 点数码只给已订阅 Plus 或 Pro 的账号，兑换前要勾选同意（见 localCDKRedeem 的 agree_credit_terms）。
+func localKindFields(planKey string) gin.H {
+	if payengine.PlanKind(planKey) == payengine.KindCredit {
+		return gin.H{
+			"kind":                     payengine.KindCredit,
+			"credit_quantity":          payengine.CreditQuantity(planKey),
+			"requires_subscription":    true,
+			"requires_no_subscription": false,
+			"requires_credit_terms":    true,
+		}
+	}
+	return gin.H{
+		"kind":                     payengine.KindSubscription,
+		"requires_subscription":    false,
+		"requires_no_subscription": true,
+		"auto_renew":               false,
+	}
+}
+
+// localCreditTermsText 是点数码没勾同意就兑换时的提示。
+const localCreditTermsText = "请先阅读并勾选点数兑换须知：仅限已订阅 Plus 或 Pro 的账号，按账号计费币种付款、卡密地区须与之一致，点数 12 个月过期且不退款"
 
 // localCDKRedeem 兑换（含干净失败后的重兑）。熔断、未就绪、跨服务商冲突都在建单之前拒绝，不占用码。
 func localCDKRedeem(c *gin.Context, cs provider.CardSupply, body map[string]any) {
@@ -412,6 +440,11 @@ func localCDKRedeem(c *gin.Context, cs provider.CardSupply, body map[string]any)
 	}
 	if !v.Redeemable() {
 		localCDKRefuse(c, row, v)
+		return
+	}
+	// 点数码：用户必须勾选同意兑换须知（设计 §5.4），没勾就不建单、不占用码
+	if payengine.PlanKind(row.PlanKey) == payengine.KindCredit && body["agree_credit_terms"] != true {
+		localReply(c, http.StatusBadRequest, gin.H{"error": localCreditTermsText})
 		return
 	}
 	if !localCDKReady(c, cs, row) {
@@ -537,6 +570,12 @@ var localFailureText = map[string]string{
 	"session_invalid":    "账号登录已失效，请重新获取 session 后再试",
 	"already_subscribed": "该账号已有订阅，无法开通",
 	"plan_unavailable":   "该套餐暂不可用，请稍后再试",
+	// 点数码的账号检查（都在付款之前，没有扣款）
+	"credit_no_subscription":   "该账号没有生效中的 Plus 或 Pro 订阅，不能购买点数，也没有发起支付",
+	"credit_plan_ineligible":   "该账号的套餐不能购买点数（仅限已订阅 Plus 或 Pro 的账号），没有发起支付",
+	"credit_not_personal":      "该账号不是个人账号，不能购买点数，也没有发起支付",
+	"credit_delinquent":        "该账号有欠费，暂不能购买点数，也没有发起支付",
+	"credit_currency_mismatch": "账号计费币种与卡密地区不一致，不能用这张卡密购买点数，也没有发起支付",
 }
 
 const localFailureDefaultText = "本次未能开通，也没有发起支付，可以稍后重新提交"

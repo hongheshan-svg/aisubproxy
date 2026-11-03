@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/url"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/marswallex"
 	"github.com/tuzi/cdk-recharge-system/internal/marswallex/mwtest"
 )
@@ -604,6 +606,26 @@ func TestDailyReviewSummaryOncePerBeijingDay(t *testing.T) {
 	clock.Advance(24 * time.Hour)
 	if err := s.dailyReviewSummary(context.Background()); err != nil || log.Count() != 2 {
 		t.Fatalf("次日应再汇总一次: err=%v alerts=%v", err, log.Texts())
+	}
+}
+
+// 开通成功但没能关闭续费的付款单计入每日待办：只数近 30 天的。
+func TestDailyReviewSummaryCountsRenewalFailed(t *testing.T) {
+	s, _, clock, log := newTestService(t)
+	clock.Set(time.Date(2026, 10, 28, 4, 0, 0, 0, time.UTC))
+	now := clock.Now().Unix()
+	for i, finished := range []int64{now - 3600, now - 31*86400} {
+		if _, err := db.DB.Exec(`INSERT INTO pay_orders (order_no, provider, source, source_ref, dry_run, plan_key, region, account_email, state,
+			renewal_state, finished_at, created_at, updated_at) VALUES (?, 'marswallex', 'admin_test', 'admin', 0, 'plus', 'PH', ?, 'succeeded', 'failed', ?, ?, ?)`,
+			fmt.Sprintf("PO-R-%d", i), fmt.Sprintf("r%d@example.com", i), finished, finished, finished); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.dailyReviewSummary(context.Background()); err != nil || log.Count() != 1 {
+		t.Fatalf("应汇总一次: err=%v alerts=%v", err, log.Texts())
+	}
+	if got := log.Texts()[0]; !strings.Contains(got, "1 张开通成功的付款单没能关闭续费") || !strings.Contains(got, "0 张付款单待人工处理") {
+		t.Fatalf("汇总文字: %s", got)
 	}
 }
 

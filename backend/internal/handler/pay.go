@@ -64,7 +64,8 @@ func payFail(c *gin.Context, err error) {
 		c.JSON(http.StatusConflict, gin.H{"error": payengine.ErrInflight.Error()})
 	case errors.Is(err, payengine.ErrBadSession):
 		c.JSON(http.StatusBadRequest, gin.H{"error": "会话无效"})
-	case errors.Is(err, payengine.ErrPlanUnavailable), errors.Is(err, payengine.ErrBadRequest), errors.Is(err, payengine.ErrProviderUnavailable):
+	case errors.Is(err, payengine.ErrPlanUnavailable), errors.Is(err, payengine.ErrBadRequest), errors.Is(err, payengine.ErrProviderUnavailable),
+		errors.Is(err, payengine.ErrRenewalUnavailable):
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 	case errors.Is(err, payengine.ErrNotFound):
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
@@ -137,12 +138,16 @@ func AdminPaySubmit(c *gin.Context) {
 	})(c)
 }
 
-// AdminPayList 分页列出单据，可按 state 筛选。
+// AdminPayList 分页列出单据，可按 state、renewal（续费进度）、kind（种类）筛选。
 func AdminPayList(c *gin.Context) {
 	payRoute(func(c *gin.Context, s *payengine.Service) {
 		page, _ := strconv.Atoi(c.Query("page"))
 		size, _ := strconv.Atoi(c.Query("page_size"))
-		orders, total, err := s.List(c.Request.Context(), strings.TrimSpace(c.Query("state")), page, size)
+		orders, total, err := s.ListBy(c.Request.Context(), payengine.OrderFilter{
+			State:   strings.TrimSpace(c.Query("state")),
+			Renewal: strings.TrimSpace(c.Query("renewal")),
+			Kind:    strings.TrimSpace(c.Query("kind")),
+		}, page, size)
 		if err != nil {
 			payFail(c, err)
 			return
@@ -151,7 +156,11 @@ func AdminPayList(c *gin.Context) {
 	})(c)
 }
 
-// AdminPayGet 返回单据、时间线与「提交前 5 分钟起该卡的交易」。交易查不到时不影响单据本身的展示。
+// payNoPoolEvidenceText 是单据所属服务商没有卡池时的交易说明：单据和时间线照常显示，只有卡池这部分查不了。
+const payNoPoolEvidenceText = "这家服务商没有卡池，卡的交易记录无法查询"
+
+// AdminPayGet 返回单据、时间线与「提交前 5 分钟起该卡的交易」。交易查不到时不影响单据本身的展示；
+// 单据所属服务商没有卡池时（换了版本、这家被去掉）说明是没有卡池，而不是暂时查不到。
 func AdminPayGet(c *gin.Context) {
 	payRoute(func(c *gin.Context, s *payengine.Service) {
 		ctx := c.Request.Context()
@@ -162,11 +171,15 @@ func AdminPayGet(c *gin.Context) {
 		}
 		resp := gin.H{"order": o, "events": nonNil(events)}
 		ev, err := s.Evidence(ctx, o.OrderNo)
-		if err != nil {
+		switch {
+		case errors.Is(err, payengine.ErrProviderUnavailable):
+			resp["evidence"] = []cardpool.Transaction{}
+			resp["evidence_error"] = payNoPoolEvidenceText
+		case err != nil:
 			log.Printf("payengine api evidence %s: %v", o.OrderNo, err)
 			resp["evidence"] = []cardpool.Transaction{}
 			resp["evidence_error"] = "交易记录暂时无法获取"
-		} else {
+		default:
 			resp["evidence"] = nonNil(ev)
 		}
 		c.JSON(http.StatusOK, resp)
@@ -196,6 +209,30 @@ func AdminPayResolve(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})(c)
 }
+
+// AdminPayRetryRenewal 手动重试关闭续费：同步关一次并核实，返回处理后的单据。不花钱、不碰卡池；
+// 不能重试（不是成功的真实开通单、已关闭、会话已清空）时 400 并说明原因。
+func AdminPayRetryRenewal(c *gin.Context) {
+	payRoute(func(c *gin.Context, s *payengine.Service) {
+		no := c.Param("no")
+		if !payOrderNoRe.MatchString(no) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "单号无效"})
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), payRenewalRetryLimit)
+		defer cancel()
+		o, err := s.RetryRenewal(ctx, no, adminName(c))
+		if err != nil {
+			payFail(c, err)
+			return
+		}
+		auditAdmin(c, "pay_renewal_retry", fmt.Sprintf("order_no=%s renewal_state=%s", no, o.RenewalState))
+		c.JSON(http.StatusOK, gin.H{"order": o})
+	})(c)
+}
+
+// payRenewalRetryLimit 是手动重试关闭续费的时限：关闭加核实是几次 ChatGPT 请求。不跟随客户端连接，关到一半不半途而废。
+const payRenewalRetryLimit = 60 * time.Second
 
 // AdminPayShot 返回某单的一张截图。单号与文件名先按正则校验，再确认是普通文件（不是符号链接、不是目录）。
 func AdminPayShot(c *gin.Context) {

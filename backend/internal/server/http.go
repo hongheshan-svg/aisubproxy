@@ -337,6 +337,7 @@ func setupRoutes(r *gin.Engine) {
 			admin.GET("/pay/orders", handler.AdminPayList)
 			admin.GET("/pay/orders/:no", handler.AdminPayGet)
 			admin.POST("/pay/orders/:no/resolve", handler.AdminPayResolve)
+			admin.POST("/pay/orders/:no/renewal/retry", handler.AdminPayRetryRenewal)
 			admin.GET("/pay/orders/:no/shots/:name", handler.AdminPayShot)
 			admin.GET("/pay/config", handler.AdminPayGetConfig)
 			admin.PUT("/pay/config", handler.AdminPayPutConfig)

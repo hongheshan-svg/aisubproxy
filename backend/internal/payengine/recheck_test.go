@@ -29,10 +29,10 @@ func TestAmountRecheckAborts(t *testing.T) {
 		name, code string
 		second     func() (int64, string, error)
 	}{
-		{"超过上限", "amount_over_cap", func() (int64, string, error) { return 130000, "₱1,300.00", nil }},
+		{"超过上限", "amount_changed", func() (int64, string, error) { return 130000, "₱1,300.00", nil }},
 		{"没超上限但与第一次不一致", "amount_changed", func() (int64, string, error) { return 100000, "₱1,000.00", nil }},
 		{"币种变了", "amount_changed", func() (int64, string, error) { return 112000, "US$1,120.00", nil }},
-		{"第二次读取失败", "amount_unreadable", func() (int64, string, error) { return 0, "", errors.New("支付页上没有找到金额") }},
+		{"第二次读取失败", "amount_changed", func() (int64, string, error) { return 0, "", errors.New("支付页上没有找到金额") }},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

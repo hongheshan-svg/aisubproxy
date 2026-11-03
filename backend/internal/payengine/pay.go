@@ -158,18 +158,19 @@ func (s *Service) fillCard(ctx context.Context, j *job) error {
 // recheckAmount 在填表之后、记下提交时间之前再读一次应付金额（MO-04）。
 // 读不出、币种不符、超过上限、和打开页面时读到的不一致，都放弃：还没点击，Release(aborted) 是安全的。
 // 读取失败不能跳过检查继续点。
+// 这里已经注资，四种情况都用 amount_changed：熔断要数它，而打开页面阶段的 amount_over_cap、amount_unreadable 没花钱，不该计入。
 func (s *Service) recheckAmount(ctx context.Context, j *job) error {
 	rctx, cancel := context.WithTimeout(ctx, s.t.PageLoad)
 	defer cancel()
 	minor, text, err := j.browser.ReadAmount(rctx, j.o.Currency)
 	if err != nil {
-		return abort("amount_unreadable", "填表后再次读取应付金额失败：%v", err)
+		return abort("amount_changed", "填表后再次读取应付金额失败：%v", err)
 	}
 	if !paybrowser.CurrencyMatches(text, j.o.Currency) {
 		return abort("amount_changed", "填表后支付页金额 %q 的币种与期望的 %s 不符", text, j.o.Currency)
 	}
 	if minor > j.o.CapMinor {
-		return abort("amount_over_cap", "填表后应付金额 %s 超过上限 %s %s", text, formatMinor(j.o.CapMinor, j.o.Currency), j.o.Currency)
+		return abort("amount_changed", "填表后应付金额 %s 超过上限 %s %s", text, formatMinor(j.o.CapMinor, j.o.Currency), j.o.Currency)
 	}
 	if minor != j.o.AmountMinor {
 		return abort("amount_changed", "填表后应付金额 %s 与打开页面时的 %s 不一致", text, j.o.AmountText)

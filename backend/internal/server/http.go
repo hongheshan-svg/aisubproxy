@@ -86,6 +86,7 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	// CDK 链路后台维护：清理到期或已完成订单的用户会话
 	handler.SetOpsAlert(alertSender("cdk", notify.SendText))
 	handler.StartOpsMaintenance(ctx)
+	handler.StartCardHeadSync(ctx)
 
 	return &Server{
 		engine: engine,

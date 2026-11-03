@@ -19,7 +19,7 @@ var (
 	ErrCardHeadNotManual = errors.New("这条卡头由服务商接口同步，不能手动修改产品信息或删除")
 )
 
-// CardHead 是某家服务商的一个卡产品（卡头）。three_ds、apple_pay 取值 ”（未标注）、yes、no，只用于显示。
+// CardHead 是某家服务商的一个卡产品（卡头）。three_ds、apple_pay 取值：空串（未标注）、yes、no，只用于显示。
 type CardHead struct {
 	Provider  string   `json:"provider"`
 	ProductID string   `json:"product_id"`

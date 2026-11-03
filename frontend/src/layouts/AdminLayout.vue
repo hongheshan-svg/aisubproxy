@@ -174,11 +174,15 @@ async function loadEnv() {
   let mars = unknown('MarsWallex')
   try {
     const r = await authFetch('/api/v1/admin/settings')
-    if (r.ok) { const d = await r.json(); zovo = zovoEnv(String(d.card_api_base || '')) }
+    if (r.ok) { const d = await r.json(); zovo = zovoEnv(String(d.card_api_base || ''), !!d.card_api_key_configured) }
   } catch { /* 保持未知 */ }
   try {
     const r = await authFetch('/api/v1/admin/marswallex/config')
-    if (r.ok) { const d = await r.json(); mars = marsEnv(String(d.base_url || ''), d.base_url_presets) }
+    if (r.ok) {
+      const d = await r.json()
+      const hasCreds = !!(d.developer_id || d.api_token_set || d.private_key_set || d.platform_public_key_set)
+      mars = marsEnv(String(d.base_url || ''), d.base_url_presets, hasCreds)
+    }
   } catch { /* 保持未知 */ }
   envBadges.value = [zovo, mars]
 }
@@ -395,6 +399,7 @@ async function submitPwd() {
 .env-badge.env-prod { color: var(--good, #16a34a); border-color: currentColor; }
 .env-badge.env-test { color: var(--warn, #d97706); border-color: currentColor; }
 .env-badge.env-custom, .env-badge.env-unknown { color: var(--err, #dc2626); border-color: currentColor; }
+.env-badge.env-unconfigured { color: var(--ink-3); }
 .is-mobile .crumb-group, .is-mobile .crumb-group + .crumb-sep { display: none; }
 .is-mobile .env-badge { padding: 4px 6px; font-size: 11px; }
 .crumb-link { font-weight: 500; color: var(--ink-2); }

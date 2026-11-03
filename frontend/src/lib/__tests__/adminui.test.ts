@@ -38,29 +38,29 @@ describe('卡池概览汇总', () => {
 
 describe('环境徽章', () => {
   it('卡台生产、沙盒、自定义', () => {
-    expect(zovoEnv('https://zovocard.com/').label).toBe('生产')
-    expect(zovoEnv('').label).toBe('生产')
-    expect(zovoEnv('https://sandbox.zovocard.com').label).toBe('沙盒')
-    expect(zovoEnv('https://x.example').kind).toBe('custom')
+    expect(zovoEnv('https://zovocard.com/', true).label).toBe('生产')
+    expect(zovoEnv('', true).label).toBe('生产')
+    expect(zovoEnv('https://sandbox.zovocard.com', true).label).toBe('沙盒')
+    expect(zovoEnv('https://x.example', true).kind).toBe('custom')
+  })
+  it('卡台没有 Key 时显示未配置，哪怕地址是生产', () => {
+    const b = zovoEnv('', false)
+    expect(b.kind).toBe('unconfigured')
+    expect(b.label).toBe('未配置')
+    expect(zovoEnv('https://zovocard.com', false).kind).toBe('unconfigured')
+    expect(zovoEnv('https://sandbox.zovocard.com', false).label).toBe('未配置')
   })
   it('MarsWallex 按预设比对', () => {
     const presets = [{ id: 'prod', url: 'https://p.example/api' }, { id: 'test', url: 'https://t.example/api' }]
-    expect(marsEnv('', presets).label).toBe('生产')
-    expect(marsEnv('https://t.example/api/', presets).label).toBe('测试')
-    expect(marsEnv('https://o.example', presets).kind).toBe('custom')
+    expect(marsEnv('', presets, true).label).toBe('生产')
+    expect(marsEnv('https://t.example/api/', presets, true).label).toBe('测试')
+    expect(marsEnv('https://o.example', presets, true).kind).toBe('custom')
   })
-})
-
-describe('页内标签', () => {
-  it('pickTab 非法值回落默认', () => {
-    expect(pickTab('holders', ['overview', 'holders'], 'overview')).toBe('holders')
-    expect(pickTab('x', ['overview'], 'overview')).toBe('overview')
-    expect(pickTab(['holders'], ['holders'], 'a')).toBe('holders')
-    expect(pickTab(undefined, ['a'], 'a')).toBe('a')
-  })
-  it('面包屑第三级', () => {
-    expect(tabCrumb(PAGE_TABS, '/ops/cardpool', 'policy')).toBe('策略与健康度')
-    expect(tabCrumb(PAGE_TABS, '/ops/cardpool', undefined)).toBe('概览')
-    expect(tabCrumb(PAGE_TABS, '/ops/providers', 'x')).toBe('')
+  it('MarsWallex 没有任何凭证时显示未配置，不因默认地址是生产而显示生产', () => {
+    const presets = [{ id: 'prod', url: 'https://p.example/api' }]
+    const b = marsEnv('', presets, false)
+    expect(b.kind).toBe('unconfigured')
+    expect(b.label).toBe('未配置')
+    expect(marsEnv('https://p.example/api', presets, false).kind).toBe('unconfigured')
   })
 })

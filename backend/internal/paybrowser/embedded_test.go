@@ -437,6 +437,7 @@ func TestEmbeddedFillStripeAddressRevealsHidden(t *testing.T) {
 }
 
 // 折叠的地址字段展不开时报错放弃，不能当成「页面没有」放过去。
+// 这个变体既没有手动地址入口也没有地址联想：走「选地址联想展开」，联想一直不出现。
 func TestEmbeddedFillStripeAddressHiddenFails(t *testing.T) {
 	needChrome(t)
 	t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
@@ -444,11 +445,143 @@ func TestEmbeddedFillStripeAddressHiddenFails(t *testing.T) {
 	b, ctx := openEmbedded(t, f, "addr=stripe-nolink")
 
 	err := b.Fill(ctx, testCard, embeddedBilling)
-	if err == nil || !strings.Contains(err.Error(), "找不到「城市」输入框") {
-		t.Fatalf("Fill = %v，期望报找不到「城市」输入框", err)
+	if err == nil || !strings.Contains(err.Error(), "地址联想没有出现") {
+		t.Fatalf("Fill = %v，期望报地址联想没有出现", err)
 	}
 	if n := len(f.payments()); n != 0 {
 		t.Fatalf("Fill 失败时仿造页收到 %d 次提交", n)
+	}
+}
+
+// 真实页面（2026-11-04 实测）没有手动地址入口：在街道里逐字键入，点一条地址联想，城市、州、邮编才展开。
+// 联想会改写街道、城市、州、邮编，之后用账单地址自己的值覆盖。
+func TestEmbeddedFillPicksSuggestion(t *testing.T) {
+	needChrome(t)
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "addr=suggest")
+
+	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+		t.Fatalf("Fill: %v", err)
+	}
+	r := b.FillReport()
+	if len(r.Absent) != 0 {
+		t.Fatalf("Absent = %v，期望为空", r.Absent)
+	}
+	want := []string{"卡号", "有效期", "CVC", "国家", "姓名", "街道地址", "城市", "州/省", "邮编"}
+	if got := fieldLabels(t, r); !slices.Equal(got, want) {
+		t.Fatalf("填过的字段 = %v，期望 %v", got, want)
+	}
+	if lines := strings.Join(r.Lines(), "\n"); !strings.Contains(lines, "手动地址：已选地址联想") {
+		t.Errorf("报告缺少「手动地址：已选地址联想」：\n%s", lines)
+	}
+	for sel, want := range map[string]string{
+		"#billingAddress-addressLine1Input":       "1 Main St",
+		"#billingAddress-localityInput":           "Portland",
+		"#billingAddress-administrativeAreaInput": "OR",
+		"#billingAddress-postalCodeInput":         "97201",
+		"#billingAddress-countryInput":            "US",
+	} {
+		got, err := paybrowser.FieldValue(ctx, b, sel)
+		if err != nil || got != want {
+			t.Fatalf("页面上 %s = %q, %v，期望 %q", sel, got, err, want)
+		}
+	}
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("只填表不提交：仿造页收到 %d 次提交", n)
+	}
+}
+
+// 键入街道后地址联想一直不出现：城市、州、邮编展不开，报错放弃。
+func TestEmbeddedFillSuggestionMissing(t *testing.T) {
+	needChrome(t)
+	t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "addr=suggest-none")
+
+	err := b.Fill(ctx, testCard, embeddedBilling)
+	if err == nil || !strings.Contains(err.Error(), "地址联想没有出现") {
+		t.Fatalf("Fill = %v，期望报地址联想没有出现", err)
+	}
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("Fill 失败时仿造页收到 %d 次提交", n)
+	}
+}
+
+// 点了地址联想，城市、州、邮编还是没展开：报错放弃。
+func TestEmbeddedFillSuggestionDoesNotExpand(t *testing.T) {
+	needChrome(t)
+	t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "addr=suggest-stuck")
+
+	err := b.Fill(ctx, testCard, embeddedBilling)
+	if err == nil || !strings.Contains(err.Error(), "仍未展开") {
+		t.Fatalf("Fill = %v，期望报仍未展开", err)
+	}
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("Fill 失败时仿造页收到 %d 次提交", n)
+	}
+}
+
+// 地址字段查的时候 DOM 里没有、填完地址前又出现了（这里是键入街道后才插入姓名框）：不能静默漏填，报错放弃。
+// 插入由键入街道触发，不靠定时，结果不受机器快慢影响。
+func TestEmbeddedFillAbsentReappears(t *testing.T) {
+	needChrome(t)
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "addr=late")
+
+	err := b.Fill(ctx, testCard, embeddedBilling)
+	if err == nil || !strings.Contains(err.Error(), "地址字段「姓名」填表时没找到、之后又出现了") {
+		t.Fatalf("Fill = %v，期望报地址字段「姓名」填表时没找到、之后又出现了", err)
+	}
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("Fill 失败时仿造页收到 %d 次提交", n)
+	}
+}
+
+// clickOption 只在主页面上的点击落点正是承载选项的 iframe 时才点：
+// 真实页面上地址 iframe 只露出上半截，选项坐标可能落到 iframe 外面，而支付按钮就在主页面上。选项本身是提交控件时也不点。
+func TestClickOptionRefusesNonIframeTarget(t *testing.T) {
+	needChrome(t)
+	srv := httptest.NewServer(http.FileServer(http.Dir("testdata")))
+	t.Cleanup(srv.Close)
+	b := launch(t, paybrowser.LaunchOptions{})
+	ctx := openCtx(t)
+	if err := b.ProbeOpen(ctx, srv.URL+"/option-target.html", nil, 200*time.Millisecond); err != nil {
+		t.Fatalf("ProbeOpen: %v", err)
+	}
+
+	// 对照：没被盖住的 iframe 里的选项能点到，说明下面的拒绝不是因为找不到或点不动
+	if err := paybrowser.ClickOption(ctx, b, "#open-option"); err != nil {
+		t.Fatalf("没被盖住的 iframe 里的选项应能点：%v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		v, err := paybrowser.FieldValue(ctx, b, "#open-clicks")
+		if err == nil && v == "1" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("没被盖住的选项收到的点击 = %q, %v，期望 1", v, err)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	for _, c := range []struct{ name, option, clicks, want string }{
+		{"主页面上的选项", "#main-option", "#main-clicks", "不是 iframe，没有点击"},
+		{"被别的 iframe 盖住的选项", "#covered-option", "#covered-clicks", "落点是别的 iframe，没有点击"},
+		{"选项是提交按钮", "#submit-option", "#submit-clicks", "是提交控件"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			err := paybrowser.ClickOption(ctx, b, c.option)
+			if err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("ClickOption(%s) = %v，期望拒绝并说明「%s」", c.option, err, c.want)
+			}
+			time.Sleep(300 * time.Millisecond)
+			if v, err := paybrowser.FieldValue(ctx, b, c.clicks); err != nil || v != "0" {
+				t.Fatalf("%s 收到的点击 = %q, %v，期望 0", c.option, v, err)
+			}
+		})
 	}
 }
 

@@ -52,11 +52,12 @@ func ScanBeforeClick(ctx context.Context, b *Browser) (map[string]bool, error) {
 	return got, err
 }
 
-// ShortenFillWaits 缩短地址字段的等待时限，返回恢复函数。用来测「一直等不到」的情形，免得每个用例等满 15 秒。
+// ShortenFillWaits 把地址字段和地址联想的等待时限都缩短到 address，返回恢复函数。
+// 用来测「一直等不到」的情形，免得每个用例等满 15 秒、8 秒。
 func ShortenFillWaits(address time.Duration) (restore func()) {
-	old := addressWait
-	addressWait = address
-	return func() { addressWait = old }
+	oldAddress, oldSuggest := addressWait, suggestWait
+	addressWait, suggestWait = address, address
+	return func() { addressWait, suggestWait = oldAddress, oldSuggest }
 }
 
 // SetDeclineSettle 设置判到被拒后再看的时长，返回恢复函数。多数用例不关心它，TestMain 统一缩短。
@@ -146,6 +147,21 @@ func FieldChecked(ctx context.Context, b *Browser, sel string) (bool, error) {
 	var v bool
 	err := callOnFirst(ctx, b, sel, `function () { return !!this.checked }`, &v)
 	return v, err
+}
+
+// ClickOption 在各 frame 里找 sel 命中的第一个可见元素，用点地址联想的 clickOption 点它。
+func ClickOption(ctx context.Context, b *Browser, sel string) error {
+	return b.do(ctx, func(ctx context.Context) error {
+		frames, err := b.frames(ctx)
+		if err != nil {
+			return err
+		}
+		e := b.find(ctx, frames, []string{sel}, false)
+		if e == nil {
+			return fmt.Errorf("找不到 %s", sel)
+		}
+		return b.clickOption(ctx, frames, e)
+	})
 }
 
 func callOnFirst(ctx context.Context, b *Browser, sel, fn string, res any) error {

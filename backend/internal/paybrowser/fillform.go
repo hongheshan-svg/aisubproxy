@@ -16,9 +16,13 @@ const (
 )
 
 var (
-	addressWait = 15 * time.Second // 地址字段的等待时限：含点手动地址入口后字段出现、字段自己出现
+	addressWait = 15 * time.Second // 地址字段的等待时限：含点手动地址入口后字段出现、字段自己出现、选地址联想后字段展开
+	suggestWait = 8 * time.Second  // 在街道里键入后等地址联想出现的时限（2026-11-04 实测 4 秒内出现）
 	emailSettle = time.Second      // 键入邮箱后留给页面反应的时间：可能重绘、重新勾上 Link 或弹 Link 验证
 )
+
+// suggestionSels 是地址联想的选项。2026-11-04 实测：联想在单独的下拉 iframe 里，地址 iframe 里也有一份，都是 role=option。
+var suggestionSels = []string{`[role="option"]`}
 
 // errSubmitControl 表示按文字找到的入口其实是提交控件。
 var errSubmitControl = errors.New("入口是提交控件，不能点")
@@ -55,7 +59,8 @@ type fillState struct {
 // 顺序依据真实 Stripe Checkout 的 DOM：改国家会重绘地址字段，所以先选国家；城市、州、邮编可能要点「手动输入」才出现；
 // Link 保存默认勾选且要求手机，先取消再填邮箱，免得键入邮箱就触发 Link 验证；手机一律不填；
 // 邮箱只有可见、必填且为空时才填账号自己的；键入都可能让页面重绘，所以最后把所有字段重新核对一遍。
-// 内嵌页（PageEmbedded）只有卡片三项必填，地址字段都可选，见 fillEmbeddedAddress。
+// 内嵌页（PageEmbedded）的地址字段按页面决定：DOM 里有的都要填上（折叠的先展开，展不开就放弃），DOM 里没有的才跳过，
+// 见 fillEmbeddedAddress。
 func (b *Browser) Fill(ctx context.Context, c Card, bl Billing) error {
 	if err := c.validate(); err != nil {
 		return err
@@ -150,14 +155,20 @@ func (b *Browser) fillHostedAddress(ctx context.Context, st *fillState, bl Billi
 	return nil
 }
 
-// fillEmbeddedAddress 填内嵌页的账单地址（设计 §5.7）。Payment Element 上地址字段可能一个都没有，所以六项都可选：
-// 每个有值的字段分三种情况：可见就照常填；DOM 里有但不可见，是折叠起来的必填字段（2026-11-04 实测城市、州、邮编默认折叠），
-// 同托管页一样可点手动地址入口展开，展不开就报「找不到」放弃；DOM 里根本没有，才记进 FillReport.Absent、不报错。
-// 顺序同托管页：国家排第一（改国家会重绘其余地址字段），选完后先试一次展开，再填姓名、街道，最后填城市、州、邮编。
+// fillEmbeddedAddress 填内嵌页的账单地址（设计 §5.7）。地址字段填哪些按页面决定：Payment Element 上可能一个都没有，
+// 也可能有一部分折叠着（2026-11-04 实测城市、州、邮编默认折叠）。每个有值的字段分三种情况：
+//   - 可见：照常填。
+//   - DOM 里有但不可见：折叠起来的字段，一样要填。页面有手动地址入口就点它展开（同托管页）；
+//     没有入口时在街道里逐字键入、点一条地址联想展开（expandBySuggestion）。展不开就报错放弃。
+//   - DOM 里没有：记进 FillReport.Absent，不报错。最后再查一遍，填表期间又出现了就报错放弃，不静默漏填。
+//
+// 顺序：国家排第一（改国家会重绘其余地址字段），选完后先试一次点手动地址入口，再填姓名；
+// 然后在需要时选地址联想展开，再填街道、城市、州、邮编，用账单地址自己的值覆盖联想填的值。
 // 地址字段要等卡号填完才出现，所以只有第一个要找的字段最多等 addressWait，之后每个只看当下有没有。
 // 值为空的字段同 fillOne 一样跳过，不找也不记。
 func (b *Browser) fillEmbeddedAddress(ctx context.Context, st *fillState, bl Billing) error {
 	wait := addressWait
+	var absent []field
 	one := func(f field) error {
 		if strings.TrimSpace(f.value) == "" {
 			return nil
@@ -177,6 +188,7 @@ func (b *Browser) fillEmbeddedAddress(ctx context.Context, st *fillState, bl Bil
 		wait = 0
 		switch {
 		case e == nil:
+			absent = append(absent, f)
 			b.updateReport(func(r *FillReport) { r.Absent = append(r.Absent, f.label) })
 			return nil
 		case visible:
@@ -198,17 +210,124 @@ func (b *Browser) fillEmbeddedAddress(ctx context.Context, st *fillState, bl Bil
 	if err := b.revealAddress(ctx, st, hideable); err != nil {
 		return err
 	}
-	for _, f := range []field{
-		{"姓名", Sel.Name, bl.Name, kindText},
-		{"街道地址", Sel.Line1, bl.Line1, kindText},
-	} {
-		if err := one(f); err != nil {
+	if err := one(field{"姓名", Sel.Name, bl.Name, kindText}); err != nil {
+		return err
+	}
+	folded, ok, err := b.foldedWithoutEntry(ctx, st, hideable)
+	if err != nil {
+		return err
+	}
+	if ok {
+		if err := b.expandBySuggestion(ctx, bl.Line1, folded); err != nil {
 			return err
 		}
+	}
+	if err := one(field{"街道地址", Sel.Line1, bl.Line1, kindText}); err != nil {
+		return err
 	}
 	for _, f := range hideable {
 		if err := one(f); err != nil {
 			return err
+		}
+	}
+	return b.checkAbsent(ctx, absent)
+}
+
+// foldedWithoutEntry 返回城市、州/省、邮编里第一个有值、DOM 里有却不可见的字段，前提是页面上没有手动地址入口、也没点过：
+// 有入口时由 fillOne 去点（同托管页）；点过入口、字段还在展开途中时也交给 fillOne 等。
+func (b *Browser) foldedWithoutEntry(ctx context.Context, st *fillState, hideable []field) (field, bool, error) {
+	if st.revealClick > 0 {
+		return field{}, false, nil
+	}
+	frames, err := b.frames(ctx)
+	if err != nil {
+		return field{}, false, err
+	}
+	for _, f := range hideable {
+		if strings.TrimSpace(f.value) == "" || b.find(ctx, frames, f.sels, false) != nil || b.findAny(ctx, frames, f.sels) == nil {
+			continue
+		}
+		if b.findText(ctx, frames, Sel.ManualAddressOption) != nil {
+			return field{}, false, nil
+		}
+		return f, true, nil
+	}
+	return field{}, false, nil
+}
+
+// expandBySuggestion 用地址联想展开折叠的城市、州、邮编（设计 §5.7）。2026-11-04 实测：内嵌页上没有手动地址入口，
+// 按 Tab、点别的输入框都不展开；在街道里逐字键入（可信键盘事件）后几秒内出现 Google 地址联想，点一条才展开。
+// 所以这里清空街道后逐字键入 line1，不按 Esc（会关掉联想），也绝不按回车（Stripe 输入框里回车可能触发提交）；
+// 等联想出现后按 frame 顺序、每个 frame 取第一个可见选项，用 clickOption 点（落点必须是承载它的 iframe，且不是提交控件），
+// 点不成就试下一个。点中后等 folded 变成可见。联想会改写街道、城市、州、邮编，由调用方之后用自己的值覆盖。
+func (b *Browser) expandBySuggestion(ctx context.Context, line1 string, folded field) error {
+	if strings.TrimSpace(line1) == "" {
+		return errors.New("账单地址没有街道，无法用地址联想展开城市、州、邮编")
+	}
+	street, err := b.waitFind(ctx, fieldWait, func(frames []frameRef) *elem { return b.find(ctx, frames, Sel.Line1, false) })
+	if err != nil {
+		return err
+	}
+	if street == nil {
+		return errors.New("找不到「街道地址」输入框，无法展开城市、州、邮编")
+	}
+	if err := focus(ctx, street); err != nil {
+		return fmt.Errorf("无法选中「街道地址」输入框: %w", err)
+	}
+	if err := clearInput(ctx, street); err != nil {
+		return fmt.Errorf("清空「街道地址」失败: %w", err)
+	}
+	if err := typeKeys(ctx, line1, slowKeyDelay); err != nil {
+		return fmt.Errorf("键入「街道地址」失败: %w", err)
+	}
+
+	var refused error // 最近一次没点成的原因，只写进错误说明
+	picked, err := b.poll(ctx, suggestWait, func(frames []frameRef) bool {
+		for _, f := range frames {
+			opt := b.find(ctx, []frameRef{f}, suggestionSels, false)
+			if opt == nil {
+				continue
+			}
+			if refused = b.clickOption(ctx, frames, opt); refused == nil {
+				return true
+			}
+		}
+		return false
+	})
+	if err != nil {
+		return err
+	}
+	if !picked {
+		const msg = "地址联想没有出现，无法展开城市、州、邮编"
+		if refused != nil {
+			return fmt.Errorf("%s（看到过选项但没点成：%w）", msg, refused)
+		}
+		return errors.New(msg)
+	}
+
+	shown, err := b.poll(ctx, addressWait, func(frames []frameRef) bool { return b.find(ctx, frames, folded.sels, false) != nil })
+	if err != nil {
+		return err
+	}
+	if !shown {
+		return errors.New("选了地址联想后城市、州、邮编仍未展开")
+	}
+	b.updateReport(func(r *FillReport) { r.ManualAddress = "已选地址联想" })
+	return nil
+}
+
+// checkAbsent 把填表时 DOM 里没有的地址字段再查一遍：页面可能在键入别的字段后才插入它们，这时报错放弃，不静默漏填。
+func (b *Browser) checkAbsent(ctx context.Context, absent []field) error {
+	if len(absent) == 0 {
+		return nil
+	}
+	frames, err := b.frames(ctx)
+	if err != nil {
+		return fmt.Errorf("复查地址字段失败: %w", err)
+	}
+	for _, f := range absent {
+		if b.findAny(ctx, frames, f.sels) != nil {
+			return fmt.Errorf("地址字段「%s」填表时没找到、之后又出现了，已放弃", f.label)
 		}
 	}
 	return nil

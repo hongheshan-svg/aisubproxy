@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Option target</title>
+<style>
+  body { font-family: sans-serif; margin: 16px; background: #fff; }
+  [role="option"] { padding: 8px; border: 1px solid #ccc; width: 200px; }
+  iframe { border: 1px solid #ccc; width: 260px; height: 90px; display: block; margin: 8px 0; }
+  .stack { position: relative; width: 262px; height: 92px; margin: 8px 0; }
+  .stack iframe { position: absolute; top: 0; left: 0; margin: 0; }
+</style>
+</head>
+<body>
+<!--
+  测 clickOption 的落点检查（测试用）。
+  不带参数是主页面，从上到下：
+    主页面上的选项 #main-option（不在 iframe 里）；
+    没被盖住的 iframe（frame=open），选项 #open-option；
+    没被盖住的 iframe（frame=submit），选项 #submit-option 是个提交按钮（button 不写 type）；
+    被另一个 iframe（frame=cover，没有选项）整个盖住的 iframe（frame=covered），选项 #covered-option。
+  带 frame=名字 时是 iframe 里的页面，只有一个选项 #名字-option（frame=cover 时没有）。
+  每个选项收到可信的点击时，把它后面的 #名字-clicks 输入框的值加一。
+-->
+<script>
+  var q = new URLSearchParams(location.search)
+  var who = q.get('frame') || 'main'
+  if (who !== 'cover') {
+    var opt = document.createElement(who === 'submit' ? 'button' : 'div')
+    opt.setAttribute('role', 'option')
+    opt.id = who + '-option'
+    opt.textContent = '1 Main Street, Seattle, WA, USA'
+    var clicks = document.createElement('input')
+    clicks.id = who + '-clicks'
+    clicks.value = '0'
+    opt.addEventListener('click', function (e) {
+      if (e.isTrusted) clicks.value = String(Number(clicks.value) + 1)
+    })
+    document.body.appendChild(opt)
+    document.body.appendChild(clicks)
+  }
+  if (!q.get('frame')) {
+    ;['open', 'submit'].forEach(function (n) {
+      var f = document.createElement('iframe')
+      f.src = '?frame=' + n
+      document.body.appendChild(f)
+    })
+    var stack = document.createElement('div')
+    stack.className = 'stack'
+    ;['covered', 'cover'].forEach(function (n) {
+      var f = document.createElement('iframe')
+      f.src = '?frame=' + n
+      stack.appendChild(f)
+    })
+    document.body.appendChild(stack)
+  }
+</script>
+</body>
+</html>

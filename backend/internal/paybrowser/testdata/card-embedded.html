@@ -26,6 +26,14 @@
     addr=stripe      仿真实页面（2026-11-04 实测）：卡号框输入满 16 位后出现国家（US、PH）、姓名、街道地址；
                      城市、州（含 OR）、邮编在 DOM 里但 display:none，点「Enter address manually」后才可见
     addr=stripe-nolink  同 addr=stripe，但没有「Enter address manually」，三个字段一直不可见
+    addr=suggest     仿真实页面（2026-11-04 实测，没有手动地址入口）：卡号框输入满 16 位后出现国家（US、PH）、姓名、
+                     街道地址（role=combobox）；城市、州（含 OR、WA）、邮编在 DOM 里但 display:none。
+                     街道收到可信的 input 且长度 ≥ 3 时显示地址联想（ul role=listbox，2 个 li role=option），按 Esc 收起；
+                     可信地点一条联想：街道、城市、州、邮编改成联想的地址（第一条是 1 Main Street / Seattle / WA / 98101），
+                     三个折叠字段显示出来，联想收起
+    addr=suggest-none   同 addr=suggest，但地址联想永远不出现
+    addr=suggest-stuck  同 addr=suggest，地址联想会出现，但点了也不展开
+    addr=late        卡号框输入满 16 位后出现国家（US、PH）和街道地址；街道收到 input 后才插入姓名框（测「先没有、后出现」）
     nocvc=1          没有 CVC 框（测必填字段缺失时报错）
   结账页发来 collect 消息时回传各字段的值和卡号框收到的真实按键次数（与 card.html 相同的协议）。
 -->
@@ -69,25 +77,82 @@
     })
   }
 
-  if (q.get('addr') === 'stripe' || q.get('addr') === 'stripe-nolink') {
+  var addr = q.get('addr') || ''
+  var countryHTML =
+    '<label>Country or region <select id="billingAddress-countryInput" name="country" autocomplete="billing country">' +
+    '<option value="US">United States</option><option value="PH">Philippines</option></select></label>'
+  var nameHTML = '<label>Full name <input id="billingAddress-nameInput" name="name" autocomplete="billing name"></label>'
+  var foldedHTML =
+    '<div id="folded" style="display:none">' +
+    '<label>City <input id="billingAddress-localityInput" name="locality" autocomplete="billing address-level2"></label>' +
+    '<label>State <select id="billingAddress-administrativeAreaInput" name="administrativeArea" autocomplete="billing address-level1">' +
+    '<option value="">State</option><option value="OR">Oregon</option><option value="WA">Washington</option></select></label>' +
+    '<label>ZIP <input id="billingAddress-postalCodeInput" name="postalCode" autocomplete="billing postal-code"></label>' +
+    '</div>'
+  // onFullNumber 在卡号框输入满 16 位后渲染一次地址区
+  function onFullNumber(render) {
     number.addEventListener('input', function () {
       if (document.getElementById('billingAddress-countryInput') || number.value.replace(/\D/g, '').length < 16) return
-      document.getElementById('address').innerHTML =
-        '<label>Country or region <select id="billingAddress-countryInput" name="country" autocomplete="billing country">' +
-        '<option value="US">United States</option><option value="PH">Philippines</option></select></label>' +
-        '<label>Full name <input id="billingAddress-nameInput" name="name" autocomplete="billing name"></label>' +
+      render(document.getElementById('address'))
+    })
+  }
+
+  if (addr === 'stripe' || addr === 'stripe-nolink') {
+    onFullNumber(function (box) {
+      box.innerHTML = countryHTML + nameHTML +
         '<label>Address line 1 <input id="billingAddress-addressLine1Input" name="addressLine1" autocomplete="billing address-line1"></label>' +
-        (q.get('addr') === 'stripe' ? '<button type="button" id="manual">Enter address manually</button>' : '') +
-        '<div id="folded" style="display:none">' +
-        '<label>City <input id="billingAddress-localityInput" name="locality" autocomplete="billing address-level2"></label>' +
-        '<label>State <select id="billingAddress-administrativeAreaInput" name="administrativeArea" autocomplete="billing address-level1">' +
-        '<option value="">State</option><option value="OR">Oregon</option><option value="WA">Washington</option></select></label>' +
-        '<label>ZIP <input id="billingAddress-postalCodeInput" name="postalCode" autocomplete="billing postal-code"></label>' +
-        '</div>'
+        (addr === 'stripe' ? '<button type="button" id="manual">Enter address manually</button>' : '') +
+        foldedHTML
       var manual = document.getElementById('manual')
       if (manual) manual.addEventListener('click', function () {
         document.getElementById('folded').style.display = 'block'
         manual.remove()
+      })
+    })
+  }
+
+  if (addr === 'suggest' || addr === 'suggest-none' || addr === 'suggest-stuck') {
+    onFullNumber(function (box) {
+      box.innerHTML = countryHTML + nameHTML +
+        '<label>Address line 1 <input id="billingAddress-addressLine1Input" name="addressLine1" autocomplete="billing address-line1"' +
+        ' role="combobox" aria-controls="autocomplete-search" aria-expanded="false"></label>' +
+        '<ul id="autocomplete-search" role="listbox" style="display:none">' +
+        '<li role="option" data-line1="1 Main Street" data-city="Seattle" data-state="WA" data-zip="98101">1 Main Street, Seattle, WA, USA</li>' +
+        '<li role="option" data-line1="1 Main Avenue" data-city="Tacoma" data-state="WA" data-zip="98402">1 Main Avenue, Tacoma, WA, USA</li>' +
+        '</ul>' +
+        foldedHTML
+      var line1 = document.getElementById('billingAddress-addressLine1Input')
+      var list = document.getElementById('autocomplete-search')
+      function showList(on) {
+        list.style.display = on ? 'block' : 'none'
+        line1.setAttribute('aria-expanded', on ? 'true' : 'false')
+      }
+      line1.addEventListener('input', function (e) {
+        if (e.isTrusted && addr !== 'suggest-none') showList(line1.value.length >= 3)
+      })
+      line1.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape') showList(false)
+      })
+      list.addEventListener('click', function (e) {
+        var opt = e.target.closest('[role="option"]')
+        if (!e.isTrusted || !opt || addr === 'suggest-stuck') return
+        line1.value = opt.dataset.line1
+        document.getElementById('billingAddress-localityInput').value = opt.dataset.city
+        document.getElementById('billingAddress-administrativeAreaInput').value = opt.dataset.state
+        document.getElementById('billingAddress-postalCodeInput').value = opt.dataset.zip
+        document.getElementById('folded').style.display = 'block'
+        showList(false)
+      })
+    })
+  }
+
+  if (addr === 'late') {
+    onFullNumber(function (box) {
+      box.innerHTML = countryHTML +
+        '<label>Address line 1 <input id="billingAddress-addressLine1Input" name="addressLine1" autocomplete="billing address-line1"></label>'
+      document.getElementById('billingAddress-addressLine1Input').addEventListener('input', function () {
+        if (document.getElementById('billingAddress-nameInput')) return
+        box.insertAdjacentHTML('beforeend', nameHTML)
       })
     })
   }

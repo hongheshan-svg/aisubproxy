@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/chromedp/cdproto/cdp"
@@ -386,6 +388,56 @@ func click(ctx context.Context, e *elem) error {
 		return err
 	}
 	return chromedp.MouseClickXY((x0+x1)/2, (y0+y1)/2).Do(ctx)
+}
+
+// clickOption 点 iframe 里的下拉选项（地址联想），点之前过两道检查，任一不过就不点、返回错误：
+//   - 落点：在主页面上看选项中心那一点是什么元素，必须是承载这个选项的 iframe（选项所在 frame 或它的祖先）。
+//     真实页面上地址 iframe 只露出上半截，选项可能在 iframe 可视区之外；getContentQuads 不按 iframe 裁剪，
+//     算出的坐标可能落在主页面别的元素上，而支付按钮就在主页面。主页面上的选项因此一律不点。
+//   - 选项本身不是提交控件（同 clickReveal）。
+//
+// frames 是 b.frames 的结果，第一个是主页面。
+func (b *Browser) clickOption(ctx context.Context, frames []frameRef, e *elem) error {
+	if err := dom.ScrollIntoViewIfNeeded().WithObjectID(e.obj).Do(ctx); err != nil {
+		return err
+	}
+	x0, y0, x1, y1, err := bounds(ctx, e)
+	if err != nil {
+		return err
+	}
+	x, y := (x0+x1)/2, (y0+y1)/2
+
+	r, err := b.eval(ctx, frames[0], fmt.Sprintf("document.elementFromPoint(%f, %f)", x, y))
+	if err != nil {
+		return err
+	}
+	if r.ObjectID == "" {
+		return errors.New("选项的点击落点不在页面上，没有点击")
+	}
+	hit := &elem{frame: frames[0], obj: r.ObjectID}
+	var tag string
+	if err := callOn(ctx, hit.obj, `function () { return this.tagName }`, &tag); err != nil {
+		return err
+	}
+	if tag != "IFRAME" {
+		return fmt.Errorf("选项的点击落点是主页面上的 %s，不是 iframe，没有点击", strings.ToLower(tag))
+	}
+	id, err := contentFrame(ctx, hit)
+	if err != nil {
+		return err
+	}
+	if !slices.ContainsFunc(subtree(frames, id), func(f frameRef) bool { return f.id == e.frame.id }) {
+		return errors.New("选项的点击落点是别的 iframe，没有点击")
+	}
+
+	var isSubmit bool
+	if err := callOn(ctx, e.obj, submitControlJS, &isSubmit); err != nil {
+		return err
+	}
+	if isSubmit {
+		return errSubmitControl
+	}
+	return chromedp.MouseClickXY(x, y).Do(ctx)
 }
 
 // focus 点击输入框；点完焦点仍不在它上面时直接设焦点。

@@ -28,14 +28,14 @@ type FieldCheck struct {
 // FillReport 是一次 Fill 的结果，用来在真实付款前核实页面结构。不含卡号、邮箱等任何值。
 type FillReport struct {
 	Fields        []FieldCheck
-	ManualAddress string   // 手动地址入口：未点击或已点击几次
+	ManualAddress string   // 怎么展开折叠的地址字段：未点击、手动地址入口已点击几次，或（内嵌页）已选地址联想
 	LinkVerify    string   // Link 内嵌验证框（「Confirm it’s you」）的处理结果，没出现时为空
 	LinkSave      string   // Link 保存勾选框的处理结果
 	Email         string   // 邮箱框的处理结果
 	Phone         string   // 手机框的检查结果
 	SavePayment   string   // 「保存付款信息」勾选框的处理结果（只有点数单检查）
 	Terms         string   // 「同意条款」勾选框的处理结果
-	Absent        []string // 内嵌页上没出现的可选地址字段的中文名，按填写顺序；托管页的地址字段必填，这里总是空
+	Absent        []string // 内嵌页上 DOM 里没有的地址字段的中文名，按填写顺序；托管页的地址字段必填，这里总是空
 }
 
 // Lines 把结果写成时间线上的中文短句，失败时也能看到走到了哪一步。

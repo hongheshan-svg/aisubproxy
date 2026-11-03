@@ -18,6 +18,7 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/notify"
 	"github.com/tuzi/cdk-recharge-system/internal/payengine"
 	"github.com/tuzi/cdk-recharge-system/internal/plansync"
+	"github.com/tuzi/cdk-recharge-system/internal/provider"
 )
 
 type Server struct {
@@ -36,7 +37,7 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 		return nil, err
 	}
 
-	engine := gin.Default()
+	engine := newEngine()
 
 	// 不信任任意代理头（X-Forwarded-For 等），保证限流拿到的是真实来源 IP。
 	// 若部署在已知反代后，用 TRUSTED_PROXIES（逗号分隔）显式声明。
@@ -51,7 +52,7 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	engine.Use(CORSMiddleware())
 
 	// MarsWallex 卡池与付款引擎先建好并注入 handler，再注册路由；付款引擎依赖卡池，所以排在其后
-	pool := cardpool.New(cardpool.Options{Client: handler.MarsWallexClient, Alert: cardPoolAlert(notify.SendText)})
+	pool := cardpool.New(cardPoolOptions(notify.SendText))
 	handler.SetCardPool(pool)
 	pay := payengine.New(payengine.Options{Pool: pool, Alert: alertSender("payengine", notify.SendText)})
 	handler.SetPayEngine(pay)
@@ -89,6 +90,15 @@ func alertSender(prefix string, send func(string)) func(string) {
 
 // cardPoolAlert 是卡池的告警函数。
 func cardPoolAlert(send func(string)) func(string) { return alertSender("cardpool", send) }
+
+// cardPoolOptions 是卡池的启动参数。补卡闸的判定在这里接上：漏接就等于 MarsWallex 没选用时照样开卡花钱，有测试钉着。
+func cardPoolOptions(send func(string)) cardpool.Options {
+	return cardpool.Options{
+		Client:             handler.MarsWallexClient,
+		Alert:              cardPoolAlert(send),
+		MarsWallexSelected: provider.MarsWallexSelected,
+	}
+}
 
 // enforceJWTSecret 在 release 模式下拒绝使用空/默认密钥启动。
 func enforceJWTSecret(mode string) error {
@@ -298,6 +308,14 @@ func setupRoutes(r *gin.Engine) {
 			admin.GET("/cardplatform/cdks", handler.CardPlatformListCDKs)
 			admin.GET("/cardplatform/cdks/stored", handler.CardPlatformListStoredCDKs)
 			admin.POST("/cardplatform/cdks", handler.CardPlatformIssueCDKs)
+			// 多卡服务商：默认发码服务商、就绪检查、本地码
+			admin.GET("/providers/default", handler.AdminGetDefaultProvider)
+			admin.PUT("/providers/default", handler.AdminPutDefaultProvider)
+			admin.GET("/providers/readiness", handler.AdminProviderReadiness)
+			admin.POST("/cdks/issue", handler.CardPlatformIssueCDKs)
+			admin.GET("/cdks", handler.AdminListLocalCDKs)
+			admin.POST("/cdks/:id/disable", handler.AdminDisableLocalCDK)
+			admin.POST("/cdks/:id/enable", handler.AdminEnableLocalCDK)
 			admin.POST("/cardplatform/cdks/sync", handler.CardPlatformSyncUpstreamCDKs)
 			admin.POST("/cardplatform/cdks/store", handler.CardPlatformStoreCDKCodes)
 			admin.POST("/cardplatform/cdks/batch-disable", handler.CardPlatformBatchDisableCDKs)

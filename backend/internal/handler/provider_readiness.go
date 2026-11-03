@@ -79,45 +79,45 @@ func checkMarsWallex(ctx context.Context, plan, region string, syncWallet wallet
 
 	if _, err := MarsWallexClient(); err != nil {
 		log.Printf("[provider] MarsWallex 配置不完整: %v", err)
-		r.FailRaw("config", "MarsWallex 凭证未配置完整，去 MarsWallex 对接页填写", err.Error())
+		r.FailRaw("config", "MarsWallex 凭证", "MarsWallex 凭证未配置完整，去 MarsWallex 对接页填写", err.Error())
 	} else {
-		r.Pass("config", "MarsWallex 配置齐全")
+		r.Pass("config", "MarsWallex 凭证", "MarsWallex 配置齐全")
 	}
 	if _, err := secretbox.LoadKey(); err != nil {
-		r.Fail("master_key", "APP_MASTER_KEY 缺失或不合法，无法加密用户会话")
+		r.Fail("master_key", "主密钥", "APP_MASTER_KEY 缺失或不合法，无法加密用户会话")
 	} else {
-		r.Pass("master_key", "主密钥可用")
+		r.Pass("master_key", "主密钥", "主密钥可用")
 	}
 	engine, pool := payEngine, cardPool
 	if engine == nil {
-		r.Fail("engine", "付款引擎未启动")
+		r.Fail("engine", "付款引擎", "付款引擎未启动")
 	} else {
-		r.Pass("engine", "付款引擎已启动")
+		r.Pass("engine", "付款引擎", "付款引擎已启动")
 		st, err := engine.BreakerStatus(ctx)
 		switch {
 		case err != nil:
 			log.Printf("[provider] 读取付款熔断状态失败: %v", err)
-			r.Fail("breaker", "付款熔断状态查询失败，按暂停处理")
+			r.Fail("breaker", "付款熔断", "付款熔断状态查询失败，按暂停处理")
 		case st.Paused:
-			r.Fail("breaker", "付款已熔断暂停："+st.ReasonText)
+			r.Fail("breaker", "付款熔断", "付款已熔断暂停："+st.ReasonText)
 		default:
-			r.Pass("breaker", "付款没有暂停")
+			r.Pass("breaker", "付款熔断", "付款没有暂停")
 		}
 	}
 	if pool == nil {
-		r.Fail("card_pool", "卡池未启动")
+		r.Fail("card_pool", "卡池", "卡池未启动")
 	} else {
-		r.Pass("card_pool", "卡池已启动")
+		r.Pass("card_pool", "卡池", "卡池已启动")
 	}
 	// 硬门槛：系统没有自动确认过一笔真实付款，就不能对外承诺这条路能走通。试运行单和人工定论的单都不算。
 	switch ok, err := db.HasRealSucceededPayOrder(ctx); {
 	case err != nil:
 		log.Printf("[provider] 查询真实付款记录失败: %v", err)
-		r.Fail("first_real_payment", "查询真实付款记录失败，按未通过处理")
+		r.Fail("first_real_payment", "首笔真实付款", "查询真实付款记录失败，按未通过处理")
 	case !ok:
-		r.Fail("first_real_payment", "需要一笔系统自动确认成功的真实付款（试运行单和人工定论的单都不算），请先在后台测试兑换跑通一笔")
+		r.Fail("first_real_payment", "首笔真实付款", "需要一笔系统自动确认成功的真实付款（试运行单和人工定论的单都不算），请先在后台测试兑换跑通一笔")
 	default:
-		r.Pass("first_real_payment", "已有系统自动确认成功的真实付款")
+		r.Pass("first_real_payment", "首笔真实付款", "已有系统自动确认成功的真实付款")
 	}
 	if engine == nil || pool == nil {
 		return r, combos
@@ -125,18 +125,18 @@ func checkMarsWallex(ctx context.Context, plan, region string, syncWallet wallet
 
 	if err := syncWallet(ctx, pool); err != nil {
 		log.Printf("[provider] 同步主钱包失败: %v", err)
-		r.Fail("wallet_sync", "主钱包余额同步失败，无法确认余额")
+		r.Fail("wallet_sync", "钱包同步", "主钱包余额同步失败，无法确认余额")
 	} else {
-		r.Pass("wallet_sync", "主钱包余额已同步")
+		r.Pass("wallet_sync", "钱包同步", "主钱包余额已同步")
 	}
 
 	combos = planCombos(ctx, engine, pool, plan, region)
 	if plan != "" && region != "" {
 		if combos[0].OK {
-			r.Pass("plan", fmt.Sprintf("%s / %s 可用", plan, region))
+			r.Pass("plan", "套餐与地区", fmt.Sprintf("%s / %s 可用", plan, region))
 		}
 		for _, p := range combos[0].Problems {
-			r.Fail("plan", p)
+			r.Fail("plan", "套餐与地区", p)
 		}
 		return r, combos
 	}
@@ -147,9 +147,9 @@ func checkMarsWallex(ctx context.Context, plan, region string, syncWallet wallet
 		}
 	}
 	if usable == 0 {
-		r.Fail("plan", "没有可用的套餐和地区组合")
+		r.Fail("plan", "套餐与地区", "没有可用的套餐和地区组合")
 	} else {
-		r.Pass("plan", fmt.Sprintf("有 %d 个可用组合", usable))
+		r.Pass("plan", "套餐与地区", fmt.Sprintf("有 %d 个可用组合", usable))
 	}
 	return r, combos
 }
@@ -226,18 +226,18 @@ func checkCombo(ctx context.Context, engine *payengine.Service, pool *cardpool.S
 func checkZovoCard(ctx context.Context) (provider.Readiness, *cardplatform.BalanceResponse) {
 	r := provider.NewReadiness(provider.ZovoCard)
 	if cardplatform.LoadConfig().APIKey == "" {
-		r.Fail("api_key", "未配置卡台 API Key")
+		r.Fail("api_key", "卡台 API Key", "未配置卡台 API Key")
 		return r, nil
 	}
-	r.Pass("api_key", "卡台 API Key 已配置")
+	r.Pass("api_key", "卡台 API Key", "卡台 API Key 已配置")
 	ctx, cancel := context.WithTimeout(ctx, walletSyncLimit)
 	defer cancel()
 	bal, err := cardplatform.NewFromSettings().GetBalance(ctx)
 	if err != nil {
 		log.Printf("[provider] 查询卡台余额失败: %v", err)
-		r.Fail("balance", "卡台余额查询失败")
+		r.Fail("balance", "卡台余额", "卡台余额查询失败")
 		return r, nil
 	}
-	r.Pass("balance", "卡台余额可查询")
+	r.Pass("balance", "卡台余额", "卡台余额可查询")
 	return r, bal
 }

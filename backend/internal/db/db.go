@@ -456,6 +456,24 @@ func SetSetting(key, value string) error {
 	return err
 }
 
+// SetSettings 在一个事务里写多项设置：要么全写上，要么都不变。
+func SetSettings(kv map[string]string) error {
+	tx, err := DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for k, v := range kv {
+		if _, err := tx.Exec(`
+		INSERT INTO site_settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+	`, k, v); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
 func DeleteSetting(key string) error {
 	_, err := DB.Exec(`DELETE FROM site_settings WHERE key = ?`, key)
 	return err

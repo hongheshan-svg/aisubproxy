@@ -1,149 +1,396 @@
-// Package provider 定义卡服务商：哪家发码、哪家兑换。
+// Package provider 是卡服务商注册表：有哪些服务商、各是什么类型、能发哪些产品和档位、一张码或令牌归哪家。
 //
-// 服务商在发码时定死、写在码上，后台只选「默认发码服务商」。切换默认值只影响之后新发的码；
-// 一张码只归一家，绝不自动换另一家重试。
+// 服务商在发码时定死、写在码上，后台按产品线选用哪家（没配的产品线用全局默认）。改配置只影响之后新发的码；
+// 一张码只归一家，绝不自动换另一家重试，认不出的码和令牌也绝不退回到别家。
+//
+// 接入一家新服务商：实现 Provider（再按类型实现 CardSupply 或 Upstream），在 init 里 Register。
+// 注册表只管身份和能力；兑换、发码的具体实现在 handler 包的适配器里。
 package provider
 
 import (
-	"context"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"fmt"
-	"slices"
+	"regexp"
 	"strings"
-
-	"github.com/tuzi/cdk-recharge-system/internal/db"
-	"github.com/tuzi/cdk-recharge-system/internal/payengine"
+	"sync"
 )
 
-// Name 是服务商名。
+// Name 是服务商名：小写字母、数字和下划线。
 type Name string
 
+// 内置服务商名。
 const (
 	ZovoCard   Name = "zovocard"
 	MarsWallex Name = "marswallex"
 )
 
-// SettingDefault 是默认发码服务商在 site_settings 里的键。
-const SettingDefault = "cdk_default_provider"
+// Kind 是服务商类型。
+type Kind string
 
-// 码和令牌的前缀。分流只认这些前缀，其余一律按现状交给 ZovoCard。
 const (
-	localCodePrefix  = "MW-"
-	localTokenPrefix = "mwt_"
+	// KindUpstream 上游发码：对方发码、对方开通，本站只转发兑换请求。
+	KindUpstream Kind = "upstream"
+	// KindCardSupply 供卡·本站付款：本站自己发码，兑换时用这家的虚拟卡、由本站浏览器付款。
+	KindCardSupply Kind = "card_supply"
 )
 
-// All 是全部服务商，顺序即展示顺序。
-var All = []Name{ZovoCard, MarsWallex}
-
-// ErrUnknown 服务商名不在枚举内。
-var ErrUnknown = errors.New("未知的卡服务商")
-
-// Parse 只接受两个枚举值（不区分大小写）。
-func Parse(s string) (Name, error) {
-	switch n := Name(strings.ToLower(strings.TrimSpace(s))); n {
-	case ZovoCard, MarsWallex:
-		return n, nil
+// Text 是给界面看的类型名。
+func (k Kind) Text() string {
+	switch k {
+	case KindUpstream:
+		return "上游发码"
+	case KindCardSupply:
+		return "供卡·本站付款"
 	}
-	return "", fmt.Errorf("%w: %q", ErrUnknown, s)
+	return string(k)
 }
 
-// LoadDefault 读默认发码服务商。没设置过或值不合法都视为 ZovoCard（现状）；读库出错返回错误，调用方不能当成 ZovoCard 继续发码。
-func LoadDefault() (Name, error) {
-	v, err := db.GetSetting(SettingDefault)
-	if err != nil {
-		return "", err
-	}
-	if n, perr := Parse(v); perr == nil {
-		return n, nil
-	}
-	return ZovoCard, nil
+// Provider 是所有服务商都要实现的接口。
+type Provider interface {
+	Name() Name
+	DisplayName() string
+	Kind() Kind
+	// Products 是这家能做的产品线，取值见 Products()。
+	Products() []string
+	// Supports 判断能否发、兑某产品的某档位。product 不区分大小写。
+	Supports(product, plan string) bool
+	// PlanNote 是这个档位需要提示给操作者和用户的话，没有返回空串。
+	PlanNote(plan string) string
 }
 
-// SaveDefault 保存默认发码服务商。
-func SaveDefault(n Name) error {
-	if _, err := Parse(string(n)); err != nil {
-		return err
-	}
-	return db.SetSetting(SettingDefault, string(n))
+// CardSupply 是供卡型服务商另外要实现的接口。码和令牌只靠前缀认领，所以前缀不能为空、不能和别家重叠。
+type CardSupply interface {
+	Provider
+	// CodePrefix 是码前缀，大写，如 MW-。
+	CodePrefix() string
+	// TokenPrefix 是兑换令牌前缀，小写，如 mwt_。
+	TokenPrefix() string
 }
 
-// MarsWallexSelected 判断 MarsWallex 现在是否被选用：默认发码服务商是它，或还有没结清的 MarsWallex 码（随时会用到卡）。
-// 自动补卡用它决定要不要暂停。
-func MarsWallexSelected(ctx context.Context) (bool, error) {
-	def, err := LoadDefault()
-	if err != nil {
-		return false, err
-	}
-	if def == MarsWallex {
-		return true, nil
-	}
-	return db.HasOpenLocalCDKs(ctx, string(MarsWallex))
+// Upstream 是上游型服务商另外要实现的接口。
+type Upstream interface {
+	Provider
+	// ClaimsCode 判断这张码是不是这家的。code 已经规范化（去空白、零宽字符，转大写）。
+	ClaimsCode(code string) bool
+	// ClaimsToken 判断这个兑换令牌是不是这家的。token 已去掉两端空白。
+	ClaimsToken(token string) bool
+	// Fallback 为 true 的上游接收谁都不认领的码和令牌。最多一家（ZovoCard，保持接入多家之前的行为）。
+	Fallback() bool
 }
 
-// Supports 判断某服务商能否发、兑某产品的某档位。
-// ZovoCard 的具体档位以卡台实时下发为准（发码时校验），这里只认产品线；MarsWallex 只做 GPT 五档的新开通。
-func Supports(n Name, product, plan string) bool {
-	product = strings.ToLower(strings.TrimSpace(product))
-	switch n {
-	case ZovoCard:
-		switch product {
-		case "gpt", "x", "grok", "claude":
-			return true
-		}
-	case MarsWallex:
-		return product == "gpt" && slices.Contains(payengine.PlanKeys, strings.TrimSpace(plan))
-	}
-	return false
+// CodeLister 是可选接口：后台用哪种码列表。不实现时供卡型为 local，上游型为空串（这家的码在它自己的后台管理）。
+type CodeLister interface {
+	CodeList() string
 }
 
-// PlanNote 是该服务商下这个档位需要提示给操作者和用户的话。
-// pro_20x 在 ZovoCard 是「Plus 升级 Pro」，在 MarsWallex 是新开通，同名不同义，必须标出来。
-func PlanNote(n Name, plan string) string {
-	if n == MarsWallex && strings.TrimSpace(plan) == "pro_20x" {
-		return "仅限无订阅账号"
+// CodeList 返回后台用哪种码列表：cardplatform 卡台码列表、local 本地码列表、空串表示没有列表。
+func CodeList(p Provider) string {
+	if l, ok := p.(CodeLister); ok {
+		return l.CodeList()
+	}
+	if p.Kind() == KindCardSupply {
+		return "local"
 	}
 	return ""
 }
 
-// Capability 是能力矩阵的一行。Plan 为 "*" 时代表整条产品线。
-type Capability struct {
-	Product    string          `json:"product"`
-	Plan       string          `json:"plan"`
-	Support    map[Name]bool   `json:"support"`
-	Notes      map[Name]string `json:"notes,omitempty"`
-	Comment    string          `json:"comment,omitempty"`
-	samplePlan string
+// Product 是一条产品线。
+type Product struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
 }
 
-// Capabilities 由 Supports 生成，界面不用另写一份。
-func Capabilities() []Capability {
-	rows := make([]Capability, 0, len(payengine.PlanKeys)+4)
-	for _, p := range payengine.PlanKeys {
-		rows = append(rows, Capability{Product: "gpt", Plan: p, samplePlan: p})
-	}
-	rows = append(rows,
-		Capability{Product: "gpt", Plan: "credit*", samplePlan: "credit250", Comment: "Codex 点数"},
-		Capability{Product: "x", Plan: "*", samplePlan: "premium_monthly", Comment: "X Premium"},
-		Capability{Product: "grok", Plan: "*", samplePlan: "premium_monthly", Comment: "Grok"},
-		Capability{Product: "claude", Plan: "*", samplePlan: "pro", Comment: "Claude"},
-	)
-	for i := range rows {
-		r := &rows[i]
-		r.Support = make(map[Name]bool, len(All))
-		for _, n := range All {
-			r.Support[n] = Supports(n, r.Product, r.samplePlan)
-			if note := PlanNote(n, r.samplePlan); note != "" {
-				if r.Notes == nil {
-					r.Notes = map[Name]string{}
-				}
-				r.Notes[n] = note
-			}
+var products = []Product{
+	{Key: "gpt", Label: "ChatGPT"},
+	{Key: "x", Label: "X Premium"},
+	{Key: "grok", Label: "Grok"},
+	{Key: "claude", Label: "Claude"},
+}
+
+// Products 返回全部产品线，顺序即展示顺序。
+func Products() []Product { return append([]Product(nil), products...) }
+
+// IsProduct 判断是不是已知产品线。
+func IsProduct(key string) bool {
+	for _, p := range products {
+		if p.Key == key {
+			return true
 		}
 	}
-	return rows
+	return false
+}
+
+// ProductLabel 返回产品线的显示名，未知的原样返回。
+func ProductLabel(key string) string {
+	for _, p := range products {
+		if p.Key == key {
+			return p.Label
+		}
+	}
+	return key
+}
+
+func normProduct(product string) string { return strings.ToLower(strings.TrimSpace(product)) }
+
+// ---- 注册表 ----
+
+var (
+	ErrUnknown      = errors.New("未知的卡服务商")
+	ErrUnrecognized = errors.New("无法识别的卡密")
+)
+
+var namePattern = regexp.MustCompile(`^[a-z0-9_]+$`)
+
+var (
+	regMu sync.RWMutex
+	reg   []Provider
+)
+
+// Register 注册一家服务商。名称不合法、重名、前缀为空或重叠、多于一家兜底，都是编程错误，直接 panic 让启动失败。
+func Register(p Provider) {
+	regMu.Lock()
+	defer regMu.Unlock()
+	if err := validate(reg, p); err != nil {
+		panic("provider.Register: " + err.Error())
+	}
+	reg = append(reg, p)
+}
+
+func validate(existing []Provider, p Provider) error {
+	if p == nil {
+		return errors.New("服务商为 nil")
+	}
+	n := p.Name()
+	if !namePattern.MatchString(string(n)) {
+		return fmt.Errorf("服务商名 %q 只能是小写字母、数字和下划线", n)
+	}
+	for _, e := range existing {
+		if e.Name() == n {
+			return fmt.Errorf("服务商名 %q 重复", n)
+		}
+	}
+	if strings.TrimSpace(p.DisplayName()) == "" {
+		return fmt.Errorf("%s 没有显示名", n)
+	}
+	for _, prod := range p.Products() {
+		if !IsProduct(prod) {
+			return fmt.Errorf("%s 的产品线 %q 未知", n, prod)
+		}
+	}
+	switch p.Kind() {
+	case KindCardSupply:
+		cs, ok := p.(CardSupply)
+		if !ok {
+			return fmt.Errorf("%s 是供卡型，但没有实现 CardSupply", n)
+		}
+		return validatePrefixes(existing, cs)
+	case KindUpstream:
+		up, ok := p.(Upstream)
+		if !ok {
+			return fmt.Errorf("%s 是上游型，但没有实现 Upstream", n)
+		}
+		if up.Fallback() {
+			for _, e := range existing {
+				if eu, ok := e.(Upstream); ok && e.Kind() == KindUpstream && eu.Fallback() {
+					return fmt.Errorf("兜底上游只能有一家，%s 和 %s 都是", e.Name(), n)
+				}
+			}
+		}
+		return nil
+	}
+	return fmt.Errorf("%s 的类型 %q 未知", n, p.Kind())
+}
+
+// validatePrefixes 码前缀和令牌前缀都不能为空、不能重复、不能互为前缀（含和自己的另一个前缀比较，忽略大小写）。
+func validatePrefixes(existing []Provider, cs CardSupply) error {
+	code, tok := cs.CodePrefix(), cs.TokenPrefix()
+	switch {
+	case code == "" || tok == "":
+		return fmt.Errorf("%s 的码前缀和令牌前缀都不能为空", cs.Name())
+	case code != strings.ToUpper(strings.TrimSpace(code)):
+		return fmt.Errorf("%s 的码前缀 %q 要大写、不带空白", cs.Name(), code)
+	case tok != strings.ToLower(strings.TrimSpace(tok)):
+		return fmt.Errorf("%s 的令牌前缀 %q 要小写、不带空白", cs.Name(), tok)
+	}
+	type owned struct {
+		owner  Name
+		prefix string
+	}
+	var taken []owned
+	for _, e := range existing {
+		if ec, ok := e.(CardSupply); ok && e.Kind() == KindCardSupply {
+			taken = append(taken, owned{e.Name(), strings.ToLower(ec.CodePrefix())}, owned{e.Name(), strings.ToLower(ec.TokenPrefix())})
+		}
+	}
+	taken = append(taken, owned{cs.Name(), strings.ToLower(code)})
+	mine := strings.ToLower(tok)
+	for _, t := range taken {
+		if strings.HasPrefix(t.prefix, mine) || strings.HasPrefix(mine, t.prefix) {
+			return fmt.Errorf("%s 的前缀 %q 和 %s 的前缀 %q 重叠", cs.Name(), tok, t.owner, t.prefix)
+		}
+	}
+	mine = strings.ToLower(code)
+	for _, t := range taken[:len(taken)-1] {
+		if strings.HasPrefix(t.prefix, mine) || strings.HasPrefix(mine, t.prefix) {
+			return fmt.Errorf("%s 的前缀 %q 和 %s 的前缀 %q 重叠", cs.Name(), code, t.owner, t.prefix)
+		}
+	}
+	return nil
+}
+
+// List 按注册顺序返回全部服务商，这也是界面上的展示顺序。
+func List() []Provider {
+	regMu.RLock()
+	defer regMu.RUnlock()
+	return append([]Provider(nil), reg...)
+}
+
+// Names 按注册顺序返回全部服务商名。
+func Names() []Name {
+	list := List()
+	out := make([]Name, len(list))
+	for i, p := range list {
+		out[i] = p.Name()
+	}
+	return out
+}
+
+// Get 按名称取服务商（大小写、两端空白不敏感）。
+func Get(n Name) (Provider, bool) {
+	want := Name(strings.ToLower(strings.TrimSpace(string(n))))
+	for _, p := range List() {
+		if p.Name() == want {
+			return p, true
+		}
+	}
+	return nil, false
+}
+
+// Parse 只接受已注册的服务商名（不区分大小写）。
+func Parse(s string) (Name, error) {
+	if p, ok := Get(Name(s)); ok {
+		return p.Name(), nil
+	}
+	return "", fmt.Errorf("%w: %q", ErrUnknown, s)
+}
+
+// AsCardSupply 是供卡型时返回它。
+func AsCardSupply(p Provider) (CardSupply, bool) {
+	if p == nil || p.Kind() != KindCardSupply {
+		return nil, false
+	}
+	cs, ok := p.(CardSupply)
+	return cs, ok
+}
+
+// AsUpstream 是上游型时返回它。
+func AsUpstream(p Provider) (Upstream, bool) {
+	if p == nil || p.Kind() != KindUpstream {
+		return nil, false
+	}
+	up, ok := p.(Upstream)
+	return up, ok
+}
+
+// fallback 返回兜底上游，没有时为 nil。
+func fallback() Provider {
+	for _, p := range List() {
+		if up, ok := AsUpstream(p); ok && up.Fallback() {
+			return p
+		}
+	}
+	return nil
+}
+
+// TestOnlySnapshot 保存当前注册表，返回恢复函数。只给测试用（注册假服务商后在 t.Cleanup 里恢复），业务代码不要调用。
+func TestOnlySnapshot() (restore func()) {
+	regMu.RLock()
+	saved := append([]Provider(nil), reg...)
+	regMu.RUnlock()
+	return func() {
+		regMu.Lock()
+		reg = saved
+		regMu.Unlock()
+	}
+}
+
+// TestOnlyReset 清空注册表。只给测试用，调用前必须先用 TestOnlySnapshot 留好恢复函数。
+func TestOnlyReset() {
+	regMu.Lock()
+	reg = nil
+	regMu.Unlock()
+}
+
+// ---- 码与令牌归属 ----
+
+// ForCode 按码判定服务商：
+//  1. 码前缀命中某个供卡型服务商，归它。这只是候选，调用方必须用数据库行的 provider 确认；
+//  2. 否则交给第一个认领它的非兜底上游；
+//  3. 再否则交给兜底上游；
+//  4. 都没有返回 ErrUnrecognized。
+func ForCode(code string) (Provider, error) {
+	norm := NormalizeCode(code)
+	list := List()
+	for _, p := range list {
+		if cs, ok := AsCardSupply(p); ok && strings.HasPrefix(norm, cs.CodePrefix()) {
+			return p, nil
+		}
+	}
+	return forUpstream(list, func(up Upstream) bool { return up.ClaimsCode(norm) })
+}
+
+// ForToken 按兑换令牌判定服务商，规则同 ForCode。供卡型的令牌前缀不区分大小写。
+func ForToken(token string) (Provider, error) {
+	tok := strings.TrimSpace(token)
+	lower := strings.ToLower(tok)
+	list := List()
+	for _, p := range list {
+		if cs, ok := AsCardSupply(p); ok && strings.HasPrefix(lower, cs.TokenPrefix()) {
+			return p, nil
+		}
+	}
+	return forUpstream(list, func(up Upstream) bool { return up.ClaimsToken(tok) })
+}
+
+func forUpstream(list []Provider, claims func(Upstream) bool) (Provider, error) {
+	var fb Provider
+	for _, p := range list {
+		up, ok := AsUpstream(p)
+		if !ok {
+			continue
+		}
+		if up.Fallback() {
+			if fb == nil {
+				fb = p
+			}
+			continue
+		}
+		if claims(up) {
+			return p, nil
+		}
+	}
+	if fb != nil {
+		return fb, nil
+	}
+	return nil, ErrUnrecognized
+}
+
+// CardSupplyForCode 码前缀命中供卡型服务商时返回它（候选，要由数据库行确认）。
+func CardSupplyForCode(code string) (CardSupply, bool) {
+	p, err := ForCode(code)
+	if err != nil {
+		return nil, false
+	}
+	return AsCardSupply(p)
+}
+
+// CardSupplyForToken 令牌前缀命中供卡型服务商时返回它（候选，要由数据库行确认）。
+func CardSupplyForToken(token string) (CardSupply, bool) {
+	p, err := ForToken(token)
+	if err != nil {
+		return nil, false
+	}
+	return AsCardSupply(p)
 }
 
 // NormalizeCode 去掉两端空白和零宽字符、转大写。码常被从聊天工具复制过来，带着看不见的字符。
@@ -158,112 +405,26 @@ func NormalizeCode(code string) string {
 	return strings.ToUpper(code)
 }
 
-// ResolveCode 按码判定服务商：只看码本身，MW- 开头是 MarsWallex，其余是 ZovoCard。
-func ResolveCode(code string) Name {
-	if strings.HasPrefix(NormalizeCode(code), localCodePrefix) {
-		return MarsWallex
+// ---- 能力 ----
+
+// Supports 判断某服务商能否发、兑某产品的某档位。未注册的服务商一律 false。
+func Supports(n Name, product, plan string) bool {
+	p, ok := Get(n)
+	return ok && p.Supports(product, plan)
+}
+
+// PlanNote 是该服务商下这个档位的提示，未注册的服务商返回空串。
+func PlanNote(n Name, plan string) string {
+	if p, ok := Get(n); ok {
+		return p.PlanNote(plan)
 	}
-	return ZovoCard
+	return ""
 }
 
-// ResolveToken 按兑换令牌判定服务商。
-func ResolveToken(token string) Name {
-	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(token)), localTokenPrefix) {
-		return MarsWallex
+// DisplayName 返回服务商的显示名，未注册的原样返回名称。
+func DisplayName(n Name) string {
+	if p, ok := Get(n); ok {
+		return p.DisplayName()
 	}
-	return ZovoCard
-}
-
-// LocalCode 是一张新生成的本地码。Code 和 Token 不入库，只在发码响应里给一次。
-type LocalCode struct {
-	Code      string
-	Prefix    string
-	CodeHash  string
-	Token     string
-	TokenHash string
-}
-
-const (
-	codeAlphabet  = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789" // 32 个字符，去掉易混的 I O 0 1
-	codeGroupSize = 5
-	codeGroups    = 5
-	tokenHexLen   = 32
-)
-
-// GenerateLocalCode 生成一张码：MW-AAAAA-BBBBB-CCCCC-DDDDD-EEEEE，共 125 位随机。
-// 字符表正好 32 个，取随机字节的低 5 位不会有偏差。随机源失败就报错，绝不退化。
-func GenerateLocalCode() (LocalCode, error) {
-	raw := make([]byte, codeGroupSize*codeGroups)
-	if _, err := rand.Read(raw); err != nil {
-		return LocalCode{}, fmt.Errorf("生成本地码失败: %w", err)
-	}
-	var b strings.Builder
-	b.WriteString(localCodePrefix)
-	for i, v := range raw {
-		if i > 0 && i%codeGroupSize == 0 {
-			b.WriteByte('-')
-		}
-		b.WriteByte(codeAlphabet[v&31])
-	}
-	code := b.String()
-	token := TokenForCode(code)
-	return LocalCode{
-		Code:      code,
-		Prefix:    code[:len(localCodePrefix)+codeGroupSize],
-		CodeHash:  db.HashCDKCode(code),
-		Token:     token,
-		TokenHash: HashToken(token),
-	}, nil
-}
-
-// TokenForCode 由完整码算兑换令牌。同一张码每次预览得到同一个令牌，不用入库；
-// 库里只有令牌的哈希，库泄露时推不出令牌，令牌也推不出码。
-func TokenForCode(code string) string {
-	sum := sha256.Sum256([]byte("local_cdk_token:" + NormalizeCode(code)))
-	return localTokenPrefix + hex.EncodeToString(sum[:])[:tokenHexLen]
-}
-
-// HashToken 是令牌入库和查询用的哈希。
-func HashToken(token string) string {
-	sum := sha256.Sum256([]byte(strings.ToLower(strings.TrimSpace(token))))
-	return hex.EncodeToString(sum[:])
-}
-
-// Check 是就绪检查的一项。
-type Check struct {
-	Key    string `json:"key"`
-	OK     bool   `json:"ok"`
-	Detail string `json:"detail"`
-	// Raw 是底层错误的原文，只给可展开的详情和排查用，不作为页面正文。
-	Raw string `json:"raw,omitempty"`
-}
-
-// Readiness 是就绪检查的结果。Problems 为空即就绪。
-type Readiness struct {
-	Provider Name     `json:"provider"`
-	OK       bool     `json:"ok"`
-	Problems []string `json:"problems"`
-	Checks   []Check  `json:"checks"`
-}
-
-// NewReadiness 返回一个还没有检查项的结果。
-func NewReadiness(n Name) Readiness {
-	return Readiness{Provider: n, OK: true, Problems: []string{}, Checks: []Check{}}
-}
-
-// Pass 记一项通过的检查。
-func (r *Readiness) Pass(key, detail string) {
-	r.Checks = append(r.Checks, Check{Key: key, OK: true, Detail: detail})
-}
-
-// Fail 记一项没通过的检查，整体变为未就绪。
-func (r *Readiness) Fail(key, detail string) {
-	r.FailRaw(key, detail, "")
-}
-
-// FailRaw 与 Fail 相同，但把底层错误原文放进 Raw：界面正文只用 detail 这句人话。
-func (r *Readiness) FailRaw(key, detail, raw string) {
-	r.OK = false
-	r.Problems = append(r.Problems, detail)
-	r.Checks = append(r.Checks, Check{Key: key, Detail: detail, Raw: raw})
+	return string(n)
 }

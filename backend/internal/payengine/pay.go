@@ -12,8 +12,12 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/paybrowser"
 )
 
-// fundCurrency 是注资金额 fund_cents 的币种。Fund 按卡币种下单，所以只能选这个币种的卡。
-const fundCurrency = "USD"
+const (
+	// fundCurrency 是注资金额 fund_cents 的币种。Fund 按卡币种下单，所以只能选这个币种的卡。
+	fundCurrency = "USD"
+	// diagTimeout 是读页面定位信息的时限：页面可能已经卡死，不能耽误后面的收尾。
+	diagTimeout = 10 * time.Second
+)
 
 // pay 是读完金额之后的步骤 5–8：选卡注资、填表、记下提交时间后点支付、等页面结果（含 3DS），最后转确认阶段（步骤 9）。
 //
@@ -21,6 +25,9 @@ const fundCurrency = "USD"
 // 进入它之前必须把 filling → submitted 写入成功（条件更新，同一单只能成功一次），写失败就不点。
 // 确认协程与重启恢复都不持有浏览器，走不到这里。
 func (s *Service) pay(ctx context.Context, j *job) error {
+	if j.o.DryRun {
+		return abort("dry_run_refused", "试运行单不能进入付款流程")
+	}
 	if err := s.fundCard(ctx, j); err != nil {
 		return err
 	}
@@ -46,7 +53,7 @@ func pageOutcomeNote(out paybrowser.Outcome) string {
 	case paybrowser.OutcomeDeclined:
 		return "支付页显示被拒，等待授权推送后定论"
 	case paybrowser.OutcomeFormRejected:
-		return "支付页显示表单校验未通过，等待授权推送后定论"
+		return "支付页显示表单校验未通过，继续确认是否开通"
 	}
 	return "支付页没有明确结果，确认是否开通"
 }
@@ -131,12 +138,37 @@ func (s *Service) fillCard(ctx context.Context, j *job) error {
 	}
 	bill := TaxFreeAddress(rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())))
 	bill.Name = j.holderName
+	bill.Email = j.o.AccountEmail // 只有页面上邮箱框必填且为空时才会填，见 Browser.Fill
 	j.note("billing_state", bill.State)
 	card := paybrowser.Card{Number: sv.CardNo, ExpMonth: mm, ExpYear: yy, CVC: sv.CVV2}
-	if err := j.browser.Fill(fctx, card, bill); err != nil {
+	err = j.browser.Fill(fctx, card, bill)
+	s.noteFillReport(ctx, j, j.browser, "填表")
+	if err != nil {
+		s.notePageDiag(ctx, j, j.browser, "填表失败")
 		return abort("fill_failed", "填写支付表单失败：%v", err)
 	}
 	return nil
+}
+
+// noteFillReport 把各字段的命中与核对结果写进时间线。报告本身不含值，这里再过一遍 scrub。
+func (s *Service) noteFillReport(ctx context.Context, j *job, b FormBrowser, prefix string) {
+	for _, line := range b.FillReport().Lines() {
+		s.event(ctx, j, "info", prefix+" "+j.scrub(line), "")
+	}
+}
+
+// notePageDiag 把页面定位信息写进时间线。开始填卡后 Diagnose 不再读正文，也不截图。
+// 这里的 ctx 必须是单据的 ctx，不能用已经超时的步骤 ctx，否则最需要定位信息的时候反而读不到。
+func (s *Service) notePageDiag(ctx context.Context, j *job, b FormBrowser, what string) {
+	s.notePage(ctx, j, b, "warn", what)
+}
+
+func (s *Service) notePage(ctx context.Context, j *job, b FormBrowser, level, what string) {
+	dctx, cancel := context.WithTimeout(ctx, diagTimeout)
+	defer cancel()
+	for _, line := range b.Diagnose(dctx) {
+		s.event(ctx, j, level, what+" "+j.scrub(line), "")
+	}
 }
 
 // submitAndWait 是步骤 7–8：点支付（全程唯一一次）、等页面结果；出现 3DS 框时取验证码填入一次再等结果。
@@ -145,6 +177,9 @@ func (s *Service) submitAndWait(ctx context.Context, j *job) (paybrowser.Outcome
 	sctx, cancel := context.WithTimeout(ctx, s.t.SubmitResult)
 	defer cancel()
 	if err := j.browser.Submit(sctx); err != nil {
+		if !j.browser.LockSubmit() {
+			return paybrowser.OutcomeUnknown, "", &notClickedError{err: err}
+		}
 		return paybrowser.OutcomeUnknown, "", fmt.Errorf("点击支付时出错：%w", err)
 	}
 	out, text, err := s.waitOutcome(ctx, j)
@@ -174,6 +209,9 @@ func (s *Service) waitOutcome(ctx context.Context, j *job) (paybrowser.Outcome, 
 	wctx, cancel := context.WithTimeout(ctx, s.t.SubmitResult+s.t.OutcomeMargin)
 	defer cancel()
 	out, text, err := j.browser.WaitOutcome(wctx, s.t.SubmitResult)
+	for _, n := range j.browser.Notices() {
+		s.event(ctx, j, "warn", "支付页提示（未识别，继续等待）："+truncate(j.scrub(n), errorMessageLimit), "")
+	}
 	if err != nil && wctx.Err() != nil && ctx.Err() == nil {
 		return out, text, errors.New("等待页面结果超时")
 	}

@@ -51,23 +51,26 @@ func declineBackfillDays(submittedAt *int64, now time.Time) (days int, ok bool) 
 // orderNoName 是单号格式，截图清理只动名字符合它的目录。
 var orderNoName = regexp.MustCompile(`^PO\d{12}[0-9a-f]{8}$`)
 
-// isDeclinedOutcome 判断页面结果是否按「被拒」的流程处理：只等 DeclineGrace、走 verifyDeclined、重启后补宽限。
-// 校验错误也走这条路：文字是否属实只有真实页面知道，钱有没有扣要看证据，只有最终定论不同（见 concludeDeclined）。
+// isDeclinedOutcome 判断页面结果是否按「页面说没成」的流程定论：到期走 verifyDeclined、重启后补宽限。
+// 校验错误也走这条路：文字是否属实只有真实页面知道，钱有没有扣要看证据。和被拒的差别见 beginVerify、verifyOrder、concludeDeclined。
 func isDeclinedOutcome(page string) bool {
 	return page == string(paybrowser.OutcomeDeclined) || page == string(paybrowser.OutcomeFormRejected)
 }
 
 // beginVerify 关闭浏览器，把已提交的单据转入确认阶段（步骤 9）。text 是页面提示或出错说明，记入 error_message；
-// 被拒或校验错误时只等 DeclineGrace（让授权推送到达），其余等满 Verify。
+// 只有命中拒付词才只等 DeclineGrace（让授权推送到达），其余都等满 Verify。
+//
+// 校验错误也等满 Verify：判断依据是一张没在真实页面核实过的词表（设计文档 §12.7），文字可能分错。
+// 分错时钱可能已经扣了，2 分钟太短；分对时只是晚 8 分钟定论，这单本来就没成。
 func (s *Service) beginVerify(ctx context.Context, j *job, out paybrowser.Outcome, text, note string) error {
 	j.closeBrowser()
 	now := s.now()
 	until := now.Add(s.t.Verify)
 	page := string(paybrowser.OutcomeUnknown)
-	switch {
-	case out == paybrowser.OutcomeSuccess:
+	switch out {
+	case paybrowser.OutcomeSuccess, paybrowser.OutcomeFormRejected:
 		page = string(out)
-	case isDeclinedOutcome(string(out)):
+	case paybrowser.OutcomeDeclined:
 		page = string(out)
 		until = now.Add(s.t.DeclineGrace)
 	}
@@ -174,15 +177,24 @@ func (s *Service) verifyOrder(ctx context.Context, o *Order) {
 	case now < until:
 		s.verifyReschedule(ctx, j)
 	case isDeclinedOutcome(o.PageOutcome):
-		s.verifyDeclined(ctx, j, accErr, now >= until+int64(s.t.Verify/time.Second))
+		s.verifyDeclined(ctx, j, accErr, now >= until+declineExtra(s.t, o.PageOutcome))
 	default:
 		s.verifyEscalate(ctx, j, "verify_timeout", "确认超时：账号未开通，支付页也没有明确拒绝")
 	}
 }
 
-// verifyDeclined 定论支付页显示被拒或校验错误、宽限期已过的单据。只有确认了账号未开通、翻完交易没有成功授权也没有处理中的授权，才算失败。
+// declineExtra 是 verify_until 之后还能再等证据多久，单位秒。被拒只等了 DeclineGrace，再给一个 Verify；
+// 校验错误已经等满 Verify，到期证据还不全就立刻转人工，所以 MaxPayDuration 不变。
+func declineExtra(t Timeouts, pageOutcome string) int64 {
+	if pageOutcome == string(paybrowser.OutcomeFormRejected) {
+		return 0
+	}
+	return int64(t.Verify / time.Second)
+}
+
+// verifyDeclined 定论支付页显示被拒或校验错误、verify_until 已过的单据。只有确认了账号未开通、翻完交易没有成功授权也没有处理中的授权，才算失败。
 // 证据不全（查询出错、授权还在处理中）绝不定成被拒——把已扣款的单子定成 declined 是最贵的错误：
-// 继续等下次检查，等到 exhausted（verify_until 之后再过一个 Verify）仍不全就转人工。
+// 继续等下次检查，等到 exhausted（见 declineExtra）仍不全就转人工。
 // 本地证据都说可以定论时，先补拉一次交易再看：Webhook 不通时本地交易表只靠 15 分钟一次的定时补拉，宽限期内看不到授权。
 func (s *Service) verifyDeclined(ctx context.Context, j *job, accErr error, exhausted bool) {
 	approved, pending, err := s.verifyAuth(ctx, j.o)
@@ -247,7 +259,8 @@ func (s *Service) backfillAndRecheck(ctx context.Context, j *job) (approved, pen
 	return approved, pending, err
 }
 
-// concludeDeclined 写失败定论。校验错误多半是配置或表单问题，不是这张卡或这个产品的问题，所以 Release(aborted) 不计入健康度；
+// concludeDeclined 写失败定论。走到这里证据已经齐了且干净：账号未开通、没有授权。
+// 校验错误是点了支付但被前端拦下、没有发出扣款，多半是配置或表单问题，不是这张卡或这个产品的问题，所以 Release(aborted) 不计入健康度；
 // 失败类别仍是 declined：单据已提交，绝不记成 not_submitted。
 func (s *Service) concludeDeclined(ctx context.Context, j *job) {
 	if j.o.PageOutcome == string(paybrowser.OutcomeFormRejected) {

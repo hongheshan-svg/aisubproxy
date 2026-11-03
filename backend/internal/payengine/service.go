@@ -42,16 +42,26 @@ type ChatGPT interface {
 	CreateCheckout(context.Context, chatgpt.Session, string, string, string) (chatgpt.Checkout, error)
 }
 
-// Browser 是引擎用到的支付页浏览器，*paybrowser.Browser 直接满足。
-type Browser interface {
+// FormBrowser 是填表用到的浏览器能力，没有 Submit：只拿到它的代码点不了支付。
+type FormBrowser interface {
 	Open(context.Context, string, []paybrowser.Cookie) error
 	ReadAmount(context.Context, string) (int64, string, error)
 	Fill(context.Context, paybrowser.Card, paybrowser.Billing) error
-	Submit(context.Context) error
-	WaitOutcome(context.Context, time.Duration) (paybrowser.Outcome, string, error)
-	EnterOTP(context.Context, string) error
+	FillReport() paybrowser.FillReport     // 最近一次 Fill 的字段命中与核对结果，不含值
+	PayButtonState(context.Context) string // 只读支付按钮的状态，绝不点击
+	Diagnose(context.Context) []string     // 定位页面问题的几行文字，已脱敏
 	Shot(context.Context, string, paybrowser.ShotScope) (string, error)
 	Close()
+}
+
+// Browser 是引擎用到的支付页浏览器，*paybrowser.Browser 直接满足。
+type Browser interface {
+	FormBrowser
+	Submit(context.Context) error
+	LockSubmit() bool // 锁定提交，返回此前是否开始过点击；返回 false 才能证明没点击
+	WaitOutcome(context.Context, time.Duration) (paybrowser.Outcome, string, error)
+	Notices() []string // 取走等结果期间记下的未识别提示（已脱敏、去重）
+	EnterOTP(context.Context, string) error
 }
 
 // Timeouts 是各步骤的超时；测试可缩短。VerifyTick 是确认协程扫描到期单据的间隔；
@@ -190,10 +200,10 @@ func defaultShotDir() string {
 	return filepath.Join(filepath.Dir(dbPath), "pay-shots")
 }
 
-// Request 是一次付款请求。
+// Request 是一次付款请求。DryRun 试运行到读金额；DryRunFill 试运行到填表（用公开测试卡走完 Fill，绝不点支付、不碰卡池），隐含 DryRun。
 type Request struct {
 	PlanKey, Region, Session, Source, SourceRef string
-	DryRun                                      bool
+	DryRun, DryRunFill                          bool
 }
 
 // badSessionError 保留 chatgpt 的错误说明，同时可被 errors.Is(err, ErrBadSession) 识别。
@@ -210,7 +220,8 @@ func (s *Service) Submit(ctx context.Context, r Request) (*Order, error) {
 	if strings.TrimSpace(r.Source) == "" {
 		return nil, fmt.Errorf("%w: 缺少来源", ErrBadRequest)
 	}
-	_, rc, err := ResolvePlan(r.PlanKey, r.Region, r.DryRun)
+	dryRun := r.DryRun || r.DryRunFill
+	_, rc, err := ResolvePlan(r.PlanKey, r.Region, dryRun)
 	if err != nil {
 		return nil, err
 	}
@@ -229,7 +240,8 @@ func (s *Service) Submit(ctx context.Context, r Request) (*Order, error) {
 	o := &Order{
 		Source:        r.Source,
 		SourceRef:     r.SourceRef,
-		DryRun:        r.DryRun,
+		DryRun:        dryRun,
+		DryRunFill:    r.DryRunFill,
 		PlanKey:       r.PlanKey,
 		Region:        r.Region,
 		Currency:      rc.Currency,

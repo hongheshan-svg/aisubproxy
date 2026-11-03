@@ -65,6 +65,12 @@
             <el-tag v-else size="small" type="info" effect="plain">未设置</el-tag>
           </p>
         </el-form-item>
+        <el-form-item label="每日换码上限（张）">
+          <el-input-number v-model="swapLimit" :min="1" :max="100000" :step="1" :precision="0" data-field="agent_swap_daily_limit" />
+          <p class="text-xs text-subtle mt-1">
+            同一个换码密码每个北京日最多换这么多张，必须大于 0。每换一张都会向卡台买一张新码，调高前先想清楚成本。
+          </p>
+        </el-form-item>
         <el-form-item label="发给代理的换码链接（可复制）">
           <div class="flex flex-wrap items-center gap-2 w-full">
             <el-input :model-value="agentSwapUrl" readonly size="large" class="!flex-1 mono" />
@@ -200,6 +206,9 @@ const PRESETS: Record<string, string> = {
 }
 
 const form = reactive({ card_api_base: PRESETS.prod })
+const swapLimit = ref<number | null>(null)
+let swapLimitLoaded: number | null = null
+const settingsLoaded = ref(false)
 const secrets = reactive({ card_api_key: '', agent_swap_password: '' })
 const hints = reactive<Record<string, any>>({})
 const saving = ref(false)
@@ -300,8 +309,16 @@ async function loadNetwork() {
 
 async function loadSettings() {
   const r = await authFetch('/api/v1/admin/settings')
-  if (!r.ok) return
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}))
+    dialog.toast(e.error || '读取设置失败，页面上显示的不是当前值，请刷新后再保存', 'err')
+    settingsLoaded.value = false
+    return
+  }
   const d = await r.json()
+  settingsLoaded.value = true
+  swapLimit.value = Number(d.agent_swap_daily_limit) > 0 ? Number(d.agent_swap_daily_limit) : null
+  swapLimitLoaded = swapLimit.value
   form.card_api_base = d.card_api_base || PRESETS.prod
   Object.assign(hints, d)
   normalizeBase()
@@ -311,7 +328,18 @@ async function save() {
   saving.value = true
   try {
     normalizeBase()
-    const body: Record<string, string> = { card_api_base: form.card_api_base.trim() }
+    const body: Record<string, string | number> = { card_api_base: form.card_api_base.trim() }
+    // 每日换码上限：改了才发，必须是大于 0 的整数；改动要二次确认（每换一张都花钱买新码）
+    if (settingsLoaded.value && swapLimit.value !== swapLimitLoaded) {
+      const n = swapLimit.value
+      if (!n || !Number.isInteger(n) || n <= 0) {
+        dialog.toast('每日换码上限必须是大于 0 的整数', 'warn')
+        return false
+      }
+      const ok = await dialog.confirm(`把代理每日换码上限从 ${swapLimitLoaded ?? '默认'} 张改为 ${n} 张？每换一张都会向卡台买一张新码。`, { title: '确认修改换码上限', okText: '确认修改', danger: true })
+      if (!ok) return false
+      body.agent_swap_daily_limit = n
+    }
     if (secrets.card_api_key.trim()) body.card_api_key = secrets.card_api_key.trim()
     if (secrets.agent_swap_password.trim()) body.agent_swap_password = secrets.agent_swap_password.trim()
     const r = await authFetch('/api/v1/admin/settings', { method: 'PUT', body: JSON.stringify(body) })
@@ -321,6 +349,7 @@ async function save() {
       return false
     }
     Object.assign(hints, d)
+    if (Number(d.agent_swap_daily_limit) > 0) { swapLimit.value = Number(d.agent_swap_daily_limit); swapLimitLoaded = swapLimit.value }
     secrets.card_api_key = ''
     secrets.agent_swap_password = ''
     dialog.toast('已保存', 'ok')

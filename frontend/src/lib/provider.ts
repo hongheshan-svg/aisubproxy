@@ -187,3 +187,21 @@ export function canResolveSwap(state: string): boolean {
 
 /** disabling 记录给运营的说明。 */
 export const DISABLING_HINT = '新码已发给用户，旧码还没禁用成功。系统每 10 分钟自动重试，持续失败会告警，请到卡台手动禁用旧码。'
+
+/**
+ * 代理换码失败后是否要锁住提交。发码结果不明（502 + outcome=unknown）、网络异常（可能已发出）、
+ * 以及服务端说记录处于 pending / unknown（409）时，再点只会多发或撞上占位，必须锁住并提示勿重试。
+ */
+export function swapFailure(status: number, d: any): { locked: boolean; message: string } {
+  const err = String(d?.error || '')
+  if ((status === 502 && d?.outcome === 'unknown')) {
+    return { locked: true, message: (err || '发码结果不明，已转人工核对') + '。请勿重试，也不要重复提交，联系管理员核对后再处理。' }
+  }
+  if (status === 0) {
+    return { locked: true, message: '网络异常，换码结果不明（新码可能已经发出）。请勿重试，联系管理员核对后再处理。' }
+  }
+  if (status === 409 && (d?.state === 'pending' || d?.state === 'unknown')) {
+    return { locked: true, message: (err || '这张码的换码还在处理中或待人工核对') + '。请勿重试，联系管理员。' }
+  }
+  return { locked: false, message: err || d?.msg || `失败 (${status})` }
+}

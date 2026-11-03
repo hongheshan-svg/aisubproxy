@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   canDisableLocal, canEnableLocal, canResolveSwap, centsToUsd, classifyIssueFailure, localCdkStatusText, localCdkTagType,
-  needsFirstRealPayment, planNote, usdToCents,
+  needsFirstRealPayment, planNote, swapFailure, usdToCents,
 } from '../provider'
 
 describe('usdToCents', () => {
@@ -68,5 +68,18 @@ describe('就绪与说明', () => {
   it('只有 unknown 的换码记录能核对', () => {
     expect(canResolveSwap('unknown')).toBe(true)
     expect(canResolveSwap('disabling')).toBe(false)
+  })
+})
+
+describe('swapFailure', () => {
+  it('发码结果不明、网络异常、处理中都锁住并提示勿重试', () => {
+    expect(swapFailure(502, { outcome: 'unknown', error: '发码结果不明，已转人工核对，请勿重试' }).locked).toBe(true)
+    expect(swapFailure(0, {}).message).toContain('请勿重试')
+    expect(swapFailure(409, { state: 'pending', error: 'x' }).locked).toBe(true)
+  })
+  it('明确失败不锁', () => {
+    expect(swapFailure(400, { error: '次数用完' })).toEqual({ locked: false, message: '次数用完' })
+    expect(swapFailure(429, { error: '今日已达上限' }).locked).toBe(false)
+    expect(swapFailure(502, { error: '卡台不可用' }).locked).toBe(false)
   })
 })

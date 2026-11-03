@@ -30,12 +30,15 @@
           size="large"
           class="!w-full"
           :loading="busy"
-          :disabled="!password.trim() || !code.trim()"
+          :disabled="locked || !password.trim() || !code.trim()"
           @click="doExchange"
         >
-          {{ busy ? '处理中…' : '换发新卡密' }}
+          {{ busy ? '处理中…' : locked ? '结果不明，已锁定' : '换发新卡密' }}
         </el-button>
-        <p v-if="error" class="alert alert-error text-sm">{{ error }}</p>
+        <p v-if="error" class="alert alert-error text-sm" role="alert">{{ error }}</p>
+        <p v-if="locked" class="alert alert-warning text-sm font-semibold" role="alert">
+          上一次换码的结果不明，新码可能已经发出。为避免重复发码，提交按钮已锁定。请勿重试，也不要刷新后再换，联系管理员核对。
+        </p>
       </div>
 
       <div v-if="result" class="card space-y-3">
@@ -64,6 +67,7 @@
 import { ref } from 'vue'
 import { dialog } from '../../lib/dialog'
 import { copyToClipboard } from '../../lib/clipboard'
+import { swapFailure } from '../../lib/provider'
 import UserPageHeader from '../../components/UserPageHeader.vue'
 
 const password = ref('')
@@ -71,8 +75,11 @@ const code = ref('')
 const busy = ref(false)
 const error = ref('')
 const result = ref<any>(null)
+// 结果不明时锁住提交：刷新页面前不允许再点，避免重复发码
+const locked = ref(false)
 
 async function doExchange() {
+  if (locked.value || busy.value) return
   error.value = ''
   result.value = null
   busy.value = true
@@ -87,13 +94,18 @@ async function doExchange() {
     })
     const d = await r.json().catch(() => ({}))
     if (!r.ok) {
-      error.value = d.error || d.msg || `失败 (${r.status})`
+      const f = swapFailure(r.status, d)
+      error.value = f.message
+      if (f.locked) locked.value = true
       return
     }
     result.value = d
     dialog.toast('已换发新码，请立即复制', 'ok')
-  } catch (e: any) {
-    error.value = e?.message || '网络错误'
+  } catch {
+    // 请求发出后连接中断：服务端可能已经发了码
+    const f = swapFailure(0, {})
+    error.value = f.message
+    locked.value = true
   } finally {
     busy.value = false
   }
@@ -107,6 +119,7 @@ async function copyNew() {
 }
 
 function reset() {
+  if (locked.value) return
   code.value = ''
   result.value = null
   error.value = ''

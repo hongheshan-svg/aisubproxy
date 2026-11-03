@@ -231,7 +231,7 @@ func firstString(vals ...interface{}) string {
 }
 
 // Checkout 是创建出的支付会话。
-type Checkout struct{ SessionID, URL string }
+type Checkout struct{ SessionID, URL, Tag, ProcessorEntity string }
 
 // CreateCheckout 创建订阅支付会话。
 // planCheckoutBody 是开通订阅建结账会话的请求体；自动付款和免付款探测共用，保证探测的请求和真实下单一致。
@@ -254,6 +254,9 @@ func (c *Client) CreateCheckout(ctx context.Context, s Session, planName, countr
 	var data struct {
 		SessionID string `json:"checkout_session_id"`
 		URL       string `json:"url"`
+		Tag       string `json:"tag"`
+		// ProcessorEntity 内嵌结账页拼链接用。
+		ProcessorEntity string `json:"processor_entity"`
 	}
 	if json.Unmarshal(b, &data) != nil {
 		return Checkout{}, errors.New("创建支付会话返回非 JSON")
@@ -261,5 +264,5 @@ func (c *Client) CreateCheckout(ctx context.Context, s Session, planName, countr
 	if data.SessionID == "" {
 		return Checkout{}, errors.New("创建支付会话未返回 checkout_session_id")
 	}
-	return Checkout{SessionID: data.SessionID, URL: data.URL}, nil
+	return Checkout{SessionID: data.SessionID, URL: data.URL, Tag: data.Tag, ProcessorEntity: strings.TrimSpace(data.ProcessorEntity)}, nil
 }

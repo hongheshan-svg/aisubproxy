@@ -357,6 +357,11 @@ type CheckResult struct {
 	ElapsedMs   int64  `json:"elapsed_ms"`
 	Error       string `json:"error"`
 	InstallHint string `json:"install_hint"`
+	// 打开 chatgpt.com 看 Cloudflare 有没有挑战本机出口（PF-4）。CFChecked 为 false 时没测成（见 CFNote），
+	// 这时 CFBlocked 的 false 不代表没被拦。注意这里没走地区代理，测的是服务器直连的出口。
+	CFChecked bool   `json:"cf_checked"`
+	CFBlocked bool   `json:"cf_blocked"`
+	CFNote    string `json:"cf_note,omitempty"`
 }
 
 // Check 启动一次浏览器并读取版本号，用于确认服务器能跑付款；最多 30 秒。
@@ -391,5 +396,35 @@ func check(ctx context.Context) CheckResult {
 	if err != nil {
 		return CheckResult{Mode: b.Mode(), Error: explainSandboxError(fmt.Sprintf("Chrome 已启动但无法正常运行页面: %v", err)), InstallHint: installHint()}
 	}
-	return CheckResult{OK: true, Version: product, Mode: b.Mode()}
+	r := CheckResult{OK: true, Version: product, Mode: b.Mode()}
+	r.CFChecked, r.CFBlocked, r.CFNote = probeCF(ctx, b)
+	return r
+}
+
+// cfProbeURL 是自检探测的地址；测试里换成本机仿造页。
+var cfProbeURL = "https://chatgpt.com/"
+
+const cfProbeTimeout = 15 * time.Second
+
+// isCFChallengeTitle 判断页面标题是不是 Cloudflare 的挑战页或拦截页。
+func isCFChallengeTitle(title string) bool {
+	t := strings.ToLower(strings.TrimSpace(title))
+	return strings.Contains(t, "just a moment") || strings.Contains(t, "attention required") || strings.Contains(t, "请稍候")
+}
+
+// probeCF 打开 cfProbeURL 读标题。挑战页有时几秒内自动通过，所以看到挑战标题后再等一会儿读一次。
+// 探测本身失败（连不上、超时）不算自检失败，只在 note 里说明。
+func probeCF(ctx context.Context, b *Browser) (checked, blocked bool, note string) {
+	pctx, cancel := context.WithTimeout(ctx, cfProbeTimeout)
+	defer cancel()
+	var title string
+	if err := b.run(pctx, chromedp.Navigate(cfProbeURL), chromedp.Title(&title)); err != nil {
+		return false, false, "无法打开 " + cfProbeURL + "：" + truncateMessage(err.Error())
+	}
+	if isCFChallengeTitle(title) {
+		if err := b.run(pctx, chromedp.Sleep(4*time.Second), chromedp.Title(&title)); err != nil {
+			return false, false, "读取页面标题失败：" + truncateMessage(err.Error())
+		}
+	}
+	return true, isCFChallengeTitle(title), ""
 }

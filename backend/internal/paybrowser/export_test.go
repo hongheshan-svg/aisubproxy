@@ -89,3 +89,13 @@ var InstallHintFor = installHint
 
 // ExplainSandboxError 给 Chrome 沙箱类错误加上中文说明。
 var ExplainSandboxError = explainSandboxError
+
+// SetCFProbeURL 把自检探测地址换成本机仿造页，返回还原函数。
+func SetCFProbeURL(u string) func() {
+	old := cfProbeURL
+	cfProbeURL = u
+	return func() { cfProbeURL = old }
+}
+
+// IsCFChallengeTitle 判断标题是不是 Cloudflare 挑战页。
+var IsCFChallengeTitle = isCFChallengeTitle

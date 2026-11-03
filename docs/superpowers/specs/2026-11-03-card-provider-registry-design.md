@@ -72,6 +72,7 @@ ZovoCard 和 MarsWallex 都是卡台服务商，以后还会接入更多家。�
 
 - 设置项 `cdk_default_provider`：全局默认（沿用）。
 - 设置项 `cdk_provider_by_product`：JSON 对象，`{产品: 服务商名}`。值为空或缺失，表示跟随全局默认。
+- 出厂配置（2026-11-03 起）：两个设置项都没保存过时，全局默认是 MarsWallex；它不做的 X、Grok、Claude 在按产品配置里单独选 ZovoCard，「卡服务商」页上看得见。保存过一次之后完全按保存的来（只存了旧的 `cdk_default_provider` 也算保存过）。
 - `ResolveIssue(product, plan)` 先取该产品的配置，没有就取全局默认。
   - 结果服务商不支持这个档位时，返回 `ErrUnsupported`，错误文案为：「<显示名> 不支持 <产品> <档位>，请在发码时手动选择服务商，或到「卡服务商」页调整」。**后端绝不悄悄换成别家。**
   - 读库出错时返回错误，不能当成 ZovoCard 继续发码。

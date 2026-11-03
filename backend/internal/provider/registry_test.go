@@ -152,9 +152,24 @@ func TestConfigResolution(t *testing.T) {
 		}
 	}
 
-	// 只有旧设置项（没有产品配置）的库能正常工作
-	set(provider.SettingDefault, "marswallex")
+	// 什么都没保存过：出厂配置是 GPT 用 MarsWallex，它不做的 X、Grok、Claude 单独选兜底的 ZovoCard
 	cfg, err := provider.LoadConfig()
+	if err != nil || cfg.Default != provider.MarsWallex || len(cfg.Warnings) != 0 {
+		t.Fatalf("%+v %v", cfg, err)
+	}
+	if by := cfg.ByProduct; len(by) != 3 || by["x"] != provider.ZovoCard || by["grok"] != provider.ZovoCard || by["claude"] != provider.ZovoCard {
+		t.Fatalf("%v", by)
+	}
+	if p, err := provider.ResolveIssue("gpt", "plus"); err != nil || p.Name() != provider.MarsWallex {
+		t.Fatal(p, err)
+	}
+	if p, err := provider.ResolveIssue("grok", "premium_monthly"); err != nil || p.Name() != provider.ZovoCard {
+		t.Fatal(p, err)
+	}
+
+	// 只有旧设置项（没有产品配置）的库能正常工作；出厂的按产品配置不再补上
+	set(provider.SettingDefault, "marswallex")
+	cfg, err = provider.LoadConfig()
 	if err != nil || cfg.Default != provider.MarsWallex || len(cfg.ByProduct) != 0 || len(cfg.Warnings) != 0 {
 		t.Fatalf("%+v %v", cfg, err)
 	}
@@ -280,8 +295,8 @@ func TestSelected(t *testing.T) {
 			t.Fatalf("%s: %v %v，期望 %v", n, got, err, want)
 		}
 	}
-	check(provider.ZovoCard, true) // 没设置过，默认就是兜底
-	check(provider.MarsWallex, false)
+	check(provider.MarsWallex, true) // 没设置过：出厂配置 GPT 用 MarsWallex
+	check(provider.ZovoCard, true)   // X、Grok、Claude 用 ZovoCard
 	check(providertest.TestCard, false)
 	if err := provider.SaveConfig(provider.ZovoCard, map[string]provider.Name{"gpt": providertest.TestCard}); err != nil {
 		t.Fatal(err)

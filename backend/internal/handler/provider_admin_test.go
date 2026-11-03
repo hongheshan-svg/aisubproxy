@@ -65,20 +65,27 @@ func httpRecorderFor(fn func(*gin.Context)) *httptest.ResponseRecorder {
 func TestDefaultProviderReadWriteAudited(t *testing.T) {
 	e := newLocalEnv(t)
 	m := localJSON(t, e.do("GET", "/admin/providers/default", ""))
-	if m["provider"] != "zovocard" {
-		t.Fatalf("初始值应是 zovocard: %v", m)
+	if m["provider"] != "marswallex" {
+		t.Fatalf("初始值应是出厂默认 marswallex: %v", m)
 	}
 	for _, bad := range []string{`{"provider":"bogus"}`, `{"provider":""}`, `not-json`} {
 		if w := e.do("PUT", "/admin/providers/default", bad); w.Code != http.StatusBadRequest {
 			t.Fatalf("%s: %d", bad, w.Code)
 		}
 	}
-	if n, _ := provider.LoadDefault(); n != provider.ZovoCard {
+	if n, _ := provider.LoadDefault(); n != provider.MarsWallex {
 		t.Fatal("非法值不能生效")
+	}
+	w := e.do("PUT", "/admin/providers/default", `{"provider":"zovocard"}`)
+	if w.Code != http.StatusOK || localJSON(t, w)["previous"] != "marswallex" {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	if a := localAudit(t); !strings.Contains(a, "provider_default_update from=marswallex to=zovocard") {
+		t.Fatalf("切换要写审计: %s", a)
 	}
 
 	// 没过硬门槛也能保存，响应带警告：发码接口另外拦
-	w := e.do("PUT", "/admin/providers/default", `{"provider":"marswallex"}`)
+	w = e.do("PUT", "/admin/providers/default", `{"provider":"marswallex"}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}
@@ -102,6 +109,7 @@ func TestDefaultProviderReadWriteAudited(t *testing.T) {
 func TestDefaultProviderOnlyAffectsNewIssues(t *testing.T) {
 	e := newLocalEnv(t)
 	e.seedRealPayment()
+	localSet(t, provider.SettingDefault, string(provider.ZovoCard)) // 出厂默认是 MarsWallex，这里从 zovocard 开始
 	// 默认 zovocard：老接口发码走卡台
 	w := e.do("POST", "/admin/cardplatform/cdks", `{"plan":"plus","count":1,"funding_confirmed":true}`)
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "ZC-FAKE-ISSUED-CODE-0001") {
@@ -672,7 +680,7 @@ func TestAdminDisableEnableLocalCDK(t *testing.T) {
 func TestAdminProviderReadiness(t *testing.T) {
 	e := newLocalEnv(t)
 	m := localJSON(t, e.do("GET", "/admin/providers/readiness", ""))
-	if m["default"] != "zovocard" || localBody(t, m["by_product"]) != "{}" || m["combos"] != nil || m["zovocard"] != nil {
+	if m["default"] != "marswallex" || localBody(t, m["by_product"]) != `{"claude":"zovocard","grok":"zovocard","x":"zovocard"}` || m["combos"] != nil || m["zovocard"] != nil {
 		t.Fatalf("%v", m)
 	}
 	providers := m["providers"].(map[string]any)
@@ -1028,6 +1036,8 @@ func TestMarsWallexSelectedForReplenish(t *testing.T) {
 			t.Fatalf("%v %v，期望 %v", got, err, want)
 		}
 	}
+	check(true) // 出厂配置：GPT 用 MarsWallex
+	localSet(t, provider.SettingDefault, string(provider.ZovoCard))
 	check(false)
 	localSet(t, provider.SettingDefault, string(provider.MarsWallex))
 	check(true)

@@ -12,13 +12,13 @@ import (
 
 func TestDefaultProviderLoadSave(t *testing.T) {
 	dbtest.Open(t)
-	if n, err := LoadDefault(); err != nil || n != ZovoCard {
-		t.Fatalf("初始值应是 zovocard: %v %v", n, err)
+	if n, err := LoadDefault(); err != nil || n != MarsWallex {
+		t.Fatalf("初始值应是 marswallex: %v %v", n, err)
 	}
-	if err := SaveDefault(MarsWallex); err != nil {
+	if err := SaveDefault(ZovoCard); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := LoadDefault(); err != nil || n != MarsWallex {
+	if n, err := LoadDefault(); err != nil || n != ZovoCard {
 		t.Fatal(n, err)
 	}
 	// 库里的非法值按兜底上游，不能变成别的

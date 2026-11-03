@@ -13,7 +13,7 @@ import (
 
 // 设置项。
 const (
-	// SettingDefault 是全局默认发码服务商。
+	// SettingDefault 是全局默认发码服务商。和 SettingByProduct 都没保存过时用出厂配置（见 factoryConfig）。
 	SettingDefault = "cdk_default_provider"
 	// SettingByProduct 是按产品选的服务商，JSON 对象 {产品: 服务商名}。缺失或值为空表示跟随全局默认。
 	SettingByProduct = "cdk_provider_by_product"
@@ -69,6 +69,7 @@ func (c Config) Effective() map[string]Name {
 }
 
 // LoadConfig 读服务商配置。读库出错返回错误，调用方不能当成任何一家继续发码。
+// 两个设置项都没保存过时返回出厂配置（factoryConfig）。
 // 库里存的服务商名已经没有注册时：全局默认按兜底上游处理，产品配置按跟随全局默认处理，两种都写进 Warnings。
 func LoadConfig() (Config, error) {
 	rawDef, err := db.GetSetting(SettingDefault)
@@ -78,6 +79,9 @@ func LoadConfig() (Config, error) {
 	rawBy, err := db.GetSetting(SettingByProduct)
 	if err != nil {
 		return Config{}, err
+	}
+	if strings.TrimSpace(rawDef) == "" && strings.TrimSpace(rawBy) == "" {
+		return factoryConfig(), nil
 	}
 	cfg := Config{ByProduct: map[string]Name{}, Warnings: []string{}}
 	fb := fallback()
@@ -127,6 +131,32 @@ func LoadConfig() (Config, error) {
 		cfg.ByProduct[prod] = p.Name()
 	}
 	return cfg, nil
+}
+
+// factoryConfig 是从没保存过服务商配置时的出厂配置：全局默认 MarsWallex；它不做的产品线（X、Grok、Claude）单独选兜底上游。
+// 这几条写在 ByProduct 里，「卡服务商」页上看得见；保存过一次之后完全按保存的来。
+// 全局默认不做某条产品线时发码照样拒绝（不自动换家），所以出厂配置要把这几条显式配上。
+// MarsWallex 没注册时退回「全部用兜底上游」。
+func factoryConfig() Config {
+	cfg := Config{ByProduct: map[string]Name{}, Warnings: []string{}}
+	fb := fallback()
+	mw, ok := Get(MarsWallex)
+	if !ok {
+		if fb != nil {
+			cfg.Default = fb.Name()
+		}
+		return cfg
+	}
+	cfg.Default = mw.Name()
+	if fb == nil {
+		return cfg
+	}
+	for _, p := range products {
+		if !providesProduct(mw, p.Key) && providesProduct(fb, p.Key) {
+			cfg.ByProduct[p.Key] = fb.Name()
+		}
+	}
+	return cfg
 }
 
 func providesProduct(p Provider, product string) bool {

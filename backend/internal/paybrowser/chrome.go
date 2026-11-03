@@ -161,7 +161,16 @@ func Launch(ctx context.Context, o LaunchOptions) (*Browser, error) {
 	if err != nil {
 		return nil, fmt.Errorf("创建 Chrome 临时目录失败: %w", err)
 	}
-	sandbox, err := sandboxOptions(dir)
+	mode, display := modeHeadless, ""
+	if env, ok := pickDisplay(); ok {
+		mode = modeHeadful
+		display = os.Getenv("DISPLAY")
+		if env != "" {
+			display = strings.TrimPrefix(env, "DISPLAY=")
+		}
+	}
+	// Chrome 只拿到白名单环境变量（不带密钥），DISPLAY 也经由这里给
+	sandbox, err := sandboxOptions(dir, display)
 	if err != nil {
 		_ = os.RemoveAll(dir)
 		return nil, err
@@ -190,13 +199,7 @@ func Launch(ctx context.Context, o LaunchOptions) (*Browser, error) {
 			opts = append(opts, chromedp.Flag("proxy-bypass-list", "<-loopback>"))
 		}
 	}
-	mode := modeHeadless
-	if env, ok := pickDisplay(); ok {
-		mode = modeHeadful
-		if env != "" {
-			opts = append(opts, chromedp.Env(env))
-		}
-	} else {
+	if mode == modeHeadless {
 		opts = append(opts, chromedp.Flag("headless", "new"))
 	}
 

@@ -49,8 +49,9 @@ func (s *Service) renewalLoop(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		s.renewalDue(ctx)
+		// 先清到点的会话，再关续费：停机超过保留时限后重启，不能拿超期的会话再去调用一次
 		s.sweepSessions(ctx)
+		s.renewalDue(ctx)
 	}
 }
 

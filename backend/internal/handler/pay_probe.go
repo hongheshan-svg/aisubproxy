@@ -175,6 +175,10 @@ func newScrubber(s chatgpt.Session, raw string, extra ...string) *scrubber {
 
 func (sc *scrubber) str(v string) string {
 	for _, sec := range sc.secrets {
+		// 空串或过短的值（如账号接口没返回 id）不当成机密，否则会把整段输出替换成乱码
+		if len(strings.TrimSpace(sec)) < 6 {
+			continue
+		}
 		if strings.Contains(sec, "@") {
 			v = strings.ReplaceAll(v, sec, probeMaskEmail(sec))
 		} else {
@@ -732,7 +736,12 @@ func (r *probeRun) checkCreditBalance() probeResult {
 	if err := r.ensureRefresh(); err != nil {
 		return r.fail("credit_balance", "%s", err.Error())
 	}
-	data, err := r.api.GetJSON(r.ctx, r.sess, chatgpt.ProbeUsage, nil, "")
+	// 和付款引擎读余额用同一组请求头（带账号 id），探出来的结构才是引擎会拿到的
+	a, bad := r.needAccount("credit_balance")
+	if bad != nil {
+		return *bad
+	}
+	data, err := r.api.GetJSON(r.ctx, r.sess, chatgpt.ProbeUsage, nil, a.id)
 	if err != nil {
 		return r.fail("credit_balance", "GET /wham/usage 失败：%s", probeErr(err))
 	}

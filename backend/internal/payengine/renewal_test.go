@@ -296,6 +296,28 @@ func TestSessionKeptAtMostOneHour(t *testing.T) {
 	}
 }
 
+// 停机超过会话保留时限后重启：同一轮里先清超期会话，续费转 failed，不能拿超期的会话再去调用取消接口。
+func TestRenewalSkipsSessionExpiredDuringDowntime(t *testing.T) {
+	h := newRenewalHarness(t)
+	o := presetSucceeded(t, h, "downtime@example.com", nil)
+	old := h.clock.Now().Add(-2 * time.Hour).Unix()
+	if _, err := db.DB.Exec(`UPDATE pay_orders SET finished_at = ?, renewal_next_at = ? WHERE order_no = ?`, old, old, o.OrderNo); err != nil {
+		t.Fatal(err)
+	}
+	h.start(t)
+	g := waitSessionCleared(t, o.OrderNo)
+	if g.State != StateSucceeded || g.RenewalState != RenewalFailed {
+		t.Fatalf("超期会话应清空并把续费转 failed: %+v", g)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if n := h.gpt.count("CancelRenewal"); n != 0 {
+		t.Fatalf("超期会话不应再调用取消接口: %d", n)
+	}
+	if a := h.alerts.Texts(); len(a) != 1 || !strings.Contains(a[0], o.OrderNo) {
+		t.Fatalf("应告警一次让用户自己关续费: %v", a)
+	}
+}
+
 // 手动重试：失败单（会话还在）重试成功；已关闭、不是开通单的都不能重试。
 func TestRetryRenewal(t *testing.T) {
 	h := newRenewalHarness(t)

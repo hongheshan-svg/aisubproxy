@@ -425,6 +425,19 @@ func TestProbeScrubber(t *testing.T) {
 	}
 }
 
+// 探测过程中追加的空串、短串（如账号接口没返回 id）不能当机密：否则 ReplaceAll("") 会把每个字符之间都插进替换文字。
+func TestProbeScrubberIgnoresEmptyAndShortSecrets(t *testing.T) {
+	sc := newScrubber(chatgpt.Session{AccessToken: "ACCESS-TOKEN-VALUE"}, "")
+	sc.secrets = append(sc.secrets, "", "   ", "ab")
+	in := "账号没有订阅 plan=free ab"
+	if out := sc.str(in); out != in {
+		t.Fatalf("空串和短串不应参与替换: %q", out)
+	}
+	if out := sc.str("tok ACCESS-TOKEN-VALUE"); out != "tok [已隐藏]" {
+		t.Fatalf("正常机密仍要擦: %q", out)
+	}
+}
+
 func TestProbeShotRouteRejectsTraversal(t *testing.T) {
 	probeEnv(t, true, paybrowser.ProbePage{})
 	for _, p := range []gin.Params{

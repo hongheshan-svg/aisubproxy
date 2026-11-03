@@ -125,7 +125,16 @@ func (p *Probe) GetJSON(ctx context.Context, s Session, path string, query url.V
 	if path == probePathAccountCheck {
 		query.Set("timezone_offset_min", "-540")
 	}
-	b, err := p.request(ctx, fhttp.MethodGet, path, query, accountHeaders(s, accountID), nil)
+	headers := accountHeaders(s, accountID)
+	if path == probePathUsage {
+		// 与 CreditBalance 一致：带价格选择头，账号头只用 ChatGPT-Account-ID
+		headers = bearer(s)
+		headers["x-openai-codex-pricing-chooser"] = "1"
+		if id := strings.TrimSpace(accountID); id != "" {
+			headers[headerChatGPTAccount] = id
+		}
+	}
+	b, err := p.request(ctx, fhttp.MethodGet, path, query, headers, nil)
 	if err != nil {
 		return nil, err
 	}

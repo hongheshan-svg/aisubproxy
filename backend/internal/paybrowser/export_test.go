@@ -2,6 +2,7 @@ package paybrowser
 
 import (
 	"context"
+	"time"
 
 	"github.com/chromedp/chromedp"
 )
@@ -39,6 +40,13 @@ func ScanBeforeClick(ctx context.Context, b *Browser) (map[string]bool, error) {
 		return nil
 	}))
 	return got, err
+}
+
+// ShortenFillWaits 缩短地址字段的等待时限，返回恢复函数。用来测「一直等不到」的情形，免得每个用例等满 15 秒。
+func ShortenFillWaits(address time.Duration) (restore func()) {
+	old := addressWait
+	addressWait = address
+	return func() { addressWait = old }
 }
 
 // InstallHintFor 返回当前部署方式下的安装提示。

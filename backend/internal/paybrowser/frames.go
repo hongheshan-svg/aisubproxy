@@ -37,6 +37,7 @@ type frameRef struct {
 type elem struct {
 	frame frameRef
 	obj   runtime.RemoteObjectID
+	sel   string // 命中的选择器，只用于填表报告
 }
 
 // visibleJS 判断元素是否可见（自身与祖先都未隐藏、透明度不为 0、有面积）。
@@ -57,6 +58,17 @@ const findJS = `((sels, visible, needText) => {
 			if (needText && !(el.innerText || '').trim()) continue
 			return el
 		}
+	}
+	return null
+})`
+
+// findAnyJS 按 sels 顺序找第一个存在的元素，不管是否可见。选择器写错时跳过。
+const findAnyJS = `(sels => {
+	for (const s of sels) {
+		try {
+			const el = document.querySelector(s)
+			if (el) return el
+		} catch (e) {}
 	}
 	return null
 })`
@@ -207,6 +219,18 @@ func (b *Browser) evalElem(ctx context.Context, frames []frameRef, expr string) 
 func (b *Browser) find(ctx context.Context, frames []frameRef, sels []string, needText bool) *elem {
 	for _, s := range sels {
 		if e := b.evalElem(ctx, frames, fmt.Sprintf("%s(%s, %s, %t)", findJS, mustJSON([]string{s}), visibleJS, needText)); e != nil {
+			e.sel = s
+			return e
+		}
+	}
+	return nil
+}
+
+// findAny 同 find，但不要求可见：透明、盖在样式元素上的勾选框按可见规则找不到。
+func (b *Browser) findAny(ctx context.Context, frames []frameRef, sels []string) *elem {
+	for _, s := range sels {
+		if e := b.evalElem(ctx, frames, fmt.Sprintf("%s(%s)", findAnyJS, mustJSON([]string{s}))); e != nil {
+			e.sel = s
 			return e
 		}
 	}

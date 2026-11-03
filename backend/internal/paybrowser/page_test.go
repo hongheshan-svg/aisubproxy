@@ -33,6 +33,32 @@ type payRecord struct {
 	NumberKeys                             int
 	Name, Country, Line1, City, State, Zip string
 	Email, Phone, DecoyNumber              string
+	LinkSave                               bool
+}
+
+// checkoutKind 是一份仿造支付页。旧页的字段迎合 selectors.go 的假设；Stripe 页照真实 DOM 写，
+// 核心用例要在两份上都跑，才能发现代码的假设和真实页面不符。
+type checkoutKind struct {
+	name string
+	file string
+	// real 表示页面行为照真实 Stripe Checkout：成功后跳走、没有成功标志，邮箱必填
+	real bool
+}
+
+var (
+	oldCheckout    = checkoutKind{name: "旧仿造页", file: "checkout.html"}
+	stripeCheckout = checkoutKind{name: "真实DOM仿造页", file: "checkout-stripe.html", real: true}
+)
+
+// eachCheckout 在两份仿造页上各跑一遍。
+func eachCheckout(t *testing.T, run func(t *testing.T, k checkoutKind)) {
+	t.Helper()
+	for _, k := range []checkoutKind{oldCheckout, stripeCheckout} {
+		t.Run(k.name, func(t *testing.T) {
+			needChrome(t)
+			run(t, k)
+		})
+	}
 }
 
 // fakeCheckout 是仿造的支付页：主页面由 main（127.0.0.1）提供，卡片 iframe 与 3DS 页由 card（localhost）提供。
@@ -41,11 +67,13 @@ type fakeCheckout struct {
 	main, card *httptest.Server
 	cardOrigin string
 
-	mu          sync.Mutex
-	session     string
-	pays        []payRecord
-	decoyClicks atomic.Int32 // 卡片 iframe 里诱饵 submit 按钮被点击的次数
-	promoClicks atomic.Int32 // 主页面优惠码 Apply 按钮被点击的次数
+	mu            sync.Mutex
+	session       string
+	pays          []payRecord
+	decoyClicks   atomic.Int32 // 卡片 iframe 里诱饵 submit 按钮被点击的次数
+	promoClicks   atomic.Int32 // 主页面优惠码 Apply 按钮被点击的次数
+	successVisits atomic.Int32 // 成功后跳转到 /success 的次数（真实 Stripe Checkout 成功靠跳转）
+	submitClicks  atomic.Int32 // 真实DOM仿造页上点到支付按钮的次数，前端校验拦下、没发 /pay 时也计入
 }
 
 func newFakeCheckout(t *testing.T) *fakeCheckout {
@@ -66,14 +94,18 @@ func newFakeCheckout(t *testing.T) *fakeCheckout {
 	_, port, _ := net.SplitHostPort(f.card.Listener.Addr().String())
 	f.cardOrigin = "http://localhost:" + port
 
-	page, err := os.ReadFile(filepath.Join("testdata", "checkout.html"))
-	if err != nil {
-		t.Fatal(err)
+	pages := map[string][]byte{}
+	for _, k := range []checkoutKind{oldCheckout, stripeCheckout} {
+		page, err := os.ReadFile(filepath.Join("testdata", k.file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		pages["/"+k.file] = bytes.ReplaceAll(page, []byte("__CARD_ORIGIN__"), []byte(f.cardOrigin))
 	}
-	page = bytes.ReplaceAll(page, []byte("__CARD_ORIGIN__"), []byte(f.cardOrigin))
 	f.main = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		page, isPage := pages[r.URL.Path]
 		switch {
-		case r.URL.Path == "/checkout.html":
+		case isPage:
 			if c, err := r.Cookie(sessionCookie); err == nil {
 				f.mu.Lock()
 				f.session = c.Value
@@ -81,6 +113,10 @@ func newFakeCheckout(t *testing.T) *fakeCheckout {
 			}
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.Write(page)
+		case r.URL.Path == "/success":
+			f.successVisits.Add(1)
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Write([]byte(`<!doctype html><title>Thanks</title><p>Thanks for your order</p>`))
 		case r.URL.Path == "/pay" && r.Method == http.MethodPost:
 			var rec payRecord
 			if err := json.NewDecoder(r.Body).Decode(&rec); err != nil {
@@ -92,6 +128,8 @@ func newFakeCheckout(t *testing.T) *fakeCheckout {
 			f.mu.Unlock()
 		case r.URL.Path == "/promo" && r.Method == http.MethodPost:
 			f.promoClicks.Add(1)
+		case r.URL.Path == "/submit-attempt" && r.Method == http.MethodPost:
+			f.submitClicks.Add(1)
 		default:
 			http.NotFound(w, r)
 		}
@@ -100,9 +138,12 @@ func newFakeCheckout(t *testing.T) *fakeCheckout {
 	return f
 }
 
-// url 返回带查询参数的支付页地址。
-func (f *fakeCheckout) url(query string) string {
-	u := f.main.URL + "/checkout.html"
+// url 返回旧仿造页带查询参数的地址。
+func (f *fakeCheckout) url(query string) string { return f.urlOf(oldCheckout, query) }
+
+// urlOf 返回指定仿造页带查询参数的地址。
+func (f *fakeCheckout) urlOf(k checkoutKind, query string) string {
+	u := f.main.URL + "/" + k.file
 	if query != "" {
 		u += "?" + query
 	}
@@ -130,26 +171,27 @@ func openCtx(t *testing.T) context.Context {
 }
 
 func TestOpenAndReadAmount(t *testing.T) {
-	needChrome(t)
-	f := newFakeCheckout(t)
-	host, _, _ := net.SplitHostPort(f.main.Listener.Addr().String())
-	b := launch(t, paybrowser.LaunchOptions{})
-	ctx := openCtx(t)
+	eachCheckout(t, func(t *testing.T, k checkoutKind) {
+		f := newFakeCheckout(t)
+		host, _, _ := net.SplitHostPort(f.main.Listener.Addr().String())
+		b := launch(t, paybrowser.LaunchOptions{})
+		ctx := openCtx(t)
 
-	cookies := []paybrowser.Cookie{{Name: sessionCookie, Value: "sess-abc123", Domain: host}}
-	if err := b.Open(ctx, f.url(""), cookies); err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	if v := f.gotSession(); v != "sess-abc123" {
-		t.Fatalf("服务端收到的会话 cookie = %q，期望 sess-abc123", v)
-	}
-	minor, text, err := b.ReadAmount(ctx, "PHP")
-	if err != nil {
-		t.Fatalf("ReadAmount: %v", err)
-	}
-	if minor != 112000 || text != "₱1,120.00" {
-		t.Fatalf("ReadAmount = %d, %q，期望 112000, ₱1,120.00", minor, text)
-	}
+		cookies := []paybrowser.Cookie{{Name: sessionCookie, Value: "sess-abc123", Domain: host}}
+		if err := b.Open(ctx, f.urlOf(k, ""), cookies); err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		if v := f.gotSession(); v != "sess-abc123" {
+			t.Fatalf("服务端收到的会话 cookie = %q，期望 sess-abc123", v)
+		}
+		minor, text, err := b.ReadAmount(ctx, "PHP")
+		if err != nil {
+			t.Fatalf("ReadAmount: %v", err)
+		}
+		if minor != 112000 || text != "₱1,120.00" {
+			t.Fatalf("ReadAmount = %d, %q，期望 112000, ₱1,120.00", minor, text)
+		}
+	})
 }
 
 // authProxy 是只做普通 HTTP 转发的最小代理：要求 Proxy-Authorization，只转发到本机（回环地址或 localhost）。
@@ -220,22 +262,49 @@ func TestProxyAuth(t *testing.T) {
 	}
 }
 
+const testEmail = "buyer@example.com"
+
 var (
 	testCard    = paybrowser.Card{Number: "4242424242424242", ExpMonth: "12", ExpYear: "30", CVC: "737"}
-	testBilling = paybrowser.Billing{Name: "Jane Doe", Line1: "1 Main St", City: "Portland", State: "OR", Zip: "97201", Country: "US"}
+	testBilling = paybrowser.Billing{Name: "Jane Doe", Line1: "1 Main St", City: "Portland", State: "OR", Zip: "97201", Country: "US", Email: testEmail}
 )
 
 const outcomeWait = 15 * time.Second
 
-// openCheckout 启动浏览器并打开带查询参数的仿造支付页。
+// openCheckout 启动浏览器并打开带查询参数的旧仿造页。
 func openCheckout(t *testing.T, f *fakeCheckout, query string, o paybrowser.LaunchOptions) (*paybrowser.Browser, context.Context) {
+	t.Helper()
+	return openKind(t, f, oldCheckout, query, o)
+}
+
+// openKind 启动浏览器并打开带查询参数的指定仿造页。
+func openKind(t *testing.T, f *fakeCheckout, k checkoutKind, query string, o paybrowser.LaunchOptions) (*paybrowser.Browser, context.Context) {
 	t.Helper()
 	b := launch(t, o)
 	ctx := openCtx(t)
-	if err := b.Open(ctx, f.url(query), nil); err != nil {
+	if err := b.Open(ctx, f.urlOf(k, query), nil); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	return b, ctx
+}
+
+// waitPaid 等到付款成功的页面表现：旧页显示成功标志；真实页面没有成功标志，只会跳走，WaitOutcome 认不出来，返回 unknown。
+func waitPaid(t *testing.T, f *fakeCheckout, b *paybrowser.Browser, ctx context.Context, k checkoutKind) {
+	t.Helper()
+	if !k.real {
+		waitOutcome(t, b, ctx, paybrowser.OutcomeSuccess)
+		return
+	}
+	deadline := time.Now().Add(outcomeWait)
+	for f.successVisits.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("真实DOM仿造页付款后没有跳转到成功页")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if got, msg, err := b.WaitOutcome(ctx, 500*time.Millisecond); err != nil || got != paybrowser.OutcomeUnknown {
+		t.Fatalf("真实页面成功后没有成功标志，WaitOutcome 应为 unknown，实际 %q, %q, %v", got, msg, err)
+	}
 }
 
 // fillAndSubmit 填卡并点击支付。
@@ -269,39 +338,44 @@ func onlyPayment(t *testing.T, f *fakeCheckout) payRecord {
 }
 
 func TestFillSubmitSuccess(t *testing.T) {
-	needChrome(t)
-	f := newFakeCheckout(t)
-	b, ctx := openCheckout(t, f, "mode=success", paybrowser.LaunchOptions{})
-	fillAndSubmit(t, b, ctx)
-	waitOutcome(t, b, ctx, paybrowser.OutcomeSuccess)
+	eachCheckout(t, func(t *testing.T, k checkoutKind) {
+		f := newFakeCheckout(t)
+		b, ctx := openKind(t, f, k, "mode=success", paybrowser.LaunchOptions{})
+		fillAndSubmit(t, b, ctx)
+		waitPaid(t, f, b, ctx, k)
 
-	got := onlyPayment(t, f)
-	want := payRecord{
-		Method: "new", Number: testCard.Number, Expiry: "1230", CVC: testCard.CVC, NumberKeys: len(testCard.Number),
-		Name: testBilling.Name, Country: testBilling.Country, Line1: testBilling.Line1, City: testBilling.City,
-		State: testBilling.State, Zip: testBilling.Zip,
-	}
-	if got != want {
-		t.Fatalf("仿造页收到 %+v\n期望 %+v", got, want)
-	}
+		got := onlyPayment(t, f)
+		want := payRecord{
+			Method: "new", Number: testCard.Number, Expiry: "1230", CVC: testCard.CVC, NumberKeys: len(testCard.Number),
+			Name: testBilling.Name, Country: testBilling.Country, Line1: testBilling.Line1, City: testBilling.City,
+			State: testBilling.State, Zip: testBilling.Zip,
+		}
+		if k.real {
+			want.Email = testEmail // 真实页面邮箱必填且为空，填账号自己的邮箱；旧页非必填，不能填
+		}
+		if got != want {
+			t.Fatalf("仿造页收到 %+v\n期望 %+v", got, want)
+		}
+	})
 }
 
 func TestDeclineReturnsMessage(t *testing.T) {
-	needChrome(t)
-	f := newFakeCheckout(t)
-	b, ctx := openCheckout(t, f, "mode=decline", paybrowser.LaunchOptions{})
+	eachCheckout(t, func(t *testing.T, k checkoutKind) {
+		f := newFakeCheckout(t)
+		b, ctx := openKind(t, f, k, "mode=decline", paybrowser.LaunchOptions{})
 
-	// 还没提交：页面上没有任何结果，到时返回 unknown
-	got, msg, err := b.WaitOutcome(ctx, 500*time.Millisecond)
-	if err != nil || got != paybrowser.OutcomeUnknown || msg != "" {
-		t.Fatalf("提交前 WaitOutcome = %q, %q, %v，期望 unknown", got, msg, err)
-	}
+		// 还没提交：页面上没有任何结果，到时返回 unknown
+		got, msg, err := b.WaitOutcome(ctx, 500*time.Millisecond)
+		if err != nil || got != paybrowser.OutcomeUnknown || msg != "" {
+			t.Fatalf("提交前 WaitOutcome = %q, %q, %v，期望 unknown", got, msg, err)
+		}
 
-	fillAndSubmit(t, b, ctx)
-	msg = waitOutcome(t, b, ctx, paybrowser.OutcomeDeclined)
-	if !strings.Contains(msg, "declined") {
-		t.Fatalf("被拒消息 = %q，期望含 declined", msg)
-	}
+		fillAndSubmit(t, b, ctx)
+		msg = waitOutcome(t, b, ctx, paybrowser.OutcomeDeclined)
+		if !strings.Contains(msg, "declined") {
+			t.Fatalf("被拒消息 = %q，期望含 declined", msg)
+		}
+	})
 }
 
 func TestClassifyPageError(t *testing.T) {
@@ -413,11 +487,12 @@ func TestExistingNoticeIgnored(t *testing.T) {
 
 // 点击前的提示不能挡住后面的判断：横幅一直在，3DS 框仍要识别。
 func TestExistingNoticeDoesNotHideChallenge(t *testing.T) {
-	needChrome(t)
-	f := newFakeCheckout(t)
-	b, ctx := openCheckout(t, f, checkoutQuery("banner", "Prices are shown in your local currency.", "mode", "3ds"), paybrowser.LaunchOptions{})
-	fillAndSubmit(t, b, ctx)
-	waitOutcome(t, b, ctx, paybrowser.OutcomeChallenge)
+	eachCheckout(t, func(t *testing.T, k checkoutKind) {
+		f := newFakeCheckout(t)
+		b, ctx := openKind(t, f, k, checkoutQuery("banner", "Prices are shown in your local currency.", "mode", "3ds"), paybrowser.LaunchOptions{})
+		fillAndSubmit(t, b, ctx)
+		waitOutcome(t, b, ctx, paybrowser.OutcomeChallenge)
+	})
 }
 
 // 判断「点击前已有」按文字完全相同：点击前后文字一样时算旧提示，单据走结果不明的确认流程，这是安全方向。
@@ -482,27 +557,29 @@ func TestScanBeforeClickBoundedOnBusyPage(t *testing.T) {
 }
 
 func TestChallengeThenOTP(t *testing.T) {
-	needChrome(t)
-	f := newFakeCheckout(t)
-	b, ctx := openCheckout(t, f, "mode=3ds", paybrowser.LaunchOptions{})
-	fillAndSubmit(t, b, ctx)
-	waitOutcome(t, b, ctx, paybrowser.OutcomeChallenge)
-	if err := b.EnterOTP(ctx, "123456"); err != nil {
-		t.Fatalf("EnterOTP: %v", err)
-	}
-	waitOutcome(t, b, ctx, paybrowser.OutcomeSuccess)
+	eachCheckout(t, func(t *testing.T, k checkoutKind) {
+		f := newFakeCheckout(t)
+		b, ctx := openKind(t, f, k, "mode=3ds", paybrowser.LaunchOptions{})
+		fillAndSubmit(t, b, ctx)
+		waitOutcome(t, b, ctx, paybrowser.OutcomeChallenge)
+		if err := b.EnterOTP(ctx, "123456"); err != nil {
+			t.Fatalf("EnterOTP: %v", err)
+		}
+		waitPaid(t, f, b, ctx, k)
+	})
 }
 
 func TestWrongOTPDeclined(t *testing.T) {
-	needChrome(t)
-	f := newFakeCheckout(t)
-	b, ctx := openCheckout(t, f, "mode=3ds", paybrowser.LaunchOptions{})
-	fillAndSubmit(t, b, ctx)
-	waitOutcome(t, b, ctx, paybrowser.OutcomeChallenge)
-	if err := b.EnterOTP(ctx, "000000"); err != nil {
-		t.Fatalf("EnterOTP: %v", err)
-	}
-	waitOutcome(t, b, ctx, paybrowser.OutcomeDeclined)
+	eachCheckout(t, func(t *testing.T, k checkoutKind) {
+		f := newFakeCheckout(t)
+		b, ctx := openKind(t, f, k, "mode=3ds", paybrowser.LaunchOptions{})
+		fillAndSubmit(t, b, ctx)
+		waitOutcome(t, b, ctx, paybrowser.OutcomeChallenge)
+		if err := b.EnterOTP(ctx, "000000"); err != nil {
+			t.Fatalf("EnterOTP: %v", err)
+		}
+		waitOutcome(t, b, ctx, paybrowser.OutcomeDeclined)
+	})
 }
 
 func TestOTPRetryAfterFailedSubmitClick(t *testing.T) {
@@ -527,46 +604,48 @@ func TestOTPRetryAfterFailedSubmitClick(t *testing.T) {
 }
 
 func TestSubmitTwiceRefused(t *testing.T) {
-	needChrome(t)
-	f := newFakeCheckout(t)
-	b, ctx := openCheckout(t, f, "mode=decline", paybrowser.LaunchOptions{})
+	eachCheckout(t, func(t *testing.T, k checkoutKind) {
+		f := newFakeCheckout(t)
+		b, ctx := openKind(t, f, k, "mode=decline", paybrowser.LaunchOptions{})
 
-	// 没填卡就提交：拒绝，以免用账号已存的卡付款
-	if err := b.Submit(ctx); err == nil || errors.Is(err, paybrowser.ErrAlreadySubmitted) {
-		t.Fatalf("未填卡时 Submit = %v，期望报「尚未填卡」", err)
-	}
+		// 没填卡就提交：拒绝，以免用账号已存的卡付款
+		if err := b.Submit(ctx); err == nil || errors.Is(err, paybrowser.ErrAlreadySubmitted) {
+			t.Fatalf("未填卡时 Submit = %v，期望报「尚未填卡」", err)
+		}
 
-	fillAndSubmit(t, b, ctx)
-	waitOutcome(t, b, ctx, paybrowser.OutcomeDeclined) // 被拒后支付按钮仍可点
-	if err := b.Submit(ctx); !errors.Is(err, paybrowser.ErrAlreadySubmitted) {
-		t.Fatalf("第二次 Submit = %v，期望 ErrAlreadySubmitted", err)
-	}
-	time.Sleep(500 * time.Millisecond)
-	onlyPayment(t, f)
+		fillAndSubmit(t, b, ctx)
+		waitOutcome(t, b, ctx, paybrowser.OutcomeDeclined) // 被拒后支付按钮仍可点
+		if err := b.Submit(ctx); !errors.Is(err, paybrowser.ErrAlreadySubmitted) {
+			t.Fatalf("第二次 Submit = %v，期望 ErrAlreadySubmitted", err)
+		}
+		time.Sleep(500 * time.Millisecond)
+		onlyPayment(t, f)
+	})
 }
 
 func TestFillReportsMissingField(t *testing.T) {
-	needChrome(t)
-	f := newFakeCheckout(t)
-	b, ctx := openCheckout(t, f, "nocvc=1", paybrowser.LaunchOptions{ShotDir: t.TempDir()})
-	err := b.Fill(ctx, testCard, testBilling)
-	if err == nil || !strings.Contains(err.Error(), "CVC") {
-		t.Fatalf("Fill = %v，期望报错并含「CVC」", err)
-	}
-	if strings.Contains(err.Error(), testCard.Number) || strings.Contains(err.Error(), testCard.CVC) {
-		t.Fatalf("错误消息泄露了卡号或 CVC: %v", err)
-	}
-	// 卡号已经键入页面：即使 Fill 失败也不许整页截图
-	if _, err := b.Shot(ctx, "after-failed-fill", paybrowser.ShotPage); !errors.Is(err, paybrowser.ErrShotForbidden) {
-		t.Fatalf("Fill 失败后 Shot(ShotPage) = %v，期望 ErrShotForbidden", err)
-	}
-	// 没填成功不能提交
-	if err := b.Submit(ctx); err == nil {
-		t.Fatal("Fill 失败后 Submit 应报错")
-	}
-	if n := len(f.payments()); n != 0 {
-		t.Fatalf("仿造页收到 %d 次提交，期望 0 次", n)
-	}
+	eachCheckout(t, func(t *testing.T, k checkoutKind) {
+		f := newFakeCheckout(t)
+		b, ctx := openKind(t, f, k, "nocvc=1", paybrowser.LaunchOptions{ShotDir: t.TempDir()})
+		err := b.Fill(ctx, testCard, testBilling)
+		if err == nil || !strings.Contains(err.Error(), "CVC") {
+			t.Fatalf("Fill = %v，期望报错并含「CVC」", err)
+		}
+		if strings.Contains(err.Error(), testCard.Number) || strings.Contains(err.Error(), testCard.CVC) {
+			t.Fatalf("错误消息泄露了卡号或 CVC: %v", err)
+		}
+		// 卡号已经键入页面：即使 Fill 失败也不许整页截图
+		if _, err := b.Shot(ctx, "after-failed-fill", paybrowser.ShotPage); !errors.Is(err, paybrowser.ErrShotForbidden) {
+			t.Fatalf("Fill 失败后 Shot(ShotPage) = %v，期望 ErrShotForbidden", err)
+		}
+		// 没填成功不能提交
+		if err := b.Submit(ctx); err == nil {
+			t.Fatal("Fill 失败后 Submit 应报错")
+		}
+		if n := len(f.payments()); n != 0 {
+			t.Fatalf("仿造页收到 %d 次提交，期望 0 次", n)
+		}
+	})
 }
 
 // readPNG 读取截图文件并返回尺寸。
@@ -664,38 +743,41 @@ func TestFindPrefersEarlierSelectorAcrossFrames(t *testing.T) {
 }
 
 func TestSubmitClicksMainPayButton(t *testing.T) {
-	needChrome(t)
-	f := newFakeCheckout(t)
-	// 主页面支付按钮在填完后 1.5 秒才出现；卡片 iframe 里一直有个可见的 submit 按钮
-	b, ctx := openCheckout(t, f, "decoy=1&latepay=1&mode=success", paybrowser.LaunchOptions{})
-	fillAndSubmit(t, b, ctx)
-	waitOutcome(t, b, ctx, paybrowser.OutcomeSuccess)
-	onlyPayment(t, f)
-	if n := f.decoyClicks.Load(); n != 0 {
-		t.Fatalf("iframe 里的 submit 按钮被点了 %d 次，期望 0 次", n)
-	}
+	eachCheckout(t, func(t *testing.T, k checkoutKind) {
+		f := newFakeCheckout(t)
+		// 主页面支付按钮在填完后 1.5 秒才出现；iframe 里一直有个可见的 submit 按钮
+		b, ctx := openKind(t, f, k, "decoy=1&latepay=1&mode=success", paybrowser.LaunchOptions{})
+		fillAndSubmit(t, b, ctx)
+		waitPaid(t, f, b, ctx, k)
+		onlyPayment(t, f)
+		if n := f.decoyClicks.Load(); n != 0 {
+			t.Fatalf("iframe 里的 submit 按钮被点了 %d 次，期望 0 次", n)
+		}
+	})
 }
 
 // M-2：主页面上排在前面的优惠码 Apply 也是 submit 按钮，点到它就白白用掉唯一一次提交。
 func TestSubmitPrefersSubmitButtonOverPromoApply(t *testing.T) {
-	needChrome(t)
-	f := newFakeCheckout(t)
-	b, ctx := openCheckout(t, f, "promo=1&mode=success", paybrowser.LaunchOptions{})
-	fillAndSubmit(t, b, ctx)
-	waitOutcome(t, b, ctx, paybrowser.OutcomeSuccess)
-	onlyPayment(t, f)
-	if n := f.promoClicks.Load(); n != 0 {
-		t.Fatalf("优惠码按钮被点了 %d 次，期望 0 次", n)
-	}
+	eachCheckout(t, func(t *testing.T, k checkoutKind) {
+		f := newFakeCheckout(t)
+		b, ctx := openKind(t, f, k, "promo=1&mode=success", paybrowser.LaunchOptions{})
+		fillAndSubmit(t, b, ctx)
+		waitPaid(t, f, b, ctx, k)
+		onlyPayment(t, f)
+		if n := f.promoClicks.Load(); n != 0 {
+			t.Fatalf("优惠码按钮被点了 %d 次，期望 0 次", n)
+		}
+	})
 }
 
 // 按钮上的 SubmitButton--complete 不算付款成功：误判会立刻关掉浏览器，3DS 就走不下去了。
 func TestFormCompleteClassIsNotSuccess(t *testing.T) {
-	needChrome(t)
-	f := newFakeCheckout(t)
-	b, ctx := openCheckout(t, f, "formcomplete=1&mode=3ds", paybrowser.LaunchOptions{})
-	fillAndSubmit(t, b, ctx)
-	waitOutcome(t, b, ctx, paybrowser.OutcomeChallenge)
+	eachCheckout(t, func(t *testing.T, k checkoutKind) {
+		f := newFakeCheckout(t)
+		b, ctx := openKind(t, f, k, "formcomplete=1&mode=3ds", paybrowser.LaunchOptions{})
+		fillAndSubmit(t, b, ctx)
+		waitOutcome(t, b, ctx, paybrowser.OutcomeChallenge)
+	})
 }
 
 func TestFillRejectsBadCard(t *testing.T) {

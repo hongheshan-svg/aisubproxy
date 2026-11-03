@@ -22,6 +22,7 @@
   查询参数：
     mode=success|decline|3ds|none  提交后的表现（默认 success；none 表示页面没有任何结果）
     delay=毫秒                mode=decline 时，收到提交后过这么久才显示被拒
+    notice=文字               收到提交后先显示 [role="alert"]，过 noticedelay 毫秒（默认 0）再按 mode 继续
     banner=文字               页面一开始就有带这段文字的 [role="alert"] 横幅
     fielderror=文字           点支付后不发 /pay，只在主页面显示 .FieldError（可重复，按顺序显示多条），模拟前端校验
     cardbanner=文字           卡片 iframe 里一开始就有带这段文字的 [role="alert"]
@@ -174,22 +175,34 @@
       email: val('email'), phone: val('phone'), decoyNumber: val('promo-number')
     }
     fetch('/pay', { method: 'POST', body: JSON.stringify(body) }).then(function () {
-      if (mode === 'decline') {
-        setTimeout(function () { show('payment-error', 'Your card was declined.') }, Number(q.get('delay')) || 0)
-      } else if (mode === 'none') {
-        // 页面没有任何结果
-      } else if (mode === '3ds') {
-        var modal = document.createElement('div')
-        modal.id = 'challenge-modal'
-        var frame = document.createElement('iframe')
-        frame.name = 'stripe-challenge-frame'
-        frame.src = CARD_ORIGIN + '/acs.html?wrap=1' + (q.get('otpflaky') === '1' ? '&flaky=1' : '')
-        modal.appendChild(frame)
-        document.body.appendChild(modal)
-      } else {
-        show('payment-success', 'Payment successful')
+      if (q.get('notice')) {
+        var note = document.createElement('div')
+        note.setAttribute('role', 'alert')
+        note.textContent = q.get('notice')
+        document.getElementById('payment-form').appendChild(note)
+        setTimeout(showResult, Number(q.get('noticedelay')) || 0)
+        return
       }
+      showResult()
     })
+  }
+
+  function showResult() {
+    if (mode === 'decline') {
+      setTimeout(function () { show('payment-error', 'Your card was declined.') }, Number(q.get('delay')) || 0)
+    } else if (mode === 'none') {
+      // 页面没有任何结果
+    } else if (mode === '3ds') {
+      var modal = document.createElement('div')
+      modal.id = 'challenge-modal'
+      var frame = document.createElement('iframe')
+      frame.name = 'stripe-challenge-frame'
+      frame.src = CARD_ORIGIN + '/acs.html?wrap=1' + (q.get('otpflaky') === '1' ? '&flaky=1' : '')
+      modal.appendChild(frame)
+      document.body.appendChild(modal)
+    } else {
+      show('payment-success', 'Payment successful')
+    }
   }
 
   document.getElementById('payment-form').addEventListener('submit', function (e) {

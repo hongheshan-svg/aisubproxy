@@ -31,7 +31,8 @@ type Cookie struct{ Name, Value, Domain string }
 type Card struct{ Number, ExpMonth, ExpYear, CVC string }
 
 // Billing 是账单地址，Country 为两位国家代码。某项为空时不填（有些国家的地址表单没有州或邮编）。
-type Billing struct{ Name, Line1, City, State, Zip, Country string }
+// Email 是账号自己的邮箱，只有页面上的邮箱框可见、必填且为空时才填，绝不写进日志或事件。
+type Billing struct{ Name, Line1, City, State, Zip, Country, Email string }
 
 // Outcome 是提交后页面给出的结果。
 type Outcome string
@@ -188,58 +189,6 @@ type field struct {
 	kind  fieldKind
 }
 
-// Fill 填入卡片与账单地址。页面先显示账号已存的卡时，先点「新卡」入口。
-// 不填 Stripe Link 的邮箱与手机（会触发 Link 验证）。任一字段找不到时报错，错误消息只含中文字段名。
-func (b *Browser) Fill(ctx context.Context, c Card, bl Billing) error {
-	if err := c.validate(); err != nil {
-		return err
-	}
-	b.mu.Lock() // 正在整页截图时等它截完，再往页面里键入卡号
-	b.cardTouched = true
-	b.filled = false
-	b.mu.Unlock()
-
-	fields := []field{
-		{"卡号", Sel.CardNumber, c.Number, kindCard},
-		{"有效期", Sel.Expiry, c.ExpMonth + c.ExpYear, kindCard},
-		{"CVC", Sel.CVC, c.CVC, kindCard},
-		{"国家", Sel.Country, bl.Country, kindChoice}, // 地址字段里先选国家：改国家会重绘姓名与其余地址字段
-		{"姓名", Sel.Name, bl.Name, kindText},
-		{"街道地址", Sel.Line1, bl.Line1, kindText},
-		{"城市", Sel.City, bl.City, kindText},
-		{"州/省", Sel.State, bl.State, kindChoice},
-		{"邮编", Sel.Zip, bl.Zip, kindText},
-	}
-	err := b.do(ctx, func(ctx context.Context) error {
-		if err := b.revealCardForm(ctx); err != nil {
-			return err
-		}
-		for _, f := range fields {
-			if strings.TrimSpace(f.value) == "" {
-				continue
-			}
-			e, err := b.waitFind(ctx, fieldWait, func(frames []frameRef) *elem { return b.find(ctx, frames, f.sels, false) })
-			if err != nil {
-				return err
-			}
-			if e == nil {
-				return fmt.Errorf("找不到「%s」输入框", f.label)
-			}
-			if err := fillField(ctx, e, f); err != nil {
-				return err
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("填卡失败: %w", err)
-	}
-	b.mu.Lock()
-	b.filled = true
-	b.mu.Unlock()
-	return nil
-}
-
 // validate 在碰页面之前检查卡片格式。错误消息不含值。
 func (c Card) validate() error {
 	month, _ := strconv.Atoi(c.ExpMonth)
@@ -266,29 +215,6 @@ func isDigits(s string, lo, hi int) bool {
 		}
 	}
 	return true
-}
-
-// revealCardForm 等卡号框出现。账号已存卡时页面先显示已存卡，点一次「新卡」入口把卡号框调出来。
-func (b *Browser) revealCardForm(ctx context.Context) error {
-	clicked := false
-	e, err := b.waitFind(ctx, formWait, func(frames []frameRef) *elem {
-		if e := b.find(ctx, frames, Sel.CardNumber, false); e != nil {
-			return e
-		}
-		if !clicked {
-			if opt := b.findText(ctx, frames, Sel.NewCardOption); opt != nil && click(ctx, opt) == nil {
-				clicked = true
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-	if e == nil {
-		return errors.New("找不到「卡号」输入框")
-	}
-	return nil
 }
 
 // fillField 按字段类型填写并核对。
@@ -396,6 +322,9 @@ func chooseOption(ctx context.Context, e *elem, f field) error {
 	return nil
 }
 
+// payEnabledJS 判断支付按钮能不能点。
+const payEnabledJS = `function () { return !this.disabled && this.getAttribute('aria-disabled') !== 'true' }`
+
 // Submit 点击主页面上的支付按钮。必须先 Fill 成功；先记下「已提交」再点击，此后再调用返回 ErrAlreadySubmitted 且不点击。
 func (b *Browser) Submit(ctx context.Context) error {
 	b.mu.Lock()
@@ -417,7 +346,7 @@ func (b *Browser) Submit(ctx context.Context) error {
 			}
 			seen = true
 			var enabled bool
-			if callOn(ctx, e.obj, `function () { return !this.disabled && this.getAttribute('aria-disabled') !== 'true' }`, &enabled) != nil || !enabled {
+			if callOn(ctx, e.obj, payEnabledJS, &enabled) != nil || !enabled {
 				return nil
 			}
 			return e

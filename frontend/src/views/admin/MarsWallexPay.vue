@@ -199,6 +199,11 @@
             </div>
           </div>
         </el-tab-pane>
+
+        <!-- ============ 免付款探测 ============ -->
+        <el-tab-pane label="免付款探测" name="probe" lazy>
+          <PayProbePanel />
+        </el-tab-pane>
       </el-tabs>
     </div>
 
@@ -292,6 +297,7 @@
 
 <script setup lang="ts">
 import AdminPageHeader from '../../components/AdminPageHeader.vue'
+import PayProbePanel from './components/PayProbePanel.vue'
 import { useRouteTab } from '../../lib/useRouteTab'
 import {
   PAY_MODE_DESC, PAY_MODE_LABEL, breakerReason, buildPayBody, isFillFieldEvent, orderModeLabel, payErrorText, sourceLabel,

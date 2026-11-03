@@ -345,6 +345,7 @@ func setupRoutes(r *gin.Engine) {
 			admin.POST("/pay/browser-check", handler.AdminPayBrowserCheck)
 			admin.GET("/pay/breaker", handler.AdminPayBreakerStatus)
 			admin.POST("/pay/breaker/resume", handler.AdminPayBreakerResume)
+			handler.RegisterPayProbeRoutes(admin)
 
 			// 卡台 Open API：实时价格 / 余额 / 发码 / 列码 / CDK 订单
 			admin.GET("/cardplatform/ping", handler.CardPlatformPing)

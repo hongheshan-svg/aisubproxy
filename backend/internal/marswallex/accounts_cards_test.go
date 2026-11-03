@@ -26,7 +26,7 @@ func TestAccountAndCardRequests(t *testing.T) {
 				return c.CreateAccount(context.Background(), CreateAccountRequest{AccountName: "SubA", OutAccountNo: "SUB1"})
 			},
 			method: "POST", escPath: "/portal/api/v1/accounts",
-			body:  `{"data":{"account_name":"SubA","out_account_no":"SUB1"}}`,
+			body:  `{"account_name":"SubA","out_account_no":"SUB1"}`,
 			reply: `{"data":{"account_no":"9","account_name":"SubA","out_account_no":"SUB1","status":"ACTIVE","create_time":1766123535}}`,
 			check: func(t *testing.T, got any) {
 				r := got.(*SubAccount)
@@ -42,7 +42,7 @@ func TestAccountAndCardRequests(t *testing.T) {
 				return c.CreateAccount(context.Background(), CreateAccountRequest{AccountName: "S", OutAccountNo: "O", Purpose: &p})
 			},
 			method: "POST", escPath: "/portal/api/v1/accounts",
-			body: `{"data":{"account_name":"S","out_account_no":"O","purpose":"SHARED_ACCOUNT"}}`,
+			body: `{"account_name":"S","out_account_no":"O","purpose":"SHARED_ACCOUNT"}`,
 		},
 		{
 			name: "ListAccounts",
@@ -249,10 +249,42 @@ func TestAccountAndCardRequests(t *testing.T) {
 			name:   "GetCard",
 			call:   func(c *Client) (any, error) { return c.GetCard(context.Background(), "c1") },
 			method: "GET", escPath: "/portal/api/v1/card/detail/c1",
-			reply: `{"data":{"card_id":"c1","card_no":"4111","card_name":"N","status":"ACTIVE","available_balance":"9.99","create_time":1766123535,"limit":{"single_limit":"100.00"}}}`,
+			reply: `{"data":{"card_id":"c1","card_no":"4111","card_name":"N","status":"ACTIVE","available_balance":"9.99","create_time":1766123535,"limit":{"single_limit":"100.00","daily_limit":"200.00","monthly_limit":"900.50"}}}`,
 			check: func(t *testing.T, got any) {
 				r := got.(*CardDetail)
 				if r.Status != "ACTIVE" || r.AvailableBalance != "9.99" || r.Limit == nil || r.Limit.SingleLimit != "100.00" || r.CreateTime.Unix() != 1766123535 {
+					t.Errorf("got %+v", r)
+				}
+				if r.Limit.DailyLimit != "200.00" || r.Limit.MonthlyLimit != "900.50" {
+					t.Errorf("日/月限额不应被丢弃: %+v", r.Limit)
+				}
+			},
+		},
+		{
+			name: "UpdateCardLimit",
+			call: func(c *Client) (any, error) {
+				return nil, c.UpdateCardLimit(context.Background(), "c1", CardLimit{SingleLimit: "50.00", DailyLimit: "100", MonthlyLimit: "300.5"})
+			},
+			method: "PUT", escPath: "/portal/api/v1/card/limit",
+			body:  `{"card_id":"c1","limit":{"single_limit":"50.00","daily_limit":"100","monthly_limit":"300.5"}}`,
+			reply: `{"data":{}}`,
+		},
+		{
+			name: "UpdateCardLimitOnlyDaily",
+			call: func(c *Client) (any, error) {
+				return nil, c.UpdateCardLimit(context.Background(), "c1", CardLimit{DailyLimit: "100.00"})
+			},
+			method: "PUT", escPath: "/portal/api/v1/card/limit",
+			body: `{"card_id":"c1","limit":{"daily_limit":"100.00"}}`,
+		},
+		{
+			name:   "GetCardLimitUsage",
+			call:   func(c *Client) (any, error) { return c.GetCardLimitUsage(context.Background(), "c 1") },
+			method: "GET", escPath: "/portal/api/v1/card/limit-usage/c%201",
+			reply: `{"data":{"card_id":"c 1","limit":{"single_limit":"50.00","daily_limit":"100.00","monthly_limit":"300.00"},"limit_remaining":{"daily_remaining":"80.25","monthly_remaining":"290.00"}}}`,
+			check: func(t *testing.T, got any) {
+				r := got.(*CardLimitUsage)
+				if r.CardID != "c 1" || r.Limit == nil || r.Limit.DailyLimit != "100.00" || r.LimitRemaining.DailyRemaining != "80.25" || r.LimitRemaining.MonthlyRemaining != "290.00" {
 					t.Errorf("got %+v", r)
 				}
 			},
@@ -288,5 +320,47 @@ func TestAccountAndCardRequests(t *testing.T) {
 				tc.check(t, got)
 			}
 		})
+	}
+}
+
+// 限额参数不合法时不发请求，也不会替调用方发一个空限额（那会清掉全部限额）。
+func TestUpdateCardLimitValidates(t *testing.T) {
+	bad := map[string]struct {
+		id    string
+		limit CardLimit
+	}{
+		"没有卡 ID":   {"", CardLimit{DailyLimit: "1.00"}},
+		"全部为空":     {"c1", CardLimit{}},
+		"零":        {"c1", CardLimit{DailyLimit: "0"}},
+		"零点零零":     {"c1", CardLimit{SingleLimit: "0.00"}},
+		"三位小数":     {"c1", CardLimit{MonthlyLimit: "1.001"}},
+		"负数":       {"c1", CardLimit{SingleLimit: "-5"}},
+		"带货币符号":    {"c1", CardLimit{SingleLimit: "$5"}},
+		"一项合法一项非法": {"c1", CardLimit{SingleLimit: "5.00", DailyLimit: "abc"}},
+	}
+	for name, tc := range bad {
+		t.Run(name, func(t *testing.T) {
+			m, c := newMockPlatform(t)
+			err := c.UpdateCardLimit(context.Background(), tc.id, tc.limit)
+			if err == nil {
+				t.Fatal("应报错")
+			}
+			if OutcomeOf(err) != OutcomeNotSent {
+				t.Errorf("outcome = %v，应为未发送", OutcomeOf(err))
+			}
+			if m.Last != nil {
+				t.Errorf("不应发请求: %s %s", m.Last.Method, m.Last.URL.Path)
+			}
+		})
+	}
+}
+
+// 限额接口被拒或结果不明时错误如实返回，不吞掉。
+func TestUpdateCardLimitSurfacesFailure(t *testing.T) {
+	m, c := newMockPlatform(t)
+	m.Reply = func(w http.ResponseWriter, r *http.Request) { m.signedJSON(w, 500, `{}`) }
+	err := c.UpdateCardLimit(context.Background(), "c1", CardLimit{DailyLimit: "1.00"})
+	if err == nil || OutcomeOf(err) != OutcomeUnknown {
+		t.Fatalf("500 应是结果未知: %v", err)
 	}
 }

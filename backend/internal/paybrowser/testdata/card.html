@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Card</title>
+<style>
+  body { font-family: sans-serif; margin: 8px; }
+  label { display: block; margin: 6px 0; }
+</style>
+</head>
+<body>
+<!--
+  仿造的 Stripe 卡片 iframe（测试用），由与支付页跨站的服务提供。
+  字段 id 与 selectors.go 中 CardNumber、Expiry、CVC 的首选项一致。?nocvc=1 时没有 CVC 框。
+  ?decoy=1 时多一个可见的 submit 按钮，每次点击都 POST 到本服务的 /decoy 计数（支付不应点到它）。
+  ?decoyonly=1 时卡字段都隐藏，只留诱饵按钮（卡字段在主文档的页面用它）。
+  ?banner=文字 时一开始就有带这段文字的 [role="alert"]。
+  支付页发来 collect 消息时回传各字段的值，以及卡号框收到的真实按键次数（检验逐字键入）；
+  发来 fielderror 消息时显示 .p-FieldError。
+-->
+<label>Card number <input id="payment-numberInput" name="number" autocomplete="cc-number" inputmode="numeric"></label>
+<label>Expiration date <input id="payment-expiryInput" name="expiry" autocomplete="cc-exp" inputmode="numeric"></label>
+<label id="cvc-row">Security code <input id="payment-cvcInput" name="cvc" autocomplete="cc-csc" inputmode="numeric"></label>
+<button type="submit" id="decoy-submit" style="display:none">Save card</button>
+<script>
+  var q = new URLSearchParams(location.search)
+  if (q.get('nocvc') === '1') {
+    document.getElementById('cvc-row').remove()
+  }
+  if (q.get('decoyonly') === '1') {
+    Array.from(document.querySelectorAll('label')).forEach(function (el) { el.style.display = 'none' })
+  }
+  if (q.get('decoy') === '1') {
+    var decoy = document.getElementById('decoy-submit')
+    decoy.style.display = ''
+    decoy.addEventListener('click', function () { fetch('/decoy', { method: 'POST' }) })
+  }
+  function addNote(attr, value, text) {
+    var el = document.createElement('div')
+    el.setAttribute(attr, value)
+    el.textContent = text
+    document.body.appendChild(el)
+  }
+  if (q.get('banner')) addNote('role', 'alert', q.get('banner'))
+  var numberKeys = 0
+  document.getElementById('payment-numberInput').addEventListener('keydown', function (e) {
+    if (e.isTrusted && e.key.length === 1) numberKeys++
+  })
+  function val(id) {
+    var el = document.getElementById(id)
+    return el ? el.value : ''
+  }
+  window.addEventListener('message', function (e) {
+    if (e.source !== parent || !e.data) return
+    if (e.data.type === 'fielderror') addNote('class', 'p-FieldError', e.data.text)
+    if (e.data.type !== 'collect') return
+    parent.postMessage({
+      type: 'card',
+      number: val('payment-numberInput'), expiry: val('payment-expiryInput'), cvc: val('payment-cvcInput'),
+      numberKeys: numberKeys
+    }, '*')
+  })
+</script>
+</body>
+</html>

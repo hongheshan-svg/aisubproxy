@@ -4,6 +4,10 @@ services:
     image: cdk-recharge:latest
     container_name: cdk-recharge
     restart: unless-stopped
+    # Chrome 带沙箱运行需要创建用户命名空间，Docker 默认 seccomp 不放行 clone、unshare。
+    # 这份配置 = Docker 默认配置 + 放行这两个调用；不用 unconfined，也不加 SYS_ADMIN。
+    security_opt:
+      - seccomp=./deploy/chrome-seccomp.json
     volumes:
       - cdk_data:/app/data
     env_file:

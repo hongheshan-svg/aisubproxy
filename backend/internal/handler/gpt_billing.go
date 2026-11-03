@@ -23,26 +23,8 @@ func accounthubBaseURL() string {
 	return "http://localhost:8788"
 }
 
-// extractEmailFromSession 从 session JSON 提取 user.email。
-func extractEmailFromSession(raw string) string {
-	s := strings.TrimSpace(raw)
-	if !strings.HasPrefix(s, "{") {
-		return ""
-	}
-	var data map[string]interface{}
-	if json.Unmarshal([]byte(s), &data) != nil {
-		return ""
-	}
-	if user, ok := data["user"].(map[string]interface{}); ok {
-		if email, ok := user["email"].(string); ok {
-			return strings.TrimSpace(email)
-		}
-	}
-	if email, ok := data["email"].(string); ok {
-		return strings.TrimSpace(email)
-	}
-	return ""
-}
+// billingSessionCheck 用用户当场粘贴的会话查上游。只能用于粘贴模式，绝不能传存储的会话。
+var billingSessionCheck = gptcheck.Check
 
 type acchubInvoiceResp struct {
 	InvoiceURL string                   `json:"invoice_url"`
@@ -63,7 +45,9 @@ func queryAccounthubInvoices(email string) (*acchubInvoiceResp, error) {
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if resp.StatusCode != 200 {
-		var errResp struct{ Error string `json:"error"` }
+		var errResp struct {
+			Error string `json:"error"`
+		}
 		json.Unmarshal(body, &errResp)
 		return nil, fmt.Errorf("accounthub %d: %s", resp.StatusCode, errResp.Error)
 	}
@@ -76,8 +60,8 @@ func queryAccounthubInvoices(email string) (*acchubInvoiceResp, error) {
 
 // SessionBillingCheck POST /api/v1/public/billing/check
 // 支持：
-//  1. cdk_code — 用兑换时绑定的 session 查账单
-//  2. token_input / session — 直接贴 session / accessToken
+//  1. cdk_code — 用兑换时记下的账号邮箱经 accounthub 查账单。★知道卡密不等于本人，绝不拿存储的会话去调上游★
+//  2. token_input / session — 用户当场粘贴 session / accessToken，用这一份查上游
 func SessionBillingCheck(c *gin.Context) {
 	var req struct {
 		TokenInput string `json:"token_input"`
@@ -99,21 +83,9 @@ func SessionBillingCheck(c *gin.Context) {
 		cdk = strings.TrimSpace(req.Code)
 	}
 
-	source := "session"
 	if raw == "" && cdk != "" {
-		sess, err := db.GetSessionByCDK(cdk)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "查询绑定失败"})
-			return
-		}
-		if strings.TrimSpace(sess) == "" {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": "未找到该卡密绑定的 session。请确认兑换时使用了 session 凭证，或改用直接粘贴 session 查询。",
-			})
-			return
-		}
-		raw = sess
-		source = "cdk"
+		billingCheckByCDK(c, cdk)
+		return
 	}
 
 	if raw == "" {
@@ -121,38 +93,8 @@ func SessionBillingCheck(c *gin.Context) {
 		return
 	}
 
-	// CDK 模式优先走 accounthub：用内部刷新过的 session 查账单
-	if source == "cdk" {
-		email := extractEmailFromSession(raw)
-		if email != "" {
-			if inv, err := queryAccounthubInvoices(email); err == nil {
-				summary := map[string]interface{}{
-					"email": email,
-				}
-				invoices := inv.Invoices
-				if invoices == nil && inv.InvoiceURL != "" {
-					invoices = []map[string]interface{}{
-						{"hosted_invoice_url": inv.InvoiceURL},
-					}
-				}
-				if invoices == nil {
-					invoices = []map[string]interface{}{}
-				}
-				c.JSON(http.StatusOK, gin.H{
-					"summary":     summary,
-					"invoices":    invoices,
-					"invoice_url": inv.InvoiceURL,
-					"auth_source": "accounthub",
-				})
-				return
-			} else {
-				log.Printf("[billing] accounthub fallback for %s: %v", email, err)
-			}
-		}
-	}
-
-	// 回退：直接用 session/accessToken 查
-	res, err := gptcheck.Check(raw)
+	// 用户当场粘贴的 session / accessToken
+	res, err := billingSessionCheck(raw)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
@@ -160,6 +102,44 @@ func SessionBillingCheck(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"summary":     res.Summary,
 		"invoices":    res.Invoices,
-		"auth_source": source,
+		"auth_source": "session",
+	})
+}
+
+// billingCheckByCDK 凭卡密查账单：只用绑定时记下的邮箱问 accounthub。查不到邮箱或 accounthub 不可用就如实报错，
+// 让用户粘贴 session，不回退到用存储的会话调上游。
+func billingCheckByCDK(c *gin.Context, cdk string) {
+	email, err := db.GetAccountEmailByCDK(cdk)
+	if err != nil {
+		log.Printf("[billing] 读取卡密绑定的邮箱失败: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询绑定失败"})
+		return
+	}
+	if email == "" {
+		c.JSON(http.StatusNotFound, gin.H{
+			"error": "未找到该卡密绑定的账号。请确认兑换时使用了 session 凭证，或改用直接粘贴 session 查询。",
+		})
+		return
+	}
+	inv, err := queryAccounthubInvoices(email)
+	if err != nil {
+		log.Printf("[billing] accounthub 查询失败: %v", err)
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "账单服务暂时不可用，请稍后再试，或改用直接粘贴 session 查询。"})
+		return
+	}
+	invoices := inv.Invoices
+	if invoices == nil && inv.InvoiceURL != "" {
+		invoices = []map[string]interface{}{
+			{"hosted_invoice_url": inv.InvoiceURL},
+		}
+	}
+	if invoices == nil {
+		invoices = []map[string]interface{}{}
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"summary":     map[string]interface{}{"email": email},
+		"invoices":    invoices,
+		"invoice_url": inv.InvoiceURL,
+		"auth_source": "accounthub",
 	})
 }

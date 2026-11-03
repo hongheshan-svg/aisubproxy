@@ -88,13 +88,11 @@ type UpdateAccountStatusRequest struct {
 	Remark        string `json:"remark"`
 }
 
-// CreateAccount 创建账户。按规范，请求体需包一层 {"data": {...}}。
+// CreateAccount 创建账户。官方当前规范（2026-11-03 下载的 openapi）请求体为平铺的
+// {account_name, out_account_no, purpose}，不再包 data 层。
 func (c *Client) CreateAccount(ctx context.Context, req CreateAccountRequest) (*SubAccount, error) {
-	body := struct {
-		Data CreateAccountRequest `json:"data"`
-	}{req}
 	out := &SubAccount{}
-	if err := c.call(ctx, http.MethodPost, "/v1/accounts", "", body, out); err != nil {
+	if err := c.call(ctx, http.MethodPost, "/v1/accounts", "", req, out); err != nil {
 		return nil, err
 	}
 	return out, nil

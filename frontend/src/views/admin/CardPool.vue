@@ -1,9 +1,6 @@
 <template>
   <div class="space-y-4">
-    <div class="card">
-      <h2 class="text-xl font-bold text-ink">卡池</h2>
-      <p class="text-sm text-muted mt-1">MarsWallex 卡池：库存、卡、持卡人、单据、交易与策略</p>
-    </div>
+    <AdminPageHeader title="卡池" description="MarsWallex 卡池：库存、卡、持卡人、单据、交易与策略" class="!mb-0" />
 
     <div class="card">
       <el-tabs v-model="tab">
@@ -12,10 +9,11 @@
           <div class="flex justify-end mb-2">
             <el-button size="small" :loading="ovLoading" @click="loadOverview">刷新</el-button>
           </div>
+          <ApiErrorNotice v-if="ovConfigError" :message="ovConfigError" />
           <div v-if="overview" class="space-y-4">
             <div>
               <div class="text-xs uppercase tracking-wide text-muted mb-1">主钱包余额</div>
-              <p v-if="overview.balance_error" class="text-sm text-warn">{{ overview.balance_error }}</p>
+              <ApiErrorNotice v-if="overview.balance_error" :message="overview.balance_error" />
               <el-table v-else :data="overview.main_balances" size="small" border empty-text="暂无余额">
                 <el-table-column prop="currency" label="币种" width="100" />
                 <el-table-column prop="available_balance" label="可用" min-width="120" />
@@ -96,6 +94,7 @@
               <template #default="{ row }">
                 <div class="flex flex-wrap gap-1">
                   <el-button size="small" text @click="openDetail(row)">详情</el-button>
+                  <el-button v-if="row.pool_state !== 'retired'" size="small" plain @click="openLimit(row)">限额</el-button>
                   <template v-if="row.pool_state === 'available'">
                     <el-button size="small" type="primary" plain @click="leaseCard(row)">租用</el-button>
                     <el-button size="small" type="warning" plain @click="disableCard(row)">停用</el-button>
@@ -324,6 +323,24 @@
                 </el-form-item>
               </div>
 
+              <div class="text-sm font-semibold text-ink mb-1">资金上限（美元）</div>
+              <p class="text-xs text-muted mb-2">超过上限的注资或转账会被后端直接拒绝，不能填 0 或负数，也没有「不限」。</p>
+              <div class="grid-form">
+                <el-form-item label="单笔注资上限">
+                  <el-input v-model="limitText.fund" placeholder="例如 500.00" inputmode="decimal" data-field="max_fund" />
+                </el-form-item>
+                <el-form-item label="钱包操作上限（单笔转账、兑换）">
+                  <el-input v-model="limitText.wallet" placeholder="例如 2000.00" inputmode="decimal" data-field="max_wallet" />
+                </el-form-item>
+                <el-form-item label="单日注资累计上限（按北京日）">
+                  <el-input v-model="limitText.daily" placeholder="例如 2000.00" inputmode="decimal" data-field="daily_cap" />
+                </el-form-item>
+                <el-form-item label="未选用 MarsWallex 时仍自动补卡">
+                  <el-switch v-model="policy.replenish_when_unselected" />
+                  <div class="text-xs text-muted mt-1">默认发码服务商不是 MarsWallex 时，自动补卡会暂停并每日告警一次。打开后仍会补卡，会占用主钱包余额。</div>
+                </el-form-item>
+              </div>
+
               <el-form-item label="开卡持卡人（可多选）">
                 <el-select v-model="policy.holder_ids" multiple filterable allow-create default-first-option style="width: 100%" placeholder="选择或输入持卡人 ID">
                   <el-option v-for="h in holders" :key="h.card_holder_id" :value="h.card_holder_id"
@@ -464,6 +481,35 @@
       </template>
     </el-dialog>
 
+    <!-- 单卡限额 -->
+    <el-dialog v-model="limitOpen" :title="`卡限额 ${limitCard?.card_id || ''}`" width="480px" :close-on-click-modal="false" append-to-body>
+      <div class="space-y-3" v-loading="limitLoading">
+        <div v-if="limitLoadError" class="alert alert-error text-sm">
+          读取当前限额失败，不能在不知道当前值的情况下修改：{{ limitLoadError }}
+          <el-button size="small" link type="primary" @click="loadLimit">重试</el-button>
+        </div>
+        <template v-else>
+          <div class="alert alert-warning text-sm">
+            设置限额可能导致付款被拒：付款金额超过单笔、当日或当月限额时，平台会直接拒绝。
+            这是整体替换，没填的项会变成不限制；至少填一项。
+          </div>
+          <el-form label-position="top" @submit.prevent>
+            <el-form-item label="单笔限额（美元，留空不限）"><el-input v-model="limitForm.single" inputmode="decimal" /></el-form-item>
+            <el-form-item label="单日限额（美元，留空不限）"><el-input v-model="limitForm.daily" inputmode="decimal" /></el-form-item>
+            <el-form-item label="单月限额（美元，留空不限）"><el-input v-model="limitForm.monthly" inputmode="decimal" /></el-form-item>
+          </el-form>
+          <div v-if="limitRemaining" class="text-sm text-muted">
+            剩余：单日 {{ limitRemaining.daily_remaining ?? '未设限' }}；单月 {{ limitRemaining.monthly_remaining ?? '未设限' }}
+          </div>
+          <p v-if="limitError" class="field-error">{{ limitError }}</p>
+        </template>
+      </div>
+      <template #footer>
+        <el-button @click="limitOpen = false">取消</el-button>
+        <el-button type="primary" :loading="limitSaving" :disabled="!!limitLoadError || limitLoading" @click="saveLimit">保存限额</el-button>
+      </template>
+    </el-dialog>
+
     <!-- 卡详情 -->
     <el-drawer v-model="detailOpen" :title="`卡详情 ${detail?.card.card_id || ''}`" size="720px" @closed="detail = null; balTxns = []">
       <div v-if="detail" class="space-y-4">
@@ -554,7 +600,12 @@
 </template>
 
 <script setup lang="ts">
+import ApiErrorNotice from '../../components/ApiErrorNotice.vue'
+import { mapApiError } from '../../lib/errors'
+import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { useRouteTab } from '../../lib/useRouteTab'
+import { centsToUsd, usdToCents } from '../../lib/provider'
 import { useRouter } from 'vue-router'
 import CardholderForm from './components/CardholderForm.vue'
 import {
@@ -610,6 +661,10 @@ interface Policy {
   product_fail_threshold: number
   card_fail_threshold: number
   auto_suspend: boolean
+  max_fund_cents: number
+  max_wallet_op_cents: number
+  daily_fund_cap_cents: number
+  replenish_when_unselected: boolean
 }
 interface Health {
   product_id: string; plan_key: string; success_24h: number; failed_24h: number
@@ -626,7 +681,7 @@ const ORDER_STATES = ['pending', 'processing', 'unknown', 'needs_review', 'succe
 
 const router = useRouter()
 const auth = useAuthStore()
-const tab = ref('overview')
+const tab = useRouteTab('/ops/cardpool')
 
 // ---------- 通用 ----------
 function fmtIso(s: string) {
@@ -675,12 +730,23 @@ function canViewSensitive(c: Card) {
 // ---------- 概览 ----------
 const overview = ref<Overview | null>(null)
 const ovLoading = ref(false)
+const ovConfigError = ref('')
 
 async function loadOverview() {
   ovLoading.value = true
   try {
     const r = await api<Overview>('/overview')
-    if (!r.ok) return dialog.toast(errText(r, '加载概览失败'), 'err')
+    if (!r.ok) {
+      // 未配置凭证：只在页面内给一个带「去配置」的提示，不再弹 toast
+      const m = mapApiError(errText(r, '加载概览失败'))
+      if (m.config) {
+        ovConfigError.value = m.raw
+        overview.value = null
+        return
+      }
+      return dialog.toast(m.raw, 'err')
+    }
+    ovConfigError.value = ''
     overview.value = r.data
   } finally {
     ovLoading.value = false
@@ -705,7 +771,10 @@ async function loadProducts() {
   if (r.ok) {
     products.value = r.data.items || []
     ensureTargetRows()
-  } else dialog.toast(errText(r, '加载产品失败'), 'warn')
+  } else if (!mapApiError(errText(r, '')).config) {
+    // 未配置凭证已在概览里提示（带「去配置」），这里不再重复弹 toast
+    dialog.toast(errText(r, '加载产品失败'), 'warn')
+  }
 }
 
 // ---------- 卡 ----------
@@ -1188,11 +1257,74 @@ async function runBackfill(days: number) {
   }
 }
 
+// ---------- 单卡限额 ----------
+interface CardLimit { single_limit?: string; daily_limit?: string; monthly_limit?: string }
+const limitOpen = ref(false)
+const limitCard = ref<Card | null>(null)
+const limitLoading = ref(false)
+const limitSaving = ref(false)
+const limitLoadError = ref('')
+const limitError = ref('')
+const limitForm = reactive({ single: '', daily: '', monthly: '' })
+const limitRemaining = ref<{ daily_remaining?: string; monthly_remaining?: string } | null>(null)
+
+function openLimit(row: Card) {
+  limitCard.value = row
+  limitOpen.value = true
+  limitForm.single = limitForm.daily = limitForm.monthly = ''
+  limitRemaining.value = null
+  limitError.value = ''
+  loadLimit()
+}
+async function loadLimit() {
+  const card = limitCard.value
+  if (!card) return
+  limitLoading.value = true
+  limitLoadError.value = ''
+  const r = await api<{ limit?: CardLimit; limit_remaining?: { daily_remaining?: string; monthly_remaining?: string } }>(`/cards/${encodeURIComponent(card.card_id)}/limit-usage`)
+  limitLoading.value = false
+  if (limitCard.value?.card_id !== card.card_id) return
+  if (!r.ok) { limitLoadError.value = errText(r, '读取限额失败'); return }
+  limitForm.single = r.data.limit?.single_limit || ''
+  limitForm.daily = r.data.limit?.daily_limit || ''
+  limitForm.monthly = r.data.limit?.monthly_limit || ''
+  limitRemaining.value = r.data.limit_remaining || null
+}
+async function saveLimit() {
+  const card = limitCard.value
+  if (!card || limitSaving.value) return
+  limitError.value = ''
+  const out: Record<string, string> = {}
+  const fields: [string, string, string][] = [['single_limit', limitForm.single, '单笔限额'], ['daily_limit', limitForm.daily, '单日限额'], ['monthly_limit', limitForm.monthly, '单月限额']]
+  for (const [key, text, name] of fields) {
+    if (!text.trim()) continue
+    const c = usdToCents(text)
+    if (!c.ok) { limitError.value = `${name}：${c.error}`; return }
+    out[key] = centsToUsd(c.cents)
+  }
+  if (!Object.keys(out).length) { limitError.value = '至少填写一项限额'; return }
+  const desc = fields.map(([k, , name]) => `${name}：${out[k] ? out[k] + ' 美元' : '不限制'}`).join('\n')
+  const ok = await dialog.confirm(
+    `卡 ${card.card_id}（尾号 ${card.last4 || '—'}）\n将把限额整体替换为：\n${desc}\n\n设置限额可能导致付款被拒。确认设置？`,
+    { title: '确认设置限额', okText: '确认设置', danger: true },
+  )
+  if (!ok) return
+  limitSaving.value = true
+  const r = await api(`/cards/${encodeURIComponent(card.card_id)}/limit`, 'PUT', out)
+  limitSaving.value = false
+  if (r.ok) { dialog.toast('限额已设置'); limitOpen.value = false; return }
+  if (r.status === 409) limitError.value = errText(r, '这张卡正在付款中，现在不能改限额')
+  else if (r.status === 502 && r.data?.outcome === 'unknown') limitError.value = '平台可能已经改了，结果不明。请重新读取限额确认；内容相同可以再提交一次。'
+  else limitError.value = errText(r, '设置失败')
+}
+
 // ---------- 策略与健康度 ----------
 const policy = ref<Policy | null>(null)
 const openAmountText = ref('0.00')
 const policySaving = ref(false)
 const policyError = ref('')
+// 三个资金上限在界面上用美元文本编辑，提交时换算成分
+const limitText = reactive({ fund: '', wallet: '', daily: '' })
 const newPlanKey = ref('')
 const health = ref<Health[]>([])
 const healthLoading = ref(false)
@@ -1230,6 +1362,9 @@ async function loadPolicy() {
   policy.value = p
   ensureTargetRows()
   openAmountText.value = money(p.open_amount_cents)
+  limitText.fund = centsToUsd(p.max_fund_cents)
+  limitText.wallet = centsToUsd(p.max_wallet_op_cents)
+  limitText.daily = centsToUsd(p.daily_fund_cap_cents)
 }
 
 function addProduct(key: string, pid: string) {
@@ -1259,9 +1394,40 @@ async function savePolicy() {
     policyError.value = '开卡金额无效，须为不少于 0 且最多两位小数的数字'
     return
   }
+  const fund = usdToCents(limitText.fund)
+  const wallet = usdToCents(limitText.wallet)
+  const daily = usdToCents(limitText.daily)
+  const bad = !fund.ok ? `单笔注资上限：${fund.error}` : !wallet.ok ? `钱包操作上限：${wallet.error}` : !daily.ok ? `单日注资累计上限：${daily.error}` : ''
+  if (bad || !fund.ok || !wallet.ok || !daily.ok) {
+    policyError.value = bad
+    return
+  }
+  // 资金上限变了要二次确认：写清旧值和新值
+  const old = await api<Policy>('/policy')
+  if (!old.ok) {
+    policyError.value = '无法读取当前策略来对比资金上限，已取消保存：' + errText(old, '读取失败')
+    return
+  }
+  const changes: string[] = []
+  const chk = (name: string, before: number, after: number) => {
+    if (before !== after) changes.push(`${name}：${centsToUsd(before)} → ${centsToUsd(after)} 美元`)
+  }
+  chk('单笔注资上限', old.data.max_fund_cents, fund.cents)
+  chk('钱包操作上限', old.data.max_wallet_op_cents, wallet.cents)
+  chk('单日注资累计上限', old.data.daily_fund_cap_cents, daily.cents)
+  if (!!old.data.replenish_when_unselected !== !!policy.value.replenish_when_unselected) {
+    changes.push(`未选用 MarsWallex 时自动补卡：${policy.value.replenish_when_unselected ? '关 → 开（会占用主钱包余额开卡）' : '开 → 关'}`)
+  }
+  if (changes.length) {
+    const ok = await dialog.confirm(`将修改影响资金的策略：\n${changes.join('\n')}\n\n确认保存？`, { title: '确认修改资金策略', okText: '确认保存', danger: true })
+    if (!ok) return
+  }
   // PUT 会替换整份策略：带上从服务器加载的全部字段，只改表单里编辑的值。
   const body: Policy = {
     ...policy.value,
+    max_fund_cents: fund.cents,
+    max_wallet_op_cents: wallet.cents,
+    daily_fund_cap_cents: daily.cents,
     open_amount_cents: Math.round(Number(amt) * 100),
     product_targets: Object.fromEntries(
       Object.entries(policy.value.product_targets).filter(([, t]) => t.target > 0 || t.daily_limit > 0),
@@ -1301,7 +1467,7 @@ async function resumeProduct(row: Health) {
 }
 
 // ---------- 标签切换 / 生命周期 ----------
-watch(tab, (t) => {
+function onTab(t: string) {
   if (t === 'overview') loadOverview()
   else if (t === 'cards') loadCards()
   else if (t === 'holders') { loadHolders(); loadSubmissions() }
@@ -1312,11 +1478,14 @@ watch(tab, (t) => {
     loadPolicy()
     loadHealth()
   }
-})
+}
+watch(tab, onTab)
 
 onMounted(() => {
   loadProducts()
-  loadOverview()
+  // 刷新后从 ?tab= 直接落在非概览标签时，加载该标签的数据
+  if (tab.value === 'overview') loadOverview()
+  else { loadOverview(); onTab(tab.value) }
 })
 
 onBeforeUnmount(() => {

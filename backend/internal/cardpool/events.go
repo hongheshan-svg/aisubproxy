@@ -370,7 +370,7 @@ func (s *Service) onTransferResult(ctx context.Context, ev *marswallex.WebhookEv
 	}
 	r := queryResult{State: st, TxnID: d.TransactionID}
 	if st == StateFailed {
-		r.Reason = "平台返回 " + normStatus(d.Status)
+		r.Reason = transferFailReason(d.FailReason)
 	}
 	got, err := s.finalize(ctx, o.OutOrderNo, r, "webhook")
 	if err != nil {

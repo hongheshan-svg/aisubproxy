@@ -140,6 +140,9 @@ func (s *Service) SubmitConversion(ctx context.Context, p ConversionParams) (*Or
 	if err != nil {
 		return nil, badRequest(err.Error())
 	}
+	if err := s.checkWalletLimit("兑换", p.SellCents, p.By); err != nil {
+		return nil, err
+	}
 	if err := s.SyncAccounts(ctx); err != nil {
 		return nil, err
 	}
@@ -217,6 +220,9 @@ func (s *Service) SubmitWalletTransfer(ctx context.Context, p WalletTransferPara
 	amount, err := marswallex.FormatAmount(p.AmountCents)
 	if err != nil {
 		return nil, badRequest(err.Error())
+	}
+	if err := s.checkWalletLimit("钱包转账", p.AmountCents, p.By); err != nil {
+		return nil, err
 	}
 	if err := s.SyncAccounts(ctx); err != nil {
 		return nil, err

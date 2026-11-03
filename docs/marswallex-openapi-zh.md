@@ -11,7 +11,7 @@
 | 数据格式 | 请求与响应均为 JSON（文件上传为 `multipart/form-data`） |
 | 认证 | `Authorization: Basic BASE64(developerId:apiToken)` |
 | 签名 | 每个请求带 `F-Signature: t={epoch},v={Base64(SHA256withRSA(payload))}`，响应与 Webhook 同样带 `F-Signature`，用 MarsWallex 公钥验签 |
-| 接口数量 | 28 个 API + 10 类 Webhook |
+| 接口数量 | 30 个 API + 10 类 Webhook（规范快照日期 2026-11-03，含卡限额修改与剩余限额查询两个接口） |
 
 ## 接入注意（整理时发现的问题，联调前需向 MarsWallex 确认）
 
@@ -22,7 +22,7 @@
 5. **中英文规范说明详略不同**：两版的接口和字段完全一致，但中文版有 15 种字段缺说明（多在卡交易、分页参数），本文已按英文版译成中文补齐。
 6. **时间字段单位不统一**：多数 `*_time` 字段标注为 Unix 秒，但转账详情 `TransferDetail` 的 `create_time` / `success_time` 标注为 Unix 毫秒；官方响应签名示例里账户的 `create_time` 又是 ISO 字符串（`2025-12-15T10:55:03.000+00:00`）。解析时按位数区分秒和毫秒，并兼容字符串格式。
 
-7. **创建账户的请求体多包了一层 `data`**：`POST /v1/accounts` 的请求体是 `{"data":{"account_name":"...","out_account_no":"..."}}`，中英文规范都是这样，和其他接口的写法不同，联调时确认。
+7. **创建账户的请求体为平铺**：`POST /v1/accounts` 按 2026-11-03 下载的官方规范，请求体是 `{"account_name":"...","out_account_no":"...","purpose":"..."}`，不再包 `data`（仓库旧存档曾是包一层的写法，已作废）。若联调被拒，再与 MarsWallex 确认。
 8. **`PUT /v1/card/status` 的 `account_no` 标成了 integer**：其他接口的账户号都是 string，而账户号是 19 位数字（如 `2000519969952288769`），超出 JavaScript 安全整数范围。建议按字符串传，并向 MarsWallex 确认。
 9. **各接口声明的状态码不统一**：申卡、创建账户、账户状态变更列了完整的 200/201/202/400/401/403/404/409/500；卡转入转出、兑换只列了 200/201/400；转账只列了 200/400/404；查询类接口大多只列了 200/400。没列出的状态码不代表不会返回。资金类请求（申卡、卡转入转出、兑换、转账）只有 200 能直接作为结果，其他状态码以及超时、断连，一律先查单确认，再决定是否重试；重试时沿用同一个 `out_order_no`。
 10. **交易状态里的 `pending`**：授权交易、结算交易的 `status` 说明写着「终态才会通知」，但枚举里有 `pending`（处理中）。收到 `pending` 不要当作终态。
@@ -71,9 +71,9 @@
    - `expiry_date` 格式 `MMyy`，范围是一个月后到四年内；
    - 共享卡要传共享账户的 `account_no`；
    - `fee_deduct_type` 不传默认 `WALLET`（钱包扣费），传 `CARD_ACCOUNT`（卡扣费）前要确认卡产品支持；
-   - 可选 `limit.single_limit` 设单笔限额。
+   - 可选 `limit` 设单笔（`single_limit`）。本项目开卡不下发限额，日/月限额只在后台手动设置，见 `PUT /v1/card/limit`。
 3. 申卡结果看 `CARD_APPLY_RESULT` 通知，或查 `GET /v1/card/apply-order`（`PROCESSING` → `SUCCESS` / `FAILED`），成功后拿到 `card_id`。
-4. 卡信息：`GET /v1/card/detail/{card_id}`（余额、状态、限额）；`GET /v1/card/sensitive/{card_id}`（完整卡号、CVV2、有效期）。
+4. 卡信息：`GET /v1/card/detail/{card_id}`（余额、状态、限额）；`GET /v1/card/limit-usage/{card_id}`（剩余日/月限额）；`GET /v1/card/sensitive/{card_id}`（完整卡号、CVV2、有效期）。
 
 ### 5. 卡资金
 
@@ -342,6 +342,8 @@ RSA.verify(signatureValue, signingPayload, marsWallexPublicKey)
 | 卡管理 | `GET` | [`/v1/card/balance-transactions`](#get-v1-card-balance-transactions) | 分页卡转入转出明细 |
 | 卡管理 | `GET` | [`/v1/card/sensitive/{card_id}`](#get-v1-card-sensitive-card-id) | 查询卡敏感信息 |
 | 卡管理 | `GET` | [`/v1/card/detail/{card_id}`](#get-v1-card-detail-card-id) | 查询卡详情 |
+| 卡管理 | `PUT` | [`/v1/card/limit`](#put-v1-card-limit) | 卡限额修改 |
+| 卡管理 | `GET` | [`/v1/card/limit-usage/{card_id}`](#get-v1-card-limit-usage-card-id) | 查询卡剩余限额 |
 | 持卡人 | `POST` | [`/v1/cardholder`](#post-v1-cardholder) | 添加持卡人 |
 | 持卡人 | `GET` | [`/v1/cardholder/{card_holder_id}`](#get-v1-cardholder-card-holder-id) | 查询持卡人 |
 | 持卡人 | `PUT` | [`/v1/cardholder/{card_holder_id}`](#put-v1-cardholder-card-holder-id) | 修改持卡人 |
@@ -407,10 +409,9 @@ RSA.verify(signatureValue, signingPayload, marsWallexPublicKey)
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `data` | object | 是 |  |
-| `data.account_name` | string | 是 | 账户别名，不含空格或换行；最大长度: `50`；示例: `SubAccountA` |
-| `data.out_account_no` | string | 是 | 商户侧账户号（创建必填，必回显），不含空格或换行；最大长度: `64`；示例: `SUB202607200001` |
-| `data.purpose` | string | 否 | 用途：传 SHARED_ACCOUNT 创建共享账户；不传或传 null 创建普通子账户；可选值: `SHARED_ACCOUNT`；可为 null |
+| `account_name` | string | 是 | 账户别名，不含空格或换行；最大长度: `50`；示例: `SubAccountA` |
+| `out_account_no` | string | 是 | 商户侧账户号（创建必填，必回显），不含空格或换行；最大长度: `64`；示例: `SUB202607200001` |
+| `purpose` | string | 否 | 用途：传 SHARED_ACCOUNT 创建共享账户；不传或传 null 创建普通子账户；可选值: `SHARED_ACCOUNT`；可为 null |
 
 **成功响应（200）**
 
@@ -602,6 +603,8 @@ RSA.verify(signatureValue, signingPayload, marsWallexPublicKey)
 | `fee_deduct_type` | string | 否 | 手续费扣收方式：CARD_ACCOUNT=卡扣费，WALLET=钱包扣费。不传或传空默认 WALLET；是否支持 CARD_ACCOUNT 取决于卡产品，取值须在卡产品 supported_fee_deduct_types 列表内；可选值: `CARD_ACCOUNT`, `WALLET` |
 | `limit` | object | 否 | 交易限额 |
 | `limit.single_limit` | string | 否 | 单笔限额 |
+| `limit.daily_limit` | string | 否 | 单日限额 |
+| `limit.monthly_limit` | string | 否 | 单月限额 |
 
 **成功响应（200）**
 
@@ -847,6 +850,58 @@ RSA.verify(signatureValue, signingPayload, marsWallexPublicKey)
 | `data.create_time` | number | 否 |  |
 | `data.limit` | object | 否 | 交易限额 |
 | `data.limit.single_limit` | string | 否 | 单笔限额 |
+| `data.limit.daily_limit` | string | 否 | 单日限额 |
+| `data.limit.monthly_limit` | string | 否 | 单月限额 |
+
+**其他状态码**：`400` 请求错误
+
+<a id="put-v1-card-limit"></a>
+
+### 卡限额修改
+
+`PUT /v1/card/limit`
+
+限额是整体替换：没传的项在平台上视为不限制。本项目只在后台手动调用（`PUT /api/v1/admin/cardpool/cards/:id/limit`），开卡和付款流程都不会自动下发。
+
+**请求体**（`application/json`）
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `card_id` | string | 是 | 卡ID |
+| `limit` | object | 是 | 交易限额 |
+| `limit.single_limit` | string | 否 | 单笔限额，最小0.01，不传则不限制 |
+| `limit.daily_limit` | string | 否 | 单日限额，最小0.01，不传则不限制 |
+| `limit.monthly_limit` | string | 否 | 单月限额，最小0.01，不传则不限制 |
+
+**成功响应（200）**：空对象。
+
+**其他状态码**：`400` 请求错误
+
+<a id="get-v1-card-limit-usage-card-id"></a>
+
+### 查询卡剩余限额
+
+`GET /v1/card/limit-usage/{card_id}`
+
+**请求参数**
+
+| 参数 | 位置 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `card_id` | path | string | 是 |  |
+
+**成功响应（200）**
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `data` | object | 否 |  |
+| `data.card_id` | string | 是 | 卡ID |
+| `data.limit` | object | 否 | 交易限额 |
+| `data.limit.single_limit` | string | 否 | 单笔限额 |
+| `data.limit.daily_limit` | string | 否 | 单日限额 |
+| `data.limit.monthly_limit` | string | 否 | 单月限额 |
+| `data.limit_remaining` | object | 是 | 剩余限额 |
+| `data.limit_remaining.daily_remaining` | string | 否 | 剩余日限额 |
+| `data.limit_remaining.monthly_remaining` | string | 否 | 剩余月限额 |
 
 **其他状态码**：`400` 请求错误
 
@@ -1669,6 +1724,8 @@ OpenAPI转账订单到达终态时触发（仅tradeSource=API的转账）
 | `create_time` | number | 否 |  |
 | `limit` | object | 否 | 交易限额 |
 | `limit.single_limit` | string | 否 | 单笔限额 |
+| `limit.daily_limit` | string | 否 | 单日限额 |
+| `limit.monthly_limit` | string | 否 | 单月限额 |
 
 ### CardSensitive
 

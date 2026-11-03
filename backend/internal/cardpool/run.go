@@ -72,6 +72,7 @@ func (s *Service) maintainRound(ctx context.Context, lg *loopLog) {
 		{"释放到期租约", s.expireLeasesOnce},
 		{"清除过期验证码", s.purgeOTPsOnce},
 		{"处理有效期不足的可用卡", s.retireExpiringOnce},
+		{"每日待人工汇总", s.dailyReviewSummary},
 	}
 	for _, st := range local {
 		if ctx.Err() != nil {

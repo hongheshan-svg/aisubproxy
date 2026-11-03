@@ -17,9 +17,30 @@ type CardProduct struct {
 	SupportedFeeDeductTypes []string `json:"supported_fee_deduct_types,omitempty"`
 }
 
-// CardLimit 为卡交易限额。
+// CardLimit 为卡交易限额；金额为字符串（最小 0.01），不传则不限制。
 type CardLimit struct {
-	SingleLimit string `json:"single_limit,omitempty"`
+	SingleLimit  string `json:"single_limit,omitempty"`
+	DailyLimit   string `json:"daily_limit,omitempty"`
+	MonthlyLimit string `json:"monthly_limit,omitempty"`
+}
+
+// UpdateCardLimitRequest 为卡限额修改参数。Limit 是整体替换：没传的项会变成「不限制」。
+type UpdateCardLimitRequest struct {
+	CardID string    `json:"card_id"`
+	Limit  CardLimit `json:"limit"`
+}
+
+// CardLimitRemaining 为卡的剩余限额。
+type CardLimitRemaining struct {
+	DailyRemaining   string `json:"daily_remaining,omitempty"`
+	MonthlyRemaining string `json:"monthly_remaining,omitempty"`
+}
+
+// CardLimitUsage 为卡限额与剩余限额。
+type CardLimitUsage struct {
+	CardID         string             `json:"card_id"`
+	Limit          *CardLimit         `json:"limit,omitempty"`
+	LimitRemaining CardLimitRemaining `json:"limit_remaining"`
 }
 
 // ApplyCardRequest 为申卡参数；Amount 为字符串金额（最多 2 位小数），ExpiryDate 为 MMyy。
@@ -80,6 +101,8 @@ type CardBalanceTransaction struct {
 	Type          string    `json:"type,omitempty"`
 	Status        string    `json:"status"`
 	CreateTime    Timestamp `json:"create_time"`
+	// FailReason 为平台给出的失败原因（Status 为 FAIL 时可能有），按平台文字处理，写入前需脱敏、截断。
+	FailReason string `json:"fail_reason,omitempty"`
 }
 
 // UpdateCardStatusRequest 为更新卡状态参数。
@@ -227,6 +250,36 @@ func (c *Client) GetCardSensitive(ctx context.Context, cardID string) (*CardSens
 func (c *Client) GetCard(ctx context.Context, cardID string) (*CardDetail, error) {
 	out := &CardDetail{}
 	if err := c.call(ctx, http.MethodGet, "/v1/card/detail/"+url.PathEscape(cardID), "", nil, out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// UpdateCardLimit 修改卡限额（PUT /v1/card/limit）。不是资金接口，但会影响之后的扣款是否被拒，只能手动调用。
+// 请求整体替换原限额，相同内容重复发送结果一样，所以结果不明时可以放心重试。三项金额都必须是大于 0 的规范金额，
+// 且至少给一项（要清除全部限额应由调用方明确决定，这里不替它发空限额）。
+func (c *Client) UpdateCardLimit(ctx context.Context, cardID string, limit CardLimit) error {
+	if cardID == "" {
+		return configError("卡 ID 不能为空", nil)
+	}
+	if limit == (CardLimit{}) {
+		return configError("至少需要设置一项限额", nil)
+	}
+	for _, v := range []string{limit.SingleLimit, limit.DailyLimit, limit.MonthlyLimit} {
+		if v == "" {
+			continue
+		}
+		if cents, err := ParseAmount(v); err != nil || cents <= 0 {
+			return configError("限额必须是大于 0 且最多两位小数的金额", err)
+		}
+	}
+	return c.call(ctx, http.MethodPut, "/v1/card/limit", "", UpdateCardLimitRequest{CardID: cardID, Limit: limit}, nil)
+}
+
+// GetCardLimitUsage 查询卡剩余限额（GET /v1/card/limit-usage/{card_id}）。
+func (c *Client) GetCardLimitUsage(ctx context.Context, cardID string) (*CardLimitUsage, error) {
+	out := &CardLimitUsage{}
+	if err := c.call(ctx, http.MethodGet, "/v1/card/limit-usage/"+url.PathEscape(cardID), "", nil, out); err != nil {
 		return nil, err
 	}
 	return out, nil

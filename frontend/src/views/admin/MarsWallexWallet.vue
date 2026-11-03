@@ -1,10 +1,7 @@
 <template>
   <div class="space-y-4">
+    <AdminPageHeader title="MarsWallex 钱包" description="主钱包与子账户、充值地址、币种兑换、转账与流水" class="!mb-0" />
     <div class="card space-y-3">
-      <div>
-        <h2 class="text-xl font-bold text-ink">MarsWallex 钱包</h2>
-        <p class="text-sm text-muted mt-1">主钱包与子账户、充值地址、兑换、转账与流水</p>
-      </div>
 
       <el-tabs v-model="tab" @tab-change="onTabChange">
         <!-- ============ 账户 ============ -->
@@ -37,7 +34,7 @@
             <el-table-column label="同步时间" min-width="150">
               <template #default="{ row }">{{ fmtTs(row.synced_at) }}</template>
             </el-table-column>
-            <el-table-column label="操作" width="110" fixed="right">
+            <el-table-column label="操作" width="110">
               <template #default="{ row }">
                 <template v-if="row.account_type === 'SUB_ACCOUNT' && !row.gone">
                   <el-button v-if="row.status === 'ACTIVE'" size="small" type="danger" plain @click="changeStatus(row, 'DISABLED')">停用</el-button>
@@ -69,7 +66,7 @@
         </el-tab-pane>
 
         <!-- ============ 兑换 ============ -->
-        <el-tab-pane label="兑换" name="conversion">
+        <el-tab-pane label="币种兑换" name="conversion">
           <el-form label-position="top" class="max-w-xl" @submit.prevent>
             <el-form-item label="卖出币种（主钱包余额币种）">
               <el-select v-model="conv.sell_currency" style="width: 100%">
@@ -106,7 +103,7 @@
             <el-table-column label="创建" min-width="150">
               <template #default="{ row }">{{ fmtTs(row.created_at) }}</template>
             </el-table-column>
-            <el-table-column label="操作" width="160" fixed="right">
+            <el-table-column label="操作" width="160">
               <template #default="{ row }">
                 <template v-if="row.state === 'needs_review'">
                   <el-button size="small" plain @click="recheck(row, convOrders)">重查</el-button>
@@ -165,7 +162,7 @@
             <el-table-column label="创建" min-width="150">
               <template #default="{ row }">{{ fmtTs(row.created_at) }}</template>
             </el-table-column>
-            <el-table-column label="操作" width="160" fixed="right">
+            <el-table-column label="操作" width="160">
               <template #default="{ row }">
                 <template v-if="row.state === 'needs_review'">
                   <el-button size="small" plain @click="recheck(row, xferOrders)">重查</el-button>
@@ -229,7 +226,9 @@
 </template>
 
 <script setup lang="ts">
+import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { useRouteTab } from '../../lib/useRouteTab'
 import { dialog } from '../../lib/dialog'
 import { copyToClipboard } from '../../lib/clipboard'
 import {
@@ -257,7 +256,7 @@ const STATUS_LABEL: Record<string, string> = {
   ACTIVE: '启用', DISABLED: '停用', INITIALIZING: '初始化中', FAILED: '失败', REJECTED: '已拒绝',
 }
 
-const tab = ref('accounts')
+const tab = useRouteTab('/ops/marswallex-wallet')
 let unmounted = false
 
 function acctTagType(s: string) {
@@ -585,6 +584,7 @@ onMounted(async () => {
   await loadAccounts(true)
   const main = mainAccount.value
   if (main) ser.account_no = main.account_no
+  if (tab.value !== 'accounts') onTabChange(tab.value)
 })
 onBeforeUnmount(() => {
   unmounted = true

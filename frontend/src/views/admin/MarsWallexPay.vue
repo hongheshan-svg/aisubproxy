@@ -1,0 +1,803 @@
+<template>
+  <div class="space-y-4">
+    <AdminPageHeader title="自动付款" description="用 ChatGPT 会话和卡池里的卡完成套餐付款：发起付款、付款订单与付款配置" class="!mb-0" />
+
+    <!-- 付款熔断：暂停期间不派发新付款，必须管理员确认原因后恢复 -->
+    <div v-if="breakerFailed" class="alert alert-warning text-sm" role="alert">
+      付款熔断状态获取失败，无法确认是否暂停。
+      <el-button size="small" link type="primary" @click="loadBreaker">重试</el-button>
+    </div>
+    <div v-else-if="breaker?.paused" class="alert alert-error breaker-banner" role="alert">
+      <div class="font-semibold">付款已暂停，新的付款单不会派发</div>
+      <div class="text-sm mt-1">原因：{{ breakerReason(breaker) || '未知' }}</div>
+      <div v-if="breaker.order_nos?.length" class="text-sm mt-1">
+        触发的单号：
+        <a v-for="no in breaker.order_nos" :key="no" class="mono underline mr-2 cursor-pointer" @click="openFromBanner(no)">{{ no }}</a>
+      </div>
+      <div class="text-xs mt-1 text-muted">
+        连续提交后失败 {{ breaker.submitted_failure_streak }} / {{ breaker.threshold }}；连续填表失败 {{ breaker.fill_failure_streak }} / {{ breaker.threshold }}
+        <template v-if="breaker.tripped_at">；触发于 {{ fmtTs(breaker.tripped_at) }}</template>
+      </div>
+      <p class="text-xs mt-1">恢复前请先看过上面的单据，确认不是同一个原因还在重复发生。恢复不会重发任何付款。</p>
+      <el-button type="danger" size="small" class="mt-2" :loading="resuming" @click="resumeBreaker">恢复付款派发</el-button>
+    </div>
+    <div class="card space-y-3">
+
+      <el-tabs v-model="tab" @tab-change="onTabChange">
+        <!-- ============ 测试兑换 ============ -->
+        <el-tab-pane label="发起付款" name="test">
+          <el-alert v-if="config?.lease_warning" type="warning" :closable="false" show-icon class="mb-3" :title="leaseWarningText" />
+          <div class="space-y-3 max-w-3xl" v-loading="configLoading">
+            <div>
+              <div class="text-sm mb-1">ChatGPT 会话</div>
+              <el-input
+                v-model="session" type="textarea" :rows="5" autocomplete="off" spellcheck="false"
+                placeholder="粘贴 ChatGPT 会话（JSON 文本）。提交成功后会立即清空，不会保存在浏览器里"
+              />
+            </div>
+            <div class="flex flex-wrap items-center gap-3">
+              <div data-testid="pay-provider" :data-selected="payProvider">
+                <el-select v-model="payProvider" placeholder="服务商" style="width: 160px" :disabled="!providerOptions.length">
+                  <el-option v-for="p in providerOptions" :key="p.name" :label="p.display_name || p.name" :value="p.name" />
+                </el-select>
+              </div>
+              <el-select v-model="planKey" placeholder="套餐" style="width: 180px">
+                <el-option v-for="p in config?.plans || []" :key="p.key" :label="p.label || p.key" :value="p.key" />
+              </el-select>
+              <el-select v-model="region" placeholder="地区" style="width: 140px">
+                <el-option v-for="r in regionList" :key="r" :label="r" :value="r" />
+              </el-select>
+            </div>
+            <div v-if="providerNotice" class="text-sm text-warn" data-testid="pay-provider-notice">{{ providerNotice }}</div>
+            <div class="space-y-1">
+              <div class="text-sm">运行方式</div>
+              <el-radio-group v-model="mode" size="default">
+                <el-radio-button value="dry_amount">{{ PAY_MODE_LABEL.dry_amount }}</el-radio-button>
+                <el-radio-button value="dry_fill">{{ PAY_MODE_LABEL.dry_fill }}</el-radio-button>
+                <el-radio-button value="real">{{ PAY_MODE_LABEL.real }}</el-radio-button>
+              </el-radio-group>
+              <div class="text-xs" :class="mode === 'real' ? 'text-warn' : 'text-muted'">{{ PAY_MODE_DESC[mode] }}</div>
+            </div>
+            <div class="text-sm">
+              <template v-if="regionConf && regionConf.cap_minor > 0">
+                <template v-if="isCreditPlan(planConf) && (regionConf.expect_minor || 0) > 0">预期金额：<b>{{ formatMinor(regionConf.expect_minor || 0, regionConf.currency) }}</b>；</template>
+                应付金额上限：<b>{{ formatMinor(regionConf.cap_minor, regionConf.currency) }}</b>；
+                注资：<b>{{ usd(regionConf.fund_cents) }} 美元</b>
+              </template>
+              <span v-else class="text-muted">该套餐在此地区未配置金额</span>
+            </div>
+            <div v-if="submitBlockReason" class="text-sm text-warn">{{ submitBlockReason }}</div>
+            <div>
+              <el-button :type="dryRun ? 'primary' : 'danger'" :loading="submitting" :disabled="!!submitBlockReason || !session.trim() || (mode === 'real' && !!breaker?.paused)" @click="submit">
+                {{ PAY_MODE_LABEL[mode] }}
+              </el-button>
+              <span v-if="mode === 'real' && breaker?.paused" class="text-sm text-warn ml-2">付款已暂停，先在上方恢复后才能真实付款</span>
+            </div>
+          </div>
+        </el-tab-pane>
+
+        <!-- ============ 订单 ============ -->
+        <el-tab-pane label="付款订单" name="orders">
+          <div class="flex flex-wrap items-center gap-2 mb-3">
+            <el-select v-model="stateFilter" clearable placeholder="全部状态" style="width: 160px" @change="onFilterChange">
+              <el-option v-for="s in STATES" :key="s" :label="stateLabel(s)" :value="s" />
+            </el-select>
+            <el-select v-model="renewalFilter" clearable placeholder="续费进度" style="width: 180px" @change="onFilterChange">
+              <el-option v-for="s in RENEWAL_STATES" :key="s" :label="renewalLabel(s)" :value="s" />
+            </el-select>
+            <el-button :loading="ordersLoading" @click="loadOrders">刷新</el-button>
+          </div>
+          <el-table :data="orders" size="small" border empty-text="暂无订单" v-loading="ordersLoading" @row-click="(row: any) => openDetail(row.order_no)" class="cursor-pointer">
+            <el-table-column label="单号" min-width="190">
+              <template #default="{ row }"><span class="mono">{{ row.order_no }}</span></template>
+            </el-table-column>
+            <el-table-column label="套餐 / 地区" min-width="120">
+              <template #default="{ row }">{{ row.plan_key }} / {{ row.region }}</template>
+            </el-table-column>
+            <el-table-column label="状态" min-width="120">
+              <template #default="{ row }">
+                <el-tag size="small" :type="stateTagType(row.state)">{{ stateLabel(row.state) }}</el-tag>
+                <el-tag v-if="row.dry_run" size="small" type="info" class="ml-1">{{ orderModeLabel(row) }}</el-tag>
+                <el-tag v-if="renewalNeedsUser(row)" size="small" type="danger" class="ml-1">续费未关闭</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="来源" min-width="100">
+              <template #default="{ row }">{{ sourceLabel(row.source, row.source_ref) }}</template>
+            </el-table-column>
+            <el-table-column label="金额" min-width="130">
+              <template #default="{ row }">{{ row.amount_minor > 0 ? formatMinor(row.amount_minor, row.currency) : '—' }}</template>
+            </el-table-column>
+            <el-table-column label="卡尾号" width="80">
+              <template #default="{ row }">{{ row.card_last4 || '—' }}</template>
+            </el-table-column>
+            <el-table-column label="账号" min-width="170" show-overflow-tooltip>
+              <template #default="{ row }">{{ row.account_email || '—' }}</template>
+            </el-table-column>
+            <el-table-column label="创建时间" min-width="160">
+              <template #default="{ row }">{{ fmtTs(row.created_at) }}</template>
+            </el-table-column>
+          </el-table>
+          <div class="mt-3 flex justify-end">
+            <el-pagination
+              v-model:current-page="page" :page-size="pageSize" :total="total" layout="total, prev, pager, next" size="small"
+              @current-change="loadOrders"
+            />
+          </div>
+        </el-tab-pane>
+
+        <!-- ============ 配置 ============ -->
+        <el-tab-pane label="付款配置" name="config">
+          <el-alert v-if="config?.lease_warning" type="warning" :closable="false" show-icon class="mb-3" :title="leaseWarningText" />
+          <div class="space-y-4" v-loading="configLoading">
+            <div v-for="p in subscriptionForm" :key="p.key" class="space-y-2">
+              <div class="font-semibold">
+                {{ p.label || p.key }}
+                <el-tag size="small" class="ml-2" :type="p.rows.some((r: any) => r.enabled) ? 'success' : 'info'">已启用 {{ p.rows.filter((r: any) => r.enabled).length }}/{{ p.rows.length }}</el-tag>
+              </div>
+              <el-table :data="visibleRows(p)" size="small" border>
+                <el-table-column label="地区" width="70" prop="region" />
+                <el-table-column label="启用" width="70">
+                  <template #default="{ row }"><el-switch v-model="row.enabled" /></template>
+                </el-table-column>
+                <el-table-column label="币种" width="110">
+                  <template #default="{ row }"><el-input v-model="row.currency" size="small" maxlength="3" autocomplete="off" /></template>
+                </el-table-column>
+                <el-table-column label="应付金额上限" min-width="170">
+                  <template #default="{ row }">
+                    <el-input-number v-model="row.cap" size="small" :min="0" :precision="currencyDigits(row.currency)" :controls="false" style="width: 130px" />
+                  </template>
+                </el-table-column>
+                <el-table-column label="注资（美元）" min-width="150">
+                  <template #default="{ row }">
+                    <el-input-number v-model="row.fund" size="small" :min="0" :precision="2" :controls="false" style="width: 110px" />
+                  </template>
+                </el-table-column>
+              </el-table>
+              <el-button v-if="showAllRegions[p.key] || hiddenCount(p) > 0" size="small" link type="primary" @click="showAllRegions[p.key] = !showAllRegions[p.key]">
+                {{ showAllRegions[p.key] ? '收起未启用的地区' : `展开未启用的地区（${hiddenCount(p)} 个）` }}
+              </el-button>
+            </div>
+            <PayCreditPlans v-model="plansForm" />
+            <div class="flex flex-wrap items-center gap-3">
+              <span class="text-sm">并发数</span>
+              <el-input-number v-model="concurrency" :min="1" :max="maxConcurrency" size="small" />
+              <span class="text-sm text-muted">最多 {{ maxConcurrency }}</span>
+              <el-button type="primary" :loading="saving" @click="saveConfig">保存</el-button>
+              <el-button v-if="formDirty" :loading="configLoading" @click="discardEdits">放弃修改，重新读取</el-button>
+              <span class="text-sm text-muted">套餐表与并发数一并保存</span>
+              <span v-if="formDirty" class="text-sm text-warn">有未保存的修改</span>
+            </div>
+          </div>
+
+          <div class="mt-6 space-y-2">
+            <div class="font-semibold">各地区代理</div>
+            <p class="text-sm text-muted">代理地址只写不读：已配置只显示「已配置」，留空表示不修改。socks5 不支持账号密码，需要账号密码请用 http 代理。</p>
+            <div v-if="proxiesFailed" class="text-sm text-warn">
+              代理状态读取失败，下面的状态不可信。<el-button size="small" link type="primary" @click="loadProxies">重试</el-button>
+            </div>
+            <div v-for="r in regionList" :key="r" class="flex flex-wrap items-center gap-2">
+              <span class="w-10 text-sm">{{ r }}</span>
+              <el-tag v-if="proxiesFailed" size="small" type="warning">读取失败</el-tag>
+              <el-tag v-else size="small" :type="proxies[r] ? 'success' : 'info'">{{ proxies[r] ? '已配置' : '未配置' }}</el-tag>
+              <el-input
+                v-model="proxyInputs[r]" type="password" autocomplete="new-password" style="width: 320px" size="small"
+                :placeholder="proxies[r] ? '留空不修改，填写则覆盖' : '如 http://user:pass@host:port'"
+              />
+              <el-button v-if="proxies[r]" size="small" type="danger" plain :loading="proxySaving" @click="clearProxy(r)">清除</el-button>
+              <el-button size="small" :loading="proxyTesting === r" :disabled="!!proxyTesting && proxyTesting !== r" @click="testProxy(r)">
+                {{ proxies[r] ? '测试' : '测试直连' }}
+              </el-button>
+              <div v-if="proxyTestResults[r]" class="basis-full pl-12 text-sm" :class="'text-' + proxyTestResults[r].tone">{{ proxyTestResults[r].text }}</div>
+            </div>
+            <el-button type="primary" :loading="proxySaving" :disabled="!hasProxyInput" @click="saveProxies">保存代理</el-button>
+          </div>
+
+          <div class="mt-6 space-y-2">
+            <div class="font-semibold">浏览器自检</div>
+            <el-button :loading="checking" :disabled="checking" @click="runCheck">运行浏览器自检</el-button>
+            <div v-if="checkResult" class="text-sm space-y-1">
+              <template v-if="checkResult.ok">
+                <div class="text-ok">自检通过</div>
+                <div>版本：{{ checkResult.version }}；模式：{{ checkResult.mode }}；耗时：{{ checkResult.elapsed_ms }} 毫秒</div>
+                <div v-if="checkResult.cf_checked === false" class="text-warn">
+                  Cloudflare 检测没有测成：{{ checkResult.cf_note || '原因未知' }}。这不代表没被拦截。
+                </div>
+                <div v-else-if="checkResult.cf_blocked" class="text-err">被 Cloudflare 拦截{{ checkResult.cf_note ? '：' + checkResult.cf_note : '' }}</div>
+                <div v-else-if="checkResult.cf_checked" class="text-ok">Cloudflare 检测通过{{ checkResult.cf_note ? '（' + checkResult.cf_note + '）' : '' }}</div>
+                <div class="text-xs text-muted">自检走服务器直连出口，没有走地区代理；要确认地区代理的出口 IP，请在上面「各地区代理」点「测试」。</div>
+              </template>
+              <template v-else>
+                <div class="text-err">自检失败：{{ checkResult.error }}</div>
+                <div v-if="checkResult.install_hint">
+                  安装命令：<code class="mono select-all">{{ checkResult.install_hint }}</code>
+                </div>
+              </template>
+            </div>
+          </div>
+        </el-tab-pane>
+
+        <!-- ============ 免付款探测 ============ -->
+        <el-tab-pane label="免付款探测" name="probe" lazy>
+          <PayProbePanel />
+        </el-tab-pane>
+      </el-tabs>
+    </div>
+
+    <!-- ============ 订单详情 ============ -->
+    <el-drawer v-model="detailOpen" :title="`订单 ${detailNo}`" size="min(760px, 100vw)" @closed="onDetailClosed">
+      <div v-loading="detailLoading" class="space-y-4">
+        <template v-if="detail">
+          <el-descriptions :column="1" size="small" border label-width="84px">
+            <el-descriptions-item label="状态">
+              <el-tag size="small" :type="stateTagType(detail.order.state)">{{ stateLabel(detail.order.state) }}</el-tag>
+              <el-tag v-if="detail.order.dry_run" size="small" type="info" class="ml-1">{{ orderModeLabel(detail.order) }}</el-tag>
+            </el-descriptions-item>
+            <el-descriptions-item label="来源">{{ sourceLabel(detail.order.source, detail.order.source_ref) }}</el-descriptions-item>
+            <el-descriptions-item label="服务商">{{ providerLabel(detail.order.provider) }}</el-descriptions-item>
+            <el-descriptions-item label="套餐 / 地区">
+              {{ detail.order.plan_key }} / {{ detail.order.region }}
+              <el-tag size="small" type="info" class="ml-1" data-testid="order-kind">{{ orderKindLabel(detail.order) }}</el-tag>
+            </el-descriptions-item>
+            <template v-if="detail.order.kind === 'credit'">
+              <el-descriptions-item label="卡是否被存">
+                <span :class="detail.order.card_saved === 'saved' ? 'text-err font-medium' : detail.order.card_saved === 'unknown' ? 'text-warn' : ''" data-testid="card-saved">
+                  {{ cardSavedLabel(detail.order.card_saved) }}
+                </span>
+              </el-descriptions-item>
+              <el-descriptions-item label="付款前点数">{{ detail.order.credit_balance_before || '没有读到' }}</el-descriptions-item>
+            </template>
+            <el-descriptions-item label="金额">
+              {{ detail.order.amount_minor > 0 ? formatMinor(detail.order.amount_minor, detail.order.currency) : '—' }}
+              （上限 {{ formatMinor(detail.order.cap_minor, detail.order.currency) }}，注资 {{ usd(detail.order.fund_cents) }} 美元）
+            </el-descriptions-item>
+            <el-descriptions-item label="账号">{{ detail.order.account_email || '—' }}</el-descriptions-item>
+            <el-descriptions-item label="卡">尾号 {{ detail.order.card_last4 || '—' }}；注资单 {{ detail.order.fund_order_no || '—' }}</el-descriptions-item>
+            <el-descriptions-item label="页面提示">{{ pageOutcomeLabel(detail.order.page_outcome) }}</el-descriptions-item>
+            <el-descriptions-item label="提交时间">{{ fmtTs(detail.order.submitted_at) }}</el-descriptions-item>
+            <el-descriptions-item label="创建 / 完成">{{ fmtTs(detail.order.created_at) }} / {{ fmtTs(detail.order.finished_at) }}</el-descriptions-item>
+            <el-descriptions-item v-if="detail.order.failure || detail.order.error_message" label="失败原因">
+              <div v-if="detail.order.failure">{{ failureText(detail.order.failure, detail.order.resolved_by) }}</div>
+              <div v-if="payErrorText(detail.order.error_code)" class="font-medium">{{ payErrorText(detail.order.error_code) }}</div>
+              <details v-if="detail.order.error_message || detail.order.error_code" class="text-xs text-muted" :open="!payErrorText(detail.order.error_code)">
+                <summary class="cursor-pointer">原文（排障用）</summary>
+                <div v-if="detail.order.error_message">{{ detail.order.error_message }}</div>
+                <div v-if="detail.order.error_code" class="mono">{{ detail.order.error_code }}</div>
+              </details>
+            </el-descriptions-item>
+            <el-descriptions-item v-if="detail.order.resolved_by" label="人工定论">
+              {{ detail.order.resolved_by }}：{{ detail.order.resolve_note }}
+            </el-descriptions-item>
+          </el-descriptions>
+
+          <PayRenewalPanel :order="detail.order" @updated="onRenewalUpdated" />
+
+          <div v-if="fillHits.length">
+            <div class="font-semibold mb-1">填表字段命中结果</div>
+            <p class="text-xs text-muted mb-2">
+              <template v-if="detail.order.dry_run_fill">试运行到填表：只填表，没有点支付，没有动卡池。</template>
+              核对每个字段是否命中了页面上的输入框、值是否一致。
+            </p>
+            <ul class="text-sm space-y-0.5">
+              <li v-for="e in fillHits" :key="e.id" :class="e.level === 'warn' || e.level === 'error' ? 'text-warn' : ''">{{ e.message }}</li>
+            </ul>
+          </div>
+
+          <div>
+            <div class="font-semibold mb-2">时间线</div>
+            <div v-if="!detail.events.length" class="text-sm text-muted">暂无记录</div>
+            <div v-for="e in detail.events" :key="e.id" class="text-sm py-1 border-b border-gray-500/20">
+              <span class="text-muted">{{ fmtTs(e.at) }}</span>
+              <el-tag size="small" class="mx-1" :type="e.level === 'error' ? 'danger' : e.level === 'warn' ? 'warning' : 'info'">{{ stateLabel(e.state) }}</el-tag>
+              <span>{{ e.message }}</span>
+              <el-button v-if="e.screenshot" size="small" link type="primary" :loading="shotLoading === e.screenshot" @click="openShot(e.screenshot)">查看截图</el-button>
+            </div>
+          </div>
+
+          <div>
+            <div class="font-semibold mb-2">该卡的授权交易（提交前 5 分钟起）</div>
+            <p class="text-xs text-muted mb-2">同一张卡以前的旧交易可能混入，请对照时间判断。</p>
+            <el-alert
+              v-if="detail.evidence_error" type="warning" :closable="false" show-icon
+              :title="evidenceNotice(detail.evidence_error).title" :description="evidenceNotice(detail.evidence_error).description"
+            />
+            <el-table v-else :data="detail.evidence" size="small" border empty-text="没有授权交易">
+              <el-table-column label="时间" min-width="150"><template #default="{ row }">{{ fmtTs(row.occurred_at) }}</template></el-table-column>
+              <el-table-column prop="kind" label="类型" min-width="90" />
+              <el-table-column prop="status" label="状态" min-width="90" />
+              <el-table-column label="金额" min-width="110"><template #default="{ row }">{{ row.txn_amount }} {{ row.txn_currency }}</template></el-table-column>
+              <el-table-column prop="merchant_name" label="商户" min-width="130" show-overflow-tooltip />
+              <el-table-column prop="decline_reason" label="拒绝原因" min-width="120" show-overflow-tooltip />
+            </el-table>
+          </div>
+
+          <div v-if="detail.order.state === 'needs_review'" class="space-y-2">
+            <div class="font-semibold">人工定论</div>
+            <el-input v-model="resolveNote" type="textarea" :rows="3" placeholder="备注（必填）：说明判定依据" />
+            <div class="flex gap-2">
+              <el-button type="success" :loading="resolving" @click="resolve('succeeded')">标记成功</el-button>
+              <el-button type="danger" :loading="resolving" @click="resolve('failed')">标记失败</el-button>
+            </div>
+          </div>
+        </template>
+      </div>
+    </el-drawer>
+
+    <el-dialog v-model="shotOpen" title="截图" width="min(900px, 96vw)" append-to-body @closed="clearShot">
+      <img v-if="shotUrl" :src="shotUrl" alt="付款过程截图" style="max-width: 100%" />
+    </el-dialog>
+  </div>
+</template>
+
+<script setup lang="ts">
+import AdminPageHeader from '../../components/AdminPageHeader.vue'
+import PayProbePanel from './components/PayProbePanel.vue'
+import PayCreditPlans from './components/PayCreditPlans.vue'
+import PayRenewalPanel from './components/PayRenewalPanel.vue'
+import { useRouteTab } from '../../lib/useRouteTab'
+import {
+  PAY_MODE_DESC, PAY_MODE_LABEL, breakerReason, buildPayBody, cardSavedLabel, cardSupplyProviders, evidenceNotice, isFillFieldEvent,
+  orderKindLabel, orderModeLabel, payErrorText, pickPayProvider, renewalLabel, renewalNeedsUser, sourceLabel,
+  type Breaker, type PayMode,
+} from '../../lib/payui'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
+import { authFetch } from '../../lib/api'
+import { dialog } from '../../lib/dialog'
+import { errText, fmtTs } from '../../lib/cardpool'
+import {
+  STATES, currencyDigits, failureText, formToPlan, formatMinor, isCreditPlan, isTerminal, pageOutcomeLabel, payApi, planToForm, proxyTestText, stateLabel,
+  payBlockReason, type FormPlan, type PlanConf, type ProxyTestResult,
+} from '../../lib/pay'
+import { loadRegistry, providerLabel, registry } from '../../lib/provider'
+
+const REGIONS = ['PH', 'US', 'JP', 'CL', 'EG']
+const RENEWAL_STATES = ['pending', 'failed', 'skipped', 'cancelled']
+
+interface PayConfig {
+  plans: PlanConf[]; concurrency: number
+  lease_minutes: number; max_pay_minutes: number; max_concurrency: number; lease_warning: boolean
+}
+
+const tab = useRouteTab('/ops/marswallex-pay')
+const route = useRoute()
+const regionList = REGIONS
+const usd = (cents: number) => (cents / 100).toFixed(2)
+
+// ---------- 配置 ----------
+const config = ref<PayConfig | null>(null)
+const configLoading = ref(false)
+const plansForm = ref<FormPlan[]>([])
+const concurrency = ref(1)
+const saving = ref(false)
+
+const leaseWarningText = computed(() =>
+  `卡池租约时长 ${config.value?.lease_minutes} 分钟，少于付款流程最长的 ${config.value?.max_pay_minutes} 分钟，卡可能在确认结束前被回收。请到卡池策略里调大。`)
+
+const maxConcurrency = computed(() => config.value?.max_concurrency || 3)
+let formSnapshot = '' // 上次同步到表单时的内容，用来判断有没有未保存的编辑
+const formState = () => JSON.stringify([plansForm.value, concurrency.value])
+const formDirty = computed(() => formSnapshot !== '' && formState() !== formSnapshot)
+
+// syncForm=false 时只更新服务端数据 config，不动 plansForm 编辑缓冲。
+function applyConfig(c: PayConfig, syncForm = true) {
+  config.value = c
+  // 默认选第一个能提交的套餐（Go 的套餐名待核实，选中它只会看到禁用的按钮）
+  if (!planKey.value && c.plans.length) planKey.value = (c.plans.find((p) => p.chatgpt_plan_name) ?? c.plans[0]).key
+  if (!region.value) region.value = REGIONS[0]
+  if (!syncForm) return
+  concurrency.value = c.concurrency
+  plansForm.value = c.plans.map((p) => planToForm(p, REGIONS))
+  formSnapshot = formState()
+}
+
+// 订阅套餐用下面的表格；Codex 点数档另有组件（多一列预期金额），两者编辑同一份 plansForm、一并保存
+const subscriptionForm = computed(() => plansForm.value.filter((p) => !isCreditPlan(p)))
+
+async function loadConfig({ syncForm = true } = {}): Promise<boolean> {
+  configLoading.value = true
+  const r = await payApi<PayConfig>('/config')
+  configLoading.value = false
+  if (!r.ok) { dialog.toast(errText(r, '读取配置失败'), 'err'); return false }
+  applyConfig(r.data, syncForm)
+  return true
+}
+
+function discardEdits() { loadConfig() }
+
+// 未启用的地区默认折叠：套餐 × 5 个地区太长，运营日常只看已启用的。展开后再启用，启用过的行不会因为临时关掉开关而消失。
+const showAllRegions = reactive<Record<string, boolean>>({})
+function visibleRows(p: FormPlan) {
+  return p.rows.filter((r) => showAllRegions[p.key] || r.enabled || r.initEnabled)
+}
+function hiddenCount(p: FormPlan) {
+  return p.rows.length - visibleRows(p).length
+}
+
+async function saveConfig() {
+  const plans = plansForm.value.map(formToPlan)
+  saving.value = true
+  const r = await payApi<PayConfig>('/config', 'PUT', { plans, concurrency: concurrency.value })
+  saving.value = false
+  if (!r.ok) { dialog.toast(errText(r, '保存失败'), 'err'); return }
+  applyConfig(r.data)
+  dialog.toast('配置已保存')
+}
+
+// ---------- 代理（只写） ----------
+const proxies = ref<Record<string, boolean>>({})
+const proxiesFailed = ref(false)
+const proxyInputs = reactive<Record<string, string>>({})
+const proxySaving = ref(false)
+const hasProxyInput = computed(() => REGIONS.some((r) => (proxyInputs[r] || '').trim() !== ''))
+
+async function loadProxies() {
+  const r = await payApi<Record<string, boolean>>('/proxies')
+  proxiesFailed.value = !r.ok
+  if (r.ok) proxies.value = r.data
+  else dialog.toast(errText(r, '读取代理状态失败'), 'err')
+}
+
+// 测试代理：同一时刻只测一个（后端也限制）；结果里没有代理地址
+const proxyTesting = ref('')
+const proxyTestResults = reactive<Record<string, { tone: 'ok' | 'warn' | 'err'; text: string }>>({})
+
+async function testProxy(r: string) {
+  proxyTesting.value = r
+  delete proxyTestResults[r]
+  const res = await payApi<ProxyTestResult>('/proxies/test', 'POST', { region: r })
+  proxyTesting.value = ''
+  proxyTestResults[r] = res.ok
+    ? proxyTestText(res.data)
+    : { tone: 'err', text: `测试失败：${errText(res, '请求失败')}` }
+}
+
+async function putProxies(body: Record<string, string>): Promise<boolean> {
+  proxySaving.value = true
+  const r = await payApi<Record<string, boolean>>('/proxies', 'PUT', body)
+  proxySaving.value = false
+  if (!r.ok) { dialog.toast(errText(r, '保存代理失败'), 'err'); return false }
+  proxies.value = r.data
+  proxiesFailed.value = false // 响应里就是最新状态
+  return true
+}
+
+async function saveProxies() {
+  const body: Record<string, string> = {}
+  for (const r of REGIONS) { const v = (proxyInputs[r] || '').trim(); if (v) body[r] = v }
+  if (!Object.keys(body).length) return
+  if (await putProxies(body)) {
+    for (const r of REGIONS) proxyInputs[r] = ''
+    dialog.toast('代理已保存')
+  }
+}
+
+async function clearProxy(r: string) {
+  if (!(await dialog.confirm(`确认清除 ${r} 地区的代理？`, { title: '清除代理', okText: '清除', danger: true }))) return
+  if (await putProxies({ [r]: '-' })) { proxyInputs[r] = ''; dialog.toast('已清除') }
+}
+
+// ---------- 浏览器自检 ----------
+interface CheckResult { ok: boolean; version: string; mode: string; elapsed_ms: number; error: string; install_hint: string; cf_checked?: boolean; cf_blocked?: boolean; cf_note?: string }
+const checking = ref(false)
+const checkResult = ref<CheckResult | null>(null)
+
+async function runCheck() {
+  if (checking.value) return
+  checking.value = true
+  checkResult.value = null
+  const r = await payApi<CheckResult>('/browser-check', 'POST')
+  checking.value = false
+  if (r.status === 409) { dialog.toast(errText(r, '已有检查在进行'), 'warn'); return }
+  if (r.ok) { checkResult.value = r.data; return }
+  checkResult.value = { ok: false, version: '', mode: '', elapsed_ms: 0, error: errText(r, '自检请求失败'), install_hint: '' }
+}
+
+// ---------- 测试兑换 ----------
+// 服务商：只列注册表里的供卡型服务商，默认 MarsWallex；从卡服务商页的链接带 ?provider= 过来时预选那一家。
+const providerOptions = computed(() => cardSupplyProviders(registry.value))
+const wantedProvider = () => route.query.provider
+const payProvider = ref(pickPayProvider(providerOptions.value, wantedProvider()))
+// 注册表读取进度：读取中不让提交，读取失败时按 MarsWallex 处理并提示
+const registryState = ref<'loading' | 'ok' | 'failed'>(registry.value ? 'ok' : 'loading')
+// 注册表晚到或刷新时：还没选、或选的那家已不在列表里，就重新预选
+watch(providerOptions, (list) => {
+  if (!payProvider.value || !list.some((p) => p.name === payProvider.value)) payProvider.value = pickPayProvider(list, wantedProvider())
+})
+const providerNotice = computed(() => {
+  if (registryState.value === 'failed' && !providerOptions.value.length) return '服务商列表读取失败，提交时按 MarsWallex 处理'
+  const w = wantedProvider()
+  if (typeof w === 'string' && w && providerOptions.value.length && !providerOptions.value.some((p) => p.name === w)) {
+    return `链接里的服务商「${w}」不是供卡型服务商，已改选 ${providerLabel(payProvider.value)}`
+  }
+  return ''
+})
+
+const session = ref('')
+const planKey = ref('')
+const region = ref('')
+const mode = ref<PayMode>('dry_amount')
+const dryRun = computed(() => mode.value !== 'real')
+const submitting = ref(false)
+
+const planConf = computed(() => config.value?.plans.find((p) => p.key === planKey.value))
+const regionConf = computed(() => planConf.value?.regions?.[region.value])
+
+// 试运行只要求有 ChatGPT 套餐名；真实付款还要求地区启用且金额已配。
+const submitBlockReason = computed(() => {
+  if (!config.value) return '配置未加载'
+  // 服务商列表还没到时不提交：否则会悄悄按 MarsWallex 下单（读取失败时才按 MarsWallex 处理，并有提示）
+  if (registryState.value === 'loading') return '服务商列表读取中'
+  return payBlockReason(planConf.value, region.value, dryRun.value)
+})
+
+async function submit() {
+  if (submitting.value || submitBlockReason.value) return
+  submitting.value = true // 覆盖确认框期间，防止重复点击
+  try {
+    // 快照：确认框显示和请求体都只用这些值，期间改了表单也不影响
+    const m = mode.value
+    const plan = planKey.value
+    const reg = region.value
+    const sess = session.value.trim()
+    const prov = payProvider.value
+    if (m === 'real') {
+      // 动钱前以最新配置和熔断状态为准；不覆盖配置页未保存的编辑
+      if (!(await loadConfig({ syncForm: false }))) return
+      if (!(await loadBreaker()) || breaker.value?.paused) {
+        dialog.toast(breakerFailed.value ? '付款熔断状态获取失败，不能真实付款' : '付款已暂停，不能真实付款', 'warn')
+        return
+      }
+      // 按快照判断，不读当前表单：等待期间改了下拉或开关也不影响这次提交
+      const pc = config.value?.plans.find((p) => p.key === plan)
+      const blocked = payBlockReason(pc, reg, false)
+      if (blocked) { dialog.toast(blocked, 'warn'); return }
+      const rc = pc?.regions?.[reg]
+      if (!rc) return
+      const ok = await dialog.confirm(
+        `服务商：${providerLabel(prov || 'marswallex')}\n套餐：${pc?.label || plan}\n地区：${reg}\n卡：付款时从卡池选卡（提交时尚未确定卡尾号）\n` +
+          `将取一张卡注资 ${usd(rc.fund_cents)} 美元并真实付款，应付金额上限 ${formatMinor(rc.cap_minor, rc.currency)}。\n确认真实付款？`,
+        { title: '确认付款', okText: '确认付款', danger: true },
+      )
+      if (!ok) return
+    } else if (m === 'dry_fill') {
+      const ok = await dialog.confirm(
+        '试运行到填表会真的打开支付页并填入测试卡信息，但绝不点支付、不碰卡池，不会扣款。\n确认开始？',
+        { title: '试运行到填表', okText: '开始试运行' },
+      )
+      if (!ok) return
+    }
+    const r = await payApi<{ order_no: string }>('/orders', 'POST', buildPayBody(m, plan, reg, sess, prov))
+    if (!r.ok) { dialog.toast(errText(r, '提交失败'), 'err'); return } // 失败保留会话，方便改完再试
+    session.value = ''
+    dialog.toast(m === 'real' ? '付款已受理' : '试运行已受理')
+    tab.value = 'orders'
+    page.value = 1
+    await loadOrders()
+    openDetail(r.data.order_no)
+  } finally {
+    submitting.value = false
+  }
+}
+
+// ---------- 订单 ----------
+const orders = ref<any[]>([])
+const total = ref(0)
+const page = ref(1)
+const pageSize = 20
+const stateFilter = ref('')
+const renewalFilter = ref('')
+const ordersLoading = ref(false)
+
+function stateTagType(s: string): 'success' | 'danger' | 'warning' | 'info' | 'primary' {
+  if (s === 'succeeded') return 'success'
+  if (s === 'failed') return 'danger'
+  if (s === 'needs_review') return 'warning'
+  if (s === 'previewed') return 'info'
+  return 'primary'
+}
+
+let ordersSeq = 0
+async function loadOrders() {
+  const my = ++ordersSeq
+  ordersLoading.value = true
+  const q = new URLSearchParams({ page: String(page.value), page_size: String(pageSize) })
+  if (stateFilter.value) q.set('state', stateFilter.value)
+  if (renewalFilter.value) q.set('renewal', renewalFilter.value)
+  const r = await payApi<{ orders: any[]; total: number }>('/orders?' + q.toString())
+  if (my !== ordersSeq) return // 已有更新的请求，丢弃旧响应
+  ordersLoading.value = false
+  if (!r.ok) { dialog.toast(errText(r, '读取订单失败'), 'err'); return }
+  orders.value = r.data.orders || []
+  total.value = r.data.total || 0
+}
+
+function onFilterChange() { page.value = 1; loadOrders() }
+
+function onTabChange(name: string | number) {
+  if (name === 'orders') loadOrders()
+  if (name === 'config') { loadConfig({ syncForm: !formDirty.value }); loadProxies() }
+}
+
+// ---------- 付款熔断 ----------
+const breaker = ref<Breaker | null>(null)
+const breakerFailed = ref(false)
+const resuming = ref(false)
+
+// 返回是否读到了状态；读不到不能当作「没暂停」。
+async function loadBreaker(): Promise<boolean> {
+  const r = await payApi<Breaker>('/breaker')
+  if (!r.ok) { breakerFailed.value = true; return false }
+  breakerFailed.value = false
+  breaker.value = { ...r.data, order_nos: r.data.order_nos || [] }
+  return true
+}
+
+async function resumeBreaker() {
+  const b = breaker.value
+  if (!b || resuming.value) return
+  const note = await dialog.prompt(
+    `请填写恢复备注（必填）：说明你看过哪几单、为什么可以恢复。\n触发单号：${b.order_nos.join('、') || '—'}`,
+    { title: '恢复付款派发', placeholder: '例如：已核对 PO…，是代理出口 IP 被拦，已更换', okText: '下一步' },
+  )
+  if (note === null || note === undefined || note === false) return
+  const text = String(note).trim()
+  if (!text) { dialog.toast('恢复备注不能为空', 'warn'); return }
+  const ok = await dialog.confirm(
+    `确认恢复付款派发？\n原因：${breakerReason(b)}\n恢复后排队中的真实付款会继续派发，可能再次动用卡池资金。\n备注：${text}`,
+    { title: '恢复付款派发', okText: '确认恢复', danger: true },
+  )
+  if (!ok) return
+  resuming.value = true
+  const r = await payApi<Breaker>('/breaker/resume', 'POST', { note: text })
+  resuming.value = false
+  if (r.status === 409) dialog.toast(errText(r, '当前没有暂停'), 'warn')
+  else if (!r.ok) { dialog.toast(errText(r, '恢复失败'), 'err'); return }
+  else dialog.toast('已恢复付款派发')
+  loadBreaker()
+}
+
+function openFromBanner(no: string) {
+  tab.value = 'orders'
+  openDetail(no)
+}
+
+// ---------- 详情、轮询、截图 ----------
+interface Detail { order: any; events: any[]; evidence: any[]; evidence_error?: string }
+const detailOpen = ref(false)
+const detailNo = ref('')
+const detail = ref<Detail | null>(null)
+const detailLoading = ref(false)
+const resolveNote = ref('')
+const fillHits = computed(() => (detail.value?.events || []).filter((e: any) => isFillFieldEvent(e.message)))
+const resolving = ref(false)
+let pollTimer: ReturnType<typeof setTimeout> | null = null
+let seq = 0 // 切换单据后丢弃旧请求的返回
+
+function stopPoll() { if (pollTimer) { clearTimeout(pollTimer); pollTimer = null } }
+
+// 只在抽屉打开且单据非终态时轮询；上一次返回后才排下一次，所以不会重叠。
+function schedulePoll() {
+  stopPoll()
+  if (!detailOpen.value || !detail.value || isTerminal(detail.value.order.state)) return
+  pollTimer = setTimeout(async () => {
+    await loadDetail(detailNo.value, true)
+    schedulePoll()
+  }, 5000)
+}
+
+async function loadDetail(no: string, silent = false) {
+  const my = ++seq
+  if (!silent) detailLoading.value = true
+  const r = await payApi<Detail>('/orders/' + encodeURIComponent(no))
+  if (my !== seq) return
+  detailLoading.value = false
+  if (!r.ok) {
+    if (!silent) dialog.toast(errText(r, '读取订单详情失败'), 'err')
+    return
+  }
+  detail.value = { ...r.data, events: r.data.events || [], evidence: r.data.evidence || [] }
+}
+
+async function openDetail(no: string) {
+  stopPoll()
+  clearShot()
+  detail.value = null
+  resolveNote.value = ''
+  detailNo.value = no
+  detailOpen.value = true
+  await loadDetail(no)
+  if (detailNo.value === no) schedulePoll()
+}
+
+function onDetailClosed() {
+  stopPoll()
+  seq++
+  clearShot()
+  detail.value = null
+  detailNo.value = ''
+}
+
+const shotOpen = ref(false)
+const shotUrl = ref('')
+const shotLoading = ref('')
+
+function clearShot() {
+  shotOpen.value = false
+  if (shotUrl.value) { URL.revokeObjectURL(shotUrl.value); shotUrl.value = '' }
+}
+
+async function openShot(name: string) {
+  const no = detailNo.value
+  shotLoading.value = name
+  try {
+    const r = await authFetch(`/api/v1/admin/pay/orders/${encodeURIComponent(no)}/shots/${encodeURIComponent(name)}`)
+    if (!r.ok) { dialog.toast('截图读取失败', 'err'); return }
+    const blob = await r.blob()
+    if (no !== detailNo.value) return // 已切换单据
+    if (shotUrl.value) URL.revokeObjectURL(shotUrl.value)
+    shotUrl.value = URL.createObjectURL(blob)
+    shotOpen.value = true
+  } catch {
+    dialog.toast('截图读取失败', 'err')
+  } finally {
+    shotLoading.value = ''
+  }
+}
+
+// 重试关闭续费之后：仍是这张单才刷新详情（时间线里有这次重试的记录），列表上的续费标记一并刷新
+async function onRenewalUpdated() {
+  const no = detailNo.value
+  if (detailOpen.value && no) await loadDetail(no, true)
+  if (tab.value === 'orders') loadOrders()
+}
+
+async function resolve(result: 'succeeded' | 'failed') {
+  const note = resolveNote.value.trim()
+  if (!note) { dialog.toast('请先填写备注', 'warn'); return }
+  const label = result === 'succeeded' ? '成功' : '失败'
+  const ok = await dialog.confirm(`确认把本单标记为${label}？只改本单结果，不会触发任何付款。`, { title: '人工定论', okText: `标记${label}`, danger: result === 'failed' })
+  if (!ok) return
+  const no = detailNo.value
+  resolving.value = true
+  const r = await payApi('/orders/' + encodeURIComponent(no) + '/resolve', 'POST', { result, note })
+  resolving.value = false
+  if (r.status === 409) {
+    dialog.toast(errText(r, '单据状态已变化'), 'warn')
+  } else if (!r.ok) {
+    dialog.toast(errText(r, '提交失败'), 'err')
+    return
+  } else {
+    dialog.toast('已标记')
+  }
+  // POST 期间可能已关闭抽屉或切到别的单据：只有仍是这张单才刷新详情、清备注，免得内容与标题对不上
+  if (detailOpen.value && detailNo.value === no) {
+    if (r.ok) resolveNote.value = ''
+    await loadDetail(no, true)
+  }
+  loadOrders()
+}
+
+onMounted(async () => {
+  loadRegistry().then((r) => { registryState.value = r.ok ? 'ok' : 'failed' })
+  await loadConfig()
+  loadBreaker()
+  // 刷新后从 ?tab= 直接落在订单或配置标签时，加载该标签的数据
+  if (tab.value !== 'test') onTabChange(tab.value)
+  breakerTimer = setInterval(loadBreaker, 30000) // 熔断可能在页面开着时触发
+})
+let breakerTimer: ReturnType<typeof setInterval> | null = null
+onUnmounted(() => {
+  if (breakerTimer) clearInterval(breakerTimer)
+  stopPoll()
+  seq++
+  if (shotUrl.value) URL.revokeObjectURL(shotUrl.value)
+  session.value = ''
+})
+</script>
+
+<style scoped>
+.text-warn { color: #d97706; }
+.text-ok { color: #16a34a; }
+.text-err { color: #dc2626; }
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+</style>

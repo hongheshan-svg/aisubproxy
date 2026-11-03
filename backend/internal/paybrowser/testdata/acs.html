@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Authentication</title>
+<style>
+  html, body { margin: 0; height: 100%; font-family: sans-serif; }
+  #wrap { border: 0; width: 100%; height: 100%; display: block; }
+  form { padding: 16px; }
+</style>
+</head>
+<body>
+<!--
+  仿造的 3DS 验证页（测试用），由与支付页跨站的服务提供。
+  ?wrap=1 时只嵌一层自身（模拟 Stripe 外框 → 发卡行 ACS 的两层 iframe），验证码框在第二层。
+  验证码框没有 autocomplete="one-time-code"，另有隐藏框与不可见框，检验「框内唯一可见的文本输入框」规则。
+  提交后通知支付页：验证码为 123456 时成功，否则被拒。
+  ?flaky=1 时，第一次输满 6 位验证码的瞬间提交按钮消失 1.5 秒（模拟页面处理中），这时去点它会失败。
+-->
+<script>
+  var q = new URLSearchParams(location.search)
+  if (q.get('wrap') === '1') {
+    document.write('<iframe id="wrap" src="acs.html' + (q.get('flaky') === '1' ? '?flaky=1' : '') + '" title="Bank authentication"></iframe>')
+  }
+</script>
+<form id="acs-form">
+  <h2>Verify your purchase</h2>
+  <p>Enter the code we sent to your phone.</p>
+  <input type="hidden" name="txn" value="t-1">
+  <input type="text" name="decoy" style="display:none">
+  <input type="text" id="acs-code" name="code" inputmode="numeric">
+  <button type="submit" id="acs-submit">Submit</button>
+</form>
+<script>
+  var form = document.getElementById('acs-form')
+  if (document.getElementById('wrap')) {
+    form.remove()
+  } else {
+    var code = document.getElementById('acs-code')
+    var submit = document.getElementById('acs-submit')
+    var hid = false
+    code.addEventListener('input', function () {
+      if (q.get('flaky') === '1' && !hid && code.value.length >= 6) {
+        hid = true
+        submit.style.display = 'none'
+        setTimeout(function () { submit.style.display = '' }, 1500)
+      }
+    })
+    form.addEventListener('submit', function (e) {
+      e.preventDefault()
+      window.top.postMessage({ type: '3ds', ok: document.getElementById('acs-code').value === '123456' }, '*')
+    })
+  }
+</script>
+</body>
+</html>

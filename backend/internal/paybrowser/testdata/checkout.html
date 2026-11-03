@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Checkout</title>
+<style>
+  body { font-family: sans-serif; width: 960px; margin: 24px auto; }
+  #card-frame { border: 1px solid #ccc; width: 440px; height: 170px; }
+  label { display: block; margin: 8px 0; }
+  #challenge-modal { position: fixed; inset: 0; background: rgba(0, 0, 0, .5); display: flex; align-items: center; justify-content: center; }
+  #challenge-modal iframe { border: 0; width: 420px; height: 280px; background: #fff; }
+</style>
+</head>
+<body>
+<!--
+  仿造的 ChatGPT / Stripe 支付页（测试用）。
+  金额、账单地址、Link 邮箱与手机在主页面；卡号、有效期、CVC 在 card.html iframe 中，
+  card.html 与 3DS 的 acs.html 由另一个服务（__CARD_ORIGIN__，与本页跨站）提供，同真实页面上的 js.stripe.com。
+  字段 id 与 selectors.go 中各 Sel 列表的首选项一致。金额在 500 毫秒后才渲染，模拟 Stripe 异步加载。
+  同 Stripe 地址表单，改国家会重绘：姓名与其余地址字段被清空。
+
+  查询参数：
+    mode=success|decline|3ds|none  提交后的表现（默认 success；none 表示页面没有任何结果）
+    delay=毫秒                mode=decline 时，收到提交后过这么久才显示被拒
+    notice=文字               收到提交后先显示 [role="alert"]，过 noticedelay 毫秒（默认 0）再按 mode 继续
+    banner=文字               页面一开始就有带这段文字的 [role="alert"] 横幅
+    fielderror=文字           点支付后不发 /pay，只在主页面显示 .FieldError（可重复，按顺序显示多条），模拟前端校验
+    cardbanner=文字           卡片 iframe 里一开始就有带这段文字的 [role="alert"]
+    cardfielderror=文字       点支付后不发 /pay，只在卡片 iframe 里显示 .p-FieldError
+    promo=1                   支付表单前面多一个可见的优惠码 submit 按钮 Apply（点击会被服务端计数，支付不应点到它）
+    formcomplete=1            支付按钮一直带 SubmitButton--complete（Stripe 可能用它表示表单已填完，不代表付款成功）
+    nocvc=1                   卡片 iframe 里没有 CVC 框
+    saved=1                   先显示已存卡，点「Use a different card」才出现卡片 iframe
+    mangle=1                  模拟地址联想：整段输入城市时被改写成别的值，逐字键入不受影响
+    decoy=1                   主页面多一个可见的 input[name="number"]（命中卡号的宽泛选择器），
+                              卡片 iframe 里多一个可见的 submit 按钮（点击会被服务端计数）
+    latepay=1                 支付按钮在邮编填好 1.5 秒后才出现
+    otpflaky=1                3DS 验证页第一次输满验证码时提交按钮短暂消失（见 acs.html 的 flaky）
+  每次提交把收到的全部字段 POST 到本服务的 /pay，供测试断言。
+-->
+<section id="summary">
+  <h1>ChatGPT Pro</h1>
+  <div id="total-row"><span>Total due today</span> </div>
+</section>
+
+<form id="promo-form" hidden>
+  <label>Promotion code <input id="promo-code"></label>
+  <button type="submit">Apply</button>
+</form>
+
+<form id="payment-form">
+  <div id="saved-card" hidden>
+    <label><input type="radio" name="method" checked> Visa •••• 4242</label>
+    <button type="button" id="use-new-card">Use a different card</button>
+  </div>
+  <div id="new-card">
+    <iframe id="card-frame" name="card-frame" title="Secure card payment input frame"></iframe>
+  </div>
+  <!-- Stripe Link 的邮箱与手机：不应被填写 -->
+  <label>Email <input id="email" type="email" autocomplete="email"></label>
+  <label>Phone <input id="phone" type="tel" autocomplete="tel"></label>
+  <label id="promo-row" style="display:none">Promo number <input id="promo-number" name="number"></label>
+  <label>Full name <input id="billingAddress-nameInput" name="name" autocomplete="billing name"></label>
+  <label>Country or region
+    <select id="billingAddress-countryInput" name="country" autocomplete="billing country">
+      <option value="PH">Philippines</option>
+      <option value="US">United States</option>
+      <option value="JP">Japan</option>
+      <option value="CL">Chile</option>
+      <option value="EG">Egypt</option>
+    </select>
+  </label>
+  <label>Address line 1 <input id="billingAddress-addressLine1Input" name="addressLine1" autocomplete="billing address-line1"></label>
+  <label>City <input id="billingAddress-localityInput" name="locality" autocomplete="billing address-level2"></label>
+  <label>State <input id="billingAddress-administrativeAreaInput" name="administrativeArea" autocomplete="billing address-level1"></label>
+  <label>ZIP <input id="billingAddress-postalCodeInput" name="postalCode" autocomplete="billing postal-code"></label>
+  <div id="payment-error" role="alert" hidden></div>
+  <div id="payment-success" hidden></div>
+  <button type="submit" class="SubmitButton">Subscribe</button>
+</form>
+
+<script>
+  var CARD_ORIGIN = '__CARD_ORIGIN__'
+  var q = new URLSearchParams(location.search)
+  var mode = q.get('mode') || 'success'
+  var method = 'new'
+  var cardFrame = document.getElementById('card-frame')
+  var cardQuery = new URLSearchParams()
+  if (q.get('nocvc') === '1') cardQuery.set('nocvc', '1')
+  if (q.get('decoy') === '1') {
+    cardQuery.set('decoy', '1')
+    document.getElementById('promo-row').style.display = ''
+  }
+  if (q.get('cardbanner')) cardQuery.set('banner', q.get('cardbanner'))
+  cardFrame.src = CARD_ORIGIN + '/card.html?' + cardQuery
+
+  if (q.get('banner')) {
+    var banner = document.createElement('div')
+    banner.setAttribute('role', 'alert')
+    banner.textContent = q.get('banner')
+    document.getElementById('summary').appendChild(banner)
+  }
+
+  if (q.get('saved') === '1') {
+    method = 'saved'
+    document.getElementById('saved-card').hidden = false
+    document.getElementById('new-card').style.display = 'none'
+    document.getElementById('use-new-card').addEventListener('click', function () {
+      method = 'new'
+      document.getElementById('saved-card').hidden = true
+      document.getElementById('new-card').style.display = ''
+    })
+  }
+
+  document.getElementById('billingAddress-countryInput').addEventListener('change', function () {
+    ['billingAddress-nameInput', 'billingAddress-addressLine1Input', 'billingAddress-localityInput',
+      'billingAddress-administrativeAreaInput', 'billingAddress-postalCodeInput'].forEach(function (id) {
+      document.getElementById(id).value = ''
+    })
+  })
+
+  if (q.get('formcomplete') === '1') {
+    document.querySelector('.SubmitButton').classList.add('SubmitButton--complete')
+  }
+
+  if (q.get('promo') === '1') {
+    var promoForm = document.getElementById('promo-form')
+    promoForm.hidden = false
+    promoForm.addEventListener('submit', function (e) {
+      e.preventDefault()
+      fetch('/promo', { method: 'POST' })
+    })
+  }
+
+  if (q.get('latepay') === '1') {
+    var payButton = document.querySelector('.SubmitButton')
+    var zip = document.getElementById('billingAddress-postalCodeInput')
+    payButton.style.display = 'none'
+    zip.addEventListener('input', function () {
+      if (zip.value) setTimeout(function () { payButton.style.display = '' }, 1500)
+    })
+  }
+
+  if (q.get('mangle') === '1') {
+    document.getElementById('billingAddress-localityInput').addEventListener('input', function (e) {
+      if (e.inputType === 'insertText' && e.data && e.data.length > 1) this.value = 'Portland, Maine'
+    })
+  }
+
+  setTimeout(function () {
+    var amount = document.createElement('span')
+    amount.id = 'OrderDetails-TotalAmount'
+    amount.textContent = '₱1,120.00'
+    document.getElementById('total-row').appendChild(amount)
+  }, 500)
+
+  function val(id) {
+    var el = document.getElementById(id)
+    return el ? el.value : ''
+  }
+
+  function show(id, text) {
+    var el = document.getElementById(id)
+    el.textContent = text
+    el.hidden = false
+  }
+
+  function pay(card) {
+    var body = {
+      method: method,
+      number: card.number || '', expiry: card.expiry || '', cvc: card.cvc || '', numberKeys: card.numberKeys || 0,
+      name: val('billingAddress-nameInput'), country: val('billingAddress-countryInput'),
+      line1: val('billingAddress-addressLine1Input'), city: val('billingAddress-localityInput'),
+      state: val('billingAddress-administrativeAreaInput'), zip: val('billingAddress-postalCodeInput'),
+      email: val('email'), phone: val('phone'), decoyNumber: val('promo-number')
+    }
+    fetch('/pay', { method: 'POST', body: JSON.stringify(body) }).then(function () {
+      if (q.get('notice')) {
+        var note = document.createElement('div')
+        note.setAttribute('role', 'alert')
+        note.textContent = q.get('notice')
+        document.getElementById('payment-form').appendChild(note)
+        setTimeout(showResult, Number(q.get('noticedelay')) || 0)
+        return
+      }
+      showResult()
+    })
+  }
+
+  function showResult() {
+    if (mode === 'decline') {
+      setTimeout(function () { show('payment-error', 'Your card was declined.') }, Number(q.get('delay')) || 0)
+    } else if (mode === 'none') {
+      // 页面没有任何结果
+    } else if (mode === '3ds') {
+      var modal = document.createElement('div')
+      modal.id = 'challenge-modal'
+      var frame = document.createElement('iframe')
+      frame.name = 'stripe-challenge-frame'
+      frame.src = CARD_ORIGIN + '/acs.html?wrap=1' + (q.get('otpflaky') === '1' ? '&flaky=1' : '')
+      modal.appendChild(frame)
+      document.body.appendChild(modal)
+    } else {
+      show('payment-success', 'Payment successful')
+    }
+  }
+
+  document.getElementById('payment-form').addEventListener('submit', function (e) {
+    e.preventDefault()
+    document.getElementById('payment-error').hidden = true
+    var fieldErrors = q.getAll('fielderror')
+    if (fieldErrors.length) {
+      fieldErrors.forEach(function (text) {
+        var el = document.createElement('div')
+        el.className = 'FieldError'
+        el.textContent = text
+        document.getElementById('payment-form').appendChild(el)
+      })
+      return
+    }
+    if (q.get('cardfielderror')) {
+      cardFrame.contentWindow.postMessage({ type: 'fielderror', text: q.get('cardfielderror') }, CARD_ORIGIN)
+      return
+    }
+    if (method === 'saved') {
+      pay({})
+      return
+    }
+    cardFrame.contentWindow.postMessage({ type: 'collect' }, CARD_ORIGIN)
+  })
+
+  window.addEventListener('message', function (e) {
+    if (e.origin !== CARD_ORIGIN) return
+    if (e.data.type === 'card') {
+      pay(e.data)
+    } else if (e.data.type === '3ds') {
+      var modal = document.getElementById('challenge-modal')
+      if (modal) modal.remove()
+      if (e.data.ok) show('payment-success', 'Payment successful')
+      else show('payment-error', 'Your card was declined.')
+    }
+  })
+</script>
+</body>
+</html>

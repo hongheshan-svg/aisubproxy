@@ -38,10 +38,37 @@ curl -fsSL https://raw.githubusercontent.com/hongheshan-svg/aisubproxy/master/de
 
 - 下载最新 Release，依次校验 sha256 和签名，再运行一次新程序的 `--version` 自检。
 - 装到 `/opt/cdk-recharge`，生成 `app.env`（随机 `JWT_SECRET` 和 `APP_MASTER_KEY`，权限 600），注册 systemd 服务 `cdk-recharge`。
+- 同时安装浏览器依赖（见下文「浏览器依赖」），失败只警告、不中断安装。升级时这一步在停服务之前做，下载和 apt 期间旧服务继续运行；apt 被别的进程占锁时最多等 5 分钟。
 - 默认只监听 `127.0.0.1:9080`，需要用 Caddy 或 Nginx 反代 HTTPS。
 - 首次登录走安装向导：用 `journalctl -u cdk-recharge | grep 'Setup Token'` 查到令牌后，打开 `/ops/setup`。
 - 指定版本安装：`… | sudo bash -s -- v1.5.0`。
 - 再次运行脚本就是升级：先停服务、备份，再替换文件，`app.env` 不动。
+
+## 浏览器依赖（MarsWallex 自动付款）
+
+自动付款要在服务器上用真实的 Chrome 打开付款页，需要 Chrome、Xvfb（虚拟显示）和中文字体。
+
+### systemd 部署
+
+升级到含 MarsWallex 兑换页的版本后，**执行一次**下面的命令，再到后台点「浏览器自检」确认通过：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hongheshan-svg/aisubproxy/master/deploy/install.sh | sudo bash -s -- --browser-deps
+```
+
+- 后台「版本更新」只替换程序和前端，**不会**运行安装脚本，所以已部署的服务器必须手动跑这一次。全新安装时，`install.sh` 会自动做这一步。
+- 脚本只做浏览器这一件事：不查发布、不下载程序、不动服务。已装的会跳过，可重复执行。
+- amd64 直接下载 Google 官方 deb（约 150MB）安装，不改动 apt 源配置；其他架构改装发行版的 `chromium`。xvfb、fonts-liberation、fonts-noto-cjk 缺哪个装哪个。只支持有 `apt-get` 的系统（Debian / Ubuntu），其他系统会打印要装什么，需手动安装。
+- 脚本会创建系统用户 `cdk-chrome`。服务以 root 运行时，Chrome 用这个低权限用户启动，**并保留 Chrome 沙箱**，任何情况下都不会关闭沙箱（不要用 `--no-sandbox`）。
+- 脚本结尾会以 `cdk-chrome` 身份带沙箱真实启动一次 Chrome 做自检（与 systemd 的 `NoNewPrivileges=true` 同一环境）。失败时退出码非 0，并提示排查方向：`sysctl user.max_user_namespaces` 不能为 0；Ubuntu 24.04 的 `kernel.apparmor_restrict_unprivileged_userns` 由 Chrome 安装包自带的 AppArmor 配置放行。
+- 服务器内存建议 ≥ 2GB（并发 1）。
+- `deploy/deploy_to_server1.sh`（scp + systemctl 部署）同样不会安装浏览器，用它部署的服务器也要手动跑一次上面的命令。
+
+### Docker 部署
+
+- 镜像已内置 `chromium`、`xvfb`、字体和 `cdk-chrome` 用户，`CHROME_PATH=/usr/bin/chromium`。升级：`git pull` 后 `docker compose up -d --build`（镜像约增大 400MB）。
+- Chrome 带沙箱运行需要创建用户命名空间，而 Docker 默认的 seccomp 配置不放行 `clone`、`unshare`，所以 `docker-compose.yml` 给 `cdk` 服务加了 `security_opt: ["seccomp=./deploy/chrome-seccomp.json"]`。自己 `docker run` 的要加 `--security-opt seccomp=deploy/chrome-seccomp.json`。
+- `deploy/chrome-seccomp.json` 来自 `moby/profiles` 的 `seccomp/default.json`，末尾追加了一条 `{"names":["clone","unshare"],"action":"SCMP_ACT_ALLOW"}`。代价：容器内进程可以创建用户命名空间，比 Docker 默认配置宽松，但远小于 `seccomp=unconfined`；没有加 `SYS_ADMIN`，也没有关闭 Chrome 沙箱。
 
 ## 在线更新
 

@@ -1,0 +1,71 @@
+# 开 PR 或推送到 master 时跑后端与前端的构建和测试。发布仍由 release.yml 在推送 v* 标签时进行。
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          # 与 release.yml 一致，用 go.mod 声明的最低版本编译，能发现误用新版标准库
+          go-version: '1.24.x'
+          cache-dependency-path: backend/go.sum
+
+      - name: Allow Chrome sandbox
+        # Ubuntu 24.04 默认限制非特权用户命名空间，Chrome 沙箱起不来；付款浏览器的测试要求带沙箱运行
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Test
+        run: npx vitest run
+
+      - name: Build
+        run: npm run build

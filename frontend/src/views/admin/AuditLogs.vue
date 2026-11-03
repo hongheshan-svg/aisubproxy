@@ -1,15 +1,11 @@
 <template>
   <div class="pb-2">
-    <div class="w-full space-y-8">
-      <div class="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-        <div>
-          <h1 class="mt-3 text-3xl font-bold text-ink">操作审计日志</h1>
-          <p class="text-sm text-muted mt-2">记录管理员的登录、改密、卡密增删禁用、任务处理、长链接生成等敏感操作。</p>
-        </div>
-        <div class="flex items-center gap-3">
+    <div class="w-full space-y-5">
+      <AdminPageHeader title="审计日志" description="记录管理员的登录、改密、卡密增删禁用、任务处理、长链接生成等敏感操作。" class="!mb-0">
+        <template #actions>
           <button class="btn-secondary" @click="loadLogs">刷新</button>
-        </div>
-      </div>
+        </template>
+      </AdminPageHeader>
 
       <div class="card overflow-hidden !p-0">
         <div class="overflow-x-auto">
@@ -34,7 +30,7 @@
                 <td class="text-muted whitespace-nowrap">{{ formatDate(item.created_at) }}</td>
                 <td class="text-ink">{{ item.username || '-' }}</td>
                 <td><span :class="actionClass(item.action)">{{ actionLabel(item.action) }}</span></td>
-                <td class="text-muted font-mono break-all">{{ item.detail || '-' }}</td>
+                <td class="text-muted font-mono break-all">{{ auditDetailLabel(item.detail) || '-' }}</td>
                 <td class="text-muted font-mono">{{ item.ip || '-' }}</td>
               </tr>
             </tbody>
@@ -46,9 +42,10 @@
 </template>
 
 <script setup lang="ts">
+import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { onMounted, ref } from 'vue'
 import { authFetch } from '../../lib/api'
-import ThemeToggle from '../../components/ThemeToggle.vue'
+import { auditActionLabel, auditDetailLabel } from '../../lib/errors'
 
 interface AuditLog {
   id: number
@@ -74,23 +71,7 @@ const loadLogs = async () => {
   loading.value = false
 }
 
-const actionLabel = (action: string) => {
-  const labels: Record<string, string> = {
-    login: '登录',
-    change_password: '修改密码',
-    cdk_generate: '生成卡密',
-    cdk_disable: '禁用卡密',
-    cardplatform_cdk_note_set: '设置CDK备注',
-    cardplatform_cdk_note_clear: '清除CDK备注',
-    cardplatform_batch_note_set: '批量CDK备注',
-    cardplatform_batch_note_clear: '批量清除CDK备注',
-    cdk_delete: '删除卡密',
-    task_approve: '任务完成',
-    task_reject: '任务失败',
-    checkout_generate: '生成长链接',
-  }
-  return labels[action] || action
-}
+const actionLabel = auditActionLabel
 
 const actionClass = (action: string) => {
   const classes: Record<string, string> = {

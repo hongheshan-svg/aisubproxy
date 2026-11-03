@@ -75,6 +75,9 @@ type Options struct {
 	Client func() (*marswallex.Client, error) // 必填；生产环境为 handler.MarsWallexClient
 	Now    func() time.Time                   // nil → time.Now
 	Alert  func(text string)                  // nil → log.Printf
+	// MarsWallexSelected 判断 MarsWallex 现在是否被选用，决定自动补卡要不要暂停（见 replenishAllowed）。
+	// 由启动代码注入：这个判定属于 provider 包，而 provider 依赖付款引擎，引擎又依赖卡池，卡池不能反过来 import。nil 视为放行。
+	MarsWallexSelected func(ctx context.Context) (bool, error)
 }
 
 // Service 是卡池服务。

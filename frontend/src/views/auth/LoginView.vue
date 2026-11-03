@@ -1,7 +1,6 @@
 <template>
   <div class="relative min-h-screen flex items-center justify-center px-6 py-10">
     <div class="absolute right-5 top-5 flex items-center gap-3">
-      <LanguageToggle />
       <ThemeToggle />
     </div>
     <div class="w-full max-w-md animate-slideInUp">
@@ -38,12 +37,13 @@
 <script setup lang="ts">
 import { reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { useI18n } from 'vue-i18n'
 import { useAuthStore } from '../../stores/auth'
 import ThemeToggle from '../../components/ThemeToggle.vue'
-import LanguageToggle from '../../components/LanguageToggle.vue'
+import zh from '../../i18n/locales/zh'
 
-const { t } = useI18n({ useScope: 'global' })
+// 后台只做中文：直接从中文词条取值，不随用户端保存的语言变化，也不改全局语言
+const t = (key: string): string =>
+  key.split('.').reduce<any>((o, k) => (o == null ? undefined : o[k]), zh) ?? key
 const router = useRouter()
 const route = useRoute()
 const authStore = useAuthStore()

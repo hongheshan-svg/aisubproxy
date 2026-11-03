@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
+	"github.com/tuzi/cdk-recharge-system/internal/provider"
 )
 
 // 公开批量查询上限：每条可能回源卡台 Result，避免一次打爆上游。
@@ -45,6 +47,9 @@ func LookupCDKStatus(c *gin.Context) {
 		return
 	}
 
+	if _, local := provider.CardSupplyForCode(code); local && !localRateCheck(c, localRateQuery) {
+		return
+	}
 	resp := lookupOneCDK(c.Request.Context(), code, deviceFrom(c))
 	if resp.Status == "unknown" {
 		c.JSON(http.StatusNotFound, gin.H{
@@ -80,6 +85,12 @@ func LookupCDKStatusBatch(c *gin.Context) {
 			"error": "一次最多查询 " + strconv.Itoa(lookupBatchMax) + " 张卡密",
 			"max":   lookupBatchMax,
 		})
+		return
+	}
+
+	// 只有批次里有本地码才计入限流：纯上游码的批量查询行为不变
+	if slices.ContainsFunc(codes, func(code string) bool { _, local := provider.CardSupplyForCode(code); return local }) &&
+		!localRateCheck(c, localRateQuery) {
 		return
 	}
 
@@ -150,7 +161,25 @@ func applyLookupFailure(resp *cdkLookupResult, notes string, reusable bool) {
 	}
 }
 
+// lookupOneCDK 查一张码：按码分派，供卡型查本地，上游型交给它的查询能力，没有这个能力的按「未找到」。
 func lookupOneCDK(ctx context.Context, code, deviceID string) cdkLookupResult {
+	p, err := provider.ForCode(code)
+	if err != nil {
+		return cdkLookupResult{CDKCode: code, Status: "unknown", Message: "未找到该卡密记录"}
+	}
+	if cs, ok := provider.AsCardSupply(p); ok {
+		return localCDKLookup(ctx, cs, code)
+	}
+	if a, ok := upstreamAdapterFor(p.Name()); ok {
+		if l, ok := a.(upstreamLookuper); ok {
+			return l.Lookup(ctx, code, deviceID)
+		}
+	}
+	return cdkLookupResult{CDKCode: code, Status: "unknown", Message: "未找到该卡密记录"}
+}
+
+// zovoCardLookup 是 ZovoCard 的卡密查询：本站的码表、绑定和卡台订单。
+func zovoCardLookup(ctx context.Context, code, deviceID string) cdkLookupResult {
 	resp := cdkLookupResult{CDKCode: code, Status: "unknown", Message: "未找到该卡密记录"}
 	redeemOK := false
 	reusable := false
@@ -271,10 +300,8 @@ func lookupOneCDK(ctx context.Context, code, deviceID string) cdkLookupResult {
 	}
 
 	if bind, berr := db.GetBindingByCDK(code); berr == nil && bind != nil {
-		if resp.AccountEmail == "" && strings.TrimSpace(bind.SessionPayload) != "" {
-			if em := extractEmailFromSession(bind.SessionPayload); em != "" {
-				resp.AccountEmail = em
-			}
+		if resp.AccountEmail == "" {
+			resp.AccountEmail = bind.AccountEmail
 		}
 		if tok := strings.TrimSpace(bind.RedemptionToken); tok != "" {
 			cli := cardplatform.NewFromSettings()
@@ -300,6 +327,7 @@ func lookupOneCDK(ctx context.Context, code, deviceID string) cdkLookupResult {
 					os := strings.ToLower(orderStatus)
 					switch {
 					case os == "completed" || os == "success" || os == "done" || os == "paid":
+						clearSessionAfterCompleted(code, tok)
 						redeemOK = true
 						resp.Status, resp.Used = "used", true
 						resp.CanResubmit = false

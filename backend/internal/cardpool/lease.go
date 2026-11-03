@@ -18,9 +18,10 @@ import (
 // 选卡时每批查询的候选卡数；一批都不合格或都没抢到时接着查下一批。
 const acquireCandidates = 20
 
-// AcquireRequest 为选卡请求。ExcludeCardIDs 供同一订单换卡重试时排除已试过的卡。
+// AcquireRequest 为选卡请求。ExcludeCardIDs 供同一订单换卡重试时排除已试过的卡。Currency 非空时只选该币种的卡（不区分大小写）。
 type AcquireRequest struct {
 	PlanKey, OrderRef, AccountEmail string
+	Currency                        string
 	ExcludeCardIDs                  []string
 }
 
@@ -96,12 +97,16 @@ type candidate struct {
 }
 
 // pickCandidates 查询某产品下可选的卡（selectableWhere），一批最多 20 张，按 use_count 降序、入池时间升序、card_id 升序。
-// after 非空时只取排在它之后的卡（键集分页，不受并发抢卡导致的行变化影响）。
+// currency 非空时只取该币种（须已转大写）的卡。after 非空时只取排在它之后的卡（键集分页，不受并发抢卡导致的行变化影响）。
 // 有效期在 Go 里另行过滤（expiryEligible）。查询结果读完即关闭，避免占用连接时再执行抢卡语句。
-func pickCandidates(ctx context.Context, productID string, maxUses int, exclude []string, after *candidate) ([]candidate, error) {
+func pickCandidates(ctx context.Context, productID string, maxUses int, currency string, exclude []string, after *candidate) ([]candidate, error) {
 	q := `SELECT c.card_id, c.product_id, c.currency, c.expiry, c.use_count, c.created_at` + selectableFrom +
 		` WHERE c.product_id = ? AND` + selectableWhere
 	args := append([]any{productID}, selectableArgs(maxUses)...)
+	if currency != "" {
+		q += ` AND UPPER(c.currency) = ?`
+		args = append(args, currency)
+	}
 	if len(exclude) > 0 {
 		q += ` AND c.card_id NOT IN (` + placeholders(len(exclude)) + `)`
 		for _, id := range exclude {
@@ -157,6 +162,7 @@ func (s *Service) Acquire(ctx context.Context, req AcquireRequest) (*Lease, erro
 	if len(products) == 0 {
 		products = pol.PlanProducts["default"]
 	}
+	currency := strings.ToUpper(strings.TrimSpace(req.Currency))
 	token, err := newLeaseToken()
 	if err != nil {
 		return nil, err
@@ -177,7 +183,7 @@ func (s *Service) Acquire(ctx context.Context, req AcquireRequest) (*Lease, erro
 		// 分批取候选，直到抢到或该产品没有更多候选：一整批有效期不合格的卡不能挡住后面的卡
 		var after *candidate
 		for {
-			cands, err := pickCandidates(ctx, productID, pol.MaxUsesPerCard, req.ExcludeCardIDs, after)
+			cands, err := pickCandidates(ctx, productID, pol.MaxUsesPerCard, currency, req.ExcludeCardIDs, after)
 			if err != nil {
 				return nil, err
 			}
@@ -205,6 +211,9 @@ func (s *Service) Acquire(ctx context.Context, req AcquireRequest) (*Lease, erro
 	}
 
 	reason := "无可用卡"
+	if currency != "" {
+		reason = "无可用的 " + currency + " 卡" // 卡池页可能明明有别的币种的卡，得说清楚缺的是什么
+	}
 	if len(products) > 0 && suspended == len(products) {
 		reason = "全部产品已停用"
 	}
@@ -270,9 +279,18 @@ func (s *Service) markSensitive(ctx context.Context, cardID, token string, requi
 	return n == 1, nil
 }
 
+// CardSensitive 是付款引擎填表用的卡号信息，与发卡平台无关：别家供卡型服务商的卡池也返回它。
+// 只在内存里用，不落库、不记日志、不序列化。
+type CardSensitive struct {
+	CardID     string
+	CardNo     string
+	ExpiryDate string
+	CVV2       string
+}
+
 // Sensitive 实时查询完整卡号、CVV2、有效期，不落库、不记日志。先记下本次租约已取卡号再调接口：
 // 响应丢失时平台可能已经返回了卡号，宁可多算一次使用。
-func (s *Service) Sensitive(ctx context.Context, l *Lease) (*marswallex.CardSensitive, error) {
+func (s *Service) Sensitive(ctx context.Context, l *Lease) (*CardSensitive, error) {
 	c, err := s.leasedCard(ctx, l, true)
 	if err != nil {
 		return nil, err
@@ -288,7 +306,14 @@ func (s *Service) Sensitive(ctx context.Context, l *Lease) (*marswallex.CardSens
 	if !ok {
 		return nil, ErrLeaseInvalid
 	}
-	return client.GetCardSensitive(ctx, c.CardID)
+	sv, err := client.GetCardSensitive(ctx, c.CardID)
+	if err != nil {
+		return nil, err
+	}
+	if sv == nil {
+		return nil, errors.New("发卡平台没有返回卡号")
+	}
+	return &CardSensitive{CardID: sv.CardID, CardNo: sv.CardNo, ExpiryDate: sv.ExpiryDate, CVV2: sv.CVV2}, nil
 }
 
 // Release 释放租约并上报结果（aborted 不计入健康度），随后按 §6.4 回收。
@@ -330,7 +355,7 @@ func (s *Service) releaseCard(ctx context.Context, cardID, token string) error {
 		use_count = use_count + lease_sensitive,
 		pool_state = CASE WHEN retire_reason <> '' OR use_count + lease_sensitive >= ? THEN ? ELSE ? END,
 		lease_token = '', lease_owner = '', lease_expires_at = NULL, lease_sensitive = 0,
-		next_action_at = ?, updated_at = ?
+		next_action_at = ?, frozen_since = NULL, updated_at = ?
 		WHERE card_id = ? AND pool_state = ? AND lease_token = ?`,
 		pol.MaxUsesPerCard, PoolUsed, PoolReleasing, now, now, cardID, PoolLeased, token)
 	if err != nil {

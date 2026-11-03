@@ -16,7 +16,9 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/handler"
 	"github.com/tuzi/cdk-recharge-system/internal/notify"
+	"github.com/tuzi/cdk-recharge-system/internal/payengine"
 	"github.com/tuzi/cdk-recharge-system/internal/plansync"
+	"github.com/tuzi/cdk-recharge-system/internal/provider"
 )
 
 type Server struct {
@@ -25,17 +27,21 @@ type Server struct {
 }
 
 func New(ctx context.Context, cfg *config.Config) (*Server, error) {
-	// 生产模式下强制要求安全的 JWT secret，避免 token 被伪造
-	if err := enforceJWTSecret(cfg.Server.Mode); err != nil {
-		return nil, err
-	}
-
 	// Initialize database
 	if err := db.Init(&cfg.Database); err != nil {
 		return nil, err
 	}
 
-	engine := gin.Default()
+	// 生产模式、或已配置动钱上游密钥时，强制要求安全的 JWT secret，避免 token 被伪造后调用动钱接口
+	upstream, err := upstreamKeysConfigured()
+	if err != nil {
+		return nil, err
+	}
+	if err := enforceJWTSecret(cfg.Server.Mode, upstream); err != nil {
+		return nil, err
+	}
+
+	engine := newEngine()
 
 	// 不信任任意代理头（X-Forwarded-For 等），保证限流拿到的是真实来源 IP。
 	// 若部署在已知反代后，用 TRUSTED_PROXIES（逗号分隔）显式声明。
@@ -49,6 +55,20 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	engine.Use(SecurityHeadersMiddleware())
 	engine.Use(CORSMiddleware())
 
+	// MarsWallex 卡池与付款引擎先建好并注入 handler，再注册路由；付款引擎依赖卡池，所以排在其后
+	pool := cardpool.New(cardPoolOptions(notify.SendText))
+	handler.SetCardPool(pool)
+	pools, err := payPools(pool)
+	if err != nil {
+		return nil, err
+	}
+	// 每家注册了的服务商都要接上 handler 层的适配器，否则它的码会被分派过来却没人接
+	if err := handler.CheckProviderAdapters(); err != nil {
+		return nil, err
+	}
+	pay := payengine.New(payengine.Options{Pools: pools, Alert: alertSender("payengine", notify.SendText)})
+	handler.SetPayEngine(pay)
+
 	// Setup routes
 	setupRoutes(engine)
 
@@ -56,9 +76,13 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	plansync.Start(ctx)
 
 	// 启动 MarsWallex 卡池（对账、回收、补卡、Webhook 事件处理）
-	pool := cardpool.New(cardpool.Options{Client: handler.MarsWallexClient, Alert: cardPoolAlert(notify.SendText)})
-	handler.SetCardPool(pool)
 	pool.Start(ctx)
+	// 启动付款引擎：Start 内含同步的重启恢复，这里返回后 HTTP 才会开始监听（Run 在 New 之后）
+	pay.Start(ctx)
+
+	// CDK 链路后台维护：清理到期或已完成订单的用户会话
+	handler.SetOpsAlert(alertSender("cdk", notify.SendText))
+	handler.StartOpsMaintenance(ctx)
 
 	return &Server{
 		engine: engine,
@@ -66,18 +90,58 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	}, nil
 }
 
-// cardPoolAlert 包装卡池告警：先写日志（Telegram 未配置时 SendText 静默返回，告警不能因此丢失），
+// alertSender 包装模块告警：先写日志（前缀标明模块；Telegram 未配置时 SendText 静默返回，告警不能因此丢失），
 // 再 HTML 转义后发送。告警里有平台错误信息、商户名、持卡人备注等不受控文本，SendText 用 parse_mode=HTML，
 // 未转义的 < 或 & 会让 Telegram 拒收整条消息。告警文本不含卡号、CVV2、验证码。
-func cardPoolAlert(send func(string)) func(string) {
+func alertSender(prefix string, send func(string)) func(string) {
 	return func(text string) {
-		log.Printf("[cardpool] 告警: %s", text)
+		log.Printf("[%s] 告警: %s", prefix, text)
 		send(html.EscapeString(text))
 	}
 }
 
-// enforceJWTSecret 在 release 模式下拒绝使用空/默认密钥启动。
-func enforceJWTSecret(mode string) error {
+// cardPoolAlert 是卡池的告警函数。
+func cardPoolAlert(send func(string)) func(string) { return alertSender("cardpool", send) }
+
+// cardPoolOptions 是卡池的启动参数。补卡闸的判定在这里接上：漏接就等于 MarsWallex 没选用时照样开卡花钱，有测试钉着。
+func cardPoolOptions(send func(string)) cardpool.Options {
+	return cardpool.Options{
+		Client:             handler.MarsWallexClient,
+		Alert:              cardPoolAlert(send),
+		MarsWallexSelected: provider.MarsWallexSelected,
+	}
+}
+
+// payPools 是付款引擎按服务商取的卡池。每家注册了的供卡型服务商都必须在这里有卡池，漏了就拒绝启动：
+// 否则它的码能发、能兑换，付款时才发现没有卡池。目前只有 MarsWallex 一家，用的是本站的 MarsWallex 卡池。
+func payPools(mw payengine.Pool) (map[string]payengine.Pool, error) {
+	pools := map[string]payengine.Pool{string(provider.MarsWallex): mw}
+	for _, p := range provider.List() {
+		if _, ok := provider.AsCardSupply(p); ok && pools[string(p.Name())] == nil {
+			return nil, fmt.Errorf("供卡型服务商 %s 没有接入卡池", p.Name())
+		}
+	}
+	return pools, nil
+}
+
+// upstreamKeysConfigured 判断库里是否已配置 MarsWallex 或卡台 API Key（动钱上游）。
+// 只看是否非空，不解密、不记录内容。
+func upstreamKeysConfigured() (bool, error) {
+	for _, key := range []string{db.SettingMarsWallexDeveloperID, db.SettingMarsWallexAPIToken, "card_api_key"} {
+		v, err := db.GetSetting(key)
+		if err != nil {
+			return false, err
+		}
+		if strings.TrimSpace(v) != "" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// enforceJWTSecret 拒绝使用空/默认/过短的 JWT 密钥启动：release 模式总是拒绝；
+// 非 release 模式下，只要已配置动钱上游密钥（hasUpstream）也拒绝，防止公开默认密钥伪造管理员 token 调用动钱接口。
+func enforceJWTSecret(mode string, hasUpstream bool) error {
 	secret := os.Getenv("JWT_SECRET")
 	weak := secret == "" ||
 		secret == "your-secret-key-change-in-production" ||
@@ -85,6 +149,9 @@ func enforceJWTSecret(mode string) error {
 		len(secret) < 16
 	if mode == "release" && weak {
 		return fmt.Errorf("不安全的 JWT_SECRET：release 模式必须设置至少 16 位的随机 JWT_SECRET 环境变量")
+	}
+	if hasUpstream && weak {
+		return fmt.Errorf("不安全的 JWT_SECRET：已配置 MarsWallex 或卡台 API Key，必须设置至少 16 位的随机 JWT_SECRET 环境变量")
 	}
 	if weak {
 		log.Printf("⚠️  当前 JWT_SECRET 不安全（默认/过短）。仅可用于本地开发，部署前请设置强随机 JWT_SECRET（release 模式将拒绝启动）。")
@@ -223,6 +290,8 @@ func setupRoutes(r *gin.Engine) {
 			admin.POST("/cardpool/cards/apply", handler.AdminCardPoolApplyCards)
 			admin.POST("/cardpool/cards/import", handler.AdminCardPoolImportCard)
 			admin.POST("/cardpool/cards/:id/refresh", handler.AdminCardPoolRefreshCard)
+			admin.PUT("/cardpool/cards/:id/limit", handler.AdminCardPoolSetCardLimit)
+			admin.GET("/cardpool/cards/:id/limit-usage", handler.AdminCardPoolCardLimitUsage)
 			admin.POST("/cardpool/cards/:id/disable", handler.AdminCardPoolDisableCard)
 			admin.POST("/cardpool/cards/:id/enable", handler.AdminCardPoolEnableCard)
 			admin.POST("/cardpool/cards/:id/freeze", handler.AdminCardPoolFreezeCard)
@@ -263,6 +332,23 @@ func setupRoutes(r *gin.Engine) {
 			admin.POST("/cardpool/backfill", handler.AdminCardPoolBackfill)
 			admin.GET("/cardpool/cards/:id/balance-transactions", handler.AdminCardPoolCardTransfers)
 
+			// MarsWallex 兑换（付款引擎）：建单、单据、人工定论、截图、配置、代理、浏览器自检
+			admin.POST("/pay/orders", handler.AdminPaySubmit)
+			admin.GET("/pay/orders", handler.AdminPayList)
+			admin.GET("/pay/orders/:no", handler.AdminPayGet)
+			admin.POST("/pay/orders/:no/resolve", handler.AdminPayResolve)
+			admin.POST("/pay/orders/:no/renewal/retry", handler.AdminPayRetryRenewal)
+			admin.GET("/pay/orders/:no/shots/:name", handler.AdminPayShot)
+			admin.GET("/pay/config", handler.AdminPayGetConfig)
+			admin.PUT("/pay/config", handler.AdminPayPutConfig)
+			admin.GET("/pay/proxies", handler.AdminPayGetProxies)
+			admin.PUT("/pay/proxies", handler.AdminPayPutProxies)
+			admin.POST("/pay/proxies/test", handler.AdminPayTestProxy)
+			admin.POST("/pay/browser-check", handler.AdminPayBrowserCheck)
+			admin.GET("/pay/breaker", handler.AdminPayBreakerStatus)
+			admin.POST("/pay/breaker/resume", handler.AdminPayBreakerResume)
+			handler.RegisterPayProbeRoutes(admin)
+
 			// 卡台 Open API：实时价格 / 余额 / 发码 / 列码 / CDK 订单
 			admin.GET("/cardplatform/ping", handler.CardPlatformPing)
 			admin.GET("/cardplatform/plans", handler.CardPlatformPlans)
@@ -270,6 +356,16 @@ func setupRoutes(r *gin.Engine) {
 			admin.GET("/cardplatform/cdks", handler.CardPlatformListCDKs)
 			admin.GET("/cardplatform/cdks/stored", handler.CardPlatformListStoredCDKs)
 			admin.POST("/cardplatform/cdks", handler.CardPlatformIssueCDKs)
+			// 卡服务商：列表与配置、默认发码服务商（旧接口）、就绪检查、本地码
+			admin.GET("/providers", handler.AdminListProviders)
+			admin.PUT("/providers/config", handler.AdminPutProviderConfig)
+			admin.GET("/providers/default", handler.AdminGetDefaultProvider)
+			admin.PUT("/providers/default", handler.AdminPutDefaultProvider)
+			admin.GET("/providers/readiness", handler.AdminProviderReadiness)
+			admin.POST("/cdks/issue", handler.CardPlatformIssueCDKs)
+			admin.GET("/cdks", handler.AdminListLocalCDKs)
+			admin.POST("/cdks/:id/disable", handler.AdminDisableLocalCDK)
+			admin.POST("/cdks/:id/enable", handler.AdminEnableLocalCDK)
 			admin.POST("/cardplatform/cdks/sync", handler.CardPlatformSyncUpstreamCDKs)
 			admin.POST("/cardplatform/cdks/store", handler.CardPlatformStoreCDKCodes)
 			admin.POST("/cardplatform/cdks/batch-disable", handler.CardPlatformBatchDisableCDKs)
@@ -279,6 +375,8 @@ func setupRoutes(r *gin.Engine) {
 			admin.PUT("/cardplatform/cdks/:id/note", handler.CardPlatformSetCDKNote)
 			admin.POST("/cardplatform/cdks/:id/disable", handler.CardPlatformDisableCDK)
 			admin.POST("/cardplatform/cdks/:id/enable", handler.CardPlatformEnableCDK)
+			admin.GET("/cardplatform/agent-exchanges", handler.AdminListAgentExchanges)
+			admin.POST("/cardplatform/agent-exchanges/:id/resolve", handler.AdminResolveAgentExchange)
 			admin.GET("/cardplatform/cdk-orders", handler.CardPlatformListCDKOrders)
 			admin.GET("/cardplatform/cdk-orders/:id", handler.CardPlatformGetCDKOrder)
 			admin.DELETE("/cardplatform/cards/:id", handler.CardPlatformDeleteCard)

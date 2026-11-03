@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/marswallex"
@@ -36,8 +37,10 @@ func (s *Service) replenishGap(ctx context.Context, productID string, target, ma
 		return 0, err
 	}
 	var releasing, orders int
-	if err := db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM mw_cards WHERE product_id = ? AND pool_state = ?`,
-		productID, PoolReleasing).Scan(&releasing); err != nil {
+	// 只剩冻结余额超过告警时长的卡（MO-05）短期内回不到可用，不占缺口，否则补卡被它们静默吃掉
+	if err := db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM mw_cards WHERE product_id = ? AND pool_state = ?
+		AND NOT (frozen_cents > 0 AND available_cents = 0 AND frozen_since IS NOT NULL AND frozen_since <= ?)`,
+		productID, PoolReleasing, now.Unix()-int64(frozenAlertAfter/time.Second)).Scan(&releasing); err != nil {
 		return 0, err
 	}
 	if err := db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM mw_card_orders WHERE kind = ? AND product_id = ? AND state IN (?, ?, ?, ?)`,
@@ -89,6 +92,9 @@ func (s *Service) replenishOnce(ctx context.Context) error {
 	defer s.applyMu.Unlock()
 	pol, err := LoadPolicy()
 	if err != nil {
+		return err
+	}
+	if allowed, err := s.replenishAllowed(ctx, pol); err != nil || !allowed {
 		return err
 	}
 	ids := make([]string, 0, len(pol.ProductTargets))

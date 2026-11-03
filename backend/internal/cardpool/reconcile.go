@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 
 	"github.com/tuzi/cdk-recharge-system/internal/db"
@@ -261,9 +262,21 @@ func transferQueryResult(t *marswallex.CardBalanceTransaction) queryResult {
 	}
 	r := queryResult{State: st, TxnID: t.TransactionID}
 	if st == StateFailed {
-		r.Reason = "平台返回 FAIL"
+		r.Reason = transferFailReason(t.FailReason)
 	}
 	return r
+}
+
+// longDigitsRe 匹配疑似卡号的长数字串（允许空格、连字符分组）。
+var longDigitsRe = regexp.MustCompile(`\d(?:[\s-]*\d){11,}`)
+
+// transferFailReason 整理转入、转出的平台失败原因：抹掉疑似卡号的长数字串并截断；为空时回退「平台返回 FAIL」。
+// 只影响 last_error 的文字，不参与状态判定。
+func transferFailReason(raw string) string {
+	if r := truncate(longDigitsRe.ReplaceAllString(raw, "***"), 200); r != "" {
+		return r
+	}
+	return "平台返回 FAIL"
 }
 
 // resendStatus 用同一张改状态单重发（设置状态可重复执行）。结果只更新仍为读取时状态的单据，
@@ -287,6 +300,48 @@ func (s *Service) resendStatus(ctx context.Context, c *marswallex.Client, o *Ord
 		v.lastErr, now, o.OutOrderNo, o.State)
 	return uerr
 }
+
+// reviewSummaryHour 北京时间几点起发每日待人工汇总。
+const reviewSummaryHour = 9
+
+// dailyReviewSummary 每个北京日在 09:00 之后的第一轮维护时，汇总仍需人工处理的事项并告警一次（key review-summary）。
+// 单笔告警只发一次，漏看后没有人再提醒；这里补上每日提醒。没有待办时不发。
+// 统计：卡池资金单 needs_review、释放超过 24 小时仍未回收的卡、付款单 needs_review（付款单在 pay_orders），
+// 以及近 30 天开通成功、但没能关闭续费的付款单（renewal_state = failed，设计 2026-11-03 §3.1）。
+func (s *Service) dailyReviewSummary(ctx context.Context) error {
+	now := s.now()
+	if now.In(beijing).Hour() < reviewSummaryHour {
+		return nil
+	}
+	var orders, cards, pays, renewals int
+	if err := db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM mw_card_orders WHERE state = ?`, StateNeedsReview).Scan(&orders); err != nil {
+		return err
+	}
+	if err := db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM mw_cards WHERE pool_state = ? AND updated_at <= ?`,
+		PoolReleasing, now.Unix()-86400).Scan(&cards); err != nil {
+		return err
+	}
+	if err := db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM pay_orders WHERE state = 'needs_review'`).Scan(&pays); err != nil {
+		return err
+	}
+	if err := db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM pay_orders WHERE state = 'succeeded' AND renewal_state = 'failed' AND finished_at >= ?`,
+		now.Unix()-renewalReviewWindow).Scan(&renewals); err != nil {
+		return err
+	}
+	if orders+cards+pays+renewals == 0 {
+		return nil
+	}
+	text := fmt.Sprintf("每日待人工汇总：%d 张卡池资金单结果需人工核对（needs_review），%d 张卡释放超过 24 小时仍未回收，%d 张付款单待人工处理。",
+		orders, cards, pays)
+	if renewals > 0 {
+		text += fmt.Sprintf("另有 %d 张开通成功的付款单没能关闭续费（近 30 天），请让用户自行在 ChatGPT 设置里关闭续费。", renewals)
+	}
+	s.alert("review-summary", text+"请到后台逐项处理。")
+	return nil
+}
+
+// renewalReviewWindow 是每日汇总统计「没能关闭续费」的回看窗口（秒）：一个订阅周期，过了这期续费已经发生，提醒也没有意义了。
+const renewalReviewWindow = 30 * 86400
 
 // escalateUnknown 把 first_sent_at 之后满 30 分钟仍为 unknown 的单据转为 needs_review，并告警（key review:<单号>）。
 func (s *Service) escalateUnknown(ctx context.Context) error {

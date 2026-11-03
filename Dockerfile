@@ -18,7 +18,9 @@ RUN CGO_ENABLED=1 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/cdk-rec
 FROM debian:bookworm-slim
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates tzdata curl \
-    && rm -rf /var/lib/apt/lists/*
+       chromium xvfb fonts-liberation fonts-noto-cjk \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --no-create-home --shell /usr/sbin/nologin cdk-chrome
 WORKDIR /app
 COPY --from=backend  /out/cdk-recharge /app/cdk-recharge
 COPY --from=frontend /src/frontend/dist /app/web
@@ -31,7 +33,8 @@ ENV DB_PATH=/app/data/cdk_recharge.db \
     SERVER_MODE=release \
     INSTALL_MODE=wizard \
     TRUSTED_PROXIES=127.0.0.1,172.16.0.0/12 \
-    CDK_DEPLOY_MODE=docker
+    CDK_DEPLOY_MODE=docker \
+    CHROME_PATH=/usr/bin/chromium
 
 VOLUME ["/app/data"]
 EXPOSE 8080

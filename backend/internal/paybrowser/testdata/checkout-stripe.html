@@ -1,0 +1,437 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Stripe Checkout</title>
+<style>
+  body { font-family: sans-serif; width: 960px; margin: 24px auto; }
+  .CheckoutInput, .Select-source { display: block; width: 420px; height: 32px; margin: 6px 0; box-sizing: border-box; }
+  /* 真实页面的隐藏方式只证实到「class 为 HiddenInput、checkVisibility() 为 false」，具体 CSS 没有证据，这里取 visibility + opacity */
+  .HiddenInput { visibility: hidden; opacity: 0; height: 0; margin: 0; padding: 0; border: 0; }
+  .Checkbox { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+  .Checkbox-InputContainer { position: relative; display: inline-block; width: 16px; height: 16px; }
+  /* 真实页面勾选框的 visible 为 false：输入框本身透明，盖在样式元素上面 */
+  .Checkbox-Input { position: absolute; inset: 0; margin: 0; width: 16px; height: 16px; opacity: 0; }
+  .Checkbox-StyledInput { display: block; width: 14px; height: 14px; border: 1px solid #888; }
+  .Checkbox-Input:checked + .Checkbox-StyledInput { background: #36c; }
+  .FieldError { color: #c00; }
+  #challenge-modal { position: fixed; inset: 0; background: rgba(0, 0, 0, .5); display: flex; align-items: center; justify-content: center; }
+  #challenge-modal iframe { border: 0; width: 420px; height: 280px; background: #fff; }
+  #decoy-frame { border: 1px solid #ccc; width: 440px; height: 170px; }
+</style>
+</head>
+<body>
+<!--
+  照 Stripe 官方测试模式 Checkout 演示页的真实 DOM 仿造（测试用）。
+
+  证据：审计时用与 paybrowser.Launch 相同的 Chrome 参数打开 https://checkout.stripe.dev/checkout，读 embedded-checkout-inner 这一帧
+  （2026-11-03，只读 DOM，未提交）。下面各字段的 id、name、type、autocomplete、aria-label、class、data-testid 与默认可见性都照抄原始数据。
+
+  已有证据：
+    - 卡字段在主文档，不在 iframe：#cardNumber、#cardExpiry、#cardCvc
+    - 地址字段默认前缀是 shipping；城市、邮编、州、地址行 2 默认带 HiddenInput 且不可见；有按钮「Enter address manually」，点击后立刻可见
+    - #email 的 type 是 text；a11y 树把它和 #phoneNumber 标为 required，把「Save my information with Link」标为默认勾选
+    - #enableStripePass 的 class 是 Checkbox-Input，visible 为 false
+    - 唯一的 button.SubmitButton[type=submit]，首屏就有，空表单也不 disabled，内含隐藏的 Processing 文案
+    - 四个金额元素同时存在；没有 #payment-success
+    - 另有 link_pay_token 输入框（可见）与几个隐藏 iframe（link-login、address-autocomplete-iframe 等）
+
+  没有证据、是假设的部分：
+    - 地址前缀 billing 是推断（同一组件只换前缀），用 prefix=billing 测
+    - 「必填」的 DOM 表现：a11y 能看到 required，但原始数据没记 required 属性还是 aria-required，默认用 aria-required，emailattr=required 测另一种
+    - 取消 Link 勾选后手机框消失、地址字段重绘、勾选框 label 的结构
+    - 点支付后的一切：FieldError 的文案（只证实 class）、被拒文案、3DS 框（沿用旧仿造页的 stripe-challenge-frame）
+    - 成功后跳转到 /success（Stripe Checkout 跳到商户 success_url，这里只模拟「离开本页」）
+    - 金额文字是测试夹具，默认国家未知（原始数据第一项是空值，这里默认选它，让改国家一定触发重绘）
+
+  查询参数：
+    mode=success|decline|3ds|none  提交后的表现（默认 success）
+    delay=毫秒                mode=decline 时，收到提交后过这么久才显示被拒
+    prefix=billing            地址字段用 billing 前缀（默认 shipping，同原始数据）
+    notice=文字               收到提交后先显示 [role="alert"]，过 noticedelay 毫秒（默认 0）再按 mode 继续
+    banner=文字               页面一开始就有带这段文字的 [role="alert"]
+    fielderror=文字           点支付后不发 /pay，只显示 .FieldError（可重复）
+    emailattr=aria|required|none  邮箱必填的表现（默认 aria：aria-required；none 表示非必填）
+    emailvalue=文字           邮箱已预填
+    wipeonemail=1             键入邮箱时清空姓名（模拟重绘）
+    nolink=1                  没有 Link 区块
+    linkstuck=1               Link 勾选框点了也取消不掉
+    linkrecheck=1             键入邮箱时重新勾上 Link
+    linkmodal=1               键入邮箱后 link-login iframe 变为可见（Link 弹出验证）
+    phonealways=1             取消 Link 后手机仍必填
+    autoreveal=1              没有「手动输入」按钮，地址行 1 有内容后 1.5 秒城市等字段自己出现
+    latemanual=1              「手动输入」按钮要等地址行 1 有内容才出现
+    reveallag=毫秒            点「手动输入」后过这么久字段才出现
+    revealclicks=次数         「手动输入」点够这么多次才有反应
+    countrylag=毫秒           改国家后过这么久才重绘
+    submitmanual=1            「手动输入」文字放在支付按钮里（绝不能点）
+    nocvc=1                   没有 CVC 框
+    mangle=1                  模拟地址联想：整段输入城市时被改写
+    latepay=1                 支付按钮在邮编填好 1.5 秒后才出现
+    decoy=1                   主页面多一个可见的 input[name="number"]，另有可见 iframe，里面有可见的 submit 按钮（点击会被计数）
+    promo=1                   支付按钮前多一个可见的优惠码 submit 按钮 Apply（点击会被计数）
+    formcomplete=1            支付按钮一直带 SubmitButton--complete
+    otpflaky=1                3DS 验证页第一次输满验证码时提交按钮短暂消失
+    captcha=1                 点支付后出现一个可见的 hCaptcha 式 iframe（src 含 challenge，不是 3DS）
+    challengeby=src           3DS 框没有 name，只靠 src 里的 three-ds 识别
+    nopay=1                   没有支付按钮
+    paydisabled=1             支付按钮一直 disabled
+    savepay=on|off            多一个「保存付款信息」勾选框（买点数时可能出现），on 为默认勾上；文案照前端包里的 "Save payment details to {merchantName} for future purchases."，DOM 结构是推断
+    savepaystuck=1            「保存付款信息」勾选框点了也取消不掉
+  每次提交把收到的全部字段 POST 到本服务的 /pay，供测试断言；点到支付按钮就 POST /submit-attempt（前端校验拦下时也算）。
+-->
+<section id="summary">
+  <button class="Button OrderSummaryColumnForEmbedded-viewDetailsButton is-hideDetailsWithImage Button--primary Button--md" data-testid="order-details-hide-details" type="button">Hide</button>
+  <h1>Pure Glow Cream</h1>
+  <div class="ProductSummary-totalAmountContainer"><span id="ProductSummary-totalAmount" class="ProductSummary-totalAmount Text Text-color--default Text-fontWeight--600 Text--tabularNumbers" data-testid="product-summary-total-amount"></span></div>
+  <div class="OrderDetails-total flex-container justify-content-space-between"><span>Total due</span> <span id="OrderDetails-TotalAmount" class="Text Text-color--default Text-fontSize--16 Text-fontWeight--600 Text--tabularNumbers"></span></div>
+</section>
+
+<form id="promo-form" hidden>
+  <input id="promo-code" aria-label="Promotion code">
+  <button type="submit">Apply</button>
+</form>
+
+<form id="payment-form" novalidate>
+  <h2>Shipping information</h2>
+  <input id="email" name="email" type="text" autocomplete="email" class="CheckoutInput Input Input--empty" placeholder="Email">
+
+  <input id="shippingName" name="shippingName" type="text" autocomplete="shipping name" aria-label="Full name" class="CheckoutInput Input Input--empty">
+  <select id="shippingCountry" name="shippingCountry" autocomplete="shipping country" aria-label="Country or region" class="Select-source"></select>
+  <input id="shippingAddressLine1" name="shippingAddressLine1" type="text" autocomplete="shipping address-line1" aria-label="Address" class="CheckoutInput Input Input--empty">
+  <input id="shippingAddressLine2" name="shippingAddressLine2" type="text" autocomplete="shipping address-line2" aria-label="Address line 2" class="CheckoutInput HiddenInput Input Input--empty">
+  <input id="shippingLocality" name="shippingLocality" type="text" autocomplete="shipping address-level2" aria-label="City" class="CheckoutInput HiddenInput Input Input--empty">
+  <input id="shippingPostalCode" name="shippingPostalCode" type="text" autocomplete="shipping postal-code" aria-label="ZIP" class="CheckoutInput CheckoutInput--tabularnums HiddenInput Input Input--empty">
+  <select id="shippingAdministrativeArea" name="shippingAdministrativeArea" autocomplete="shipping address-level1" aria-label="State" class="Select-source Select-source--empty HiddenInput">
+    <option value="">State</option>
+    <option value="AL">Alabama</option>
+    <option value="AK">Alaska</option>
+    <option value="AS">American Samoa</option>
+    <option value="AZ">Arizona</option>
+    <option value="AR">Arkansas</option>
+    <option value="AA">Armed Forces (AA)</option>
+    <option value="AE">Armed Forces (AE)</option>
+    <!-- 原始数据只记了前 8 项，下面是免税州 -->
+    <option value="DE">Delaware</option>
+    <option value="MT">Montana</option>
+    <option value="NH">New Hampshire</option>
+    <option value="OR">Oregon</option>
+  </select>
+  <button id="manual-address" type="button" class="Button Button--link Button--checkoutSecondaryLink Button--md">Enter address manually</button>
+
+  <h2>Payment method</h2>
+  <input id="cardNumber" name="cardNumber" type="text" autocomplete="cc-number" aria-label="Card number" class="CheckoutInput CheckoutInput--tabularnums Input Input--empty">
+  <input id="cardExpiry" name="cardExpiry" type="text" autocomplete="cc-exp" aria-label="Expiration" class="CheckoutInput CheckoutInput--tabularnums Input Input--empty">
+  <input id="cardCvc" name="cardCvc" type="text" autocomplete="cc-csc" aria-label="Credit or debit card CVC/CVV" class="CheckoutInput CheckoutInput--tabularnums Input Input--empty">
+  <div class="Checkbox" id="use-shipping-row">
+    <div class="Checkbox-InputContainer">
+      <input id="cardUseShippingAsBilling" name="cardUseShippingAsBilling" type="checkbox" class="Checkbox-Input" checked>
+      <span class="Checkbox-StyledInput"></span>
+    </div>
+    <label for="cardUseShippingAsBilling">Billing info is same as shipping</label>
+  </div>
+
+  <div id="link-section" class="SignUpForm">
+    <div class="Checkbox">
+      <div class="Checkbox-InputContainer">
+        <input id="enableStripePass" name="enableStripePass" type="checkbox" class="Checkbox-Input" checked>
+        <span class="Checkbox-StyledInput"></span>
+      </div>
+      <label for="enableStripePass">Save my information with Link</label>
+    </div>
+    <div id="phone-row">
+      <select name="phoneNumberCountryCode" autocomplete="never-autocomplete-country-code" aria-label="Phone number country code" class="PhoneNumberCountryCodeSelect-select">
+        <option value="AF">Afghanistan (+93)</option>
+        <option value="AL">Albania (+355)</option>
+        <option value="US" selected>United States (+1)</option>
+      </select>
+      <input id="phoneNumber" name="phoneNumber" type="tel" autocomplete="tel" aria-label="Phone number" aria-required="true" class="CheckoutInput PhoneNumberInput-input SignUpForm-phoneInput CheckoutInput--hasPlaceholderIcon Input Input--empty">
+    </div>
+  </div>
+
+  <div id="savepay-section" class="Checkbox" style="display:none">
+    <div class="Checkbox-InputContainer">
+      <input id="savePaymentDetails" name="savePaymentDetails" type="checkbox" class="Checkbox-Input">
+      <span class="Checkbox-StyledInput"></span>
+    </div>
+    <label for="savePaymentDetails">Save payment details to OpenAI for future purchases.</label>
+  </div>
+
+  <div id="decoy-row" style="display:none"><input id="promo-number" name="number" aria-label="Promo number"></div>
+  <div id="errors"></div>
+  <button type="submit" class="SubmitButton SubmitButton--clickable" data-testid="hosted-payment-submit-button"><span>Pay</span><span style="display:none">Processing</span></button>
+  <input name="link_pay_token" type="text" autocomplete="off" aria-label="Link Pay Token">
+</form>
+
+<footer>
+  <button type="button" class="Button ZwaNu64p__FooterButtonLink Button--link Button--checkoutSecondaryLink Button--md">Legal</button>
+  <button type="button" class="Button ZwaNu64p__FooterButtonLink Button--link Button--checkoutSecondaryLink Button--md">Contact</button>
+</footer>
+
+<iframe name="link-login" title="Link" style="display:none"></iframe>
+<iframe name="address-autocomplete-iframe" style="display:none"></iframe>
+<iframe name="__privateStripeController6541" style="display:none"></iframe>
+<iframe name="__privateStripeMetricsController6540" style="display:none"></iframe>
+
+<script>
+  var CARD_ORIGIN = '__CARD_ORIGIN__'
+  var q = new URLSearchParams(location.search)
+  var mode = q.get('mode') || 'success'
+  var form = document.getElementById('payment-form')
+  var prefix = q.get('prefix') === 'billing' ? 'billing' : 'shipping'
+  function $(id) { return document.getElementById(id) }
+
+  // 原始数据是 shipping 前缀；billing 是同一组件只换前缀的推断
+  if (prefix === 'billing') {
+    $('use-shipping-row').remove()
+    Array.from(document.querySelectorAll('[id^="shipping"]')).forEach(function (el) {
+      el.id = el.id.replace(/^shipping/, 'billing')
+      el.name = el.name.replace(/^shipping/, 'billing')
+      el.setAttribute('autocomplete', el.getAttribute('autocomplete').replace(/^shipping /, 'billing '))
+    })
+  }
+  function addr(name) { return $(prefix + name) }
+
+  // 原始数据的国家列表：第一项是空值，其余是 ISO 码|名称（前 8 项原样记录，后面的名称来自 bodyText）
+  var countries = [['', ''], ['AU', 'Australia'], ['BE', 'Belgium'], ['BR', 'Brazil'], ['BG', 'Bulgaria'], ['CA', 'Canada'], ['CN', 'China'], ['CY', 'Cyprus'],
+    ['CZ', 'Czechia'], ['DK', 'Denmark'], ['FR', 'France'], ['DE', 'Germany'], ['JP', 'Japan'], ['GB', 'United Kingdom'], ['US', 'United States']]
+  countries.forEach(function (c) {
+    var o = document.createElement('option')
+    o.value = c[0]
+    o.textContent = c[1]
+    addr('Country').appendChild(o)
+  })
+
+  var hideable = ['AddressLine2', 'Locality', 'PostalCode', 'AdministrativeArea']
+  function collapse() {
+    hideable.forEach(function (n) { addr(n).classList.add('HiddenInput') })
+    if (q.get('autoreveal') !== '1' && q.get('latemanual') !== '1' && q.get('submitmanual') !== '1') $('manual-address').style.display = ''
+  }
+  function expand() {
+    hideable.forEach(function (n) { addr(n).classList.remove('HiddenInput') })
+    $('manual-address').style.display = 'none'
+  }
+
+  if (q.get('autoreveal') === '1' || q.get('latemanual') === '1' || q.get('submitmanual') === '1') $('manual-address').style.display = 'none'
+  var manualClicks = 0
+  $('manual-address').addEventListener('click', function () {
+    manualClicks++
+    if (manualClicks < (Number(q.get('revealclicks')) || 1)) return
+    var lag = Number(q.get('reveallag')) || 0
+    if (lag) setTimeout(expand, lag)
+    else expand()
+  })
+  addr('AddressLine1').addEventListener('input', function () {
+    if (!this.value) return
+    if (q.get('autoreveal') === '1') setTimeout(expand, 1500)
+    if (q.get('latemanual') === '1' && addr('Locality').classList.contains('HiddenInput')) $('manual-address').style.display = ''
+  })
+
+  // 改国家会重绘：姓名与其余地址字段被清空，城市等重新隐藏
+  addr('Country').addEventListener('change', function () {
+    var redraw = function () {
+      ['Name', 'AddressLine1', 'AddressLine2', 'Locality', 'PostalCode', 'AdministrativeArea'].forEach(function (n) { addr(n).value = '' })
+      collapse()
+    }
+    var lag = Number(q.get('countrylag')) || 0
+    if (lag) setTimeout(redraw, lag)
+    else redraw()
+  })
+
+  // 邮箱必填的三种表现
+  var emailAttr = q.get('emailattr') || 'aria'
+  if (emailAttr === 'aria') $('email').setAttribute('aria-required', 'true')
+  if (emailAttr === 'required') $('email').required = true
+  if (q.get('emailvalue')) $('email').value = q.get('emailvalue')
+  $('email').addEventListener('input', function () {
+    if (q.get('wipeonemail') === '1') addr('Name').value = ''
+    if (q.get('linkrecheck') === '1' && $('enableStripePass')) {
+      $('enableStripePass').checked = true
+      $('phone-row').style.display = ''
+    }
+    if (q.get('linkmodal') === '1') document.querySelector('iframe[name="link-login"]').style.display = ''
+  })
+
+  if (q.get('nolink') === '1') $('link-section').remove()
+  if ($('enableStripePass')) {
+    $('enableStripePass').addEventListener('click', function (e) {
+      if (q.get('linkstuck') === '1') e.preventDefault()
+    })
+    $('enableStripePass').addEventListener('change', function () {
+      if (q.get('phonealways') !== '1') $('phone-row').style.display = this.checked ? '' : 'none'
+    })
+  }
+
+  if (q.get('nocvc') === '1') $('cardCvc').remove()
+  if (q.get('savepay') === 'on' || q.get('savepay') === 'off') {
+    $('savepay-section').style.display = ''
+    $('savePaymentDetails').checked = q.get('savepay') === 'on'
+    $('savePaymentDetails').addEventListener('click', function (e) {
+      if (q.get('savepaystuck') === '1') e.preventDefault()
+    })
+  } else {
+    $('savepay-section').remove()
+  }
+  if (q.get('banner')) {
+    var banner = document.createElement('div')
+    banner.setAttribute('role', 'alert')
+    banner.textContent = q.get('banner')
+    $('summary').appendChild(banner)
+  }
+  var payButton = document.querySelector('.SubmitButton')
+  if (q.get('nopay') === '1') payButton.remove()
+  if (q.get('paydisabled') === '1') payButton.disabled = true
+  if (q.get('formcomplete') === '1') payButton.classList.add('SubmitButton--complete')
+  if (q.get('submitmanual') === '1') {
+    var hint = document.createElement('span')
+    hint.textContent = ' Enter address manually'
+    payButton.appendChild(hint)
+  }
+  if (q.get('promo') === '1') {
+    $('promo-form').hidden = false
+    $('promo-form').addEventListener('submit', function (e) {
+      e.preventDefault()
+      fetch('/promo', { method: 'POST' })
+    })
+  }
+  if (q.get('latepay') === '1') {
+    payButton.style.display = 'none'
+    addr('PostalCode').addEventListener('input', function () {
+      if (this.value) setTimeout(function () { payButton.style.display = '' }, 1500)
+    })
+  }
+  if (q.get('mangle') === '1') {
+    addr('Locality').addEventListener('input', function (e) {
+      if (e.inputType === 'insertText' && e.data && e.data.length > 1) this.value = 'Portland, Maine'
+    })
+  }
+  if (q.get('decoy') === '1') {
+    $('decoy-row').style.display = ''
+    var decoyFrame = document.createElement('iframe')
+    decoyFrame.id = 'decoy-frame'
+    decoyFrame.src = CARD_ORIGIN + '/card.html?decoy=1&decoyonly=1'
+    form.parentNode.insertBefore(decoyFrame, form)
+  }
+
+  // 金额异步渲染；四个元素同时存在，同真实页面
+  setTimeout(function () {
+    var text = '₱1,120.00'
+    ;['OrderDetails-TotalAmount', 'ProductSummary-totalAmount'].forEach(function (id) {
+      var amount = document.createElement('span')
+      amount.className = 'CurrencyAmount'
+      amount.textContent = text
+      $(id).appendChild(amount)
+    })
+  }, 500)
+
+  var numberKeys = 0
+  $('cardNumber').addEventListener('keydown', function (e) {
+    if (e.isTrusted && e.key.length === 1) numberKeys++
+  })
+
+  function val(el) { return el ? el.value : '' }
+  function linkOn() { return !!$('enableStripePass') && $('enableStripePass').checked }
+
+  function addError(text) {
+    var el = document.createElement('div')
+    el.className = 'FieldError'
+    el.textContent = text
+    $('errors').appendChild(el)
+  }
+
+  // 前端校验：文案没有证据（只证实 class 是 FieldError），只为让用例看到「点了支付但被前端校验拦下、没有发 /pay」
+  function validate() {
+    var errors = []
+    if (!val($('email')) && emailAttr !== 'none') errors.push('Your email is incomplete.')
+    if (!val(addr('Name'))) errors.push('Your name is incomplete.')
+    if (!val(addr('Country'))) errors.push('Your country is required.')
+    if (!val(addr('AddressLine1'))) errors.push('Your address is incomplete.')
+    if (!val(addr('Locality'))) errors.push('Your city is incomplete.')
+    if (!val(addr('PostalCode'))) errors.push('Your postal code is incomplete.')
+    if (!val(addr('AdministrativeArea'))) errors.push('Your state is required.')
+    if (!val($('cardNumber'))) errors.push('Your card number is incomplete.')
+    if (!val($('cardExpiry'))) errors.push('Your card\'s expiration date is incomplete.')
+    if (!val($('cardCvc'))) errors.push('Your card\'s security code is incomplete.')
+    if ((linkOn() || q.get('phonealways') === '1') && !val($('phoneNumber'))) errors.push('Phone number is required')
+    return errors
+  }
+
+  function showResult() {
+    if (q.get('captcha') === '1') {
+      var cap = document.createElement('iframe')
+      cap.title = 'hCaptcha challenge'
+      cap.src = CARD_ORIGIN + '/card.html?hcaptcha=1&frame=challenge'
+      cap.style.cssText = 'width:300px;height:200px;display:block'
+      document.body.appendChild(cap)
+    }
+    if (mode === 'decline') {
+      setTimeout(function () { showAlert('Your card was declined.') }, Number(q.get('delay')) || 0)
+    } else if (mode === 'none') {
+      // 页面没有任何结果
+    } else if (mode === '3ds') {
+      var modal = document.createElement('div')
+      modal.id = 'challenge-modal'
+      var frame = document.createElement('iframe')
+      if (q.get('challengeby') === 'src') frame.title = 'three-ds'
+      else frame.name = 'stripe-challenge-frame'
+      frame.src = CARD_ORIGIN + '/acs.html?wrap=1' + (q.get('otpflaky') === '1' ? '&flaky=1' : '') + (q.get('challengeby') === 'src' ? '&via=three-ds' : '')
+      modal.appendChild(frame)
+      document.body.appendChild(modal)
+    } else {
+      location.replace('/success')
+    }
+  }
+
+  function showAlert(text) {
+    var el = document.createElement('div')
+    el.setAttribute('role', 'alert')
+    el.textContent = text
+    $('errors').appendChild(el)
+  }
+
+  function pay() {
+    var body = {
+      method: 'new',
+      number: val($('cardNumber')), expiry: val($('cardExpiry')), cvc: val($('cardCvc')), numberKeys: numberKeys,
+      name: val(addr('Name')), country: val(addr('Country')), line1: val(addr('AddressLine1')), city: val(addr('Locality')),
+      state: val(addr('AdministrativeArea')), zip: val(addr('PostalCode')),
+      email: val($('email')), phone: val($('phoneNumber')), decoyNumber: val($('promo-number')), linkSave: linkOn(),
+      savePayment: !!$('savePaymentDetails') && $('savePaymentDetails').checked
+    }
+    fetch('/pay', { method: 'POST', body: JSON.stringify(body) }).then(function () {
+      if (q.get('notice')) {
+        showAlert(q.get('notice'))
+        setTimeout(showResult, Number(q.get('noticedelay')) || 0)
+        return
+      }
+      showResult()
+    })
+  }
+
+  form.addEventListener('submit', function (e) {
+    e.preventDefault()
+    fetch('/submit-attempt', { method: 'POST' })
+    $('errors').textContent = ''
+    var fieldErrors = q.getAll('fielderror')
+    if (fieldErrors.length) {
+      fieldErrors.forEach(addError)
+      return
+    }
+    var errors = validate()
+    if (errors.length) {
+      errors.forEach(addError)
+      return
+    }
+    pay()
+  })
+
+  window.addEventListener('message', function (e) {
+    if (e.origin !== CARD_ORIGIN || e.data.type !== '3ds') return
+    var modal = $('challenge-modal')
+    if (modal) modal.remove()
+    if (e.data.ok) location.replace('/success')
+    else showAlert('Your card was declined.')
+  })
+</script>
+</body>
+</html>

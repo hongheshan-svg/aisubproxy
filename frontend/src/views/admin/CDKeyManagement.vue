@@ -1,9 +1,8 @@
 <template>
   <div class="pb-2 space-y-4">
-    <div class="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-      <div>
-        <h1 class="text-2xl font-bold text-ink">CDK 卡密</h1>
-        <div class="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
+    <AdminPageHeader title="CDK 卡密" class="!mb-0">
+      <template #description>
+        <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted">
           <el-tag :type="configured ? 'success' : 'danger'" size="small">
             {{ configured ? 'API 已配置' : '未配置 Key' }}
           </el-tag>
@@ -12,10 +11,10 @@
             <el-button link type="primary" @click="copyText(egressIp)">复制</el-button>
           </span>
           <span v-if="balanceText">余额 <b class="mono text-ink">{{ balanceText }}</b></span>
-          <span class="text-subtle">{{ priceSource }} · v{{ pricingVersion ?? '—' }}</span>
+          <span v-if="priceSource || pricingVersion != null" class="text-subtle">{{ priceSource }}<template v-if="pricingVersion != null"> · v{{ pricingVersion }}</template></span>
         </div>
-      </div>
-      <div class="flex flex-wrap gap-2">
+      </template>
+      <template #actions>
         <el-popover placement="bottom-end" :width="420" trigger="click">
           <template #reference>
             <el-button size="small">代理换码</el-button>
@@ -32,15 +31,19 @@
         </el-popover>
         <router-link to="/ops/integration" class="btn-secondary !py-1.5 !px-3 text-sm">卡台配置</router-link>
         <el-button size="small" :loading="loadingMeta" @click="refreshAll">刷新</el-button>
-      </div>
-    </div>
+      </template>
+    </AdminPageHeader>
 
-    <label class="text-sm">{{ t('xPremium.product') }}
-      <select v-model="directProduct" class="input !w-48" :disabled="issuing || loadingMeta" @change="loadMeta">
-        <option value="gpt">ChatGPT</option><option value="x">X Premium</option><option value="grok">Grok</option><option value="claude">Claude</option>
-      </select>
-    </label>
-    <div v-if="metaError" class="alert alert-error">{{ metaError }}</div>
+    <el-tabs v-model="tab" class="cdk-tabs">
+      <el-tab-pane label="卡密" name="codes" />
+      <el-tab-pane label="代理换码核对" name="swaps" />
+    </el-tabs>
+
+    <IssueProviderBar v-if="tab === 'codes'" v-model:provider="provider" v-model:product="directProduct" :reg="registry"
+      :products="productOptions" :notice="providerNotice" :error="registryError" :busy="issuing || loadingMeta" @product-change="onProductChange" />
+
+    <template v-if="tab === 'codes' && codeListKind === 'cardplatform'">
+    <ApiErrorNotice :message="metaError" />
     <el-button v-if="!configured" type="warning" size="small" @click="$router.push('/ops/integration')">
       去配置 API Key
     </el-button>
@@ -263,6 +266,7 @@
             </button>
           </template>
         </el-table-column>
+        <el-table-column label="服务商" width="92"><template #default>{{ providerLabel(provider) }}</template></el-table-column>
         <el-table-column prop="plan" label="套餐" width="100">
           <template #default="{ row }">{{ planLabel(row.plan) }}</template>
         </el-table-column>
@@ -322,20 +326,58 @@
         />
       </div>
     </section>
+    </template>
+
+    <LocalCdkPanel v-else-if="tab === 'codes' && codeListKind === 'local'" :key="provider" :provider="provider" :product="directProduct" />
+    <section v-else-if="tab === 'codes' && provider" class="card text-sm text-muted" data-testid="no-code-list">
+      这家服务商的码请在它自己的后台管理。
+    </section>
+    <AgentExchangePanel v-else-if="tab === 'swaps'" />
   </div>
 </template>
 
 <script setup lang="ts">
+import ApiErrorNotice from '../../components/ApiErrorNotice.vue'
+import LocalCdkPanel from './components/LocalCdkPanel.vue'
+import AgentExchangePanel from './components/AgentExchangePanel.vue'
+import { useIssueProvider } from '../../lib/useIssueProvider'
+import IssueProviderBar from './components/IssueProviderBar.vue'
+import { useRouteTab } from '../../lib/useRouteTab'
+import {
+  loadRegistry, providerCodeList, providerLabel, registry,
+} from '../../lib/provider'
+import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { useI18n } from 'vue-i18n'
 const { t } = useI18n()
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { authFetch } from '../../lib/api'
+import { IdempotencyKeeper } from '../../lib/idempotency'
 import { dialog } from '../../lib/dialog'
 import { copyToClipboard } from '../../lib/clipboard'
 import { isCardAttachPlan } from '../../lib/plan'
 
+const tab = useRouteTab('/ops/cdkeys')
+const registryError = ref('')
+const productOptions = computed(() => {
+  const l = registry.value?.products
+  return l && l.length ? l : [{ key: 'gpt', label: 'ChatGPT' }, { key: 'x', label: 'X Premium' }, { key: 'grok', label: 'Grok' }, { key: 'claude', label: 'Claude' }]
+})
+const codeListKind = computed(() => providerCodeList(registry.value, provider.value))
+async function loadProviderRegistry() {
+  const r = await loadRegistry(true)
+  if (!r.ok) { registryError.value = (r.data && (r.data as any).error) || '网络错误'; return }
+  registryError.value = ''
+  applyPreselect()
+}
+async function onProductChange() {
+  // 先按已有数据立刻重算预选，免得等卡台套餐接口时界面显示不做该产品的服务商；档位列表变了再算一次
+  applyPreselect()
+  await loadMeta()
+  applyPreselect()
+}
+
 const RECENT_KEY = 'cdk_recent_issued_v1'
-/** 浏览器兜底缓存（历史本机数据）；主存储已改为服务器 SQLite */
+/** 旧版本把完整码写入 localStorage 的键。现在不再写入，只在升级时读出一次并删除（见 loadCodeCache） */
 const CODE_CACHE_KEY = 'cdk_full_code_cache_v1'
 /** 卡台完整码形如 GPTD-xxxxxxxxxxxx-xxxxxxxxxxxx-xxxxxxxxxxxx（约 43 字符） */
 const FULL_CODE_MIN_LEN = 20
@@ -377,6 +419,7 @@ const form = reactive({
   // 将来卡台若改默认地区，「没指定」和「明确指定了 PH」该走不同的路。
   payment_country: '',
 })
+const { provider, notice: providerNotice, apply: applyPreselect } = useIssueProvider(directProduct, computed(() => form.plan), (k) => planLabel(k))
 // ★地区清单只认卡台下发的 payment_regions★，本站不写死。
 // 写死的那份和卡台的校验表迟早不一致，而不一致时两边都不报错：
 // 多出来的地区发码被拒，少了的地区卡台支持了却选不到。
@@ -976,22 +1019,16 @@ function extractFullCode(item: any): string {
   return ''
 }
 
+/** 升级迁移：旧版本缓存的完整码只读进内存（供回填服务器），随后立即删除 localStorage 里的旧缓存。 */
 function loadCodeCache() {
   try {
     const raw = localStorage.getItem(CODE_CACHE_KEY)
+    localStorage.removeItem(CODE_CACHE_KEY)
     if (!raw) return
     const o = JSON.parse(raw)
     if (o && typeof o === 'object') codeCache.value = o
   } catch {
     /* ignore */
-  }
-}
-
-function saveCodeCache() {
-  try {
-    localStorage.setItem(CODE_CACHE_KEY, JSON.stringify(codeCache.value))
-  } catch {
-    /* ignore quota */
   }
 }
 
@@ -1013,8 +1050,8 @@ function rememberIssued(items: any[], plan: string) {
     if (prefix) next[`pfx:${prefix}`] = entry
     next[`code:${code}`] = entry
   }
+  // 完整码只在内存中保留（页面刷新即失效），主存储是服务器 SQLite；不写 localStorage
   codeCache.value = next
-  saveCodeCache()
 }
 
 function lookupFullCode(row: any): string {
@@ -1240,41 +1277,40 @@ async function loadMeta() {
   }
 }
 
+// 发码幂等键：请求内容不变的重试沿用同一个键，服务端缺头会拒绝；明确成功后才换新
+const issueKeys = new IdempotencyKeeper()
+
 async function issue() {
   issueError.value = ''
   issueOk.value = ''
   if (!canIssue.value) return
   issuing.value = true
   try {
+    const payload = {
+      // 必须明说是哪一家：服务端留空时按配置的默认服务商发码，配置改了就会发错
+      provider: provider.value,
+      plan: form.plan,
+      product: directProduct.value,
+      count: form.count,
+      funding_confirmed: true,
+      // 只传国家，币种由卡台按它的唯一真相源补。本站猜币种猜错的话，
+      // 卡台会回「付款地区与币种不匹配」——一句完全指不到真因的话。
+      payment_country: form.payment_country || '',
+    }
     const r = await authFetch('/api/v1/admin/cardplatform/cdks', {
       method: 'POST',
-      body: JSON.stringify({
-        plan: form.plan,
-        product: directProduct.value,
-        count: form.count,
-        funding_confirmed: true,
-        // 只传国家，币种由卡台按它的唯一真相源补。本站猜币种猜错的话，
-        // 卡台会回「付款地区与币种不匹配」——一句完全指不到真因的话。
-        payment_country: form.payment_country || '',
-      }),
+      headers: { 'Idempotency-Key': issueKeys.keyFor(payload) },
+      body: JSON.stringify(payload),
     })
     const d = await r.json().catch(() => ({}))
     if (!r.ok) {
-      const recovered = await syncFromCardplatform({ quiet: true, plan: form.plan, status: 'unused' })
-      const recCodes = Array.isArray(recovered?.codes) ? recovered.codes.map(extractFullCode).filter(Boolean) : []
-      if (recCodes.length) {
-        recentCodes.value = recCodes
-        // ★这里不传地区★：找回是按「plan + unused」从卡台捞最近的码，
-        // 捞到的不一定全是这一批，标上地区等于给出一个可能是错的承诺。
-        persistRecent(recCodes, form.plan)
-        issueOk.value = `发码请求未完成，已从卡台找回 ${recCodes.length} 张完整码。不要再点购买。`
-        dialog.toast(issueOk.value, 'warn')
-        await loadList()
-        await loadMeta()
-        return
-      }
+      // 找回由服务端做（只认本次请求开始之后创建的码）。这里不再按「档位 + unused」猜：
+      // 那样会把别处发的码当成这一批。结果不明时直接再点一次购买，沿用同一个幂等键，卡台不会重复发码。
       const msg = d.error || d.msg || '发码失败'
       issueError.value = msg
+      if (r.status === 0 || r.status >= 500) {
+        issueError.value += '（结果可能不明：直接再点一次购买即可，同一次请求不会重复发码）'
+      }
       if (String(msg).includes('403') || d.code === 403) {
         issueError.value += ' — 可能是 IP 未进白名单，请复制上方出口 IP 到卡台'
       }
@@ -1287,6 +1323,7 @@ async function issue() {
       recentCodes.value = []
       return
     }
+    if (!d.recovered) issueKeys.done() // 明确成功才换新键；找回的结果不明，沿用旧键重试不会多发
     // 浏览器兜底 + 列表以服务器为准
     rememberIssued(issued, form.plan)
     recentCodes.value = codes
@@ -1402,10 +1439,13 @@ async function refreshAll() {
 }
 
 onMounted(async () => {
+  const reg = loadProviderRegistry()
   loadCodeCache()
   loadPersistedRecent()
   if (recentCodes.value.length) issueOpen.value = true
   await refreshAll()
+  await reg
+  applyPreselect()
   // 若本机有历史完整码而服务器库为空，自动静默回填一次
   const localN = Object.values(codeCache.value).filter((v) => isFullCode(v?.code || '')).length
   if (localN > 0 && storeStats.fullInStore === 0) {
@@ -1419,6 +1459,7 @@ onMounted(async () => {
 </script>
 
 <style scoped>
+.text-warn { color: #d97706; }
 .fold-head {
   width: 100%;
   display: flex;

@@ -1,43 +1,40 @@
 <template>
   <div class="space-y-4">
-    <el-card shadow="never">
-      <template #header>
-        <div class="flex items-center justify-between">
-          <span class="font-semibold">站点外观与配置</span>
-          <el-tag size="small" type="success">DB 持久化</el-tag>
-        </div>
-      </template>
-      <p class="text-sm text-muted mb-4">
-        品牌/皮肤写入服务端 <code>site_settings</code>。
-      </p>
+    <AdminPageHeader class="!mb-0" title="外观与品牌" description="站点名称、副标题和整站皮肤。保存后对所有访客生效；未保存的皮肤只是预览，刷新或离开本页会还原。" />
 
-      <el-form label-width="120px" class="max-w-xl">
+    <el-card shadow="never">
+      <el-form label-width="120px" class="max-w-4xl">
         <el-form-item label="站点名称">
-          <el-input v-model="form.brand_name" maxlength="40" show-word-limit />
+          <el-input v-model="form.brand_name" maxlength="40" show-word-limit class="max-w-xl" />
         </el-form-item>
         <el-form-item label="副标题">
-          <el-input v-model="form.brand_sub" maxlength="80" show-word-limit />
+          <el-input v-model="form.brand_sub" maxlength="80" show-word-limit class="max-w-xl" />
         </el-form-item>
-        <el-form-item label="整站主题">
+        <el-form-item label="整站皮肤">
           <div class="w-full">
-            <SkinPicker show-mode title="主题包（配色 + 字体 + 布局）" />
+            <SkinPicker compact />
           </div>
         </el-form-item>
-        <el-form-item>
-          <el-button type="primary" :loading="saving" @click="saveBrand">保存品牌与主题</el-button>
-          <el-button @click="reapply">强制重应用主题</el-button>
+        <el-form-item label="明暗">
+          <el-radio-group :model-value="themeMode" @update:model-value="(v: any) => setTheme(v as ThemeMode)">
+            <el-radio-button value="light">亮色</el-radio-button>
+            <el-radio-button value="dark">暗色</el-radio-button>
+            <el-radio-button value="auto">跟随系统</el-radio-button>
+          </el-radio-group>
+          <div class="text-xs text-subtle w-full mt-1">保存的明暗是访客的默认值；每个人仍可在自己的浏览器里切换。</div>
         </el-form-item>
-        <p class="text-xs text-subtle -mt-2">
-          主题切换会同时改配色、字体、圆角、导航与布局壳。若偶尔「半套」，点「强制重应用」。
-          推荐试：<b>苹果玻璃</b>、黑白控制台、粗野主义——每套主题的按钮、面板、输入框与页签形态都不同，不只是换色。
-        </p>
+        <el-form-item>
+          <el-button type="primary" :loading="saving" @click="saveBrand">保存并对所有访客生效</el-button>
+          <span v-if="dirty" class="text-xs ml-3" style="color: var(--warn)">皮肤尚未保存</span>
+        </el-form-item>
       </el-form>
     </el-card>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { siteBrand, setSiteBrand, setSkin, setTheme, siteSkin, themeMode, applyThemeAll, type SkinId, type ThemeMode } from '../../theme'
 import SkinPicker from '../../components/SkinPicker.vue'
 import { authFetch } from '../../lib/api'
@@ -48,6 +45,9 @@ const form = reactive({
   brand_sub: siteBrand.value.sub,
 })
 const saving = ref(false)
+// 服务端已保存的皮肤：离开本页时，未保存的预览要还原
+const savedSkin = ref<SkinId>(siteSkin.value)
+const dirty = computed(() => siteSkin.value !== savedSkin.value)
 
 onMounted(async () => {
   try {
@@ -56,16 +56,18 @@ onMounted(async () => {
     const d = await r.json()
     form.brand_name = d.brand_name || form.brand_name
     form.brand_sub = d.brand_sub || form.brand_sub
-    if (d.skin) setSkin(d.skin as SkinId)
+    if (d.skin) {
+      savedSkin.value = d.skin as SkinId
+      setSkin(d.skin as SkinId)
+    }
     if (d.theme_mode) setTheme(d.theme_mode as ThemeMode)
     setSiteBrand({ name: form.brand_name, sub: form.brand_sub })
   } catch { /* ignore */ }
 })
 
-function reapply() {
-  applyThemeAll()
-  dialog.toast('主题已重应用', 'ok')
-}
+onBeforeUnmount(() => {
+  if (dirty.value) setSkin(savedSkin.value)
+})
 
 async function saveBrand() {
   saving.value = true
@@ -86,7 +88,8 @@ async function saveBrand() {
       dialog.toast(d.error || '保存失败', 'err')
       return
     }
-    dialog.toast('品牌/主题已保存', 'ok')
+    savedSkin.value = siteSkin.value
+    dialog.toast('已保存，对所有访客生效', 'ok')
   } finally {
     saving.value = false
   }

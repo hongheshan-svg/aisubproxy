@@ -1,5 +1,6 @@
 <template>
   <div class="space-y-4">
+    <AdminPageHeader class="!mb-0" title="MarsWallex 对接" description="首次接入按 1 → 5 的顺序操作：选环境、填凭证、生成密钥对并把公钥交给 MarsWallex、测试连接、配置 Webhook。" />
     <div v-if="cfg && !cfg.master_key_ready" class="card warn-box">
       服务器未配置 APP_MASTER_KEY，无法保存密钥（API Token、私钥）；地址、Developer ID、平台公钥仍可保存
       <span v-if="cfg.master_key_error" class="text-xs">（{{ cfg.master_key_error }}）</span>
@@ -7,10 +8,7 @@
 
     <!-- 1. 环境与地址 -->
     <div class="card space-y-4">
-      <div>
-        <h2 class="text-xl font-bold text-ink">MarsWallex 对接</h2>
-        <p class="text-sm text-muted mt-1">环境与地址</p>
-      </div>
+      <h3 class="step-title"><span class="step-no">1</span>环境与地址</h3>
       <div class="flex flex-wrap gap-2">
         <el-button
           v-for="p in cfg?.base_url_presets || []"
@@ -22,13 +20,13 @@
           {{ p.label }}
         </el-button>
       </div>
-      <el-input v-model="form.base_url" size="large" class="mono max-w-xl" placeholder="Base URL" />
+      <el-input v-model="form.base_url" size="large" class="mono mw-field" placeholder="Base URL" />
     </div>
 
     <!-- 2. 凭证 -->
     <div class="card space-y-4">
-      <h3 class="text-lg font-bold text-ink">凭证</h3>
-      <el-form label-position="top" class="max-w-xl" @submit.prevent>
+      <h3 class="step-title"><span class="step-no">2</span>凭证</h3>
+      <el-form label-position="top" class="mw-field" @submit.prevent>
         <el-form-item label="Developer ID">
           <el-input v-model="form.developer_id" size="large" class="mono" />
         </el-form-item>
@@ -54,12 +52,7 @@
             :placeholder="secretPlaceholder(cfg?.private_key_set, '粘贴私钥 PEM')"
           />
           <p v-if="cfg?.private_key_error" class="field-error">{{ cfg.private_key_error }}</p>
-          <div class="flex flex-wrap items-center gap-2 mt-2">
-            <el-button size="small" :loading="generating" :disabled="!masterKeyReady" @click="generateKeypair">
-              {{ cfg?.private_key_set ? '重新生成密钥对' : '生成密钥对' }}
-            </el-button>
-            <span class="text-xs text-subtle">在服务器内生成，私钥加密保存在本服务器、不会显示也不能下载</span>
-          </div>
+          <p class="text-xs text-subtle mt-1">没有私钥？到下面第 3 步让服务器生成，私钥加密保存在本服务器。</p>
         </el-form-item>
         <el-form-item label="平台公钥（PEM）">
           <el-input
@@ -73,21 +66,6 @@
         </el-form-item>
       </el-form>
 
-      <div v-if="cfg" class="space-y-2">
-        <div class="text-xs uppercase tracking-wide text-muted">我们的公钥（提供给 MarsWallex）</div>
-        <pre class="pem mono">{{ cfg.public_key_pem || '（尚未生成）' }}</pre>
-        <el-button v-if="cfg.public_key_pem" size="small" @click="copyText(cfg.public_key_pem)">复制</el-button>
-        <div v-if="cfg.public_key_pem" class="text-xs text-subtle">
-          把这段公钥粘贴到 MarsWallex「成为开发者」弹窗的 RSA 公钥一栏；以后重新生成密钥对，也要回到平台更新这里的公钥。
-        </div>
-        <div class="text-xs text-subtle">
-          我们的公钥指纹：<code class="mono">{{ cfg.public_key_fingerprint || '—' }}</code>
-        </div>
-        <div class="text-xs text-subtle">
-          平台公钥指纹：<code class="mono">{{ cfg.platform_public_key_fingerprint || '—' }}</code>
-        </div>
-      </div>
-
       <el-button
         type="primary"
         size="large"
@@ -99,10 +77,35 @@
       </el-button>
     </div>
 
-    <!-- 3. 测试连接 -->
+    <!-- 3. 密钥对 -->
+    <div class="card space-y-3">
+      <h3 class="step-title"><span class="step-no">3</span>密钥对</h3>
+      <div class="flex flex-wrap items-center gap-2">
+        <el-button type="primary" :loading="generating" :disabled="!masterKeyReady" @click="generateKeypair">
+          {{ cfg?.private_key_set ? '重新生成密钥对' : '生成密钥对' }}
+        </el-button>
+        <span class="text-xs text-subtle">在服务器内生成，私钥加密保存在本服务器、不会显示也不能下载</span>
+      </div>
+      <div v-if="cfg" class="space-y-2 mw-field">
+        <div class="text-sm font-medium text-ink">我们的公钥（提供给 MarsWallex）</div>
+        <pre class="pem mono">{{ cfg.public_key_pem || '（尚未生成）' }}</pre>
+        <el-button v-if="cfg.public_key_pem" size="small" @click="copyText(cfg.public_key_pem)">复制公钥</el-button>
+        <div v-if="cfg.public_key_pem" class="alert alert-warning text-xs">
+          请把上面的公钥粘贴到 MarsWallex「成为开发者」弹窗的 RSA 公钥一栏；以后每次重新生成密钥对，都要回到平台更新公钥，否则签名会失败。
+        </div>
+        <div class="text-xs text-subtle">
+          我们的公钥指纹：<code class="mono">{{ cfg.public_key_fingerprint || '—' }}</code>
+        </div>
+        <div class="text-xs text-subtle">
+          平台公钥指纹：<code class="mono">{{ cfg.platform_public_key_fingerprint || '—' }}</code>
+        </div>
+      </div>
+    </div>
+
+    <!-- 4. 测试连接 -->
     <div class="card space-y-3">
       <div class="flex flex-wrap items-center justify-between gap-2">
-        <h3 class="text-lg font-bold text-ink">测试连接</h3>
+        <h3 class="step-title"><span class="step-no">4</span>测试连接</h3>
         <el-button type="success" plain :loading="testing" @click="runTest">测试连接</el-button>
       </div>
       <div v-if="result" class="space-y-2">
@@ -127,9 +130,9 @@
       </div>
     </div>
 
-    <!-- 4. Webhook -->
+    <!-- 5. Webhook -->
     <div class="card space-y-3">
-      <h3 class="text-lg font-bold text-ink">Webhook</h3>
+      <h3 class="step-title"><span class="step-no">5</span>Webhook</h3>
       <div class="flex flex-wrap items-center gap-2">
         <el-input :model-value="cfg?.webhook_url || ''" readonly size="large" class="!flex-1 mono" />
         <el-button :disabled="!cfg?.webhook_url" @click="copyText(cfg?.webhook_url || '')">复制</el-button>
@@ -169,6 +172,7 @@
 </template>
 
 <script setup lang="ts">
+import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { authFetch } from '../../lib/api'
 import { dialog } from '../../lib/dialog'
@@ -409,6 +413,9 @@ onMounted(() => {
 </script>
 
 <style scoped>
+.mw-field { max-width: 720px; width: 100%; }
+.step-title { display: flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 600; color: var(--ink); }
+.step-no { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; background: var(--primary-soft); color: var(--primary); font-size: 12px; font-weight: 700; }
 .warn-box {
   color: #b91c1c;
   background: #fef2f2;

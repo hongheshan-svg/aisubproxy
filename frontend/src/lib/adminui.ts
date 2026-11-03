@@ -97,6 +97,7 @@ export const PAGE_TABS: Record<string, TabDef[]> = {
   ],
   '/ops/marswallex-pay': [
     { name: 'test', label: '发起付款' }, { name: 'orders', label: '付款订单' }, { name: 'config', label: '付款配置' },
+    { name: 'probe', label: '免付款探测' },
   ],
   '/ops/cdkeys': [
     { name: 'codes', label: '卡密' }, { name: 'swaps', label: '代理换码核对' },

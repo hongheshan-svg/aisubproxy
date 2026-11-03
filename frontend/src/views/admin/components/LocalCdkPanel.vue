@@ -15,7 +15,7 @@
         <ul class="list-disc pl-5">
           <li v-for="p in mw.problems" :key="p">{{ p }}</li>
         </ul>
-        <router-link v-if="firstPayMissing" to="/ops/marswallex-pay" class="underline">
+        <router-link v-if="firstPayMissing" :to="{ path: '/ops/marswallex-pay', query: { provider } }" class="underline" data-testid="first-pay-link">
           需要一笔系统自动确认成功的真实付款，去自动付款做
         </router-link>
         <router-link to="/ops/providers" class="underline ml-3">查看就绪详情</router-link>
@@ -169,7 +169,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, onServerPrefetch, ref, watch } from 'vue'
 import ApiErrorNotice from '../../../components/ApiErrorNotice.vue'
 import { dialog } from '../../../lib/dialog'
 import { copyToClipboard } from '../../../lib/clipboard'
@@ -426,6 +426,8 @@ async function enableOne(row: LocalCdkRow) {
 }
 
 onMounted(() => { loadReadiness(); load() })
+// 仅服务端渲染（单元测试）会触发：让测试里渲染出的面板带上就绪数据。浏览器里不会执行。
+onServerPrefetch(loadReadiness)
 </script>
 
 <style scoped>

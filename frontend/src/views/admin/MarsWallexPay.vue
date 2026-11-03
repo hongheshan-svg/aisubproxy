@@ -36,6 +36,11 @@
               />
             </div>
             <div class="flex flex-wrap items-center gap-3">
+              <div data-testid="pay-provider" :data-selected="payProvider">
+                <el-select v-model="payProvider" placeholder="服务商" style="width: 160px" :disabled="!providerOptions.length">
+                  <el-option v-for="p in providerOptions" :key="p.name" :label="p.display_name || p.name" :value="p.name" />
+                </el-select>
+              </div>
               <el-select v-model="planKey" placeholder="套餐" style="width: 180px">
                 <el-option v-for="p in config?.plans || []" :key="p.key" :label="p.label || p.key" :value="p.key" />
               </el-select>
@@ -43,6 +48,7 @@
                 <el-option v-for="r in regionList" :key="r" :label="r" :value="r" />
               </el-select>
             </div>
+            <div v-if="providerNotice" class="text-sm text-warn" data-testid="pay-provider-notice">{{ providerNotice }}</div>
             <div class="space-y-1">
               <div class="text-sm">运行方式</div>
               <el-radio-group v-model="mode" size="default">
@@ -54,6 +60,7 @@
             </div>
             <div class="text-sm">
               <template v-if="regionConf && regionConf.cap_minor > 0">
+                <template v-if="isCreditPlan(planConf) && (regionConf.expect_minor || 0) > 0">预期金额：<b>{{ formatMinor(regionConf.expect_minor || 0, regionConf.currency) }}</b>；</template>
                 应付金额上限：<b>{{ formatMinor(regionConf.cap_minor, regionConf.currency) }}</b>；
                 注资：<b>{{ usd(regionConf.fund_cents) }} 美元</b>
               </template>
@@ -75,6 +82,9 @@
             <el-select v-model="stateFilter" clearable placeholder="全部状态" style="width: 160px" @change="onFilterChange">
               <el-option v-for="s in STATES" :key="s" :label="stateLabel(s)" :value="s" />
             </el-select>
+            <el-select v-model="renewalFilter" clearable placeholder="续费进度" style="width: 180px" @change="onFilterChange">
+              <el-option v-for="s in RENEWAL_STATES" :key="s" :label="renewalLabel(s)" :value="s" />
+            </el-select>
             <el-button :loading="ordersLoading" @click="loadOrders">刷新</el-button>
           </div>
           <el-table :data="orders" size="small" border empty-text="暂无订单" v-loading="ordersLoading" @row-click="(row: any) => openDetail(row.order_no)" class="cursor-pointer">
@@ -88,6 +98,7 @@
               <template #default="{ row }">
                 <el-tag size="small" :type="stateTagType(row.state)">{{ stateLabel(row.state) }}</el-tag>
                 <el-tag v-if="row.dry_run" size="small" type="info" class="ml-1">{{ orderModeLabel(row) }}</el-tag>
+                <el-tag v-if="renewalNeedsUser(row)" size="small" type="danger" class="ml-1">续费未关闭</el-tag>
               </template>
             </el-table-column>
             <el-table-column label="来源" min-width="100">
@@ -118,7 +129,7 @@
         <el-tab-pane label="付款配置" name="config">
           <el-alert v-if="config?.lease_warning" type="warning" :closable="false" show-icon class="mb-3" :title="leaseWarningText" />
           <div class="space-y-4" v-loading="configLoading">
-            <div v-for="p in plansForm" :key="p.key" class="space-y-2">
+            <div v-for="p in subscriptionForm" :key="p.key" class="space-y-2">
               <div class="font-semibold">
                 {{ p.label || p.key }}
                 <el-tag size="small" class="ml-2" :type="p.rows.some((r: any) => r.enabled) ? 'success' : 'info'">已启用 {{ p.rows.filter((r: any) => r.enabled).length }}/{{ p.rows.length }}</el-tag>
@@ -146,6 +157,7 @@
                 {{ showAllRegions[p.key] ? '收起未启用的地区' : `展开未启用的地区（${hiddenCount(p)} 个）` }}
               </el-button>
             </div>
+            <PayCreditPlans v-model="plansForm" />
             <div class="flex flex-wrap items-center gap-3">
               <span class="text-sm">并发数</span>
               <el-input-number v-model="concurrency" :min="1" :max="maxConcurrency" size="small" />
@@ -212,7 +224,19 @@
               <el-tag v-if="detail.order.dry_run" size="small" type="info" class="ml-1">{{ orderModeLabel(detail.order) }}</el-tag>
             </el-descriptions-item>
             <el-descriptions-item label="来源">{{ sourceLabel(detail.order.source, detail.order.source_ref) }}</el-descriptions-item>
-            <el-descriptions-item label="套餐 / 地区">{{ detail.order.plan_key }} / {{ detail.order.region }}</el-descriptions-item>
+            <el-descriptions-item label="服务商">{{ providerLabel(detail.order.provider) }}</el-descriptions-item>
+            <el-descriptions-item label="套餐 / 地区">
+              {{ detail.order.plan_key }} / {{ detail.order.region }}
+              <el-tag size="small" type="info" class="ml-1" data-testid="order-kind">{{ orderKindLabel(detail.order) }}</el-tag>
+            </el-descriptions-item>
+            <template v-if="detail.order.kind === 'credit'">
+              <el-descriptions-item label="卡是否被存">
+                <span :class="detail.order.card_saved === 'saved' ? 'text-err font-medium' : detail.order.card_saved === 'unknown' ? 'text-warn' : ''" data-testid="card-saved">
+                  {{ cardSavedLabel(detail.order.card_saved) }}
+                </span>
+              </el-descriptions-item>
+              <el-descriptions-item label="付款前点数">{{ detail.order.credit_balance_before || '没有读到' }}</el-descriptions-item>
+            </template>
             <el-descriptions-item label="金额">
               {{ detail.order.amount_minor > 0 ? formatMinor(detail.order.amount_minor, detail.order.currency) : '—' }}
               （上限 {{ formatMinor(detail.order.cap_minor, detail.order.currency) }}，注资 {{ usd(detail.order.fund_cents) }} 美元）
@@ -235,6 +259,8 @@
               {{ detail.order.resolved_by }}：{{ detail.order.resolve_note }}
             </el-descriptions-item>
           </el-descriptions>
+
+          <PayRenewalPanel :order="detail.order" @updated="onRenewalUpdated" />
 
           <div v-if="fillHits.length">
             <div class="font-semibold mb-1">填表字段命中结果</div>
@@ -261,7 +287,10 @@
           <div>
             <div class="font-semibold mb-2">该卡的授权交易（提交前 5 分钟起）</div>
             <p class="text-xs text-muted mb-2">同一张卡以前的旧交易可能混入，请对照时间判断。</p>
-            <el-alert v-if="detail.evidence_error" type="warning" :closable="false" show-icon title="授权交易暂时读不出" description="这不代表没有授权交易，请稍后刷新再看，不要据此判定未扣款。" />
+            <el-alert
+              v-if="detail.evidence_error" type="warning" :closable="false" show-icon
+              :title="evidenceNotice(detail.evidence_error).title" :description="evidenceNotice(detail.evidence_error).description"
+            />
             <el-table v-else :data="detail.evidence" size="small" border empty-text="没有授权交易">
               <el-table-column label="时间" min-width="150"><template #default="{ row }">{{ fmtTs(row.occurred_at) }}</template></el-table-column>
               <el-table-column prop="kind" label="类型" min-width="90" />
@@ -292,34 +321,35 @@
 
 <script setup lang="ts">
 import AdminPageHeader from '../../components/AdminPageHeader.vue'
+import PayCreditPlans from './components/PayCreditPlans.vue'
+import PayRenewalPanel from './components/PayRenewalPanel.vue'
 import { useRouteTab } from '../../lib/useRouteTab'
 import {
-  PAY_MODE_DESC, PAY_MODE_LABEL, breakerReason, buildPayBody, isFillFieldEvent, orderModeLabel, payErrorText, sourceLabel,
+  PAY_MODE_DESC, PAY_MODE_LABEL, breakerReason, buildPayBody, cardSavedLabel, cardSupplyProviders, evidenceNotice, isFillFieldEvent,
+  orderKindLabel, orderModeLabel, payErrorText, pickPayProvider, renewalLabel, renewalNeedsUser, sourceLabel,
   type Breaker, type PayMode,
 } from '../../lib/payui'
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { authFetch } from '../../lib/api'
 import { dialog } from '../../lib/dialog'
 import { errText, fmtTs } from '../../lib/cardpool'
 import {
-  STATES, currencyDigits, failureText, formatMinor, fromMinor, isTerminal, pageOutcomeLabel, payApi, stateLabel, toMinor, payBlockReason,
+  STATES, currencyDigits, failureText, formToPlan, formatMinor, isCreditPlan, isTerminal, pageOutcomeLabel, payApi, planToForm, stateLabel,
+  payBlockReason, type FormPlan, type PlanConf,
 } from '../../lib/pay'
+import { loadRegistry, providerLabel, registry } from '../../lib/provider'
 
 const REGIONS = ['PH', 'US', 'JP', 'CL', 'EG']
+const RENEWAL_STATES = ['pending', 'failed', 'skipped', 'cancelled']
 
-interface RegionConf { enabled: boolean; currency: string; cap_minor: number; fund_cents: number }
-interface PlanConf {
-  key: string; label: string; chatgpt_plan_name: string; expect_plan_type: string
-  regions: Record<string, RegionConf>
-}
 interface PayConfig {
   plans: PlanConf[]; concurrency: number
   lease_minutes: number; max_pay_minutes: number; max_concurrency: number; lease_warning: boolean
 }
-interface FormRow { region: string; enabled: boolean; initEnabled: boolean; currency: string; cap: number | null; fund: number | null }
-interface FormPlan { key: string; label: string; chatgpt_plan_name: string; expect_plan_type: string; rows: FormRow[] }
 
 const tab = useRouteTab('/ops/marswallex-pay')
+const route = useRoute()
 const regionList = REGIONS
 const usd = (cents: number) => (cents / 100).toFixed(2)
 
@@ -346,15 +376,12 @@ function applyConfig(c: PayConfig, syncForm = true) {
   if (!region.value) region.value = REGIONS[0]
   if (!syncForm) return
   concurrency.value = c.concurrency
-  plansForm.value = c.plans.map((p) => ({
-    key: p.key, label: p.label, chatgpt_plan_name: p.chatgpt_plan_name, expect_plan_type: p.expect_plan_type,
-    rows: REGIONS.map((r) => {
-      const rc = p.regions?.[r] || { enabled: false, currency: '', cap_minor: 0, fund_cents: 0 }
-      return { region: r, enabled: rc.enabled, initEnabled: rc.enabled, currency: rc.currency, cap: fromMinor(rc.cap_minor, rc.currency), fund: rc.fund_cents / 100 }
-    }),
-  }))
+  plansForm.value = c.plans.map((p) => planToForm(p, REGIONS))
   formSnapshot = formState()
 }
+
+// 订阅套餐用下面的表格；Codex 点数档另有组件（多一列预期金额），两者编辑同一份 plansForm、一并保存
+const subscriptionForm = computed(() => plansForm.value.filter((p) => !isCreditPlan(p)))
 
 async function loadConfig({ syncForm = true } = {}): Promise<boolean> {
   configLoading.value = true
@@ -377,16 +404,7 @@ function hiddenCount(p: FormPlan) {
 }
 
 async function saveConfig() {
-  const plans = plansForm.value.map((p) => ({
-    key: p.key, label: p.label, chatgpt_plan_name: p.chatgpt_plan_name, expect_plan_type: p.expect_plan_type,
-    regions: Object.fromEntries(p.rows.map((row) => {
-      const cur = row.currency.trim().toUpperCase()
-      return [row.region, {
-        enabled: row.enabled, currency: cur,
-        cap_minor: toMinor(row.cap || 0, cur), fund_cents: Math.round((row.fund || 0) * 100),
-      }]
-    })),
-  }))
+  const plans = plansForm.value.map(formToPlan)
   saving.value = true
   const r = await payApi<PayConfig>('/config', 'PUT', { plans, concurrency: concurrency.value })
   saving.value = false
@@ -451,6 +469,25 @@ async function runCheck() {
 }
 
 // ---------- 测试兑换 ----------
+// 服务商：只列注册表里的供卡型服务商，默认 MarsWallex；从卡服务商页的链接带 ?provider= 过来时预选那一家。
+const providerOptions = computed(() => cardSupplyProviders(registry.value))
+const wantedProvider = () => route.query.provider
+const payProvider = ref(pickPayProvider(providerOptions.value, wantedProvider()))
+// 注册表读取进度：读取中不让提交，读取失败时按 MarsWallex 处理并提示
+const registryState = ref<'loading' | 'ok' | 'failed'>(registry.value ? 'ok' : 'loading')
+// 注册表晚到或刷新时：还没选、或选的那家已不在列表里，就重新预选
+watch(providerOptions, (list) => {
+  if (!payProvider.value || !list.some((p) => p.name === payProvider.value)) payProvider.value = pickPayProvider(list, wantedProvider())
+})
+const providerNotice = computed(() => {
+  if (registryState.value === 'failed' && !providerOptions.value.length) return '服务商列表读取失败，提交时按 MarsWallex 处理'
+  const w = wantedProvider()
+  if (typeof w === 'string' && w && providerOptions.value.length && !providerOptions.value.some((p) => p.name === w)) {
+    return `链接里的服务商「${w}」不是供卡型服务商，已改选 ${providerLabel(payProvider.value)}`
+  }
+  return ''
+})
+
 const session = ref('')
 const planKey = ref('')
 const region = ref('')
@@ -464,6 +501,8 @@ const regionConf = computed(() => planConf.value?.regions?.[region.value])
 // 试运行只要求有 ChatGPT 套餐名；真实付款还要求地区启用且金额已配。
 const submitBlockReason = computed(() => {
   if (!config.value) return '配置未加载'
+  // 服务商列表还没到时不提交：否则会悄悄按 MarsWallex 下单（读取失败时才按 MarsWallex 处理，并有提示）
+  if (registryState.value === 'loading') return '服务商列表读取中'
   return payBlockReason(planConf.value, region.value, dryRun.value)
 })
 
@@ -476,6 +515,7 @@ async function submit() {
     const plan = planKey.value
     const reg = region.value
     const sess = session.value.trim()
+    const prov = payProvider.value
     if (m === 'real') {
       // 动钱前以最新配置和熔断状态为准；不覆盖配置页未保存的编辑
       if (!(await loadConfig({ syncForm: false }))) return
@@ -490,7 +530,7 @@ async function submit() {
       const rc = pc?.regions?.[reg]
       if (!rc) return
       const ok = await dialog.confirm(
-        `套餐：${pc?.label || plan}\n地区：${reg}\n卡：付款时从卡池选卡（提交时尚未确定卡尾号）\n` +
+        `服务商：${providerLabel(prov || 'marswallex')}\n套餐：${pc?.label || plan}\n地区：${reg}\n卡：付款时从卡池选卡（提交时尚未确定卡尾号）\n` +
           `将取一张卡注资 ${usd(rc.fund_cents)} 美元并真实付款，应付金额上限 ${formatMinor(rc.cap_minor, rc.currency)}。\n确认真实付款？`,
         { title: '确认付款', okText: '确认付款', danger: true },
       )
@@ -502,7 +542,7 @@ async function submit() {
       )
       if (!ok) return
     }
-    const r = await payApi<{ order_no: string }>('/orders', 'POST', buildPayBody(m, plan, reg, sess))
+    const r = await payApi<{ order_no: string }>('/orders', 'POST', buildPayBody(m, plan, reg, sess, prov))
     if (!r.ok) { dialog.toast(errText(r, '提交失败'), 'err'); return } // 失败保留会话，方便改完再试
     session.value = ''
     dialog.toast(m === 'real' ? '付款已受理' : '试运行已受理')
@@ -521,6 +561,7 @@ const total = ref(0)
 const page = ref(1)
 const pageSize = 20
 const stateFilter = ref('')
+const renewalFilter = ref('')
 const ordersLoading = ref(false)
 
 function stateTagType(s: string): 'success' | 'danger' | 'warning' | 'info' | 'primary' {
@@ -537,6 +578,7 @@ async function loadOrders() {
   ordersLoading.value = true
   const q = new URLSearchParams({ page: String(page.value), page_size: String(pageSize) })
   if (stateFilter.value) q.set('state', stateFilter.value)
+  if (renewalFilter.value) q.set('renewal', renewalFilter.value)
   const r = await payApi<{ orders: any[]; total: number }>('/orders?' + q.toString())
   if (my !== ordersSeq) return // 已有更新的请求，丢弃旧响应
   ordersLoading.value = false
@@ -678,6 +720,13 @@ async function openShot(name: string) {
   }
 }
 
+// 重试关闭续费之后：仍是这张单才刷新详情（时间线里有这次重试的记录），列表上的续费标记一并刷新
+async function onRenewalUpdated() {
+  const no = detailNo.value
+  if (detailOpen.value && no) await loadDetail(no, true)
+  if (tab.value === 'orders') loadOrders()
+}
+
 async function resolve(result: 'succeeded' | 'failed') {
   const note = resolveNote.value.trim()
   if (!note) { dialog.toast('请先填写备注', 'warn'); return }
@@ -705,6 +754,7 @@ async function resolve(result: 'succeeded' | 'failed') {
 }
 
 onMounted(async () => {
+  loadRegistry().then((r) => { registryState.value = r.ok ? 'ok' : 'failed' })
   await loadConfig()
   loadBreaker()
   // 刷新后从 ?tab= 直接落在订单或配置标签时，加载该标签的数据

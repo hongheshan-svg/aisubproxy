@@ -26,13 +26,17 @@ type Server struct {
 }
 
 func New(ctx context.Context, cfg *config.Config) (*Server, error) {
-	// 生产模式下强制要求安全的 JWT secret，避免 token 被伪造
-	if err := enforceJWTSecret(cfg.Server.Mode); err != nil {
+	// Initialize database
+	if err := db.Init(&cfg.Database); err != nil {
 		return nil, err
 	}
 
-	// Initialize database
-	if err := db.Init(&cfg.Database); err != nil {
+	// 生产模式、或已配置动钱上游密钥时，强制要求安全的 JWT secret，避免 token 被伪造后调用动钱接口
+	upstream, err := upstreamKeysConfigured()
+	if err != nil {
+		return nil, err
+	}
+	if err := enforceJWTSecret(cfg.Server.Mode, upstream); err != nil {
 		return nil, err
 	}
 
@@ -90,8 +94,24 @@ func alertSender(prefix string, send func(string)) func(string) {
 // cardPoolAlert 是卡池的告警函数。
 func cardPoolAlert(send func(string)) func(string) { return alertSender("cardpool", send) }
 
-// enforceJWTSecret 在 release 模式下拒绝使用空/默认密钥启动。
-func enforceJWTSecret(mode string) error {
+// upstreamKeysConfigured 判断库里是否已配置 MarsWallex 或卡台 API Key（动钱上游）。
+// 只看是否非空，不解密、不记录内容。
+func upstreamKeysConfigured() (bool, error) {
+	for _, key := range []string{db.SettingMarsWallexDeveloperID, db.SettingMarsWallexAPIToken, "card_api_key"} {
+		v, err := db.GetSetting(key)
+		if err != nil {
+			return false, err
+		}
+		if strings.TrimSpace(v) != "" {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// enforceJWTSecret 拒绝使用空/默认/过短的 JWT 密钥启动：release 模式总是拒绝；
+// 非 release 模式下，只要已配置动钱上游密钥（hasUpstream）也拒绝，防止公开默认密钥伪造管理员 token 调用动钱接口。
+func enforceJWTSecret(mode string, hasUpstream bool) error {
 	secret := os.Getenv("JWT_SECRET")
 	weak := secret == "" ||
 		secret == "your-secret-key-change-in-production" ||
@@ -99,6 +119,9 @@ func enforceJWTSecret(mode string) error {
 		len(secret) < 16
 	if mode == "release" && weak {
 		return fmt.Errorf("不安全的 JWT_SECRET：release 模式必须设置至少 16 位的随机 JWT_SECRET 环境变量")
+	}
+	if hasUpstream && weak {
+		return fmt.Errorf("不安全的 JWT_SECRET：已配置 MarsWallex 或卡台 API Key，必须设置至少 16 位的随机 JWT_SECRET 环境变量")
 	}
 	if weak {
 		log.Printf("⚠️  当前 JWT_SECRET 不安全（默认/过短）。仅可用于本地开发，部署前请设置强随机 JWT_SECRET（release 模式将拒绝启动）。")

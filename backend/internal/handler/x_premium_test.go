@@ -61,6 +61,7 @@ func TestXIssueInfersProductWithoutQueryParameter(t *testing.T) {
 	r.POST("/issue", CardPlatformIssueCDKs)
 	req := httptest.NewRequest("POST", "/issue", strings.NewReader(`{"plan":"basic_monthly","count":1,"funding_confirmed":true}`))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Idempotency-Key", "test-key")
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	if w.Code != 200 || issued != 1 {

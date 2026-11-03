@@ -331,6 +331,7 @@ import { useI18n } from 'vue-i18n'
 const { t } = useI18n()
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { authFetch } from '../../lib/api'
+import { IdempotencyKeeper } from '../../lib/idempotency'
 import { dialog } from '../../lib/dialog'
 import { copyToClipboard } from '../../lib/clipboard'
 import { isCardAttachPlan } from '../../lib/plan'
@@ -1235,41 +1236,38 @@ async function loadMeta() {
   }
 }
 
+// 发码幂等键：请求内容不变的重试沿用同一个键，服务端缺头会拒绝；明确成功后才换新
+const issueKeys = new IdempotencyKeeper()
+
 async function issue() {
   issueError.value = ''
   issueOk.value = ''
   if (!canIssue.value) return
   issuing.value = true
   try {
+    const payload = {
+      plan: form.plan,
+      product: directProduct.value,
+      count: form.count,
+      funding_confirmed: true,
+      // 只传国家，币种由卡台按它的唯一真相源补。本站猜币种猜错的话，
+      // 卡台会回「付款地区与币种不匹配」——一句完全指不到真因的话。
+      payment_country: form.payment_country || '',
+    }
     const r = await authFetch('/api/v1/admin/cardplatform/cdks', {
       method: 'POST',
-      body: JSON.stringify({
-        plan: form.plan,
-        product: directProduct.value,
-        count: form.count,
-        funding_confirmed: true,
-        // 只传国家，币种由卡台按它的唯一真相源补。本站猜币种猜错的话，
-        // 卡台会回「付款地区与币种不匹配」——一句完全指不到真因的话。
-        payment_country: form.payment_country || '',
-      }),
+      headers: { 'Idempotency-Key': issueKeys.keyFor(payload) },
+      body: JSON.stringify(payload),
     })
     const d = await r.json().catch(() => ({}))
     if (!r.ok) {
-      const recovered = await syncFromCardplatform({ quiet: true, plan: form.plan, status: 'unused' })
-      const recCodes = Array.isArray(recovered?.codes) ? recovered.codes.map(extractFullCode).filter(Boolean) : []
-      if (recCodes.length) {
-        recentCodes.value = recCodes
-        // ★这里不传地区★：找回是按「plan + unused」从卡台捞最近的码，
-        // 捞到的不一定全是这一批，标上地区等于给出一个可能是错的承诺。
-        persistRecent(recCodes, form.plan)
-        issueOk.value = `发码请求未完成，已从卡台找回 ${recCodes.length} 张完整码。不要再点购买。`
-        dialog.toast(issueOk.value, 'warn')
-        await loadList()
-        await loadMeta()
-        return
-      }
+      // 找回由服务端做（只认本次请求开始之后创建的码）。这里不再按「档位 + unused」猜：
+      // 那样会把别处发的码当成这一批。结果不明时直接再点一次购买，沿用同一个幂等键，卡台不会重复发码。
       const msg = d.error || d.msg || '发码失败'
       issueError.value = msg
+      if (r.status === 0 || r.status >= 500) {
+        issueError.value += '（结果可能不明：直接再点一次购买即可，同一次请求不会重复发码）'
+      }
       if (String(msg).includes('403') || d.code === 403) {
         issueError.value += ' — 可能是 IP 未进白名单，请复制上方出口 IP 到卡台'
       }
@@ -1282,6 +1280,7 @@ async function issue() {
       recentCodes.value = []
       return
     }
+    if (!d.recovered) issueKeys.done() // 明确成功才换新键；找回的结果不明，沿用旧键重试不会多发
     // 浏览器兜底 + 列表以服务器为准
     rememberIssued(issued, form.plan)
     recentCodes.value = codes

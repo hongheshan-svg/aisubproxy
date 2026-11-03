@@ -1,6 +1,7 @@
 package payengine
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -20,7 +21,7 @@ func TestAmountBelowFloorAbortsBeforeFunding(t *testing.T) {
 	h.start(t)
 	o := waitDone(t, h.submit(t, false).OrderNo)
 	assertNotSubmitted(t, o, "amount_below_floor")
-	for _, sub := range []string{"99.99", "100.00", "档位"} {
+	for _, sub := range []string{"99.99", "100.00", "PHP", "档位"} {
 		if !strings.Contains(o.ErrorMessage, sub) {
 			t.Fatalf("说明应含 %q: %s", sub, o.ErrorMessage)
 		}
@@ -75,7 +76,53 @@ func TestDryRunWithoutFloorSkipsCheck(t *testing.T) {
 	if o.State != StatePreviewed {
 		t.Fatalf("试运行应完成预览: %+v", o)
 	}
-	if countEvents(t, o.OrderNo, "未配置最低金额，跳过下限检查") != 1 {
+	n := 0
+	for _, e := range eventStates(t, o.OrderNo) {
+		if strings.Contains(e.Message, "未配置最低金额，跳过下限检查") {
+			n++
+			if e.Level != "info" {
+				t.Fatalf("跳过下限检查应是 info: %+v", e)
+			}
+		}
+	}
+	if n != 1 {
 		t.Fatalf("应记一条跳过下限检查: %+v", eventStates(t, o.OrderNo))
+	}
+}
+
+// 点数单的最低金额同样在注资前把关：出厂最低金额 56500，页面 56499 放弃。
+func TestCreditAmountBelowFloorAbortsBeforeFunding(t *testing.T) {
+	h := newCreditHarness(t)
+	setPage(h, 56499, "₱564.99")
+	h.start(t)
+	o := waitDone(t, h.submitCredit(t, false, false).OrderNo)
+	assertNotSubmitted(t, o, "amount_below_floor")
+	for _, sub := range []string{"564.99", "565.00", "PHP"} {
+		if !strings.Contains(o.ErrorMessage, sub) {
+			t.Fatalf("说明应含 %q: %s", sub, o.ErrorMessage)
+		}
+	}
+	if h.pool.count("Acquire") != 0 || h.pool.count("Fund") != 0 || h.pool.total() != 0 {
+		t.Fatalf("不应碰卡池: %d", h.pool.total())
+	}
+}
+
+// 真实单走到 openPage 时最低金额为 0（以后重构漏赋值）：直接放弃，不能静默放行。包内直接调 openPage，因为正常路径有 ResolvePlan 兜底造不出这个状态。
+func TestRealOrderWithZeroFloorAborts(t *testing.T) {
+	h := newPayHarness(t, nil)
+	o := h.submit(t, false) // 不启动工作协程
+	j := &job{o: o}
+	if err := h.svc.advance(ctx, j, StateChecking, "检查账号", nil); err != nil {
+		t.Fatal(err)
+	}
+	j.o.CheckoutURL = testCheckoutURL
+	defer j.closeBrowser()
+	err := h.svc.openPage(ctx, j)
+	var f *stepFailure
+	if !errors.As(err, &f) || f.code != "plan_unavailable" || !strings.Contains(f.msg, "未配置最低金额") {
+		t.Fatalf("应以 plan_unavailable 放弃: %v", err)
+	}
+	if h.pool.total() != 0 {
+		t.Fatalf("不应碰卡池: %d", h.pool.total())
 	}
 }

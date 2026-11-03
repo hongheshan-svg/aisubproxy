@@ -624,7 +624,7 @@ func embeddedCheckoutLink(u *url.URL, raw string) bool {
 }
 
 // openPage 是步骤 4：启动浏览器（走地区代理）、注入会话 cookie、打开支付页、截整页图、读应付金额；
-// 打不开（停在 Cloudflare 挑战页记 cf_challenge 并告警）、读不出或真实付款超过上限则放弃。
+// 打不开（停在 Cloudflare 挑战页记 cf_challenge 并告警）、读不出，或真实付款超过上限、低于最低金额也都在注资前放弃。
 // pageRenderWait 是打开支付页后、截图前最多等页面显示完整的时间。Stripe 先放金额再淡入，通常一两秒内完成。
 const pageRenderWait = 10 * time.Second
 
@@ -687,7 +687,10 @@ func (s *Service) openPage(ctx context.Context, j *job) error {
 		} else if minor < j.floorMinor {
 			s.event(ctx, j, "warn", fmt.Sprintf("支付页金额 %s 低于最低金额 %s %s（可能选错了档位或带了优惠）；真实付款会在此放弃", text, formatMinor(j.floorMinor, j.o.Currency), j.o.Currency), "")
 		}
-	} else if j.floorMinor > 0 && minor < j.floorMinor {
+	} else if j.floorMinor <= 0 {
+		// 真实单不允许没有最低金额：ResolvePlan 已兜底，这里防以后重构漏赋值时下限被悄悄跳过
+		return abort("plan_unavailable", "套餐 %s 在地区 %s 未配置最低金额，已放弃，未注资", j.o.PlanKey, j.o.Region)
+	} else if minor < j.floorMinor {
 		return abort("amount_below_floor", "支付页金额 %s 低于该套餐在该地区的最低金额 %s %s（可能选错了档位或带了优惠），已放弃，未注资", text, formatMinor(j.floorMinor, j.o.Currency), j.o.Currency)
 	}
 	return nil

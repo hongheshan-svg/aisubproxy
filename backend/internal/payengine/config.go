@@ -91,7 +91,7 @@ var planDefaults = map[string]planDefault{
 var currencyRe = regexp.MustCompile(`^[A-Z]{3}$`)
 
 // RegionConf 是某套餐在某地区的付款参数；金额均为最小单位。
-// ExpectMinor 是预期应付金额，只用于展示和校验配置（上限不能低于它），付款时以支付页实际读到的金额为准、以 CapMinor 为上限。
+// ExpectMinor 是预期应付金额，只用于展示和校验配置（上限不能低于它），付款时以支付页实际读到的金额为准，上限由 CapMinor 把关，下限由 FloorMinor 把关。
 type RegionConf struct {
 	Enabled     bool   `json:"enabled"`
 	Currency    string `json:"currency"`

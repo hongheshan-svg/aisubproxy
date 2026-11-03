@@ -153,6 +153,65 @@ func (b *Browser) Open(ctx context.Context, url string, cookies []Cookie) error 
 	}
 }
 
+// renderedJS 判断金额是否已真正显示：按 Sel.Amount 找到含数字的金额元素，要求它有尺寸、
+// 自身和所有上级都可见且完全不透明、没有被别的元素盖住（在视口内时检查），上级没有正在跑的动画。
+const renderedJS = `(sels => {
+	let el = null
+	for (const s of sels) {
+		let c
+		try { c = document.querySelector(s) } catch (e) { continue }
+		if (c && /\d/.test(c.innerText || c.textContent || '')) { el = c; break }
+	}
+	if (!el) return false
+	const r = el.getBoundingClientRect()
+	if (r.width === 0 || r.height === 0) return false
+	for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
+		const cs = getComputedStyle(n)
+		if (cs.display === 'none' || cs.visibility === 'hidden' || parseFloat(cs.opacity) < 0.99) return false
+	}
+	if (r.bottom > 0 && r.top < innerHeight && r.right > 0 && r.left < innerWidth) {
+		const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
+		if (!top || !(el.contains(top) || top.contains(el))) return false
+	}
+	if (document.getAnimations) {
+		for (const a of document.getAnimations()) {
+			const t = a.effect && a.effect.target
+			if (a.playState === 'running' && t && t.contains && t.contains(el)) return false
+		}
+	}
+	return true
+})`
+
+func (b *Browser) amountRendered(ctx context.Context) (bool, error) {
+	sels, err := json.Marshal(Sel.Amount)
+	if err != nil {
+		return false, err
+	}
+	var ok bool
+	err = b.run(ctx, chromedp.Evaluate(fmt.Sprintf("%s(%s)", renderedJS, sels), &ok))
+	return ok, err
+}
+
+// WaitRendered 等支付页真正显示出来：金额可见、所在区域完全不透明、没有被遮挡、淡入动画已结束。
+// Stripe 会先把金额放进 DOM、盖着加载骨架再淡入，Open 返回时画面上可能还是骨架，这时截图没有用。
+// 最多等 max；等不到返回 false 而不报错，因为这只影响截图，不能因此中断付款。只读页面，不点击、不输入。
+func (b *Browser) WaitRendered(ctx context.Context, max time.Duration) bool {
+	ctx, cancel := context.WithTimeout(ctx, max)
+	defer cancel()
+	tick := time.NewTicker(pollInterval)
+	defer tick.Stop()
+	for {
+		if ok, _ := b.amountRendered(ctx); ok {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-tick.C:
+		}
+	}
+}
+
 func openErr(what string, err error) error {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return fmt.Errorf("%s：页面加载超时（%d 秒）", what, int(pageLoadTimeout/time.Second))

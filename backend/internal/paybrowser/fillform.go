@@ -10,6 +10,7 @@ import (
 
 const (
 	revealGap       = 2 * time.Second // 两次点手动地址入口的最短间隔
+	linkSkipWait    = 5 * time.Second // Link 验证框出现后，等「Pay without Link」出现的时限
 	revealMaxClicks = 2               // 手动地址入口最多点这么多次，防止按钮是开关时来回切换
 	phoneSettle     = 3 * time.Second // 取消 Link 后等手机框收起的时限
 )
@@ -127,30 +128,58 @@ func (b *Browser) fillForm(ctx context.Context, c Card, bl Billing) error {
 	if err := b.checkLinkModal(ctx); err != nil {
 		return err
 	}
+	if err := b.acceptTerms(ctx); err != nil {
+		return err
+	}
 	return b.recheckFields(ctx, st.done)
 }
 
 // revealCardForm 等卡号框出现。账号已存卡时页面先显示已存卡，点一次「新卡」入口把卡号框调出来。
+// 账号邮箱注册过 Stripe Link 时页面先显示「Confirm it’s you」验证码框并藏起卡号框，点一次「Pay without Link」跳过；
+// 同框的「Text a code」会给账号主人发验证码，绝不点。
 func (b *Browser) revealCardForm(ctx context.Context) error {
-	clicked := false
-	e, err := b.waitFind(ctx, formWait, func(frames []frameRef) *elem {
-		if e := b.find(ctx, frames, Sel.CardNumber, false); e != nil {
-			return e
+	newCard, skippedLink, found := false, false, false
+	var linkSeen time.Time
+	_, err := b.poll(ctx, formWait, func(frames []frameRef) bool {
+		if b.find(ctx, frames, Sel.CardNumber, false) != nil {
+			found = true
+			return true
 		}
-		if !clicked {
+		if !skippedLink && b.find(ctx, frames, Sel.LinkVerification, false) != nil {
+			if linkSeen.IsZero() {
+				linkSeen = time.Now()
+			}
+			if opt := b.findText(ctx, frames, Sel.PayWithoutLinkOption); opt != nil && clickReveal(ctx, opt) == nil {
+				skippedLink = true
+				b.noteLinkVerify("已点「Pay without Link」")
+				return false
+			}
+			return time.Since(linkSeen) >= linkSkipWait // 验证框挡着，卡号框不会自己出现，不必等满
+		}
+		if !newCard {
 			if opt := b.findText(ctx, frames, Sel.NewCardOption); opt != nil && clickReveal(ctx, opt) == nil {
-				clicked = true
+				newCard = true
 			}
 		}
-		return nil
+		return false
 	})
-	if err != nil {
+	switch {
+	case err != nil:
 		return err
+	case found:
+		return nil
+	case !linkSeen.IsZero() && !skippedLink:
+		b.noteLinkVerify("要求验证身份，找不到「Pay without Link」")
+		//nolint:staticcheck // ST1005：Stripe Link 是产品名（专有名词）
+		return errors.New("Stripe Link 要求验证身份，页面上没有「Pay without Link」，已放弃")
+	case skippedLink:
+		return errors.New("点了「Pay without Link」后仍找不到「卡号」输入框")
 	}
-	if e == nil {
-		return errors.New("找不到「卡号」输入框")
-	}
-	return nil
+	return errors.New("找不到「卡号」输入框")
+}
+
+func (b *Browser) noteLinkVerify(status string) {
+	b.updateReport(func(r *FillReport) { r.LinkVerify = status })
 }
 
 // fillOne 等字段出现并填写，值为空时跳过（有些国家的地址表单没有州或邮编）。hideable 的字段可能要点手动地址入口才出现。
@@ -214,16 +243,42 @@ func (b *Browser) tryReveal(ctx context.Context, frames []frameRef, st *fillStat
 	b.updateReport(func(r *FillReport) { r.ManualAddress = fmt.Sprintf("已点击 %d 次", st.revealClick) })
 }
 
-// linkState 是 Link 保存勾选框的状态。
-type linkState struct {
+// checkState 是勾选框的状态。
+type checkState struct {
 	Checked bool `json:"checked"`
 	Shown   bool `json:"shown"`
 }
 
-// linkStateJS 不看透明度和面积：勾选框本身透明，盖在样式元素上，只有 display 或 visibility 才说明它没显示。
-const linkStateJS = `function () {
+// checkStateJS 不看透明度和面积：Stripe 的勾选框本身透明，盖在样式元素上，只有 display 或 visibility 才说明它没显示。
+const checkStateJS = `function () {
 	return { checked: !!this.checked, shown: !this.checkVisibility || this.checkVisibility({ visibilityProperty: true }) }
 }`
+
+// readCheck 读勾选框的状态。
+func readCheck(ctx context.Context, e *elem) (checkState, error) {
+	var st checkState
+	err := callOn(ctx, e.obj, checkStateJS, &st)
+	return st, err
+}
+
+// setCheck 把勾选框点到 want：先用鼠标点，不生效再用脚本点，返回最后读到的状态。调用方先确认它当前不是 want。
+func setCheck(ctx context.Context, e *elem, want bool) (checkState, error) {
+	read := func() (checkState, error) {
+		if err := sleep(ctx, settleDelay); err != nil {
+			return checkState{}, err
+		}
+		return readCheck(ctx, e)
+	}
+	_ = click(ctx, e) // 点不到也没关系，下面看结果，再用脚本点
+	st, err := read()
+	if err != nil || st.Checked == want {
+		return st, err
+	}
+	if err := callOn(ctx, e.obj, `function () { this.click() }`, nil); err != nil {
+		return st, err
+	}
+	return read()
+}
 
 // disableLinkSave 取消「Save my information with Link」：勾着就要求手机，还可能弹 Link 验证。
 // 先用鼠标点，不生效再用脚本点，还是勾着就报错放弃。页面没有这个勾选框不算错。
@@ -237,8 +292,8 @@ func (b *Browser) disableLinkSave(ctx context.Context) error {
 		b.noteLink("页面没有")
 		return nil
 	}
-	var st linkState
-	if err := callOn(ctx, e.obj, linkStateJS, &st); err != nil {
+	st, err := readCheck(ctx, e)
+	if err != nil {
 		return fmt.Errorf("读取 Link 保存选项失败: %w", err)
 	}
 	switch {
@@ -249,23 +304,8 @@ func (b *Browser) disableLinkSave(ctx context.Context) error {
 		b.noteLink("未勾选，无需取消")
 		return nil
 	}
-	read := func() error {
-		if err := sleep(ctx, settleDelay); err != nil {
-			return err
-		}
-		return callOn(ctx, e.obj, linkStateJS, &st)
-	}
-	_ = click(ctx, e) // 点不到也没关系，下面看结果，再用脚本点
-	if err := read(); err != nil {
-		return fmt.Errorf("读取 Link 保存选项失败: %w", err)
-	}
-	if st.Checked {
-		if err := callOn(ctx, e.obj, `function () { this.click() }`, nil); err != nil {
-			return fmt.Errorf("取消 Link 保存失败: %w", err)
-		}
-		if err := read(); err != nil {
-			return fmt.Errorf("读取 Link 保存选项失败: %w", err)
-		}
+	if st, err = setCheck(ctx, e, false); err != nil {
+		return fmt.Errorf("取消 Link 保存失败: %w", err)
 	}
 	if st.Checked {
 		return errors.New("取消不掉「Save my information with Link」")
@@ -365,6 +405,42 @@ func (b *Browser) checkPhone(ctx context.Context) error {
 	return nil
 }
 
+// acceptTerms 勾上「同意条款」：Stripe 要求同意服务条款时才显示这个勾选框，默认不勾，不勾点支付会被拦下。
+// 用户确认过由系统自动勾上（2026-11-03）。勾不上就报错放弃，不点支付；页面没有或没显示不算错。只点勾选框本身，不点条款链接。
+func (b *Browser) acceptTerms(ctx context.Context) error {
+	note := func(s string) { b.updateReport(func(r *FillReport) { r.Terms = s }) }
+	frames, err := b.frames(ctx)
+	if err != nil {
+		return fmt.Errorf("读取「同意条款」失败: %w", err)
+	}
+	e := b.findAny(ctx, frames, Sel.TermsConsent)
+	if e == nil {
+		note("页面没有")
+		return nil
+	}
+	st, err := readCheck(ctx, e)
+	if err != nil {
+		return fmt.Errorf("读取「同意条款」失败: %w", err)
+	}
+	switch {
+	case !st.Shown:
+		note("未显示")
+		return nil
+	case st.Checked:
+		note("页面已勾选")
+		return nil
+	}
+	if st, err = setCheck(ctx, e, true); err != nil {
+		return fmt.Errorf("勾选「同意条款」失败: %w", err)
+	}
+	if !st.Checked {
+		note("勾不上")
+		return errors.New("勾不上「同意条款」")
+	}
+	note("已勾选")
+	return nil
+}
+
 // checkLinkModal 发现 Link 弹出验证就放弃：要验证码，走不下去，也不能让它挡在支付按钮前面。
 func (b *Browser) checkLinkModal(ctx context.Context) error {
 	frames, err := b.frames(ctx)
@@ -374,6 +450,12 @@ func (b *Browser) checkLinkModal(ctx context.Context) error {
 	if b.find(ctx, frames, Sel.LinkLoginFrame, false) != nil {
 		//nolint:staticcheck // ST1005：Stripe Link 是产品名（专有名词），错误文本保持不变
 		return errors.New("Stripe Link 弹出了验证框，已放弃")
+	}
+	// 键入邮箱后才出现的内嵌验证框：此时卡号框已被藏起，不再点「Pay without Link」重来，直接放弃
+	if b.find(ctx, frames, Sel.LinkVerification, false) != nil {
+		b.noteLinkVerify("填完后又要求验证身份")
+		//nolint:staticcheck // ST1005：Stripe Link 是产品名（专有名词）
+		return errors.New("Stripe Link 要求验证身份，已放弃")
 	}
 	return nil
 }

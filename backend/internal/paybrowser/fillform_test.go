@@ -99,6 +99,42 @@ func TestManualAddressNeverClicksSubmit(t *testing.T) {
 	wantFillRefused(t, f, b, err, "城市")
 }
 
+// 买点数时 Stripe 要求同意服务条款：默认不勾，不勾点支付会被前端拦下，不会扣款。用户已确认自动勾上。
+func TestFillTermsConsent(t *testing.T) {
+	t.Run("要同意条款就勾上", func(t *testing.T) {
+		needChrome(t)
+		f := newFakeCheckout(t)
+		b, ctx := openKind(t, f, stripeCheckout, "mode=success&terms=1", paybrowser.LaunchOptions{})
+		fillAndSubmit(t, b, ctx)
+		waitPaid(t, f, b, ctx, stripeCheckout)
+		if got := onlyPayment(t, f); got.Number != testCard.Number {
+			t.Fatalf("卡号不一致")
+		}
+		if got := b.FillReport().Terms; got != "已勾选" {
+			t.Fatalf("报告的同意条款 = %q", got)
+		}
+		if lines := strings.Join(b.FillReport().Lines(), "\n"); !strings.Contains(lines, "同意条款：已勾选") {
+			t.Fatalf("时间线没写同意条款的处理：\n%s", lines)
+		}
+	})
+	t.Run("条款勾不上就放弃", func(t *testing.T) {
+		needChrome(t)
+		f := newFakeCheckout(t)
+		b, err := fillStripe(t, f, "mode=success&terms=stuck", testBilling)
+		wantFillRefused(t, f, b, err, "同意条款")
+	})
+	t.Run("页面没有条款勾选框照常走", func(t *testing.T) {
+		needChrome(t)
+		f := newFakeCheckout(t)
+		b, ctx := openKind(t, f, stripeCheckout, "mode=success", paybrowser.LaunchOptions{})
+		fillAndSubmit(t, b, ctx)
+		waitPaid(t, f, b, ctx, stripeCheckout)
+		if got := b.FillReport().Terms; got != "页面没有" {
+			t.Fatalf("报告的同意条款 = %q", got)
+		}
+	})
+}
+
 func TestFillLinkSave(t *testing.T) {
 	t.Run("取消不掉就放弃", func(t *testing.T) {
 		needChrome(t)
@@ -119,6 +155,47 @@ func TestFillLinkSave(t *testing.T) {
 		f := newFakeCheckout(t)
 		b, err := fillStripe(t, f, "mode=success&linkmodal=1", testBilling)
 		wantFillRefused(t, f, b, err, "Link")
+	})
+	t.Run("Link 要验证身份就点 Pay without Link 照常填卡", func(t *testing.T) {
+		needChrome(t)
+		f := newFakeCheckout(t)
+		b, ctx := openKind(t, f, stripeCheckout, "mode=success&linkverify=1", paybrowser.LaunchOptions{})
+		fillAndSubmit(t, b, ctx)
+		waitPaid(t, f, b, ctx, stripeCheckout)
+		if got := onlyPayment(t, f); got.Number != testCard.Number || got.LinkSave {
+			t.Fatalf("卡号是否一致 %v，Link 保存 %v；期望卡号一致、不存 Link", got.Number == testCard.Number, got.LinkSave)
+		}
+		if n := f.linkSMSClicks.Load(); n != 0 {
+			t.Fatalf("「Text a code」被点了 %d 次，绝不能点", n)
+		}
+		if got := b.FillReport().LinkVerify; got != "已点「Pay without Link」" {
+			t.Fatalf("报告的 Link 验证 = %q", got)
+		}
+		if lines := strings.Join(b.FillReport().Lines(), "\n"); !strings.Contains(lines, "Link 验证：已点「Pay without Link」") {
+			t.Fatalf("时间线没写 Link 验证的处理：\n%s", lines)
+		}
+	})
+	t.Run("Link 要验证身份但没有 Pay without Link 就放弃", func(t *testing.T) {
+		needChrome(t)
+		f := newFakeCheckout(t)
+		start := time.Now()
+		b, err := fillStripe(t, f, "mode=success&linkverify=nobutton", testBilling)
+		wantFillRefused(t, f, b, err, "Pay without Link")
+		if el := time.Since(start); el > 20*time.Second {
+			t.Fatalf("验证框已出现就不必等满卡号框的时限，实际等了 %v", el)
+		}
+		if n := f.linkSMSClicks.Load(); n != 0 {
+			t.Fatalf("「Text a code」被点了 %d 次，绝不能点", n)
+		}
+	})
+	t.Run("键入邮箱后 Link 要验证身份就放弃", func(t *testing.T) {
+		needChrome(t)
+		f := newFakeCheckout(t)
+		b, err := fillStripe(t, f, "mode=success&linkverify=onemail", testBilling)
+		wantFillRefused(t, f, b, err, "Link 要求验证身份")
+		if n := f.linkSMSClicks.Load(); n != 0 {
+			t.Fatalf("「Text a code」被点了 %d 次，绝不能点", n)
+		}
 	})
 	t.Run("页面没有 Link 区块照常走", func(t *testing.T) {
 		needChrome(t)

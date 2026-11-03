@@ -253,6 +253,8 @@ func (b *localFakeBrowser) Shot(_ context.Context, name string, _ paybrowser.Sho
 
 func (b *localFakeBrowser) Close() {}
 
+func (b *localFakeBrowser) WaitRendered(context.Context, time.Duration) bool { return true }
+
 func (b *localFakeBrowser) counts() (made, fills, submits int) {
 	b.mu.Lock()
 	defer b.mu.Unlock()

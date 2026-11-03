@@ -19,6 +19,7 @@ type callLog struct {
 	mu    sync.Mutex
 	calls map[string]int
 	args  map[string][]any
+	seq   []string // 按发生顺序记下的方法名
 }
 
 func (c *callLog) hit(name string, args ...any) {
@@ -29,6 +30,14 @@ func (c *callLog) hit(name string, args ...any) {
 	}
 	c.calls[name]++
 	c.args[name] = args
+	c.seq = append(c.seq, name)
+}
+
+// order 返回按发生顺序记下的方法名。
+func (c *callLog) order() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.seq...)
 }
 
 func (c *callLog) count(name string) int {
@@ -286,6 +295,7 @@ type browserFactory struct {
 	diagnose    func(context.Context) []string // 未设置时返回一行固定文字
 	lockSubmit  func() bool                    // 未设置时返回 true：不能证明没点击，这是安全方向
 	savePayment func() (string, error)         // EnsureNoSavePayment 的结果；未设置时为「页面没有」
+	notRendered bool                           // true 时 WaitRendered 返回 false（页面一直没显示完整）
 
 	mu         sync.Mutex
 	proxies    []string
@@ -452,3 +462,8 @@ func (b *fakeBrowser) Shot(_ context.Context, name string, scope paybrowser.Shot
 }
 
 func (b *fakeBrowser) Close() { b.hit("Close") }
+
+func (b *fakeBrowser) WaitRendered(context.Context, time.Duration) bool {
+	b.hit("WaitRendered")
+	return !b.f.notRendered
+}

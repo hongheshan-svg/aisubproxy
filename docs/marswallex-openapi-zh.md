@@ -11,7 +11,7 @@
 | 数据格式 | 请求与响应均为 JSON（文件上传为 `multipart/form-data`） |
 | 认证 | `Authorization: Basic BASE64(developerId:apiToken)` |
 | 签名 | 每个请求带 `F-Signature: t={epoch},v={Base64(SHA256withRSA(payload))}`，响应与 Webhook 同样带 `F-Signature`，用 MarsWallex 公钥验签 |
-| 接口数量 | 28 个 API + 10 类 Webhook（规范快照日期 2026-11-03，官方规范新增的卡限额接口待接入，见 API-02） |
+| 接口数量 | 30 个 API + 10 类 Webhook（规范快照日期 2026-11-03，含卡限额修改与剩余限额查询两个接口） |
 
 ## 接入注意（整理时发现的问题，联调前需向 MarsWallex 确认）
 
@@ -71,9 +71,9 @@
    - `expiry_date` 格式 `MMyy`，范围是一个月后到四年内；
    - 共享卡要传共享账户的 `account_no`；
    - `fee_deduct_type` 不传默认 `WALLET`（钱包扣费），传 `CARD_ACCOUNT`（卡扣费）前要确认卡产品支持；
-   - 可选 `limit.single_limit` 设单笔限额。
+   - 可选 `limit` 设单笔（`single_limit`）。本项目开卡不下发限额，日/月限额只在后台手动设置，见 `PUT /v1/card/limit`。
 3. 申卡结果看 `CARD_APPLY_RESULT` 通知，或查 `GET /v1/card/apply-order`（`PROCESSING` → `SUCCESS` / `FAILED`），成功后拿到 `card_id`。
-4. 卡信息：`GET /v1/card/detail/{card_id}`（余额、状态、限额）；`GET /v1/card/sensitive/{card_id}`（完整卡号、CVV2、有效期）。
+4. 卡信息：`GET /v1/card/detail/{card_id}`（余额、状态、限额）；`GET /v1/card/limit-usage/{card_id}`（剩余日/月限额）；`GET /v1/card/sensitive/{card_id}`（完整卡号、CVV2、有效期）。
 
 ### 5. 卡资金
 
@@ -342,6 +342,8 @@ RSA.verify(signatureValue, signingPayload, marsWallexPublicKey)
 | 卡管理 | `GET` | [`/v1/card/balance-transactions`](#get-v1-card-balance-transactions) | 分页卡转入转出明细 |
 | 卡管理 | `GET` | [`/v1/card/sensitive/{card_id}`](#get-v1-card-sensitive-card-id) | 查询卡敏感信息 |
 | 卡管理 | `GET` | [`/v1/card/detail/{card_id}`](#get-v1-card-detail-card-id) | 查询卡详情 |
+| 卡管理 | `PUT` | [`/v1/card/limit`](#put-v1-card-limit) | 卡限额修改 |
+| 卡管理 | `GET` | [`/v1/card/limit-usage/{card_id}`](#get-v1-card-limit-usage-card-id) | 查询卡剩余限额 |
 | 持卡人 | `POST` | [`/v1/cardholder`](#post-v1-cardholder) | 添加持卡人 |
 | 持卡人 | `GET` | [`/v1/cardholder/{card_holder_id}`](#get-v1-cardholder-card-holder-id) | 查询持卡人 |
 | 持卡人 | `PUT` | [`/v1/cardholder/{card_holder_id}`](#put-v1-cardholder-card-holder-id) | 修改持卡人 |
@@ -601,6 +603,8 @@ RSA.verify(signatureValue, signingPayload, marsWallexPublicKey)
 | `fee_deduct_type` | string | 否 | 手续费扣收方式：CARD_ACCOUNT=卡扣费，WALLET=钱包扣费。不传或传空默认 WALLET；是否支持 CARD_ACCOUNT 取决于卡产品，取值须在卡产品 supported_fee_deduct_types 列表内；可选值: `CARD_ACCOUNT`, `WALLET` |
 | `limit` | object | 否 | 交易限额 |
 | `limit.single_limit` | string | 否 | 单笔限额 |
+| `limit.daily_limit` | string | 否 | 单日限额 |
+| `limit.monthly_limit` | string | 否 | 单月限额 |
 
 **成功响应（200）**
 
@@ -846,6 +850,58 @@ RSA.verify(signatureValue, signingPayload, marsWallexPublicKey)
 | `data.create_time` | number | 否 |  |
 | `data.limit` | object | 否 | 交易限额 |
 | `data.limit.single_limit` | string | 否 | 单笔限额 |
+| `data.limit.daily_limit` | string | 否 | 单日限额 |
+| `data.limit.monthly_limit` | string | 否 | 单月限额 |
+
+**其他状态码**：`400` 请求错误
+
+<a id="put-v1-card-limit"></a>
+
+### 卡限额修改
+
+`PUT /v1/card/limit`
+
+限额是整体替换：没传的项在平台上视为不限制。本项目只在后台手动调用（`PUT /api/v1/admin/cardpool/cards/:id/limit`），开卡和付款流程都不会自动下发。
+
+**请求体**（`application/json`）
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `card_id` | string | 是 | 卡ID |
+| `limit` | object | 是 | 交易限额 |
+| `limit.single_limit` | string | 否 | 单笔限额，最小0.01，不传则不限制 |
+| `limit.daily_limit` | string | 否 | 单日限额，最小0.01，不传则不限制 |
+| `limit.monthly_limit` | string | 否 | 单月限额，最小0.01，不传则不限制 |
+
+**成功响应（200）**：空对象。
+
+**其他状态码**：`400` 请求错误
+
+<a id="get-v1-card-limit-usage-card-id"></a>
+
+### 查询卡剩余限额
+
+`GET /v1/card/limit-usage/{card_id}`
+
+**请求参数**
+
+| 参数 | 位置 | 类型 | 必填 | 说明 |
+|---|---|---|---|---|
+| `card_id` | path | string | 是 |  |
+
+**成功响应（200）**
+
+| 字段 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `data` | object | 否 |  |
+| `data.card_id` | string | 是 | 卡ID |
+| `data.limit` | object | 否 | 交易限额 |
+| `data.limit.single_limit` | string | 否 | 单笔限额 |
+| `data.limit.daily_limit` | string | 否 | 单日限额 |
+| `data.limit.monthly_limit` | string | 否 | 单月限额 |
+| `data.limit_remaining` | object | 是 | 剩余限额 |
+| `data.limit_remaining.daily_remaining` | string | 否 | 剩余日限额 |
+| `data.limit_remaining.monthly_remaining` | string | 否 | 剩余月限额 |
 
 **其他状态码**：`400` 请求错误
 
@@ -1668,6 +1724,8 @@ OpenAPI转账订单到达终态时触发（仅tradeSource=API的转账）
 | `create_time` | number | 否 |  |
 | `limit` | object | 否 | 交易限额 |
 | `limit.single_limit` | string | 否 | 单笔限额 |
+| `limit.daily_limit` | string | 否 | 单日限额 |
+| `limit.monthly_limit` | string | 否 | 单月限额 |
 
 ### CardSensitive
 

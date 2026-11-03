@@ -455,6 +455,10 @@ func AdminCardPoolGetPolicy(c *gin.Context) {
 func AdminCardPoolPutPolicy(c *gin.Context) {
 	poolRoute(func(c *gin.Context, s *cardpool.Service) {
 		p := cardpool.DefaultPolicy()
+		// 旧前端不认识资金上限字段，保存时不传：沿用当前值，不能被默认值悄悄改掉。
+		// 其它字段不能这样打底（map 会被合并）。读不出来时 LoadPolicy 返回默认值，正好是安全的上限。
+		cur, _ := cardpool.LoadPolicy()
+		p.MaxFundCents, p.MaxWalletOpCents, p.DailyFundCapCents = cur.MaxFundCents, cur.MaxWalletOpCents, cur.DailyFundCapCents
 		if !bindPoolJSON(c, &p) {
 			return
 		}

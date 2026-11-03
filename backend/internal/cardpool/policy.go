@@ -3,6 +3,7 @@ package cardpool
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"regexp"
 
 	"github.com/tuzi/cdk-recharge-system/internal/db"
@@ -10,6 +11,13 @@ import (
 
 // PolicySettingKey 是策略在 site_settings 中的键。
 const PolicySettingKey = "mw_cardpool_policy"
+
+// 资金上限默认值（单位：分）。上限必须大于 0，不存在「0 表示不限」。
+const (
+	DefaultMaxFundCents      int64 = 50000  // 单笔注资 500 美元
+	DefaultMaxWalletOpCents  int64 = 200000 // 单笔钱包转账、兑换 2000 美元
+	DefaultDailyFundCapCents int64 = 200000 // 单日注资累计 2000 美元（北京日）
+)
 
 // ProductTarget 为单个卡产品的补卡目标与每日开卡上限。
 type ProductTarget struct {
@@ -32,6 +40,10 @@ type Policy struct {
 	ProductFailThreshold int                      `json:"product_fail_threshold"`
 	CardFailThreshold    int                      `json:"card_fail_threshold"`
 	AutoSuspend          bool                     `json:"auto_suspend"`
+	// 资金上限，必须大于 0。金额按币种最小单位比较（系统没有汇率）。
+	MaxFundCents      int64 `json:"max_fund_cents"`       // 单笔注资上限
+	MaxWalletOpCents  int64 `json:"max_wallet_op_cents"`  // 单笔钱包转账、兑换上限
+	DailyFundCapCents int64 `json:"daily_fund_cap_cents"` // 单日注资累计上限（北京日）
 }
 
 // DefaultPolicy 返回默认策略；map 与切片为空但非 nil。
@@ -50,6 +62,9 @@ func DefaultPolicy() Policy {
 		ProductFailThreshold: 3,
 		CardFailThreshold:    2,
 		AutoSuspend:          true,
+		MaxFundCents:         DefaultMaxFundCents,
+		MaxWalletOpCents:     DefaultMaxWalletOpCents,
+		DailyFundCapCents:    DefaultDailyFundCapCents,
 	}
 }
 
@@ -66,6 +81,22 @@ func inRange(name string, v, lo, hi int) error {
 func (p Policy) Validate() error {
 	if p.OpenAmountCents < 0 {
 		return badRequest("open_amount_cents 不能为负数")
+	}
+	limits := []struct {
+		name string
+		v    int64
+	}{
+		{"max_fund_cents", p.MaxFundCents},
+		{"max_wallet_op_cents", p.MaxWalletOpCents},
+		{"daily_fund_cap_cents", p.DailyFundCapCents},
+	}
+	for _, l := range limits {
+		if l.v <= 0 {
+			return badRequest(l.name + " 必须大于 0")
+		}
+	}
+	if p.OpenAmountCents > p.MaxFundCents {
+		return badRequest("open_amount_cents 不能超过 max_fund_cents")
 	}
 	if !cardNamePrefixRe.MatchString(p.CardNamePrefix) {
 		return badRequest("card_name_prefix 只能是 1 到 10 位字母或数字")
@@ -122,7 +153,28 @@ func LoadPolicy() (Policy, error) {
 	if p.HolderIDs == nil {
 		p.HolderIDs = []string{}
 	}
+	p.normalizeLimits()
 	return p, nil
+}
+
+// normalizeLimits 把库里不大于 0 的资金上限换成默认值并记日志。旧策略缺这些字段时 Unmarshal 已沿用默认值，
+// 这里兜住手改过的存量数据：无论如何不能变成不限。
+func (p *Policy) normalizeLimits() {
+	limits := []struct {
+		name string
+		v    *int64
+		def  int64
+	}{
+		{"max_fund_cents", &p.MaxFundCents, DefaultMaxFundCents},
+		{"max_wallet_op_cents", &p.MaxWalletOpCents, DefaultMaxWalletOpCents},
+		{"daily_fund_cap_cents", &p.DailyFundCapCents, DefaultDailyFundCapCents},
+	}
+	for _, l := range limits {
+		if *l.v <= 0 {
+			log.Printf("[cardpool] 策略里的 %s 为 %d，不合法，按默认值 %d 执行", l.name, *l.v, l.def)
+			*l.v = l.def
+		}
+	}
 }
 
 // SavePolicy 先校验再保存；校验失败不写入。

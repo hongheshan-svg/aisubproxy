@@ -227,56 +227,68 @@
         "type": "object",
         "properties": {
           "card_id": {
-            "type": "string"
+            "type": "string",
+            "description": "卡ID"
           },
           "card_no": {
             "type": "string",
             "description": "卡号"
           },
           "card_name": {
-            "type": "string"
+            "type": "string",
+            "description": "卡名称"
           },
           "card_type": {
             "type": "string",
             "description": "卡类型（虚拟卡）"
           },
           "card_mode": {
-            "type": "string"
+            "type": "string",
+            "description": "资金模式：储值卡、共享卡"
           },
           "card_label": {
-            "type": "string"
+            "type": "string",
+            "description": "卡组"
           },
           "card_country": {
-            "type": "string"
+            "type": "string",
+            "description": "卡所属国家或地区，参考：https://en.wikipedia.org/wiki/ISO_3166-2"
           },
           "card_currency": {
-            "type": "string"
+            "type": "string",
+            "description": "币种，参考：https://en.wikipedia.org/wiki/ISO_4217"
           },
           "expiry_date": {
             "type": "string",
-            "description": "MMyy"
+            "description": "过期时间，MMyy"
           },
           "status": {
             "type": "string",
+            "description": "状态：ACTIVE=正常，REVOKED=冻结，CANCELED=注销，INCANCELED=注销中，FREEZING=冻结中，UNFREEZING=解冻中",
             "enum": [
               "ACTIVE",
               "REVOKED",
               "CANCELED",
-              "INCANCELED"
+              "INCANCELED",
+              "FREEZING",
+              "UNFREEZING"
             ]
           },
           "available_balance": {
-            "type": "string"
+            "type": "string",
+            "description": "可用余额"
           },
           "freeze_balance": {
-            "type": "string"
+            "type": "string",
+            "description": "冻结余额"
           },
           "remark": {
             "type": "string",
             "description": "备注"
           },
           "create_time": {
-            "type": "number"
+            "type": "number",
+            "description": "创建时间，以自 Unix 纪元以来的秒数计量"
           },
           "limit": {
             "type": "object",
@@ -285,6 +297,14 @@
               "single_limit": {
                 "type": "string",
                 "description": "单笔限额"
+              },
+              "daily_limit": {
+                "type": "string",
+                "description": "单日限额"
+              },
+              "monthly_limit": {
+                "type": "string",
+                "description": "单月限额"
               }
             }
           }
@@ -293,7 +313,15 @@
           "card_id",
           "card_no",
           "card_name",
-          "status"
+          "card_type",
+          "card_mode",
+          "card_label",
+          "card_country",
+          "card_currency",
+          "status",
+          "available_balance",
+          "freeze_balance",
+          "create_time"
         ]
       },
       "CardSensitive": {
@@ -358,6 +386,10 @@
               "FAIL"
             ]
           },
+          "fail_reason": {
+            "type": "string",
+            "description": "失败原因"
+          },
           "create_time": {
             "type": "number"
           }
@@ -367,6 +399,66 @@
           "transaction_id",
           "card_id",
           "status"
+        ]
+      },
+      "CardTransferDetail": {
+        "type": "object",
+        "properties": {
+          "out_order_no": {
+            "type": "string",
+            "description": "商家订单号"
+          },
+          "transaction_id": {
+            "type": "string",
+            "description": "平台订单号"
+          },
+          "card_id": {
+            "type": "string",
+            "description": "卡ID"
+          },
+          "currency": {
+            "type": "string",
+            "description": "币种，法币参考 ISO 4217（https://en.wikipedia.org/wiki/ISO_4217），数币：USDT"
+          },
+          "amount": {
+            "type": "string",
+            "description": "金额，单位：元"
+          },
+          "type": {
+            "type": "string",
+            "description": "类型：CHARGE=转入，WITHDRAW=转出",
+            "enum": [
+              "CHARGE",
+              "WITHDRAW"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "description": "状态：APPLY=处理中，SUCCESS=成功，FAIL=失败",
+            "enum": [
+              "APPLY",
+              "SUCCESS",
+              "FAIL"
+            ]
+          },
+          "fail_reason": {
+            "type": "string",
+            "description": "失败原因"
+          },
+          "create_time": {
+            "type": "number",
+            "description": "创建时间"
+          }
+        },
+        "required": [
+          "out_order_no",
+          "transaction_id",
+          "card_id",
+          "currency",
+          "amount",
+          "type",
+          "status",
+          "create_time"
         ]
       },
       "AuthTransaction": {
@@ -1124,7 +1216,7 @@
           },
           "country_code": {
             "type": "string",
-            "description": "国家/地区，ISO 3166-1 alpha-2 两位码",
+            "description": "国家/地区（国籍），ISO 3166-1 alpha-2 两位码",
             "minLength": 2,
             "maxLength": 2
           },
@@ -1248,37 +1340,29 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "data"
+                  "account_name",
+                  "out_account_no"
                 ],
                 "properties": {
-                  "data": {
-                    "type": "object",
-                    "required": [
-                      "account_name",
-                      "out_account_no"
+                  "account_name": {
+                    "type": "string",
+                    "maxLength": 50,
+                    "description": "账户别名，不含空格或换行",
+                    "example": "SubAccountA"
+                  },
+                  "out_account_no": {
+                    "type": "string",
+                    "maxLength": 64,
+                    "description": "商户侧账户号（创建必填，必回显），不含空格或换行",
+                    "example": "SUB202607200001"
+                  },
+                  "purpose": {
+                    "type": "string",
+                    "enum": [
+                      "SHARED_ACCOUNT"
                     ],
-                    "properties": {
-                      "account_name": {
-                        "type": "string",
-                        "maxLength": 50,
-                        "description": "账户别名，不含空格或换行",
-                        "example": "SubAccountA"
-                      },
-                      "out_account_no": {
-                        "type": "string",
-                        "maxLength": 64,
-                        "description": "商户侧账户号（创建必填，必回显），不含空格或换行",
-                        "example": "SUB202607200001"
-                      },
-                      "purpose": {
-                        "type": "string",
-                        "enum": [
-                          "SHARED_ACCOUNT"
-                        ],
-                        "description": "用途：传 SHARED_ACCOUNT 创建共享账户；不传或传 null 创建普通子账户",
-                        "nullable": true
-                      }
-                    }
+                    "description": "用途：传 SHARED_ACCOUNT 创建共享账户；不传或传 null 创建普通子账户",
+                    "nullable": true
                   }
                 }
               }
@@ -1716,7 +1800,7 @@
             "schema": {
               "type": "string"
             },
-            "description": "子账户系统ID"
+            "description": "账户系统ID"
           },
           {
             "$ref": "#/components/parameters/FSignature"
@@ -1745,7 +1829,8 @@
                     "type": "string",
                     "minLength": 2,
                     "maxLength": 100,
-                    "description": "变更原因（必填），2~100字符，不支持 emoji"
+                    "description": "变更原因（必填），2~100字符，不支持 emoji",
+                    "example": "暂停使用该账户"
                   }
                 }
               }
@@ -2016,7 +2101,15 @@
                     "properties": {
                       "single_limit": {
                         "type": "string",
-                        "description": "单笔限额"
+                        "description": "单笔限额，最小0.01，不传则不限制"
+                      },
+                      "daily_limit": {
+                        "type": "string",
+                        "description": "单日限额，最小0.01，不传则不限制"
+                      },
+                      "monthly_limit": {
+                        "type": "string",
+                        "description": "单月限额，最小0.01，不传则不限制"
                       }
                     }
                   }
@@ -2489,9 +2582,12 @@
               "application/json": {
                 "schema": {
                   "type": "object",
+                  "required": [
+                    "data"
+                  ],
                   "properties": {
                     "data": {
-                      "$ref": "#/components/schemas/CardBalanceTransaction"
+                      "$ref": "#/components/schemas/CardTransferDetail"
                     }
                   }
                 }
@@ -2524,7 +2620,8 @@
             "required": true,
             "schema": {
               "type": "integer"
-            }
+            },
+            "description": "页码"
           },
           {
             "name": "page_size",
@@ -2532,7 +2629,8 @@
             "required": true,
             "schema": {
               "type": "integer"
-            }
+            },
+            "description": "分页大小"
           },
           {
             "name": "card_id",
@@ -2540,7 +2638,8 @@
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "description": "卡ID"
           },
           {
             "name": "start_time",
@@ -2548,7 +2647,8 @@
             "required": true,
             "schema": {
               "type": "number"
-            }
+            },
+            "description": "开始时间"
           },
           {
             "name": "end_time",
@@ -2556,7 +2656,8 @@
             "required": true,
             "schema": {
               "type": "number"
-            }
+            },
+            "description": "结束时间"
           },
           {
             "name": "out_order_no",
@@ -2564,7 +2665,8 @@
             "required": false,
             "schema": {
               "type": "string"
-            }
+            },
+            "description": "商家订单号"
           },
           {
             "$ref": "#/components/parameters/FSignature"
@@ -2577,14 +2679,20 @@
               "application/json": {
                 "schema": {
                   "type": "object",
+                  "required": [
+                    "count",
+                    "data"
+                  ],
                   "properties": {
                     "count": {
-                      "type": "string"
+                      "type": "string",
+                      "description": "结果集总数"
                     },
                     "data": {
                       "type": "array",
+                      "description": "结果集",
                       "items": {
-                        "$ref": "#/components/schemas/CardBalanceTransaction"
+                        "$ref": "#/components/schemas/CardTransferDetail"
                       }
                     }
                   }
@@ -2679,9 +2787,175 @@
               "application/json": {
                 "schema": {
                   "type": "object",
+                  "required": [
+                    "data"
+                  ],
                   "properties": {
                     "data": {
                       "$ref": "#/components/schemas/CardDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/card/limit": {
+      "put": {
+        "summary": "卡限额修改",
+        "tags": [
+          "卡管理"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/FSignature"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "card_id",
+                  "limit"
+                ],
+                "properties": {
+                  "card_id": {
+                    "type": "string",
+                    "description": "卡ID"
+                  },
+                  "limit": {
+                    "type": "object",
+                    "description": "交易限额",
+                    "properties": {
+                      "single_limit": {
+                        "type": "string",
+                        "description": "单笔限额，最小0.01，不传则不限制"
+                      },
+                      "daily_limit": {
+                        "type": "string",
+                        "description": "单日限额，最小0.01，不传则不限制"
+                      },
+                      "monthly_limit": {
+                        "type": "string",
+                        "description": "单月限额，最小0.01，不传则不限制"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "请求错误",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/card/limit-usage/{card_id}": {
+      "get": {
+        "summary": "查询卡剩余限额",
+        "tags": [
+          "卡管理"
+        ],
+        "parameters": [
+          {
+            "name": "card_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/FSignature"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "required": [
+                        "card_id",
+                        "limit_remaining"
+                      ],
+                      "properties": {
+                        "card_id": {
+                          "type": "string",
+                          "description": "卡ID"
+                        },
+                        "limit": {
+                          "type": "object",
+                          "description": "交易限额",
+                          "properties": {
+                            "single_limit": {
+                              "type": "string",
+                              "description": "单笔限额"
+                            },
+                            "daily_limit": {
+                              "type": "string",
+                              "description": "单日限额"
+                            },
+                            "monthly_limit": {
+                              "type": "string",
+                              "description": "单月限额"
+                            }
+                          }
+                        },
+                        "limit_remaining": {
+                          "type": "object",
+                          "description": "剩余限额",
+                          "properties": {
+                            "daily_remaining": {
+                              "type": "string",
+                              "description": "剩余日限额"
+                            },
+                            "monthly_remaining": {
+                              "type": "string",
+                              "description": "剩余月限额"
+                            }
+                          }
+                        }
+                      }
                     }
                   }
                 }
@@ -2784,7 +3058,7 @@
                   },
                   "country_code": {
                     "type": "string",
-                    "description": "国家/地区，ISO 3166-1 alpha-2 两位码",
+                    "description": "国家/地区（国籍），ISO 3166-1 alpha-2 两位码",
                     "minLength": 2,
                     "maxLength": 2
                   },
@@ -3119,7 +3393,7 @@
                   },
                   "country_code": {
                     "type": "string",
-                    "description": "国家/地区，ISO 3166-1 alpha-2 两位码",
+                    "description": "国家/地区（国籍），ISO 3166-1 alpha-2 两位码",
                     "minLength": 2,
                     "maxLength": 2
                   },
@@ -4323,7 +4597,7 @@
                     "example": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
                   },
                   "data": {
-                    "$ref": "#/components/schemas/CardBalanceTransaction",
+                    "$ref": "#/components/schemas/CardTransferDetail",
                     "description": "卡转账交易详情"
                   }
                 }

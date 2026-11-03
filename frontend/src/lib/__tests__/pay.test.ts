@@ -1,5 +1,21 @@
 import { describe, expect, it } from 'vitest'
-import { failureLabel, failureText, formatMinor, fromMinor, isTerminal, pageOutcomeLabel, payBlockReason, stateLabel, toMinor } from '../pay'
+import { failureLabel, failureText, formatMinor, fromMinor, isTerminal, pageOutcomeLabel, payBlockReason, proxyTestText, stateLabel, toMinor } from '../pay'
+
+describe('proxyTestText', () => {
+  it('一致', () => {
+    expect(proxyTestText({ region: 'PH', proxy_configured: true, ok: true, ip: '1.2.3.4', loc: 'PH', latency_ms: 320, matches_region: true }))
+      .toEqual({ tone: 'ok', text: '出口 IP 1.2.3.4，OpenAI 识别为 PH（菲律宾），耗时 320 ms' })
+  })
+  it('不一致用警告色', () => {
+    const r = proxyTestText({ region: 'PH', proxy_configured: false, ok: true, ip: '5.6.7.8', loc: 'SG', latency_ms: 90, matches_region: false })
+    expect(r.tone).toBe('warn')
+    expect(r.text).toContain('识别为 SG，与 PH 不一致，可能拿不到该地区价格，也更容易被风控')
+  })
+  it('失败显示中文原因', () => {
+    expect(proxyTestText({ region: 'PH', proxy_configured: true, ok: false, error: '代理认证失败，请检查账号密码' }))
+      .toEqual({ tone: 'err', text: '测试失败：代理认证失败，请检查账号密码' })
+  })
+})
 
 describe('pay lib', () => {
   it('stateLabel 13 个状态', () => {

@@ -343,6 +343,7 @@ func setupRoutes(r *gin.Engine) {
 			admin.PUT("/pay/config", handler.AdminPayPutConfig)
 			admin.GET("/pay/proxies", handler.AdminPayGetProxies)
 			admin.PUT("/pay/proxies", handler.AdminPayPutProxies)
+			admin.POST("/pay/proxies/test", handler.AdminPayTestProxy)
 			admin.POST("/pay/browser-check", handler.AdminPayBrowserCheck)
 			admin.GET("/pay/breaker", handler.AdminPayBreakerStatus)
 			admin.POST("/pay/breaker/resume", handler.AdminPayBreakerResume)

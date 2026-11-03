@@ -132,6 +132,9 @@ type Service struct {
 	recoveryFailed bool            // 重启恢复失败过（已告警）；只在 Start 和其后的工作协程里读写，二者不并发
 	graceRestored  map[string]bool // 本次启动已补过宽限期的被拒单，恢复重试时不再补；读写范围同上
 	recovered      atomic.Bool     // 重启恢复已完成：此前不派发，确认协程不接管、不定论被拒单
+
+	// checkURL 校验支付链接，New 里固定为 checkCheckoutURL。不开放给 Options：只有包内测试（用本机仿造页跑真实 Chrome）能换掉它。
+	checkURL func(string) error
 }
 
 // New 创建引擎，未提供的依赖取默认实现。
@@ -165,7 +168,8 @@ func New(o Options) *Service {
 	if t.Backfill <= 0 {
 		t.Backfill = DefaultTimeouts().Backfill
 	}
-	return &Service{opts: o, t: t, realBrowser: realBrowser, kick: make(chan struct{}, 1), running: map[string]bool{}, verifyErrs: map[string]map[string]string{}}
+	return &Service{opts: o, t: t, realBrowser: realBrowser, kick: make(chan struct{}, 1), running: map[string]bool{}, verifyErrs: map[string]map[string]string{},
+		checkURL: checkCheckoutURL}
 }
 
 func (s *Service) now() time.Time { return s.opts.Now() }

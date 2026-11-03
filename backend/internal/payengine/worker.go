@@ -473,13 +473,51 @@ func (s *Service) createLink(ctx context.Context, j *job) error {
 		return s.chatgptAbort(j, "checkout_failed", "创建支付会话失败", err)
 	}
 	j.note("checkout_session_id", co.SessionID)
-	if co.URL == "" {
+	return s.acceptCheckoutURL(ctx, j, co.SessionID, co.URL)
+}
+
+// acceptCheckoutURL 校验支付链接并推进到 link_created。链接为空记 checkout_failed；
+// 不在支付域名白名单里记 checkout_url_untrusted，链接不落库、不打开。两种情况都还没取卡、没注资。
+func (s *Service) acceptCheckoutURL(ctx context.Context, j *job, sessionID, link string) error {
+	if strings.TrimSpace(link) == "" {
 		return abort("checkout_failed", "创建支付会话未返回支付链接")
 	}
-	if err := s.advance(ctx, j, StateLinkCreated, "已生成支付链接", map[string]any{"checkout_url": co.URL}); err != nil {
+	if err := s.checkURL(link); err != nil {
 		return err
 	}
-	j.o.CheckoutSessionID, j.o.CheckoutURL = co.SessionID, co.URL
+	if err := s.advance(ctx, j, StateLinkCreated, "已生成支付链接", map[string]any{"checkout_url": link}); err != nil {
+		return err
+	}
+	j.o.CheckoutSessionID, j.o.CheckoutURL = sessionID, link
+	return nil
+}
+
+// trustedCheckoutHosts 是付款引擎允许打开的支付页域名：OpenAI 的支付域名和 Stripe 托管结账页。
+// 只认这两个主机名本身，子域名、相似域名、chatgpt.com（自定义结账页，引擎不支持）一律不认。
+// 这份名单只管付款；免付款探测工具另有一份更宽的名单，只用于报告，两份互不复用。
+var trustedCheckoutHosts = map[string]bool{
+	"pay.openai.com":      true,
+	"checkout.stripe.com": true,
+}
+
+// checkCheckoutURL 校验支付链接：必须是 https、没有账号密码、没有端口，主机名正好在 trustedCheckoutHosts 里。
+// 不通过时返回 checkout_url_untrusted 的放弃原因，说明里只写域名，绝不写完整链接（链接里带会话号）。
+func checkCheckoutURL(raw string) error {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return abort("checkout_url_untrusted", "支付链接无法解析出域名，已放弃，未注资")
+	}
+	host := strings.ToLower(u.Hostname())
+	switch {
+	case u.Scheme != "https":
+		return abort("checkout_url_untrusted", "支付链接不是 https（域名 %s），已放弃，未注资", host)
+	case u.User != nil:
+		return abort("checkout_url_untrusted", "支付链接带账号信息（域名 %s），已放弃，未注资", host)
+	case u.Port() != "":
+		return abort("checkout_url_untrusted", "支付链接带端口（域名 %s），已放弃，未注资", host)
+	case !trustedCheckoutHosts[host]:
+		return abort("checkout_url_untrusted", "支付链接的域名 %s 不在支付域名白名单里，已放弃，未注资", host)
+	}
 	return nil
 }
 
@@ -498,6 +536,10 @@ func (s *Service) openPage(ctx context.Context, j *job) error {
 	j.browser = b
 	if j.o.DryRun {
 		b.LockSubmit() // 试运行单：浏览器对象本身拒绝点击，不只靠流程分支
+	}
+	// 建链接时已经校验过；打开之前再拦一次，不让任何别的路径带进来的链接被打开
+	if err := s.checkURL(j.o.CheckoutURL); err != nil {
+		return err
 	}
 
 	pctx, cancel := context.WithTimeout(ctx, s.t.PageLoad)

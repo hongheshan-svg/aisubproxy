@@ -69,7 +69,7 @@ func (g *localFakeGPT) CreateCheckout(context.Context, chatgpt.Session, string, 
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.checkouts++
-	return chatgpt.Checkout{SessionID: "cs_live_abc", URL: "https://pay.example/c/cs_live_abc"}, nil
+	return chatgpt.Checkout{SessionID: "cs_live_abc", URL: "https://pay.openai.com/c/pay/cs_live_abc"}, nil
 }
 
 func (g *localFakeGPT) setRefreshErr(err error) {

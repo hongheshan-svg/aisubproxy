@@ -761,8 +761,8 @@ func localCDKExchange(c *gin.Context, cs provider.CardSupply, code, ip string) {
 		localReply(c, http.StatusBadRequest, gin.H{"error": "该卡密尚无兑换失败记录，不能换新码", "hint": "仅限充值失败且未扣款的卡密"})
 		return
 	}
-	// 新码也是这家新发的码，硬门槛照样要过
-	switch passed, err := db.HasRealSucceededPayOrder(ctx, row.Provider); {
+	// 新码也是这家新发的码，硬门槛照样要过（按这张码的种类：订阅开通码、点数码分别计算）
+	switch passed, err := db.HasRealSucceededPayOrder(ctx, row.Provider, payengine.PlanKind(row.PlanKey)); {
 	case err != nil:
 		log.Printf("[local-cdk] 查询真实付款记录失败: %v", err)
 		localReply(c, http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试"})

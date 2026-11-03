@@ -529,10 +529,27 @@ func (e *localEnv) waitOrdersFailed(id int64, n int) {
 	}
 }
 
-// seedRealPayment 写一笔系统自动确认成功的真实付款单：过发码硬门槛。
+// seedRealPayment 写一笔系统自动确认成功、已关闭续费的真实开通单：过订阅开通码的发码硬门槛。
 func (e *localEnv) seedRealPayment() {
 	e.t.Helper()
-	e.insertOrder("admin_test", "admin", 0, "seed@example.com", "succeeded", "", true)
+	e.markRenewalCancelled(e.insertOrder("admin_test", "admin", 0, "seed@example.com", "succeeded", "", true))
+}
+
+// markRenewalCancelled 把一张成功的开通单记成已关闭续费并核实。
+func (e *localEnv) markRenewalCancelled(no string) {
+	e.t.Helper()
+	if _, err := db.DB.Exec(`UPDATE pay_orders SET renewal_state = 'cancelled' WHERE order_no = ?`, no); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
+// seedRealCreditPayment 写一笔系统自动确认成功的真实点数单：过点数码的发码硬门槛。
+func (e *localEnv) seedRealCreditPayment() {
+	e.t.Helper()
+	no := e.insertOrder("admin_test", "admin", 0, "seed-credit@example.com", "succeeded", "", true)
+	if _, err := db.DB.Exec(`UPDATE pay_orders SET kind = 'credit', plan_key = 'credit250', credit_quantity = 250 WHERE order_no = ?`, no); err != nil {
+		e.t.Fatal(err)
+	}
 }
 
 // do 发一个请求。发码接口每次带一个新的幂等键，等于每次都是新的一次点击；专门测幂等的用 doIssue。

@@ -24,6 +24,23 @@ const (
 // PlanKeys 是支持的套餐键（顺序即展示顺序）。
 var PlanKeys = []string{"go", "plus", "pro_5x", "pro_20x", "pro_50x"}
 
+// 单据种类，与 pay_orders.kind 列的取值一致。
+const (
+	KindSubscription = db.PayKindSubscription // 订阅开通
+	KindCredit       = db.PayKindCredit       // Codex 点数
+)
+
+// CreditPlanKeys 是 Codex 点数各档的键，与 ZovoCard 同名，数量取自键名。
+var CreditPlanKeys = []string{"credit250", "credit500", "credit1000", "credit2500", "credit5000", "credit25000"}
+
+// PlanKind 返回套餐键对应的单据种类：点数档为 credit，其余为 subscription。发码门槛按它分别计算。
+func PlanKind(planKey string) string {
+	if contains(CreditPlanKeys, strings.TrimSpace(planKey)) {
+		return KindCredit
+	}
+	return KindSubscription
+}
+
 // Regions 是支持的地区（顺序即展示顺序）。
 var Regions = []string{"PH", "US", "JP", "CL", "EG"}
 

@@ -103,9 +103,11 @@ func TestMigrateProviderColumnsOnLegacyDB(t *testing.T) {
 			}
 		}
 	}
-	// 旧单照样能当硬门槛：它们都是 MarsWallex 的
-	if ok, err := db.HasRealSucceededPayOrder(localCtx, "marswallex"); err != nil || !ok {
-		t.Fatal(ok, err)
+	// 旧的成功单会话早已清空、续费没关，迁移时记为 skipped，不再能当订阅开通码的硬门槛（设计 2026-11-03 §3.3）；也不是点数单
+	for _, kind := range []string{db.PayKindSubscription, db.PayKindCredit} {
+		if ok, err := db.HasRealSucceededPayOrder(localCtx, "marswallex", kind); err != nil || ok {
+			t.Fatal(kind, ok, err)
+		}
 	}
 	if v, err := db.GetSetting("cdk_default_provider"); err != nil || v != "marswallex" {
 		t.Fatal(v, err)

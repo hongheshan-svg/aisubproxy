@@ -284,45 +284,81 @@ func TestLocalCDKOneOrderIndex(t *testing.T) {
 	}
 }
 
+// setOrderCols 改一张测试单的列（只在测试里用，列名写死在调用处）。
+func setOrderCols(t *testing.T, no, sets string, args ...any) {
+	t.Helper()
+	if _, err := db.DB.Exec(`UPDATE pay_orders SET `+sets+` WHERE order_no = ?`, append(args, no)...); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestHasRealSucceededPayOrderGate(t *testing.T) {
 	dbtest.Open(t)
-	check := func(want bool) {
+	check := func(kind string, want bool) {
 		t.Helper()
-		got, err := db.HasRealSucceededPayOrder(localCtx, "marswallex")
+		got, err := db.HasRealSucceededPayOrder(localCtx, "marswallex", kind)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if got != want {
-			t.Fatalf("门槛 %v，期望 %v", got, want)
+			t.Fatalf("%s 门槛 %v，期望 %v", kind, got, want)
 		}
 	}
-	if _, err := db.HasRealSucceededPayOrder(localCtx, " "); err == nil {
+	if _, err := db.HasRealSucceededPayOrder(localCtx, " ", db.PayKindSubscription); err == nil {
 		t.Fatal("没有服务商时不能给结论")
 	}
-	check(false)
-	addOrder(t, "admin_test", "admin", 1, "", "succeeded", "", false) // 试运行到读金额
-	addOrder(t, "admin_test", "admin", 2, "", "succeeded", "", false) // 试运行到填表
+	if _, err := db.HasRealSucceededPayOrder(localCtx, "marswallex", ""); err == nil {
+		t.Fatal("没有单据种类时不能给结论")
+	}
+	check(db.PayKindSubscription, false)
+	check(db.PayKindCredit, false)
+	for _, dry := range []int{1, 2} { // 试运行到读金额、到填表：哪怕续费状态写成已关闭也不算
+		no := addOrder(t, "admin_test", "admin", dry, "", "succeeded", "", false)
+		setOrderCols(t, no, "renewal_state = 'cancelled'")
+	}
 	addOrder(t, "admin_test", "admin", 1, "", "previewed", "", false)
 	addOrder(t, "admin_test", "admin", 0, "", "failed", "declined", true)
 	addOrder(t, "admin_test", "admin", 0, "", "needs_review", "", true)
-	check(false)
+	check(db.PayKindSubscription, false)
 	// 人工定论成功的单不能证明系统能自己走通，不算
 	manual := addOrder(t, "admin_test", "admin", 0, "", "succeeded", "", true)
-	if _, err := db.DB.Exec(`UPDATE pay_orders SET resolved_by = 'alice', resolve_note = '核对已开通' WHERE order_no = ?`, manual); err != nil {
-		t.Fatal(err)
-	}
-	check(false)
+	setOrderCols(t, manual, "resolved_by = 'alice', resolve_note = '核对已开通', renewal_state = 'cancelled'")
+	check(db.PayKindSubscription, false)
 	// 别家的成功单、服务商不明的成功单都不算
-	addProviderOrder(t, "testcard", "admin_test", "admin", 0, "", "succeeded", "", true)
-	addProviderOrder(t, "", "admin_test", "admin", 0, "", "succeeded", "", true)
-	check(false)
-	addOrder(t, "admin_test", "admin", 0, "", "succeeded", "", true)
-	check(true)
+	for _, p := range []string{"testcard", ""} {
+		no := addProviderOrder(t, p, "admin_test", "admin", 0, "", "succeeded", "", true)
+		setOrderCols(t, no, "renewal_state = 'cancelled'")
+	}
+	check(db.PayKindSubscription, false)
+	// 订阅开通单成功了、但续费没关掉（不适用、待处理、失败、跳过）都不算
+	sub := addOrder(t, "admin_test", "admin", 0, "", "succeeded", "", true)
+	for _, rs := range []string{"", "pending", "failed", "skipped"} {
+		setOrderCols(t, sub, "renewal_state = ?", rs)
+		check(db.PayKindSubscription, false)
+	}
+	// 点数单成功不能替订阅开通码过门槛，订阅开通单也不能替点数码过门槛
+	credit := addOrder(t, "admin_test", "admin", 0, "", "succeeded", "", true)
+	setOrderCols(t, credit, "kind = 'credit', credit_quantity = 250, plan_key = 'credit250', renewal_state = 'cancelled'")
+	check(db.PayKindSubscription, false)
+	check(db.PayKindCredit, true)
+	setOrderCols(t, credit, "kind = 'subscription'")
+	check(db.PayKindCredit, false)
+	setOrderCols(t, sub, "renewal_state = 'cancelled'")
+	check(db.PayKindSubscription, true)
+	check(db.PayKindCredit, false)
+	// 人工定论成功的点数单也不算
+	setOrderCols(t, credit, "kind = 'credit', resolved_by = 'alice'")
+	check(db.PayKindCredit, false)
+	setOrderCols(t, credit, "resolved_by = ''")
+	check(db.PayKindCredit, true)
 	// 按服务商分别计算：testcard 自己的成功单让它过门槛，MarsWallex 的不帮它
-	if ok, err := db.HasRealSucceededPayOrder(localCtx, "testcard"); err != nil || !ok {
+	if ok, err := db.HasRealSucceededPayOrder(localCtx, "testcard", db.PayKindSubscription); err != nil || !ok {
 		t.Fatal(ok, err)
 	}
-	if ok, err := db.HasRealSucceededPayOrder(localCtx, "othercard"); err != nil || ok {
+	if ok, err := db.HasRealSucceededPayOrder(localCtx, "testcard", db.PayKindCredit); err != nil || ok {
+		t.Fatal(ok, err)
+	}
+	if ok, err := db.HasRealSucceededPayOrder(localCtx, "othercard", db.PayKindSubscription); err != nil || ok {
 		t.Fatal(ok, err)
 	}
 }

@@ -536,17 +536,29 @@ func IsLocalCDKOrderConflict(err error) bool {
 	return strings.Contains(se.Error(), "pay_orders.source_ref")
 }
 
-// HasRealSucceededPayOrder 该供卡型服务商是否已有一笔系统自动确认成功的真实付款单：发它的码的硬门槛，按服务商分别计算。
+// HasRealSucceededPayOrder 该供卡型服务商是否已有一笔系统自动确认成功的真实付款单：发它的码的硬门槛，按服务商、按单据种类分别计算。
 // dry_run 非 0 的都是试运行（1 到读金额、2 到填表），不算。resolved_by 非空是人工定论的单，不能证明系统能自己走通，也不算。
 // 别家的成功单不算：一家走通不能证明另一家的卡和流程也能走通。
-func HasRealSucceededPayOrder(ctx context.Context, provider string) (bool, error) {
+//   - 订阅开通码（kind = subscription）：那笔单还要已经关闭续费并核实（renewal_state = cancelled），
+//     证明「付款 → 确认 → 关闭续费」整条链路走通了。旧库迁移时成功单记为 skipped，不算。
+//   - 点数码（kind = credit）：要有一笔真实点数单成功，订阅开通单不算。
+func HasRealSucceededPayOrder(ctx context.Context, provider, kind string) (bool, error) {
 	provider = strings.TrimSpace(provider)
 	if provider == "" {
 		return false, errors.New("硬门槛查询缺少服务商")
 	}
+	extra := ""
+	switch kind {
+	case PayKindSubscription:
+		extra = ` AND kind = 'subscription' AND renewal_state = 'cancelled'`
+	case PayKindCredit:
+		extra = ` AND kind = 'credit'`
+	default:
+		return false, fmt.Errorf("硬门槛查询的单据种类 %q 未知", kind)
+	}
 	var n int
 	err := DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM (SELECT 1 FROM pay_orders
-		WHERE dry_run = 0 AND state = 'succeeded' AND resolved_by = '' AND provider = ? LIMIT 1)`, provider).Scan(&n)
+		WHERE dry_run = 0 AND state = 'succeeded' AND resolved_by = '' AND provider = ?`+extra+` LIMIT 1)`, provider).Scan(&n)
 	return n > 0, err
 }
 

@@ -93,16 +93,9 @@ export function isCreditPlan(p: { kind?: string } | null | undefined): boolean {
   return p?.kind === 'credit'
 }
 
-// 点数档在 PH 的默认金额，与后端 creditDefaultPH 一致：每 250 点 565.00 PHP，上限是预期金额的 112%（都向下取整到最小单位）。
-const CREDIT_PHP_PER_250_MINOR = 56500
-const CREDIT_CAP_PERCENT = 112
-
-export function creditDefaultPH(quantity: number): { currency: string; expect_minor: number; floor_minor: number; cap_minor: number } {
-  const q = Math.max(0, Math.floor(quantity || 0))
-  const expect = Math.floor((CREDIT_PHP_PER_250_MINOR * q) / 250)
-  // 最低金额出厂等于预期金额，与后端一致
-  return { currency: 'PHP', expect_minor: expect, floor_minor: expect, cap_minor: Math.floor((expect * CREDIT_CAP_PERCENT) / 100) }
-}
+/** 接口返回的内置价格（后端 BuiltinRegionPrice）：套餐键 → 地区 → 价格，只含美国、菲律宾。 */
+export interface BuiltinPrice { currency: string; expect_minor: number; floor_minor: number; cap_minor: number }
+export type BuiltinPrices = Record<string, Record<string, BuiltinPrice>>
 
 // ---------- 付款配置：套餐表与编辑表单互转 ----------
 
@@ -151,17 +144,25 @@ export function formToPlan(p: FormPlan): PlanConf {
   }
 }
 
-/** 把点数档的 PH 行恢复成默认币种、预期金额、最低金额和上限；不动启用开关和注资金额（注资没有默认值，要按汇率填）。 */
-export function applyCreditDefaultPH(p: FormPlan): boolean {
-  const row = p.rows.find((r) => r.region === 'PH')
-  if (!row || !isCreditPlan(p) || !(p.credit_quantity > 0)) return false
-  const d = creditDefaultPH(p.credit_quantity)
-  row.currency = d.currency
-  row.expect = fromMinor(d.expect_minor, d.currency)
-  row.floor = fromMinor(d.floor_minor, d.currency)
-  row.cap = fromMinor(d.cap_minor, d.currency)
+/** 把某个地区的行恢复成内置价格（币种、预期金额、最低金额、上限）；不动启用开关和注资金额。订阅和点数都能用，没有内置价返回 false。 */
+export function applyBuiltinPrice(p: FormPlan, region: string, builtin: BuiltinPrices | undefined): boolean {
+  const row = p.rows.find((r) => r.region === region)
+  const b = builtin?.[p.key]?.[region]
+  if (!row || !b) return false
+  row.currency = b.currency
+  row.expect = fromMinor(b.expect_minor, b.currency)
+  row.floor = fromMinor(b.floor_minor, b.currency)
+  row.cap = fromMinor(b.cap_minor, b.currency)
   return true
 }
+
+/** 套餐在哪些地区有内置价（按地区顺序）。 */
+export function builtinRegions(p: FormPlan, builtin: BuiltinPrices | undefined): string[] {
+  return p.rows.map((r) => r.region).filter((r) => !!builtin?.[p.key]?.[r])
+}
+
+/** 表格下方的说明：内置价覆盖哪些地区。 */
+export const BUILTIN_NOTE = '美国、菲律宾的预期金额、最低金额、上限已按官方价格内置（可改）；其他地区要自己填。'
 
 /** 金额上限低于预期金额时的提示（两者都大于 0 才比较），与后端保存时的校验一致。 */
 export function capBelowExpect(capMinor: number, expectMinor: number): boolean {

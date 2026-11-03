@@ -39,8 +39,12 @@ func TestDefaultPlanTable(t *testing.T) {
 		}
 		for r, c := range cur {
 			rc := p.Regions[r]
-			if rc.Currency != c || rc.Enabled || rc.CapMinor != 0 || rc.FundCents != 0 {
+			// 美国、菲律宾的内置价见 TestDefaultPlanTableUsesBuiltin，这里只看币种、未启用、注资为 0 和没有内置价的地区金额为 0
+			if rc.Currency != c || rc.Enabled || rc.FundCents != 0 {
 				t.Fatalf("%s/%s 默认值错误: %+v", p.Key, r, rc)
+			}
+			if _, builtin := BuiltinRegionPrice(p.Key, r); !builtin && rc.CapMinor != 0 {
+				t.Fatalf("%s/%s 没有内置价，金额应为 0: %+v", p.Key, r, rc)
 			}
 		}
 	}
@@ -64,8 +68,9 @@ func TestResolvePlanRules(t *testing.T) {
 	if _, _, err := ResolvePlan("plus", "PH", false); !errors.Is(err, ErrPlanUnavailable) {
 		t.Fatalf("未启用应不可用: %v", err)
 	}
-	saveWith(t, "plus", "PH", RegionConf{Enabled: true, Currency: "PHP", FloorMinor: 100, FundCents: 100})
-	_, _, err := ResolvePlan("plus", "PH", false)
+	// 日本没有内置价，缺上限仍要拒绝（美国、菲律宾缺的金额会被内置价补上，见 TestResolvePlanWorksWithBuiltin）
+	saveWith(t, "plus", "JP", RegionConf{Enabled: true, Currency: "JPY", FloorMinor: 100, FundCents: 100})
+	_, _, err := ResolvePlan("plus", "JP", false)
 	if !errors.Is(err, ErrPlanUnavailable) || !strings.Contains(err.Error(), "金额上限") {
 		t.Fatalf("缺金额上限: %v", err)
 	}
@@ -283,10 +288,13 @@ func TestDefaultCreditPlans(t *testing.T) {
 		if p.Kind != KindCredit || int64(p.CreditQuantity) != w[0] || p.ChatGPTPlanName != "" || p.ExpectPlanType != "" {
 			t.Fatalf("%s 默认值错误: %+v", p.Key, p)
 		}
-		if rc := p.Regions["PH"]; rc.Enabled || rc.Currency != "PHP" || rc.ExpectMinor != w[1] || rc.CapMinor != w[2] || rc.FundCents != 0 {
+		if rc := p.Regions["PH"]; rc.Enabled || rc.Currency != "PHP" || rc.ExpectMinor != w[1] || rc.CapMinor != w[2] || rc.FloorMinor != w[1]*7/8 || rc.FundCents != 0 {
 			t.Fatalf("%s/PH 默认值错误: %+v", p.Key, rc)
 		}
-		for _, r := range []string{"US", "JP", "CL", "EG"} {
+		if rc := p.Regions["US"]; rc.Enabled || rc.Currency != "USD" || rc.ExpectMinor != 4*w[0] || rc.FloorMinor != 4*w[0] || rc.CapMinor != 4*w[0]*11/10 || rc.FundCents != 0 {
+			t.Fatalf("%s/US 内置价错误: %+v", p.Key, rc)
+		}
+		for _, r := range []string{"JP", "CL", "EG"} {
 			if rc := p.Regions[r]; rc.Enabled || rc.CapMinor != 0 || rc.ExpectMinor != 0 || rc.Currency != defaultCurrency[r] {
 				t.Fatalf("%s/%s 不应有默认金额: %+v", p.Key, r, rc)
 			}
@@ -357,11 +365,12 @@ func TestSavePlanTableCredit(t *testing.T) {
 
 func TestResolvePlanRequiresFloor(t *testing.T) {
 	dbtest.Open(t)
-	saveWith(t, "plus", "PH", RegionConf{Enabled: true, Currency: "PHP", CapMinor: 12000, FundCents: 3000})
-	if _, _, err := ResolvePlan("plus", "PH", false); !errors.Is(err, ErrPlanUnavailable) || !strings.Contains(err.Error(), "未配置最低金额") {
+	// 日本没有内置价；美国、菲律宾缺最低金额会被内置价补上
+	saveWith(t, "plus", "JP", RegionConf{Enabled: true, Currency: "JPY", CapMinor: 12000, FundCents: 3000})
+	if _, _, err := ResolvePlan("plus", "JP", false); !errors.Is(err, ErrPlanUnavailable) || !strings.Contains(err.Error(), "未配置最低金额") {
 		t.Fatalf("缺最低金额应不可用: %v", err)
 	}
-	if _, _, err := ResolvePlan("plus", "PH", true); err != nil {
+	if _, _, err := ResolvePlan("plus", "JP", true); err != nil {
 		t.Fatalf("试运行不要求最低金额: %v", err)
 	}
 }
@@ -404,13 +413,14 @@ func TestSavePlanTableValidatesFloor(t *testing.T) {
 func TestDefaultFloor(t *testing.T) {
 	for _, p := range DefaultPlanTable() {
 		for r, rc := range p.Regions {
+			b, builtin := BuiltinRegionPrice(p.Key, r)
 			switch {
-			case p.Kind == KindCredit && r == "PH":
-				if rc.FloorMinor != rc.ExpectMinor || rc.FloorMinor <= 0 {
-					t.Fatalf("%s/PH 出厂最低金额应等于预期金额: %+v", p.Key, rc)
+			case builtin:
+				if rc.FloorMinor != b.FloorMinor || rc.FloorMinor <= 0 || rc.FloorMinor > rc.ExpectMinor {
+					t.Fatalf("%s/%s 出厂最低金额应是内置值且不高于预期: %+v", p.Key, r, rc)
 				}
 			case rc.FloorMinor != 0:
-				t.Fatalf("%s/%s 出厂最低金额应为 0: %+v", p.Key, r, rc)
+				t.Fatalf("%s/%s 没有内置价，出厂最低金额应为 0: %+v", p.Key, r, rc)
 			}
 		}
 	}

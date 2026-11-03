@@ -60,19 +60,6 @@ func CreditQuantity(planKey string) int {
 	return n
 }
 
-// 点数各档在 PH 的默认金额（设计 2026-11-03 §5.3，取自 ZovoCard 文档）：每 250 点 ₱565，按数量线性计算；上限为预期金额 × 1.12。
-// 金额为比索的最小单位（分）。其他地区没有默认值，管理员配置后才能用。
-const (
-	creditPHPPer250Minor = 56500
-	creditCapPercent     = 112
-)
-
-// creditDefaultPH 返回点数档在 PH 的默认预期金额与上限。
-func creditDefaultPH(quantity int) (expect, capMinor int64) {
-	expect = int64(creditPHPPer250Minor) * int64(quantity) / 250
-	return expect, expect * creditCapPercent / 100
-}
-
 // Regions 是支持的地区（顺序即展示顺序）。
 var Regions = []string{"PH", "US", "JP", "CL", "EG"}
 
@@ -117,19 +104,24 @@ type PlanConf struct {
 func defaultPlan(key string) PlanConf {
 	if q := CreditQuantity(key); q > 0 {
 		p := PlanConf{Key: key, Label: fmt.Sprintf("Codex 点数 %d", q), Kind: KindCredit, CreditQuantity: q, Regions: map[string]RegionConf{}}
-		for _, r := range Regions {
-			p.Regions[r] = RegionConf{Currency: defaultCurrency[r]}
-		}
-		expect, capMinor := creditDefaultPH(q)
-		p.Regions["PH"] = RegionConf{Currency: "PHP", ExpectMinor: expect, CapMinor: capMinor, FloorMinor: expect}
+		fillDefaultRegions(&p)
 		return p
 	}
 	d := planDefaults[key]
 	p := PlanConf{Key: key, Label: d.label, Kind: KindSubscription, ChatGPTPlanName: d.name, ExpectPlanType: d.expect, Regions: map[string]RegionConf{}}
+	fillDefaultRegions(&p)
+	return p
+}
+
+// fillDefaultRegions 填各地区的出厂值：US、PH 用内置价格区间，其他地区只有币种。全部未启用、注资为 0。
+func fillDefaultRegions(p *PlanConf) {
 	for _, r := range Regions {
+		if b, ok := BuiltinRegionPrice(p.Key, r); ok {
+			p.Regions[r] = b
+			continue
+		}
 		p.Regions[r] = RegionConf{Currency: defaultCurrency[r]}
 	}
-	return p
 }
 
 // normalizePlan 把由套餐键决定的字段改回键的取值：种类、点数；点数档不留 ChatGPT 套餐名和期望套餐类型。
@@ -140,7 +132,7 @@ func normalizePlan(p *PlanConf) {
 	}
 }
 
-// DefaultPlanTable 返回全部未启用、金额为 0 的默认套餐表。
+// DefaultPlanTable 返回全部未启用的默认套餐表：美国、菲律宾带内置价格区间，其他地区金额为 0。
 func DefaultPlanTable() []PlanConf {
 	out := make([]PlanConf, 0, len(PlanKeys))
 	for _, k := range PlanKeys {
@@ -150,6 +142,7 @@ func DefaultPlanTable() []PlanConf {
 }
 
 // LoadPlanTable 读取套餐表，并与默认表合并：补齐缺项、丢弃未知键。
+// 美国、菲律宾已存的预期、最低、上限为 0 时用内置价补上（规则见 fillBuiltin），补的值保存前只在内存里。
 func LoadPlanTable() ([]PlanConf, error) {
 	raw, err := db.GetSetting(settingPlanTable)
 	if err != nil {
@@ -171,7 +164,7 @@ func LoadPlanTable() ([]PlanConf, error) {
 			tbl[i].Label, tbl[i].ChatGPTPlanName, tbl[i].ExpectPlanType = s.Label, s.ChatGPTPlanName, s.ExpectPlanType
 			for _, r := range Regions {
 				if rc, ok := s.Regions[r]; ok {
-					tbl[i].Regions[r] = rc
+					tbl[i].Regions[r] = fillBuiltin(s.Key, r, rc)
 				}
 			}
 			normalizePlan(&tbl[i])

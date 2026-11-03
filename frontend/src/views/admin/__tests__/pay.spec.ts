@@ -125,15 +125,37 @@ describe('付款配置：Codex 点数档', () => {
   })
   const plus: PlanConf = { key: 'plus', label: 'Plus', chatgpt_plan_name: 'chatgptplusplan', expect_plan_type: 'plus', kind: 'subscription', regions: {} }
 
-  it('只渲染点数档，每档一个 PH 恢复默认金额按钮，并写明 PH 默认金额', async () => {
+  const builtin = {
+    plus: { US: { currency: 'USD', expect_minor: 2000, floor_minor: 2000, cap_minor: 2200 }, PH: { currency: 'PHP', expect_minor: 99900, floor_minor: 87412, cap_minor: 112200 } },
+    credit250: { US: { currency: 'USD', expect_minor: 1000, floor_minor: 1000, cap_minor: 1100 }, PH: { currency: 'PHP', expect_minor: 56500, floor_minor: 49437, cap_minor: 63280 } },
+    credit500: { US: { currency: 'USD', expect_minor: 2000, floor_minor: 2000, cap_minor: 2200 }, PH: { currency: 'PHP', expect_minor: 113000, floor_minor: 98875, cap_minor: 126560 } },
+  }
+
+  it('只渲染点数档，有内置价的 US、PH 行各有一个恢复内置价格按钮，并写明内置说明', async () => {
     const plans = [plus, credit('credit250', 250), credit('credit500', 500)].map((p) => planToForm(p, REGIONS))
-    const html = await render(PayCreditPlans, { modelValue: plans })
+    const html = await render(PayCreditPlans, { modelValue: plans, builtin })
     expect(html).toContain('data-testid="credit-plans"')
     expect(html).toContain('data-plan="credit250"')
     expect(html).toContain('data-plan="credit500"')
     expect(html).not.toContain('data-plan="plus"')
-    expect(html).toContain('data-testid="ph-default-credit250"')
-    expect(html).toContain('PH 默认每 250 点 565.00 PHP')
+    expect(html).toContain('data-testid="builtin-credit250-PH"')
+    expect(html).toContain('data-testid="builtin-credit250-US"')
+    expect(html).not.toContain('data-testid="builtin-credit250-JP"')
+    expect(html).toContain('恢复内置价格')
+    expect(html).toContain('美国、菲律宾的预期金额、最低金额、上限已按官方价格内置（可改）；其他地区要自己填。')
+    expect(html).not.toContain('ph-default-')
+  })
+
+  it('订阅表有恢复内置价格入口和内置说明；接口没给 builtin 时没有入口', async () => {
+    const forms = [planToForm(plus, REGIONS), planToForm(credit('credit250', 250), REGIONS)]
+    const html = await render(PaySubscriptionPlans, { modelValue: forms, builtin })
+    expect(html).toContain('data-testid="builtin-plus-PH"')
+    expect(html).toContain('data-testid="builtin-plus-US"')
+    expect(html).not.toContain('data-testid="builtin-plus-JP"')
+    expect(html).toContain('恢复内置价格')
+    expect(html).toContain('美国、菲律宾的预期金额、最低金额、上限已按官方价格内置（可改）；其他地区要自己填。')
+    const none = await render(PaySubscriptionPlans, { modelValue: forms })
+    expect(none).not.toContain('恢复内置价格')
   })
 
   it('点数表格有最低金额列', async () => {

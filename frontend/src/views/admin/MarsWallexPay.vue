@@ -130,8 +130,8 @@
         <el-tab-pane label="付款配置" name="config">
           <el-alert v-if="config?.lease_warning" type="warning" :closable="false" show-icon class="mb-3" :title="leaseWarningText" />
           <div class="space-y-4" v-loading="configLoading">
-            <PaySubscriptionPlans v-model="plansForm" />
-            <PayCreditPlans v-model="plansForm" />
+            <PaySubscriptionPlans v-model="plansForm" :builtin="config?.builtin" />
+            <PayCreditPlans v-model="plansForm" :builtin="config?.builtin" />
             <div class="flex flex-wrap items-center gap-3">
               <span class="text-sm">并发数</span>
               <el-input-number v-model="concurrency" :min="1" :max="maxConcurrency" size="small" />
@@ -321,7 +321,7 @@ import { dialog } from '../../lib/dialog'
 import { errText, fmtTs } from '../../lib/cardpool'
 import {
   STATES, failureText, formToPlan, formatMinor, isTerminal, pageOutcomeLabel, payApi, planToForm, proxyTestText, stateLabel,
-  payBlockReason, type FormPlan, type PlanConf, type ProxyTestResult,
+  payBlockReason, type BuiltinPrices, type FormPlan, type PlanConf, type ProxyTestResult,
 } from '../../lib/pay'
 import { loadRegistry, providerLabel, registry } from '../../lib/provider'
 
@@ -329,7 +329,7 @@ const REGIONS = ['PH', 'US', 'JP', 'CL', 'EG']
 const RENEWAL_STATES = ['pending', 'failed', 'skipped', 'cancelled']
 
 interface PayConfig {
-  plans: PlanConf[]; concurrency: number
+  plans: PlanConf[]; builtin: BuiltinPrices; concurrency: number
   lease_minutes: number; max_pay_minutes: number; max_concurrency: number; lease_warning: boolean
 }
 

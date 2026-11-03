@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  applyCreditDefaultPH, failureLabel, failureText, floorProblem, formatMinor, formToPlan, fromMinor, isTerminal, pageOutcomeLabel, payBlockReason, planToForm,
+  applyBuiltinPrice, failureLabel, failureText, floorProblem, formatMinor, formToPlan, fromMinor, isTerminal, pageOutcomeLabel, payBlockReason, planToForm,
   proxyTestText, stateLabel, toMinor, type PlanConf,
 } from '../pay'
 
@@ -125,14 +125,16 @@ describe('最低金额', () => {
     expect(back.regions.US.floor_minor).toBe(0)
   })
 
-  it('applyCreditDefaultPH 后 PH 行的最低金额等于预期金额', () => {
+  it('applyBuiltinPrice 后 PH 点数行的最低金额低于预期金额，且能通过 floorProblem', () => {
     const credit: PlanConf = { ...plan, key: 'credit250', kind: 'credit', credit_quantity: 250, regions: {} }
     const f = planToForm(credit, REGIONS)
-    expect(applyCreditDefaultPH(f)).toBe(true)
+    const builtin = { credit250: { PH: { currency: 'PHP', expect_minor: 56500, floor_minor: 49437, cap_minor: 63280 } } }
+    expect(applyBuiltinPrice(f, 'PH', builtin)).toBe(true)
     const ph = f.rows.find((r) => r.region === 'PH')!
-    expect(ph.floor).toBe(ph.expect)
-    expect(ph.floor).toBe(565)
-    expect(formToPlan(f).regions.PH.floor_minor).toBe(56500)
+    expect(ph.expect).toBe(565)
+    expect(ph.floor).toBe(494.37)
+    expect(formToPlan(f).regions.PH.floor_minor).toBe(49437)
+    expect(floorProblem(49437, 56500, 63280)).toBe('')
   })
 
   it('floorProblem 与后端保存校验一致', () => {

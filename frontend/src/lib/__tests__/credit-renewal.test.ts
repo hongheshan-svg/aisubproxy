@@ -1,7 +1,7 @@
 // 后台自动付款页：Codex 点数档配置、关闭续费、点数单详情、发起付款选服务商相关的纯函数。
 import { describe, expect, it } from 'vitest'
 import {
-  applyCreditDefaultPH, capBelowExpect, creditDefaultPH, formToPlan, isCreditPlan, payBlockReason, planToForm, type PlanConf,
+  applyBuiltinPrice, capBelowExpect, formToPlan, isCreditPlan, payBlockReason, planToForm, type BuiltinPrices, type PlanConf,
 } from '../pay'
 import {
   buildPayBody, cardSavedLabel, cardSupplyProviders, evidenceNotice, orderKindLabel, payErrorText, pickPayProvider,
@@ -54,13 +54,6 @@ describe('点数档的付款配置', () => {
     },
   }
 
-  it('PH 默认金额与后端 creditDefaultPH 一致：每 250 点 565.00 PHP，上限 112%', () => {
-    expect(creditDefaultPH(250)).toEqual({ currency: 'PHP', expect_minor: 56500, floor_minor: 56500, cap_minor: 63280 })
-    expect(creditDefaultPH(500)).toEqual({ currency: 'PHP', expect_minor: 113000, floor_minor: 113000, cap_minor: 126560 })
-    expect(creditDefaultPH(25000)).toEqual({ currency: 'PHP', expect_minor: 5650000, floor_minor: 5650000, cap_minor: 6328000 })
-    expect(creditDefaultPH(0)).toEqual({ currency: 'PHP', expect_minor: 0, floor_minor: 0, cap_minor: 0 })
-  })
-
   it('点数档没有 ChatGPT 套餐名也能提交；真实付款仍要求启用且金额已配', () => {
     expect(isCreditPlan(creditPlan)).toBe(true)
     expect(payBlockReason(creditPlan, 'PH', true)).toBe('')
@@ -93,17 +86,41 @@ describe('点数档的付款配置', () => {
     expect(back.kind).toBe('')
   })
 
-  it('PH 恢复默认金额：只改 PH 的币种、预期、最低金额和上限，不动启用和注资', () => {
+  // 接口返回的 builtin（与后端 BuiltinRegionPrice 一致）
+  const builtin: BuiltinPrices = {
+    credit1000: {
+      US: { currency: 'USD', expect_minor: 4000, floor_minor: 4000, cap_minor: 4400 },
+      PH: { currency: 'PHP', expect_minor: 226000, floor_minor: 197750, cap_minor: 253120 },
+    },
+    plus: {
+      US: { currency: 'USD', expect_minor: 2000, floor_minor: 2000, cap_minor: 2200 },
+      PH: { currency: 'PHP', expect_minor: 99900, floor_minor: 87412, cap_minor: 112200 },
+    },
+  }
+
+  it('恢复内置价格（点数档）：只改该地区的币种、预期、最低金额和上限，不动启用和注资', () => {
     const form = planToForm({
       ...creditPlan, key: 'credit1000', credit_quantity: 1000,
       regions: { ...creditPlan.regions, PH: { enabled: false, currency: 'USD', expect_minor: 1, floor_minor: 1, cap_minor: 2, fund_cents: 4500 } },
     }, REGIONS)
-    expect(applyCreditDefaultPH(form)).toBe(true)
-    const ph = formToPlan(form).regions.PH
-    expect(ph).toEqual({ enabled: false, currency: 'PHP', expect_minor: 226000, floor_minor: 226000, cap_minor: 253120, fund_cents: 4500 })
-    // 订阅套餐不适用
-    const sub = planToForm({ ...creditPlan, kind: 'subscription' }, REGIONS)
-    expect(applyCreditDefaultPH(sub)).toBe(false)
+    expect(applyBuiltinPrice(form, 'PH', builtin)).toBe(true)
+    const back = formToPlan(form)
+    expect(back.regions.PH).toEqual({ enabled: false, currency: 'PHP', expect_minor: 226000, floor_minor: 197750, cap_minor: 253120, fund_cents: 4500 })
+    expect(back.regions.US).toEqual(creditPlan.regions.US)
+    expect(applyBuiltinPrice(form, 'US', builtin)).toBe(true)
+    expect(formToPlan(form).regions.US).toMatchObject({ currency: 'USD', expect_minor: 4000, floor_minor: 4000, cap_minor: 4400 })
+  })
+
+  it('恢复内置价格（订阅套餐）也能用；没有内置价的地区或套餐返回 false 且不改表单', () => {
+    const sub = planToForm({ ...creditPlan, key: 'plus', kind: 'subscription' }, REGIONS)
+    expect(applyBuiltinPrice(sub, 'PH', builtin)).toBe(true)
+    expect(formToPlan(sub).regions.PH).toMatchObject({ currency: 'PHP', expect_minor: 99900, floor_minor: 87412, cap_minor: 112200 })
+    const before = JSON.stringify(sub)
+    expect(applyBuiltinPrice(sub, 'JP', builtin)).toBe(false)
+    expect(applyBuiltinPrice(planToForm({ ...creditPlan, key: 'go' }, REGIONS), 'PH', builtin)).toBe(false)
+    expect(applyBuiltinPrice(sub, 'PH', undefined)).toBe(false)
+    expect(applyBuiltinPrice(sub, 'XX', builtin)).toBe(false)
+    expect(JSON.stringify(sub)).toBe(before)
   })
 
   it('上限低于预期金额（两者都大于 0）才提示', () => {

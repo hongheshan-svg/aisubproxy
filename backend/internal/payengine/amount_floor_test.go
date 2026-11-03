@@ -70,9 +70,16 @@ func TestDryRunBelowFloorOnlyWarns(t *testing.T) {
 
 func TestDryRunWithoutFloorSkipsCheck(t *testing.T) {
 	h := newHarness(t)
-	saveWith(t, "plus", "PH", RegionConf{Enabled: true, Currency: "PHP", CapMinor: 120000, FundCents: 3000})
+	// 美国、菲律宾的最低金额有内置价，空着会被补上；没有内置价的日本才会出现「未配置最低金额」
+	saveWith(t, "plus", "JP", RegionConf{Enabled: true, Currency: "JPY", CapMinor: 200000, FundCents: 3000})
+	setPage(h, 112000, "¥112,000")
 	h.start(t)
-	o := waitDone(t, h.submit(t, true).OrderNo)
+	req := Request{Provider: testProvider, PlanKey: "plus", Region: "JP", Session: testSession, Source: "admin_test", SourceRef: "admin", DryRun: true}
+	sub, err := h.svc.Submit(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := waitDone(t, sub.OrderNo)
 	if o.State != StatePreviewed {
 		t.Fatalf("试运行应完成预览: %+v", o)
 	}
@@ -90,14 +97,14 @@ func TestDryRunWithoutFloorSkipsCheck(t *testing.T) {
 	}
 }
 
-// 点数单的最低金额同样在注资前把关：出厂最低金额 56500，页面 56499 放弃。
+// 点数单的最低金额同样在注资前把关：内置最低金额 49437（预期 56500 × 7/8），页面 49436 放弃。
 func TestCreditAmountBelowFloorAbortsBeforeFunding(t *testing.T) {
 	h := newCreditHarness(t)
-	setPage(h, 56499, "₱564.99")
+	setPage(h, 49436, "₱494.36")
 	h.start(t)
 	o := waitDone(t, h.submitCredit(t, false, false).OrderNo)
 	assertNotSubmitted(t, o, "amount_below_floor")
-	for _, sub := range []string{"564.99", "565.00", "PHP"} {
+	for _, sub := range []string{"494.36", "494.37", "PHP"} {
 		if !strings.Contains(o.ErrorMessage, sub) {
 			t.Fatalf("说明应含 %q: %s", sub, o.ErrorMessage)
 		}

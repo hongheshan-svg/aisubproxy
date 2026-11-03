@@ -1,9 +1,11 @@
 <template>
   <div class="space-y-4" data-testid="subscription-plans">
+    <p class="text-xs text-muted">{{ BUILTIN_NOTE }}</p>
     <div v-for="p in subscriptionPlans" :key="p.key" class="space-y-2" :data-plan="p.key">
-      <div class="font-semibold">
+      <div class="font-semibold flex flex-wrap items-center gap-2">
         {{ p.label || p.key }}
-        <el-tag size="small" class="ml-2" :type="p.rows.some((r) => r.enabled) ? 'success' : 'info'">已启用 {{ p.rows.filter((r) => r.enabled).length }}/{{ p.rows.length }}</el-tag>
+        <el-tag size="small" :type="p.rows.some((r) => r.enabled) ? 'success' : 'info'">已启用 {{ p.rows.filter((r) => r.enabled).length }}/{{ p.rows.length }}</el-tag>
+        <el-button v-for="r in builtinRegions(p, builtin)" :key="r" size="small" link type="primary" :data-testid="`builtin-${p.key}-${r}`" @click="applyBuiltinPrice(p, r, builtin)">{{ r }} 恢复内置价格</el-button>
       </div>
       <el-table :data="visibleRows(p)" size="small" border>
         <el-table-column label="地区" width="70" prop="region" />
@@ -46,15 +48,20 @@
 <script setup lang="ts">
 // 付款配置里的订阅套餐：每个地区可配预期金额、最低金额、上限和注资。编辑的是父组件的表单（同一份 plansForm），随「保存」一起提交。
 import { computed, reactive } from 'vue'
-import { capBelowExpect, currencyDigits, floorProblem, isCreditPlan, toMinor, type FormPlan, type FormRow } from '../../../lib/pay'
+import {
+  BUILTIN_NOTE, applyBuiltinPrice, builtinRegions, capBelowExpect, currencyDigits, floorProblem, isCreditPlan, toMinor,
+  type BuiltinPrices, type FormPlan, type FormRow,
+} from '../../../lib/pay'
 
 const plans = defineModel<FormPlan[]>({ required: true })
+const props = defineProps<{ builtin?: BuiltinPrices }>()
 const subscriptionPlans = computed(() => plans.value.filter((p) => !isCreditPlan(p)))
 
 // 未启用的地区默认折叠；启用过的行不会因为临时关掉开关而消失
 const showAll = reactive<Record<string, boolean>>({})
 function visibleRows(p: FormPlan) {
-  return p.rows.filter((r) => showAll[p.key] || r.enabled || r.initEnabled)
+  // 有内置价的地区（美国、菲律宾）常显，管理员能直接看到和改内置价
+  return p.rows.filter((r) => showAll[p.key] || r.enabled || r.initEnabled || !!props.builtin?.[p.key]?.[r.region])
 }
 function hiddenCount(p: FormPlan) {
   return p.rows.length - visibleRows(p).length

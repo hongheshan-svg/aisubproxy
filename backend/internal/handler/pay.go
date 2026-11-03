@@ -281,8 +281,23 @@ func payConfigBody(s *payengine.Service) (gin.H, error) {
 		log.Printf("payengine api: 读取卡池策略失败，租约提示按默认策略计算: %v", err)
 	}
 	maxPay := payengine.MaxPayDuration(s.Timeouts())
+	// builtin 只带金额：前端「恢复内置价格」用，不带启用开关和注资
+	type builtinPrice struct {
+		Currency    string `json:"currency"`
+		ExpectMinor int64  `json:"expect_minor"`
+		FloorMinor  int64  `json:"floor_minor"`
+		CapMinor    int64  `json:"cap_minor"`
+	}
+	builtin := map[string]map[string]builtinPrice{}
+	for key, regions := range payengine.BuiltinPrices() {
+		builtin[key] = map[string]builtinPrice{}
+		for r, b := range regions {
+			builtin[key][r] = builtinPrice{Currency: b.Currency, ExpectMinor: b.ExpectMinor, FloorMinor: b.FloorMinor, CapMinor: b.CapMinor}
+		}
+	}
 	return gin.H{
 		"plans":           plans,
+		"builtin":         builtin,
 		"concurrency":     payengine.LoadConcurrency(),
 		"lease_minutes":   pol.LeaseMinutes,
 		"max_pay_minutes": int(math.Ceil(maxPay.Minutes())),

@@ -110,7 +110,7 @@
    - 连续 3 次没能完成启动，就不再接管：退回镜像版本运行，并告警「在线升级的 vX 连续 3 次启动失败，已退回镜像版本 vY」。
    - 数据库兼容性：沿用原生版回滚的前提，即新版本的数据库旧版本可以直接用。
 6. **命令行回滚**：先执行 `docker exec cdk-recharge /app/cdk-recharge rollback`，再执行 `docker restart cdk-recharge`。回滚在容器内作用于 `/app/data/runtime`。
-7. **「版本更新」页**：容器里也能一键升级。页面同时说明另一种方式：换镜像版本，执行 `CDK_VERSION=vX.Y.Z docker compose pull && docker compose up -d`。
+7. **「版本更新」页**：容器里也能一键升级。页面同时说明另一种方式：换镜像版本，执行 `CDK_VERSION=X.Y.Z docker compose pull && docker compose up -d`（镜像标签不带 `v`），或重跑 `deploy/docker-deploy.sh --version X.Y.Z`。
 8. **开关**：沿用 `UPDATE_ENABLED`，设为 0 就关闭在线升级。
 
 **取舍**：数据卷里的程序能被改写，这一点和原生版相同。下载时已经验过签名；能改数据卷的人本来也能改数据库，所以启动时不再重复验签。

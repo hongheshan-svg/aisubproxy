@@ -1,6 +1,26 @@
 <template>
   <div class="space-y-4">
     <AdminPageHeader title="自动付款" description="用 ChatGPT 会话和卡池里的卡完成套餐付款：发起付款、付款订单与付款配置" class="!mb-0" />
+
+    <!-- 付款熔断：暂停期间不派发新付款，必须管理员确认原因后恢复 -->
+    <div v-if="breakerFailed" class="alert alert-warning text-sm" role="alert">
+      付款熔断状态获取失败，无法确认是否暂停。
+      <el-button size="small" link type="primary" @click="loadBreaker">重试</el-button>
+    </div>
+    <div v-else-if="breaker?.paused" class="alert alert-error breaker-banner" role="alert">
+      <div class="font-semibold">付款已暂停，新的付款单不会派发</div>
+      <div class="text-sm mt-1">原因：{{ breakerReason(breaker) || '未知' }}</div>
+      <div v-if="breaker.order_nos?.length" class="text-sm mt-1">
+        触发的单号：
+        <a v-for="no in breaker.order_nos" :key="no" class="mono underline mr-2 cursor-pointer" @click="openFromBanner(no)">{{ no }}</a>
+      </div>
+      <div class="text-xs mt-1 text-muted">
+        连续提交后失败 {{ breaker.submitted_failure_streak }} / {{ breaker.threshold }}；连续填表失败 {{ breaker.fill_failure_streak }} / {{ breaker.threshold }}
+        <template v-if="breaker.tripped_at">；触发于 {{ fmtTs(breaker.tripped_at) }}</template>
+      </div>
+      <p class="text-xs mt-1">恢复前请先看过上面的单据，确认不是同一个原因还在重复发生。恢复不会重发任何付款。</p>
+      <el-button type="danger" size="small" class="mt-2" :loading="resuming" @click="resumeBreaker">恢复付款派发</el-button>
+    </div>
     <div class="card space-y-3">
 
       <el-tabs v-model="tab" @tab-change="onTabChange">
@@ -22,7 +42,15 @@
               <el-select v-model="region" placeholder="地区" style="width: 140px">
                 <el-option v-for="r in regionList" :key="r" :label="r" :value="r" />
               </el-select>
-              <el-switch v-model="dryRun" active-text="试运行（不选卡、不付款）" inactive-text="关闭 = 真实付款" />
+            </div>
+            <div class="space-y-1">
+              <div class="text-sm">运行方式</div>
+              <el-radio-group v-model="mode" size="default">
+                <el-radio-button value="dry_amount">{{ PAY_MODE_LABEL.dry_amount }}</el-radio-button>
+                <el-radio-button value="dry_fill">{{ PAY_MODE_LABEL.dry_fill }}</el-radio-button>
+                <el-radio-button value="real">{{ PAY_MODE_LABEL.real }}</el-radio-button>
+              </el-radio-group>
+              <div class="text-xs" :class="mode === 'real' ? 'text-warn' : 'text-muted'">{{ PAY_MODE_DESC[mode] }}</div>
             </div>
             <div class="text-sm">
               <template v-if="regionConf && regionConf.cap_minor > 0">
@@ -33,9 +61,10 @@
             </div>
             <div v-if="submitBlockReason" class="text-sm text-warn">{{ submitBlockReason }}</div>
             <div>
-              <el-button :type="dryRun ? 'primary' : 'danger'" :loading="submitting" :disabled="!!submitBlockReason || !session.trim()" @click="submit">
-                {{ dryRun ? '试运行' : '真实付款' }}
+              <el-button :type="dryRun ? 'primary' : 'danger'" :loading="submitting" :disabled="!!submitBlockReason || !session.trim() || (mode === 'real' && !!breaker?.paused)" @click="submit">
+                {{ PAY_MODE_LABEL[mode] }}
               </el-button>
+              <span v-if="mode === 'real' && breaker?.paused" class="text-sm text-warn ml-2">付款已暂停，先在上方恢复后才能真实付款</span>
             </div>
           </div>
         </el-tab-pane>
@@ -58,8 +87,11 @@
             <el-table-column label="状态" min-width="120">
               <template #default="{ row }">
                 <el-tag size="small" :type="stateTagType(row.state)">{{ stateLabel(row.state) }}</el-tag>
-                <el-tag v-if="row.dry_run" size="small" type="info" class="ml-1">试运行</el-tag>
+                <el-tag v-if="row.dry_run" size="small" type="info" class="ml-1">{{ orderModeLabel(row) }}</el-tag>
               </template>
+            </el-table-column>
+            <el-table-column label="来源" min-width="100">
+              <template #default="{ row }">{{ sourceLabel(row.source, row.source_ref) }}</template>
             </el-table-column>
             <el-table-column label="金额" min-width="130">
               <template #default="{ row }">{{ row.amount_minor > 0 ? formatMinor(row.amount_minor, row.currency) : '—' }}</template>
@@ -91,7 +123,7 @@
                 {{ p.label || p.key }}
                 <el-tag size="small" class="ml-2" :type="p.rows.some((r: any) => r.enabled) ? 'success' : 'info'">已启用 {{ p.rows.filter((r: any) => r.enabled).length }}/{{ p.rows.length }}</el-tag>
               </div>
-              <el-table :data="p.rows" size="small" border>
+              <el-table :data="visibleRows(p)" size="small" border>
                 <el-table-column label="地区" width="70" prop="region" />
                 <el-table-column label="启用" width="70">
                   <template #default="{ row }"><el-switch v-model="row.enabled" /></template>
@@ -110,6 +142,9 @@
                   </template>
                 </el-table-column>
               </el-table>
+              <el-button v-if="showAllRegions[p.key] || hiddenCount(p) > 0" size="small" link type="primary" @click="showAllRegions[p.key] = !showAllRegions[p.key]">
+                {{ showAllRegions[p.key] ? '收起未启用的地区' : `展开未启用的地区（${hiddenCount(p)} 个）` }}
+              </el-button>
             </div>
             <div class="flex flex-wrap items-center gap-3">
               <span class="text-sm">并发数</span>
@@ -148,6 +183,12 @@
               <template v-if="checkResult.ok">
                 <div class="text-ok">自检通过</div>
                 <div>版本：{{ checkResult.version }}；模式：{{ checkResult.mode }}；耗时：{{ checkResult.elapsed_ms }} 毫秒</div>
+                <div v-if="checkResult.cf_checked === false" class="text-warn">
+                  Cloudflare 检测没有测成：{{ checkResult.cf_note || '原因未知' }}。这不代表没被拦截。
+                </div>
+                <div v-else-if="checkResult.cf_blocked" class="text-err">被 Cloudflare 拦截{{ checkResult.cf_note ? '：' + checkResult.cf_note : '' }}</div>
+                <div v-else-if="checkResult.cf_checked" class="text-ok">Cloudflare 检测通过{{ checkResult.cf_note ? '（' + checkResult.cf_note + '）' : '' }}</div>
+                <div class="text-xs text-muted">自检走服务器直连出口，没有走地区代理；地区代理的出口 IP 要另外确认。</div>
               </template>
               <template v-else>
                 <div class="text-err">自检失败：{{ checkResult.error }}</div>
@@ -168,8 +209,9 @@
           <el-descriptions :column="1" size="small" border label-width="84px">
             <el-descriptions-item label="状态">
               <el-tag size="small" :type="stateTagType(detail.order.state)">{{ stateLabel(detail.order.state) }}</el-tag>
-              <el-tag v-if="detail.order.dry_run" size="small" type="info" class="ml-1">试运行</el-tag>
+              <el-tag v-if="detail.order.dry_run" size="small" type="info" class="ml-1">{{ orderModeLabel(detail.order) }}</el-tag>
             </el-descriptions-item>
+            <el-descriptions-item label="来源">{{ sourceLabel(detail.order.source, detail.order.source_ref) }}</el-descriptions-item>
             <el-descriptions-item label="套餐 / 地区">{{ detail.order.plan_key }} / {{ detail.order.region }}</el-descriptions-item>
             <el-descriptions-item label="金额">
               {{ detail.order.amount_minor > 0 ? formatMinor(detail.order.amount_minor, detail.order.currency) : '—' }}
@@ -182,13 +224,28 @@
             <el-descriptions-item label="创建 / 完成">{{ fmtTs(detail.order.created_at) }} / {{ fmtTs(detail.order.finished_at) }}</el-descriptions-item>
             <el-descriptions-item v-if="detail.order.failure || detail.order.error_message" label="失败原因">
               <div v-if="detail.order.failure">{{ failureText(detail.order.failure, detail.order.resolved_by) }}</div>
-              <div v-if="detail.order.error_message">{{ detail.order.error_message }}</div>
-              <div v-if="detail.order.error_code" class="text-xs text-muted">{{ detail.order.error_code }}</div>
+              <div v-if="payErrorText(detail.order.error_code)" class="font-medium">{{ payErrorText(detail.order.error_code) }}</div>
+              <details v-if="detail.order.error_message || detail.order.error_code" class="text-xs text-muted" :open="!payErrorText(detail.order.error_code)">
+                <summary class="cursor-pointer">原文（排障用）</summary>
+                <div v-if="detail.order.error_message">{{ detail.order.error_message }}</div>
+                <div v-if="detail.order.error_code" class="mono">{{ detail.order.error_code }}</div>
+              </details>
             </el-descriptions-item>
             <el-descriptions-item v-if="detail.order.resolved_by" label="人工定论">
               {{ detail.order.resolved_by }}：{{ detail.order.resolve_note }}
             </el-descriptions-item>
           </el-descriptions>
+
+          <div v-if="fillHits.length">
+            <div class="font-semibold mb-1">填表字段命中结果</div>
+            <p class="text-xs text-muted mb-2">
+              <template v-if="detail.order.dry_run_fill">试运行到填表：只填表，没有点支付，没有动卡池。</template>
+              核对每个字段是否命中了页面上的输入框、值是否一致。
+            </p>
+            <ul class="text-sm space-y-0.5">
+              <li v-for="e in fillHits" :key="e.id" :class="e.level === 'warn' || e.level === 'error' ? 'text-warn' : ''">{{ e.message }}</li>
+            </ul>
+          </div>
 
           <div>
             <div class="font-semibold mb-2">时间线</div>
@@ -235,6 +292,11 @@
 
 <script setup lang="ts">
 import AdminPageHeader from '../../components/AdminPageHeader.vue'
+import { useRouteTab } from '../../lib/useRouteTab'
+import {
+  PAY_MODE_DESC, PAY_MODE_LABEL, breakerReason, buildPayBody, isFillFieldEvent, orderModeLabel, payErrorText, sourceLabel,
+  type Breaker, type PayMode,
+} from '../../lib/payui'
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { authFetch } from '../../lib/api'
 import { dialog } from '../../lib/dialog'
@@ -254,10 +316,10 @@ interface PayConfig {
   plans: PlanConf[]; concurrency: number
   lease_minutes: number; max_pay_minutes: number; max_concurrency: number; lease_warning: boolean
 }
-interface FormRow { region: string; enabled: boolean; currency: string; cap: number | null; fund: number | null }
+interface FormRow { region: string; enabled: boolean; initEnabled: boolean; currency: string; cap: number | null; fund: number | null }
 interface FormPlan { key: string; label: string; chatgpt_plan_name: string; expect_plan_type: string; rows: FormRow[] }
 
-const tab = ref('test')
+const tab = useRouteTab('/ops/marswallex-pay')
 const regionList = REGIONS
 const usd = (cents: number) => (cents / 100).toFixed(2)
 
@@ -288,7 +350,7 @@ function applyConfig(c: PayConfig, syncForm = true) {
     key: p.key, label: p.label, chatgpt_plan_name: p.chatgpt_plan_name, expect_plan_type: p.expect_plan_type,
     rows: REGIONS.map((r) => {
       const rc = p.regions?.[r] || { enabled: false, currency: '', cap_minor: 0, fund_cents: 0 }
-      return { region: r, enabled: rc.enabled, currency: rc.currency, cap: fromMinor(rc.cap_minor, rc.currency), fund: rc.fund_cents / 100 }
+      return { region: r, enabled: rc.enabled, initEnabled: rc.enabled, currency: rc.currency, cap: fromMinor(rc.cap_minor, rc.currency), fund: rc.fund_cents / 100 }
     }),
   }))
   formSnapshot = formState()
@@ -304,6 +366,15 @@ async function loadConfig({ syncForm = true } = {}): Promise<boolean> {
 }
 
 function discardEdits() { loadConfig() }
+
+// 未启用的地区默认折叠：套餐 × 5 个地区太长，运营日常只看已启用的。展开后再启用，启用过的行不会因为临时关掉开关而消失。
+const showAllRegions = reactive<Record<string, boolean>>({})
+function visibleRows(p: FormPlan) {
+  return p.rows.filter((r) => showAllRegions[p.key] || r.enabled || r.initEnabled)
+}
+function hiddenCount(p: FormPlan) {
+  return p.rows.length - visibleRows(p).length
+}
 
 async function saveConfig() {
   const plans = plansForm.value.map((p) => ({
@@ -364,7 +435,7 @@ async function clearProxy(r: string) {
 }
 
 // ---------- 浏览器自检 ----------
-interface CheckResult { ok: boolean; version: string; mode: string; elapsed_ms: number; error: string; install_hint: string }
+interface CheckResult { ok: boolean; version: string; mode: string; elapsed_ms: number; error: string; install_hint: string; cf_checked?: boolean; cf_blocked?: boolean; cf_note?: string }
 const checking = ref(false)
 const checkResult = ref<CheckResult | null>(null)
 
@@ -383,7 +454,8 @@ async function runCheck() {
 const session = ref('')
 const planKey = ref('')
 const region = ref('')
-const dryRun = ref(true)
+const mode = ref<PayMode>('dry_amount')
+const dryRun = computed(() => mode.value !== 'real')
 const submitting = ref(false)
 
 const planConf = computed(() => config.value?.plans.find((p) => p.key === planKey.value))
@@ -400,13 +472,17 @@ async function submit() {
   submitting.value = true // 覆盖确认框期间，防止重复点击
   try {
     // 快照：确认框显示和请求体都只用这些值，期间改了表单也不影响
-    const dry = dryRun.value
+    const m = mode.value
     const plan = planKey.value
     const reg = region.value
     const sess = session.value.trim()
-    if (!dry) {
-      // 动钱前以最新配置为准；不覆盖配置页未保存的编辑
+    if (m === 'real') {
+      // 动钱前以最新配置和熔断状态为准；不覆盖配置页未保存的编辑
       if (!(await loadConfig({ syncForm: false }))) return
+      if (!(await loadBreaker()) || breaker.value?.paused) {
+        dialog.toast(breakerFailed.value ? '付款熔断状态获取失败，不能真实付款' : '付款已暂停，不能真实付款', 'warn')
+        return
+      }
       // 按快照判断，不读当前表单：等待期间改了下拉或开关也不影响这次提交
       const pc = config.value?.plans.find((p) => p.key === plan)
       const blocked = payBlockReason(pc, reg, false)
@@ -419,13 +495,17 @@ async function submit() {
         { title: '确认付款', okText: '确认付款', danger: true },
       )
       if (!ok) return
+    } else if (m === 'dry_fill') {
+      const ok = await dialog.confirm(
+        '试运行到填表会真的打开支付页并填入测试卡信息，但绝不点支付、不碰卡池，不会扣款。\n确认开始？',
+        { title: '试运行到填表', okText: '开始试运行' },
+      )
+      if (!ok) return
     }
-    const r = await payApi<{ order_no: string }>('/orders', 'POST', {
-      plan_key: plan, region: reg, session: sess, dry_run: dry,
-    })
+    const r = await payApi<{ order_no: string }>('/orders', 'POST', buildPayBody(m, plan, reg, sess))
     if (!r.ok) { dialog.toast(errText(r, '提交失败'), 'err'); return } // 失败保留会话，方便改完再试
     session.value = ''
-    dialog.toast(dry ? '试运行已受理' : '付款已受理')
+    dialog.toast(m === 'real' ? '付款已受理' : '试运行已受理')
     tab.value = 'orders'
     page.value = 1
     await loadOrders()
@@ -472,6 +552,49 @@ function onTabChange(name: string | number) {
   if (name === 'config') { loadConfig({ syncForm: !formDirty.value }); loadProxies() }
 }
 
+// ---------- 付款熔断 ----------
+const breaker = ref<Breaker | null>(null)
+const breakerFailed = ref(false)
+const resuming = ref(false)
+
+// 返回是否读到了状态；读不到不能当作「没暂停」。
+async function loadBreaker(): Promise<boolean> {
+  const r = await payApi<Breaker>('/breaker')
+  if (!r.ok) { breakerFailed.value = true; return false }
+  breakerFailed.value = false
+  breaker.value = { ...r.data, order_nos: r.data.order_nos || [] }
+  return true
+}
+
+async function resumeBreaker() {
+  const b = breaker.value
+  if (!b || resuming.value) return
+  const note = await dialog.prompt(
+    `请填写恢复备注（必填）：说明你看过哪几单、为什么可以恢复。\n触发单号：${b.order_nos.join('、') || '—'}`,
+    { title: '恢复付款派发', placeholder: '例如：已核对 PO…，是代理出口 IP 被拦，已更换', okText: '下一步' },
+  )
+  if (note === null || note === undefined || note === false) return
+  const text = String(note).trim()
+  if (!text) { dialog.toast('恢复备注不能为空', 'warn'); return }
+  const ok = await dialog.confirm(
+    `确认恢复付款派发？\n原因：${breakerReason(b)}\n恢复后排队中的真实付款会继续派发，可能再次动用卡池资金。\n备注：${text}`,
+    { title: '恢复付款派发', okText: '确认恢复', danger: true },
+  )
+  if (!ok) return
+  resuming.value = true
+  const r = await payApi<Breaker>('/breaker/resume', 'POST', { note: text })
+  resuming.value = false
+  if (r.status === 409) dialog.toast(errText(r, '当前没有暂停'), 'warn')
+  else if (!r.ok) { dialog.toast(errText(r, '恢复失败'), 'err'); return }
+  else dialog.toast('已恢复付款派发')
+  loadBreaker()
+}
+
+function openFromBanner(no: string) {
+  tab.value = 'orders'
+  openDetail(no)
+}
+
 // ---------- 详情、轮询、截图 ----------
 interface Detail { order: any; events: any[]; evidence: any[]; evidence_error?: string }
 const detailOpen = ref(false)
@@ -479,6 +602,7 @@ const detailNo = ref('')
 const detail = ref<Detail | null>(null)
 const detailLoading = ref(false)
 const resolveNote = ref('')
+const fillHits = computed(() => (detail.value?.events || []).filter((e: any) => isFillFieldEvent(e.message)))
 const resolving = ref(false)
 let pollTimer: ReturnType<typeof setTimeout> | null = null
 let seq = 0 // 切换单据后丢弃旧请求的返回
@@ -580,8 +704,16 @@ async function resolve(result: 'succeeded' | 'failed') {
   loadOrders()
 }
 
-onMounted(loadConfig)
+onMounted(async () => {
+  await loadConfig()
+  loadBreaker()
+  // 刷新后从 ?tab= 直接落在订单或配置标签时，加载该标签的数据
+  if (tab.value !== 'test') onTabChange(tab.value)
+  breakerTimer = setInterval(loadBreaker, 30000) // 熔断可能在页面开着时触发
+})
+let breakerTimer: ReturnType<typeof setInterval> | null = null
 onUnmounted(() => {
+  if (breakerTimer) clearInterval(breakerTimer)
   stopPoll()
   seq++
   if (shotUrl.value) URL.revokeObjectURL(shotUrl.value)

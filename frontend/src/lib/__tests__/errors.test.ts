@@ -40,4 +40,12 @@ describe('审计字典', () => {
     expect(auditDetailLabel('setup completed')).toBe('安装完成')
     expect(auditDetailLabel('x')).toBe('x')
   })
+
+  it('付款单错误码翻译，原文保留', () => {
+    const m = mapApiError('cf_challenge')
+    expect(m.mapped).toBe(true)
+    expect(m.text).toContain('Cloudflare')
+    expect(m.raw).toBe('cf_challenge')
+    expect(mapApiError('some_unknown_code').mapped).toBe(false)
+  })
 })

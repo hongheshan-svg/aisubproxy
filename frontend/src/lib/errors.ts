@@ -1,6 +1,8 @@
 // 把后端返回的原始错误码/英文键名翻译成管理员看得懂的话。
 // 原始文本一定要保留（raw），排障时从详情/悬浮提示里看。
 
+import { payErrorText } from './payui'
+
 export interface MappedError {
   /** 给人看的文案；未识别时等于原文 */
   text: string
@@ -37,6 +39,11 @@ const RULES: Rule[] = [
 
 export function mapApiError(input: unknown, fallback = ''): MappedError {
   const raw = String((input as any)?.message ?? input ?? '').trim() || fallback
+  // 付款单错误码（cf_challenge、amount_changed 等）单独出现时翻译成人话，原文仍在 raw 里
+  if (/^[a-z][a-z0-9_]*$/.test(raw)) {
+    const t = payErrorText(raw)
+    if (t) return { text: t, raw, mapped: true }
+  }
   for (const r of RULES) {
     if (r.test.test(raw)) return { text: r.text, raw, mapped: true, config: r.config, link: r.link }
   }

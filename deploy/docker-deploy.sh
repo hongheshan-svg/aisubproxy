@@ -1,231 +1,217 @@
 #!/usr/bin/env bash
-# CDK Recharge System — Docker 一键部署
+# CDK Recharge System — Docker 一键部署 / 升级
+#
+# 不再克隆源码、不在服务器上构建：按版本从 GitHub 下载该标签下的 docker-compose.yml、
+# deploy/chrome-seccomp.json、Caddyfile 模板，然后 docker compose pull && up -d。
+# 容器内程序以 root 运行，启动 Chrome 时降权到 cdk-chrome 用户并保留沙箱。
+#
 # 用法:
-#   curl -fsSL <raw-url>/deploy/docker-deploy.sh | bash -s -- --domain gpt66.cc
+#   curl -fsSL https://raw.githubusercontent.com/hongheshan-svg/aisubproxy/master/deploy/docker-deploy.sh | bash -s -- --domain gpt66.cc
 #   或本地: ./deploy/docker-deploy.sh --domain gpt66.cc
+#
+# 权限：安装 Docker 需要 root；Docker 已装好时，docker 组里的用户也可运行本脚本
+# （安装目录需对该用户可写，默认 /opt/cdk-recharge：sudo install -d -o "$USER" /opt/cdk-recharge）。
+#
+# 环境变量:
+#   CDK_VERSION   要部署的版本（如 v1.6.0 或 1.6.0）；不设则取最新 Release
+#   CDK_GITHUB_REPO  发布仓库（默认 hongheshan-svg/aisubproxy）
 set -euo pipefail
 
+REPO="${CDK_GITHUB_REPO:-hongheshan-svg/aisubproxy}"
+IMAGE_REPO="ghcr.io/hongheshan-svg/aisubproxy"
 DOMAIN=""
-REPO_URL="https://github.com/hongheshan-svg/aisubproxy.git"
 INSTALL_DIR="/opt/cdk-recharge"
+WANT_VERSION="${CDK_VERSION:-}"
 
 usage() {
   echo "用法: $0 [选项]"
-  echo "  --domain DOMAIN    绑定域名（如 gpt66.cc），不传则用 :80 纯 IP 访问"
+  echo "  --domain DOMAIN    绑定域名（如 gpt66.cc）；不传则保持现有 Caddyfile，没有时用 :80 纯 IP 访问"
   echo "  --dir DIR          安装目录（默认 /opt/cdk-recharge）"
-  echo "  --skip-build       跳过 Docker 构建（已有镜像时）"
+  echo "  --version VER      部署指定版本（如 v1.6.0），默认最新 Release；也可用环境变量 CDK_VERSION"
+  echo "  --skip-build       已无意义（不再在服务器上构建），忽略"
   exit 1
 }
 
-SKIP_BUILD=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --domain) DOMAIN="$2"; shift 2 ;;
-    --dir)    INSTALL_DIR="$2"; shift 2 ;;
-    --skip-build) SKIP_BUILD=1; shift ;;
+    --domain) DOMAIN="${2:?--domain 需要参数}"; shift 2 ;;
+    --dir)    INSTALL_DIR="${2:?--dir 需要参数}"; shift 2 ;;
+    --version) WANT_VERSION="${2:?--version 需要参数}"; shift 2 ;;
+    --skip-build) echo "提示: --skip-build 已无意义（现在直接拉取发布好的镜像，不在服务器上构建），已忽略"; shift ;;
     -h|--help) usage ;;
     *) echo "未知参数: $1"; usage ;;
   esac
 done
 
+log() { printf '%s\n' "$*"; }
+die() { printf '错误：%s\n' "$*" >&2; exit 1; }
+
+# env_value <文件> <键>：取最后一行 键=值 的值，去掉首尾空白（含 \r）与成对引号
+env_value() {
+  local v re_dq='^"(.*)"$' re_sq="^'(.*)'$"
+  [[ -f "$1" ]] || return 0
+  v="$(grep -E "^$2=" "$1" | tail -n 1 | cut -d= -f2- | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' || true)"
+  if [[ "$v" =~ $re_dq || "$v" =~ $re_sq ]]; then v="${BASH_REMATCH[1]}"; fi
+  printf '%s' "$v"
+}
+
+# set_env_value <文件> <键> <值>：已有该键就原地替换，否则追加；权限保持 600，密钥不出现在进程参数里
+set_env_value() {
+  local f="$1" k="$2" tmp
+  tmp="$(mktemp "$f.XXXXXX")"
+  if grep -q "^$k=" "$f"; then
+    K="$k" V="$3" awk '
+      index($0, ENVIRON["K"] "=") == 1 { print ENVIRON["K"] "=" ENVIRON["V"]; next }
+      { print }
+    ' "$f" > "$tmp"
+  else
+    cat "$f" > "$tmp"
+    if [[ -s "$tmp" && -n "$(tail -c 1 "$tmp")" ]]; then echo >> "$tmp"; fi
+    printf '%s=%s\n' "$k" "$3" >> "$tmp"
+  fi
+  chmod 600 "$tmp"
+  mv "$tmp" "$f"
+}
+
 echo "=========================================="
 echo "  CDK Recharge System — Docker 部署"
 echo "=========================================="
-echo "  域名: ${DOMAIN:-'(无，HTTP 模式)'}"
+echo "  域名: ${DOMAIN:-'(未指定)'}"
 echo "  目录: ${INSTALL_DIR}"
 echo
 
-# 1) 检查 Docker
+# 1) Docker（只有安装 Docker 需要 root）
 if ! command -v docker &>/dev/null; then
+  [[ $EUID -eq 0 ]] || die "这台机器没有安装 Docker，安装 Docker 需要 root：请先用 root 或 sudo 运行一次本脚本"
   echo "[1/6] 安装 Docker..."
   curl -fsSL https://get.docker.com | sh
   systemctl enable --now docker
+  if [[ -n "${SUDO_USER:-}" && "$SUDO_USER" != root ]]; then
+    usermod -aG docker "$SUDO_USER" && echo "  已把 ${SUDO_USER} 加入 docker 组（重新登录后生效，之后无需 sudo）"
+  fi
 else
   echo "[1/6] Docker 已安装 ✓"
 fi
 
-# docker compose (v2 plugin)
 if docker compose version &>/dev/null; then
   DC="docker compose"
 elif command -v docker-compose &>/dev/null; then
   DC="docker-compose"
 else
+  [[ $EUID -eq 0 ]] || die "缺少 docker compose 插件，安装它需要 root"
   echo "[1/6] 安装 docker-compose-plugin..."
-  apt-get update -qq && apt-get install -y -qq docker-compose-plugin 2>/dev/null \
+  { apt-get update -qq && apt-get install -y -qq docker-compose-plugin; } 2>/dev/null \
     || yum install -y docker-compose-plugin 2>/dev/null \
-    || { echo "请手动安装 docker compose plugin"; exit 1; }
+    || die "请手动安装 docker compose plugin"
   DC="docker compose"
 fi
 echo "  compose: $DC ✓"
+docker info >/dev/null 2>&1 || die "当前用户无权访问 Docker（需要 root 或 docker 组成员）"
 
-# 2) 拉取/更新代码
-if [[ -d "$INSTALL_DIR/.git" ]]; then
-  echo "[2/6] 更新代码..."
-  cd "$INSTALL_DIR"
-  # 老安装目录的 origin 可能还指向旧仓库，拉取前先改成当前仓库
-  git remote set-url origin "$REPO_URL"
-  git pull --ff-only origin master 2>/dev/null || git pull origin master
+# 2) 确定版本
+if [[ -z "$WANT_VERSION" || "$WANT_VERSION" == latest ]]; then
+  echo "[2/6] 查询最新 Release..."
+  TAG="$(curl -fsSL -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$REPO/releases/latest" \
+    | grep -o '"tag_name": *"[^"]*"' | head -n1 | sed 's/.*"\([^"]*\)"$/\1/' || true)"
+  [[ -n "$TAG" ]] || die "查询最新 Release 失败；可用 --version vX.Y.Z 指定版本"
 else
-  echo "[2/6] 克隆代码..."
-  git clone "$REPO_URL" "$INSTALL_DIR"
-  cd "$INSTALL_DIR"
+  TAG="v${WANT_VERSION#v}"
 fi
+IMAGE_TAG="${TAG#v}"   # 镜像标签不带 v
+IMAGE="${IMAGE_REPO}:${IMAGE_TAG}"
+RAW="https://raw.githubusercontent.com/$REPO/$TAG"
+echo "[2/6] 版本 ${TAG}（镜像 ${IMAGE}）"
 
-# 3) 生成 JWT Secret（首次）
-JWT_FILE="$INSTALL_DIR/.jwt_secret"
-if [[ ! -f "$JWT_FILE" ]]; then
-  JWT_SECRET=$(openssl rand -hex 32)
-  echo "$JWT_SECRET" > "$JWT_FILE"
-  chmod 600 "$JWT_FILE"
-  echo "[3/6] 生成 JWT Secret ✓"
-else
-  JWT_SECRET=$(cat "$JWT_FILE")
-  echo "[3/6] JWT Secret 已存在 ✓"
+# 3) 下载该标签下的部署文件
+if [[ ! -d "$INSTALL_DIR" ]]; then
+  mkdir -p "$INSTALL_DIR" 2>/dev/null \
+    || die "无法创建 ${INSTALL_DIR}；请先执行：sudo install -d -o \"\$USER\" ${INSTALL_DIR}"
 fi
-
-# 3.5) APP_MASTER_KEY（用于加密 MarsWallex 等密钥；丢失或更换后已保存的密钥无法解密）
-# 容器实际使用 .env 中的值：.env 已有非空 APP_MASTER_KEY 时一律沿用，绝不另生成一个不同的。
-MASTER_KEY_FILE="$INSTALL_DIR/.master_key"
-ENV_FILE="$INSTALL_DIR/.env"
-ENV_MASTER_KEY=""
-if [[ -f "$ENV_FILE" ]]; then
-  # 取最后一行 APP_MASTER_KEY= 的值，去掉首尾空白（含 \r）与成对引号
-  ENV_MASTER_KEY=$(grep -E '^APP_MASTER_KEY=' "$ENV_FILE" | tail -n 1 | cut -d= -f2- \
-    | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' || true)
-  re_dq='^"(.*)"$'
-  re_sq="^'(.*)'$"
-  if [[ "$ENV_MASTER_KEY" =~ $re_dq || "$ENV_MASTER_KEY" =~ $re_sq ]]; then
-    ENV_MASTER_KEY="${BASH_REMATCH[1]}"
-  fi
-fi
-write_master_key_file() {
-  # umask 077：文件从创建起就只有属主可读，没有全员可读的窗口
-  (umask 077 && printf '%s\n' "$1" > "$MASTER_KEY_FILE")
-  chmod 600 "$MASTER_KEY_FILE"
-}
-if [[ -n "$ENV_MASTER_KEY" ]]; then
-  APP_MASTER_KEY="$ENV_MASTER_KEY"
-  if [[ ! -f "$MASTER_KEY_FILE" ]]; then
-    write_master_key_file "$APP_MASTER_KEY"
-    echo "[3/6] 沿用 .env 中的 APP_MASTER_KEY，已备份到 .master_key ✓"
-  else
-    if [[ "$(cat "$MASTER_KEY_FILE")" != "$APP_MASTER_KEY" ]]; then
-      echo "  警告: .master_key 与 .env 中的 APP_MASTER_KEY 不一致；容器使用 .env 中的值，请人工核对"
-    fi
-    echo "[3/6] APP_MASTER_KEY 已存在 ✓"
-  fi
-elif [[ -f "$MASTER_KEY_FILE" ]]; then
-  APP_MASTER_KEY=$(cat "$MASTER_KEY_FILE")
-  echo "[3/6] APP_MASTER_KEY 已存在 ✓"
-else
-  APP_MASTER_KEY=$(openssl rand -base64 32)
-  write_master_key_file "$APP_MASTER_KEY"
-  echo "[3/6] 生成 APP_MASTER_KEY ✓"
-fi
-
-# 4) 写入 .env（docker compose 自动读取）
-if [[ ! -f "$ENV_FILE" ]]; then
-  (
-    umask 077
-    cat > "$ENV_FILE" <<EOF
-JWT_SECRET=${JWT_SECRET}
-APP_MASTER_KEY=${APP_MASTER_KEY}
-INSTALL_MODE=wizard
-EOF
-  )
-  chmod 600 "$ENV_FILE"
-  echo "[4/6] 创建 .env ✓"
-else
-  # 追加前确保文件以换行结尾，避免新行与最后一行粘连
-  if [[ -s "$ENV_FILE" && -n "$(tail -c 1 "$ENV_FILE")" ]]; then
-    echo >> "$ENV_FILE"
-  fi
-  # 确保 JWT_SECRET 存在
-  if ! grep -q "^JWT_SECRET=" "$ENV_FILE"; then
-    echo "JWT_SECRET=${JWT_SECRET}" >> "$ENV_FILE"
-  fi
-  # 确保 APP_MASTER_KEY 存在且非空：空的 APP_MASTER_KEY= 行就地填入，没有该行则追加
-  if [[ -z "$ENV_MASTER_KEY" ]]; then
-    if grep -q "^APP_MASTER_KEY=" "$ENV_FILE"; then
-      ENV_TMP=$(mktemp "$ENV_FILE.XXXXXX")
-      # 用环境变量传值，密钥不出现在进程参数里
-      K="$APP_MASTER_KEY" awk '
-        /^APP_MASTER_KEY=/ {
-          v = substr($0, 16)
-          gsub(/^[ \t\r]+|[ \t\r]+$/, "", v)
-          if (v == "" || v == "\"\"" || v == "\047\047") { print "APP_MASTER_KEY=" ENVIRON["K"]; next }
-        }
-        { print }
-      ' "$ENV_FILE" > "$ENV_TMP"
-      chmod 600 "$ENV_TMP"
-      mv "$ENV_TMP" "$ENV_FILE"
-      echo "  .env 中的 APP_MASTER_KEY 为空，已填入 ✓"
-    else
-      echo "APP_MASTER_KEY=${APP_MASTER_KEY}" >> "$ENV_FILE"
-    fi
-  fi
-  echo "[4/6] .env 已存在 ✓"
-fi
-
-# 5) 配置 Caddyfile
-echo "[5/6] 配置 Caddy..."
-if [[ -n "$DOMAIN" ]]; then
-  cat > "$INSTALL_DIR/Caddyfile" <<CADDY
-${DOMAIN} {
-    encode zstd gzip
-
-    @blocked path /.env* /app.env* /.git/* /data/*
-    handle @blocked {
-        respond 404
-    }
-
-    reverse_proxy cdk:8080 {
-        header_up X-Real-IP {client_ip}
-        header_up X-Forwarded-Proto {scheme}
-        header_up X-Forwarded-Host {host}
-    }
-}
-CADDY
-  echo "  域名: ${DOMAIN} (自动 HTTPS) ✓"
-else
-  cat > "$INSTALL_DIR/Caddyfile" <<CADDY
-:80 {
-    encode zstd gzip
-
-    @blocked path /.env* /app.env* /.git/* /data/*
-    handle @blocked {
-        respond 404
-    }
-
-    reverse_proxy cdk:8080 {
-        header_up X-Real-IP {client_ip}
-        header_up X-Forwarded-Proto {scheme}
-        header_up X-Forwarded-Host {host}
-    }
-}
-CADDY
-  echo "  HTTP 模式 (:80) ✓"
-fi
-
-# docker-compose.yml 注入 JWT_SECRET
-# docker compose 会自动从 .env 读取变量，但我们需要把它传给容器
-# 修改 docker-compose.yml 中的 environment 部分添加 JWT_SECRET
-# 通过 .env 文件 + docker-compose env_file 实现
-if ! grep -q "env_file" "$INSTALL_DIR/docker-compose.yml" 2>/dev/null; then
-  sed -i '/environment:/i\    env_file:\n      - .env' "$INSTALL_DIR/docker-compose.yml" 2>/dev/null || true
-fi
-
-# 6) 构建 & 启动
-echo "[6/6] 构建并启动容器..."
+[[ -w "$INSTALL_DIR" ]] || die "${INSTALL_DIR} 对当前用户不可写；请执行：sudo chown \"\$USER\" ${INSTALL_DIR}"
+mkdir -p "$INSTALL_DIR/deploy"
 cd "$INSTALL_DIR"
-if [[ "$SKIP_BUILD" -eq 0 ]]; then
-  $DC build --no-cache cdk
+
+fetch() { # fetch <相对路径> <目标>
+  local tmp
+  tmp="$(mktemp "$2.XXXXXX")"
+  if ! curl -fsSL -o "$tmp" "$RAW/$1"; then
+    rm -f "$tmp"
+    die "下载 $RAW/$1 失败"
+  fi
+  mv "$tmp" "$2"
+}
+
+if [[ -f docker-compose.yml ]]; then
+  # 老安装目录是 git 克隆、compose 里是 build: .；保留一份备份，方便找回自己的改动
+  cp -f docker-compose.yml docker-compose.yml.bak
 fi
+fetch docker-compose.yml docker-compose.yml
+fetch deploy/chrome-seccomp.json deploy/chrome-seccomp.json
+CADDY_TMPL="$(mktemp)"
+trap 'rm -f "$CADDY_TMPL"' EXIT
+curl -fsSL -o "$CADDY_TMPL" "$RAW/deploy/Caddyfile.docker.tmpl" || die "下载 Caddyfile 模板失败"
+echo "[3/6] 已下载 docker-compose.yml、chrome-seccomp.json、Caddyfile 模板 ✓"
+
+# 4) .env：已有的不覆盖，只补缺失的密钥
+ENV_FILE="$INSTALL_DIR/.env"
+if [[ ! -f "$ENV_FILE" ]]; then
+  (umask 077 && : > "$ENV_FILE")
+  chmod 600 "$ENV_FILE"
+  echo "INSTALL_MODE=wizard" >> "$ENV_FILE"
+  created=1
+else
+  created=0
+fi
+if [[ -z "$(env_value "$ENV_FILE" JWT_SECRET)" ]]; then
+  # 兼容老安装留下的 .jwt_secret
+  old_jwt=""
+  [[ -f "$INSTALL_DIR/.jwt_secret" ]] && old_jwt="$(tr -d ' \r\n' < "$INSTALL_DIR/.jwt_secret")"
+  set_env_value "$ENV_FILE" JWT_SECRET "${old_jwt:-$(openssl rand -hex 32)}"
+  echo "  .env 补上 JWT_SECRET ✓"
+fi
+if [[ -z "$(env_value "$ENV_FILE" APP_MASTER_KEY)" ]]; then
+  # 丢失或更换 APP_MASTER_KEY 后，已保存的 MarsWallex 密钥无法解密：老安装的 .master_key 优先沿用
+  old_key=""
+  [[ -f "$INSTALL_DIR/.master_key" ]] && old_key="$(tr -d '\r\n' < "$INSTALL_DIR/.master_key")"
+  set_env_value "$ENV_FILE" APP_MASTER_KEY "${old_key:-$(openssl rand -base64 32)}"
+  echo "  .env 补上 APP_MASTER_KEY ✓（请备份 ${ENV_FILE}）"
+fi
+set_env_value "$ENV_FILE" CDK_VERSION "$IMAGE_TAG"
+chmod 600 "$ENV_FILE"
+if [[ $created -eq 1 ]]; then echo "[4/6] 已创建 .env（权限 600）✓"; else echo "[4/6] .env 已存在，未覆盖 ✓"; fi
+
+# 5) Caddyfile：给了域名就按域名重新生成；没给域名时保留已有的
+if [[ -n "$DOMAIN" ]]; then
+  sed "s|__SITE_ADDRESS__|${DOMAIN}|" "$CADDY_TMPL" > Caddyfile
+  echo "[5/6] Caddy: ${DOMAIN}（自动 HTTPS）✓"
+elif [[ -f Caddyfile ]]; then
+  echo "[5/6] Caddy: 沿用现有 Caddyfile ✓"
+else
+  sed "s|__SITE_ADDRESS__|:80|" "$CADDY_TMPL" > Caddyfile
+  echo "[5/6] Caddy: HTTP 模式 (:80) ✓"
+fi
+
+# 6) 拉取、迁移旧数据卷所有者、启动
+echo "[6/6] 拉取镜像并启动..."
+$DC pull
+
 $DC up -d
+
+echo "  等待健康检查..."
+healthy=0
+for _ in $(seq 1 60); do
+  st="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' cdk-recharge 2>/dev/null || echo missing)"
+  if [[ "$st" == healthy ]]; then healthy=1; break; fi
+  sleep 2
+done
+if [[ $healthy -ne 1 ]]; then
+  $DC logs --tail 40 cdk || true
+  die "2 分钟内容器未通过健康检查（状态：${st:-?}）。查看日志：cd ${INSTALL_DIR} && ${DC} logs -f cdk"
+fi
 
 echo
 echo "=========================================="
-echo "  部署完成！"
+echo "  部署完成！版本 ${TAG}"
 echo "=========================================="
 if [[ -n "$DOMAIN" ]]; then
   echo "  访问: https://${DOMAIN}"
@@ -234,11 +220,13 @@ else
   echo "  访问: http://$(curl -s ifconfig.me 2>/dev/null || echo '<本机IP>'):80"
 fi
 echo "  首次打开进入安装向导，设置管理员账号和卡台 API Key"
+echo "  请备份 ${ENV_FILE}（其中 APP_MASTER_KEY 丢失后，已保存的 MarsWallex 密钥无法解密）"
 echo
 echo "  常用命令:"
 echo "    cd ${INSTALL_DIR}"
-echo "    $DC logs -f          # 查看日志"
-echo "    $DC restart           # 重启"
-echo "    $DC down              # 停止"
-echo "    $DC up -d --build     # 更新后重建"
+echo "    $DC logs -f                       # 查看日志"
+echo "    $DC restart                       # 重启"
+echo "    $DC down                          # 停止"
+echo "    升级: 重跑本脚本，或 CDK_VERSION=X.Y.Z $DC pull && CDK_VERSION=X.Y.Z $DC up -d"
+echo "    docker exec cdk-recharge /app/cdk-recharge rollback && docker restart cdk-recharge   # 回滚在线升级"
 echo

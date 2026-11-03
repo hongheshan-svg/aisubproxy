@@ -4,7 +4,7 @@
     <p class="text-sm text-muted mt-0.5 mb-3">
       代理凭密码进入隐藏页，将<strong>失败且未扣款</strong>的 CDK 换一张新码。
     </p>
-    <el-form label-position="top" @submit.prevent>
+    <el-form label-position="top" class="max-w-3xl" @submit.prevent>
       <el-form-item label="代理换码密码">
         <el-input
           v-model="password"
@@ -14,15 +14,14 @@
           :placeholder="pwHint"
           autocomplete="new-password"
         />
-        <p class="text-xs text-subtle mt-1">
+        <p class="w-full text-xs text-subtle mt-1">
           留空保存=不修改；
-          <el-tag v-if="configured" size="small" type="success" effect="plain">已设置</el-tag>
-          <el-tag v-else size="small" type="info" effect="plain">未设置</el-tag>
+          <el-tag size="small" :type="configured ? 'success' : 'info'" effect="plain">{{ configured ? '已设置' : '未设置' }}</el-tag>
         </p>
       </el-form-item>
       <el-form-item label="每日换码上限（张）">
         <el-input-number v-model="swapLimit" :min="1" :max="100000" :step="1" :precision="0" data-field="agent_swap_daily_limit" />
-        <p class="text-xs text-subtle mt-1">
+        <p class="w-full text-xs text-subtle mt-1">
           同一个换码密码每个北京日最多换这么多张，必须大于 0。每换一张都会向卡台买一张新码，调高前先想清楚成本。
         </p>
       </el-form-item>
@@ -32,7 +31,7 @@
           <el-button type="primary" @click="copyText(agentSwapUrl)">复制链接</el-button>
           <el-button @click="openSwap">打开</el-button>
         </div>
-        <p class="text-xs text-subtle mt-1">
+        <p class="w-full text-xs text-subtle mt-1">
           路径固定 <code class="mono">/partner/swap</code>（短链 <code class="mono">/a/swap</code>）。导航栏不展示，把完整链接 + 密码发给代理即可。
         </p>
       </el-form-item>

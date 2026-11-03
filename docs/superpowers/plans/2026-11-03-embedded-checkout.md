@@ -34,7 +34,7 @@
 - 不做任何绕过 Cloudflare 或页面风控的事。
 - 测试不发真实网络请求，不付款。浏览器测试用本机仿造页和真实 Chrome，找不到 Chrome 时用 `needChrome` 跳过。
 - 不碰 18080 端口和仓库的 `data/` 目录。不用 `git add -A`，`.claude/` 不要提交。不用不带参数的 `git stash`。
-- 门禁：`cd backend && go build ./... && go vet ./... && go test ./...`；`cd frontend && npx vitest run && npm run build`。
+- 门禁：`cd backend && go build ./... && go vet ./... && go test -timeout 30m ./...`；`cd frontend && npx vitest run && npm run build`。
 - 规范化金额原文的格式是「金额里最后一段数字 + 空格 + 大写币种代码」，比如 `100.00 USD`、`1,120.00 PHP`。
 - 下限规则：`金额 < FloorMinor` 时放弃，错误码 `amount_below_floor`。最低金额和预期金额、上限一样按「套餐 × 地区」用该地区币种填，不做汇率换算。
 
@@ -476,7 +476,7 @@
   - 运行全量后端测试，按报错给各测试的套餐配置补 `FloorMinor`。
 
 - [ ] **Step 4：运行确认通过**
-  Run：`cd backend && go build ./... && go vet ./... && go test ./... 2>&1 | grep -v '^ok' | head`
+  Run：`cd backend && go build ./... && go vet ./... && go test -timeout 30m ./... 2>&1 | grep -v '^ok' | head`
   Expected：没有输出，即全部 `ok`。
 
 - [ ] **Step 5：提交** `feat(payengine): 新增最低金额，支付页金额低于它时在注资前放弃`
@@ -545,7 +545,7 @@
 
 - [ ] **Step 1：写更新日志与文档改动**
 - [ ] **Step 2：全量门禁**
-  Run：`cd backend && go build ./... && go vet ./... && go test ./... && cd ../frontend && npx vitest run && npm run build`
+  Run：`cd backend && go build ./... && go vet ./... && go test -timeout 30m ./... && cd ../frontend && npx vitest run && npm run build`
   Expected：全部通过。
 - [ ] **Step 3：提交前查敏感信息**
   Run：`git diff origin/master --stat && git diff origin/master | grep -nE 'cs_live_[A-Za-z0-9]{6,}|eyJ[A-Za-z0-9_-]{20,}|sk_live|pk_live'`

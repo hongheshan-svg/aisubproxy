@@ -2,7 +2,7 @@ package paybrowser
 
 // Sel 集中存放支付页各元素的选择器。每项是按优先级排列的候选列表，依次尝试，
 // 查找范围为主页面与各级 iframe（含跨站 iframe），选择器顺序优先于 frame 顺序，只认可见元素。
-// 除 NewCardOption、ManualAddressOption 外都是 CSS 选择器。
+// 除 NewCardOption、ManualAddressOption、PayWithoutLinkOption 外都是 CSS 选择器。
 //
 // 真实付款页是哪一种还没有证据，所以同时列两种页面的候选：
 //   - Stripe Checkout（托管页，字段在主文档，前缀 shipping 或 billing）
@@ -39,6 +39,10 @@ var Sel = struct {
 	LinkSave []string
 	// LinkLoginFrame 是 Link 弹出验证时显示的 iframe
 	LinkLoginFrame []string
+	// LinkVerification 是账号邮箱注册过 Link 时内嵌在付款区的「Confirm it’s you」验证码框，出现时卡号框被藏起来
+	LinkVerification []string
+	// TermsConsent 是「同意条款」勾选框（Stripe 要求同意服务条款时才有；本身透明，要用不要求可见的查找）
+	TermsConsent []string
 	// PayButton 是提交支付的按钮（只在主页面找，不进 iframe）
 	PayButton []string
 	// Amount 是汇总区「今日应付」的总额元素
@@ -57,6 +61,8 @@ var Sel = struct {
 	NewCardOption []string
 	// ManualAddressOption 是展开手动地址的入口文字（按文字匹配，不是 CSS）
 	ManualAddressOption []string
+	// PayWithoutLinkOption 是 Link 验证框里跳过验证、改填新卡的入口文字（按文字匹配，不是 CSS）
+	PayWithoutLinkOption []string
 }{
 	CardNumber: []string{`#payment-numberInput`, `#cardNumber`, `input[autocomplete="cc-number"]`, `input[name="cardNumber"]`, `input[name="number"]`},
 	Expiry:     []string{`#payment-expiryInput`, `#cardExpiry`, `input[autocomplete="cc-exp"]`, `input[name="cardExpiry"]`, `input[name="expiry"]`},
@@ -95,6 +101,9 @@ var Sel = struct {
 	Phone:          []string{`#phoneNumber`, `#phone`, `input[autocomplete="tel"]`, `input[type="tel"]`},
 	LinkSave:       []string{`#enableStripePass`, `input[name="enableStripePass"]`},
 	LinkLoginFrame: []string{`iframe[name="link-login"]`},
+	// 2026-11-03 真实支付页（ChatGPT 点数单）导出的 DOM：容器 class 与第一个验证码格的 data-testid
+	LinkVerification: []string{`.LinkVerificationContent`, `[data-testid="sms-code-input-0"]`},
+	TermsConsent:     []string{`#termsOfServiceConsentCheckbox`, `input[name="termsOfServiceConsentCheckbox"]`},
 
 	// .SubmitButton 在前：主页面可能有别的 submit 按钮（如优惠码 Apply）排在支付按钮前面
 	PayButton: []string{`.SubmitButton`, `[data-testid="hosted-payment-submit-button"]`, `button[type="submit"]`},
@@ -119,4 +128,6 @@ var Sel = struct {
 	},
 	// 只有英文这条核实过；Launch 固定 --lang=en-US，其余是页面不跟随浏览器语言时的后备
 	ManualAddressOption: []string{"Enter address manually", "手动输入地址", "手動で入力"},
+	// 同一份真实 DOM 里核实过的按钮文字；同框还有「Text a code to …」，那个会发验证码，绝不能点
+	PayWithoutLinkOption: []string{"Pay without Link"},
 }

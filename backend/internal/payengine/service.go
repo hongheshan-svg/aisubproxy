@@ -51,6 +51,8 @@ type ChatGPT interface {
 type FormBrowser interface {
 	Open(context.Context, string, []paybrowser.Cookie) error
 	ReadAmount(context.Context, string) (int64, string, error)
+	// WaitRendered 等支付页真正显示出来再截图，最多等给定时长；等不到返回 false，不报错，只读不点。
+	WaitRendered(context.Context, time.Duration) bool
 	Fill(context.Context, paybrowser.Card, paybrowser.Billing) error
 	FillReport() paybrowser.FillReport     // 最近一次 Fill 的字段命中与核对结果，不含值
 	PayButtonState(context.Context) string // 只读支付按钮的状态，绝不点击

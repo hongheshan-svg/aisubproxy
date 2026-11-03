@@ -16,6 +16,8 @@ func TestEnsureNoSavePayment(t *testing.T) {
 		{"默认勾上要取消", "mode=success&savepay=on", "已取消"},
 		{"本来就没勾", "mode=success&savepay=off", "未勾选"},
 		{"页面没有这个勾选框", "mode=success", "页面没有"},
+		// 真实点数页：两个勾选框同时在。条款文案含「store your payment method」，不能被当成「保存付款信息」取消掉，否则提交会被拦下
+		{"不动同意条款", "mode=success&savepay=on&terms=1", "已取消"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

@@ -542,6 +542,9 @@ func checkCheckoutURL(raw string) error {
 
 // openPage 是步骤 4：启动浏览器（走地区代理）、注入会话 cookie、打开支付页、截整页图、读应付金额；
 // 读不出或真实付款超过上限则放弃。
+// pageRenderWait 是打开支付页后、截图前最多等页面显示完整的时间。Stripe 先放金额再淡入，通常一两秒内完成。
+const pageRenderWait = 10 * time.Second
+
 func (s *Service) openPage(ctx context.Context, j *job) error {
 	if err := s.advance(ctx, j, StateOpening, "启动浏览器，打开支付页", nil); err != nil {
 		return err
@@ -569,6 +572,9 @@ func (s *Service) openPage(ctx context.Context, j *job) error {
 		defer cancelShot()
 		s.shot(sctx, j, "open-failed", paybrowser.ShotPage) // 还没填卡，允许截整页；pctx 可能已经超时
 		return abort("page_failed", "打开支付页失败：%v", err)
+	}
+	if !b.WaitRendered(pctx, pageRenderWait) {
+		s.event(ctx, j, "warn", fmt.Sprintf("支付页 %d 秒内没有显示完整，下面的截图可能是加载中的画面", int(pageRenderWait/time.Second)), "")
 	}
 	s.shot(pctx, j, "opening", paybrowser.ShotPage)
 	minor, text, err := b.ReadAmount(pctx, j.o.Currency)

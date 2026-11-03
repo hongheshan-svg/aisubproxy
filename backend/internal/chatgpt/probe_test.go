@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -71,7 +72,8 @@ func TestProbeAllowlistAcceptsListed(t *testing.T) {
 	}
 }
 
-func TestProbeCheckoutBodiesAndShape(t *testing.T) {
+// 探测建会话的请求必须和自动付款逐字一致（请求体和账号头），探测才能代表真实下单；每项只建一次会话。
+func TestProbeCheckoutMatchesEngineRequest(t *testing.T) {
 	var bodies []map[string]interface{}
 	var hdrs []http.Header
 	p := NewProbe(newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -83,42 +85,59 @@ func TestProbeCheckoutBodiesAndShape(t *testing.T) {
 		_ = json.Unmarshal(b, &m)
 		bodies = append(bodies, m)
 		hdrs = append(hdrs, r.Header.Clone())
-		if m["checkout_ui_mode"] == "redirect" {
-			w.Write([]byte(`{"checkout_session_id":"cs_live_a1SECRETSECRET","url":"https://pay.openai.com/c/pay/cs_live_a1SECRETSECRET#fragsecret","currency":"php"}`))
+		if m["plan_name"] != nil {
+			w.Write([]byte(`{"tag":"custom_checkout_session","processor_entity":"openai_llc","checkout_session_id":"cs_live_b2SECRET"}`))
 			return
 		}
-		w.Write([]byte(`{"tag":"custom_checkout_session","processor_entity":"openai_llc","checkout_session_id":"cs_live_b2SECRET"}`))
+		w.Write([]byte(`{"checkout_session_id":"cs_live_a1SECRETSECRET","url":"https://pay.openai.com/c/pay/cs_live_a1SECRETSECRET#fragsecret","currency":"php"}`))
 	})))
+	ctx := context.Background()
 	s := Session{AccessToken: "at", SessionToken: "st", Email: "a@b.c"}
 
-	plain, err := p.CreditCheckout(context.Background(), s, "acc-1", false)
-	if err != nil || plain.Shape != ShapeCustom || plain.Processor != "openai_llc" {
-		t.Fatalf("不带 redirect: %+v %v", plain, err)
+	// 点数：先按自动付款建一次，再探测一次，两次请求要一样
+	if _, err := p.c.CreateCreditCheckout(ctx, s, "acc-1", 250); err != nil {
+		t.Fatalf("自动付款建点数会话: %v", err)
 	}
-	red, err := p.CreditCheckout(context.Background(), s, "acc-1", true)
+	red, err := p.CreditCheckout(ctx, s, "acc-1")
 	if err != nil || red.Shape != ShapeURL || red.Host != "pay.openai.com" || red.Currency != "PHP" {
-		t.Fatalf("带 redirect: %+v %v", red, err)
+		t.Fatalf("探测点数会话: %+v %v", red, err)
 	}
 	if strings.Contains(red.PathPrefix, "SECRET") || strings.Contains(red.SessionPfx, "SECRET") || red.SessionPfx != "cs_live_" {
 		t.Fatalf("返回摘要里带了会话号: %+v", red)
 	}
-	if _, has := bodies[0]["checkout_ui_mode"]; has {
-		t.Errorf("不带 redirect 的请求体不该有 checkout_ui_mode: %v", bodies[0])
+	if !reflect.DeepEqual(bodies[0], bodies[1]) {
+		t.Errorf("探测的点数请求体应与自动付款一致:\n自动付款 %v\n探测 %v", bodies[0], bodies[1])
 	}
 	cp, _ := bodies[1]["credit_purchase_data"].(map[string]interface{})
-	if cp["quantity"] != float64(250) || cp["unit"] != "credit" || cp["account_id"] != "acc-1" || bodies[1]["entry_point"] != "codex_purchase_credits_route" {
+	if cp["quantity"] != float64(250) || cp["unit"] != "credit" || cp["account_id"] != "acc-1" ||
+		bodies[1]["entry_point"] != "codex_purchase_credits_route" || bodies[1]["checkout_ui_mode"] != "redirect" {
 		t.Errorf("点数请求体不对: %v", bodies[1])
 	}
-	if hdrs[1].Get("Authorization") != "Bearer at" || hdrs[1].Get("ChatGPT-Account-ID") != "acc-1" || hdrs[1].Get("X-OpenAI-Expected-Account-Id") != "acc-1" {
-		t.Errorf("请求头不对: %v", hdrs[1])
+	for _, h := range []string{"Authorization", "ChatGPT-Account-ID", "X-OpenAI-Expected-Account-Id"} {
+		if hdrs[1].Get(h) == "" || hdrs[1].Get(h) != hdrs[0].Get(h) {
+			t.Errorf("探测的 %s 头应与自动付款一致: %q / %q", h, hdrs[0].Get(h), hdrs[1].Get(h))
+		}
 	}
 
-	mode, err := p.ModeCheckout(context.Background(), s, "chatgptplusplan", "PH", "PHP", true)
-	if err != nil || mode.Shape != ShapeURL {
-		t.Fatalf("开通会话: %+v %v", mode, err)
+	// 开通：同样先自动付款、再探测
+	if _, err := p.c.CreateCheckout(ctx, s, "chatgptplusplan", "PH", "PHP"); err != nil {
+		t.Fatalf("自动付款建开通会话: %v", err)
 	}
-	if bodies[2]["plan_name"] != "chatgptplusplan" || bodies[2]["checkout_ui_mode"] != "redirect" {
-		t.Errorf("开通请求体不对: %v", bodies[2])
+	mode, err := p.ModeCheckout(ctx, s, "chatgptplusplan", "PH", "PHP")
+	if err != nil || mode.Shape != ShapeCustom || mode.Processor != "openai_llc" {
+		t.Fatalf("探测开通会话: %+v %v", mode, err)
+	}
+	if !reflect.DeepEqual(bodies[2], bodies[3]) {
+		t.Errorf("探测的开通请求体应与自动付款一致:\n自动付款 %v\n探测 %v", bodies[2], bodies[3])
+	}
+	if bodies[3]["plan_name"] != "chatgptplusplan" {
+		t.Errorf("开通请求体不对: %v", bodies[3])
+	}
+	if hdrs[3].Get("Authorization") != "Bearer at" || hdrs[3].Get("Authorization") != hdrs[2].Get("Authorization") {
+		t.Errorf("开通请求头不对: %v", hdrs[3])
+	}
+	if len(bodies) != 4 {
+		t.Errorf("每次探测只应建一次会话，实际共 %d 次请求", len(bodies))
 	}
 }
 

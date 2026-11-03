@@ -58,6 +58,11 @@
     linkstuck=1               Link 勾选框点了也取消不掉
     linkrecheck=1             键入邮箱时重新勾上 Link
     linkmodal=1               键入邮箱后 link-login iframe 变为可见（Link 弹出验证）
+    linkverify=1              账号邮箱已注册 Link：卡字段先藏起来，显示内嵌的「Confirm it’s you」验证码框，点「Pay without Link」后
+                              验证框消失、卡字段出现；「Text a code」按钮被点会计数（绝不能点）。结构照 2026-11-03 真实支付页
+                              （ChatGPT 点数单）导出的 DOM：.LinkVerificationContent--inline、sms-code-input-0~5、两个按钮
+    linkverify=nobutton       同上，但没有「Pay without Link」按钮
+    linkverify=onemail        一开始没有验证框，键入邮箱后才出现（同时藏起卡字段）
     phonealways=1             取消 Link 后手机仍必填
     autoreveal=1              没有「手动输入」按钮，地址行 1 有内容后 1.5 秒城市等字段自己出现
     latemanual=1              「手动输入」按钮要等地址行 1 有内容才出现
@@ -78,6 +83,8 @@
     paydisabled=1             支付按钮一直 disabled
     savepay=on|off            多一个「保存付款信息」勾选框（买点数时可能出现），on 为默认勾上；文案照前端包里的 "Save payment details to {merchantName} for future purchases."，DOM 结构是推断
     savepaystuck=1            「保存付款信息」勾选框点了也取消不掉
+    terms=1|stuck             多一个默认不勾的「同意条款」勾选框（Stripe 要求同意服务条款时才有），不勾就点支付只显示 .FieldError、不发 /pay；
+                              stuck 表示点了也勾不上。id、name、链接 class 与文案照 2026-11-03 真实支付页（ChatGPT 点数单）导出的 DOM
   每次提交把收到的全部字段 POST 到本服务的 /pay，供测试断言；点到支付按钮就 POST /submit-attempt（前端校验拦下时也算）。
 -->
 <section id="summary">
@@ -120,6 +127,20 @@
   <button id="manual-address" type="button" class="Button Button--link Button--checkoutSecondaryLink Button--md">Enter address manually</button>
 
   <h2>Payment method</h2>
+  <div id="link-verify" class="LinkVerificationContent LinkVerificationContent--inline" data-component-name="payment" style="display:none">
+    <h3>Confirm it’s you</h3>
+    <p>Enter the code sent to ***@*** to use your saved information.</p>
+    <div>
+      <input id="one-time-code" data-testid="sms-code-input-0" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="1" aria-label="Verification code digit 1">
+      <input data-testid="sms-code-input-1" type="text" inputmode="numeric" maxlength="1" aria-label="Verification code digit 2">
+      <input data-testid="sms-code-input-2" type="text" inputmode="numeric" maxlength="1" aria-label="Verification code digit 3">
+      <input data-testid="sms-code-input-3" type="text" inputmode="numeric" maxlength="1" aria-label="Verification code digit 4">
+      <input data-testid="sms-code-input-4" type="text" inputmode="numeric" maxlength="1" aria-label="Verification code digit 5">
+      <input data-testid="sms-code-input-5" type="text" inputmode="numeric" maxlength="1" aria-label="Verification code digit 6">
+    </div>
+    <button id="link-sms" type="button" class="Button SendSMSOTPButton Button--link Button--md">Text a code to ••••• ••••00</button>
+    <button id="link-skip" type="button" class="Button Button--link Button--checkoutSecondaryLink Button--md">Pay without Link</button>
+  </div>
   <input id="cardNumber" name="cardNumber" type="text" autocomplete="cc-number" aria-label="Card number" class="CheckoutInput CheckoutInput--tabularnums Input Input--empty">
   <input id="cardExpiry" name="cardExpiry" type="text" autocomplete="cc-exp" aria-label="Expiration" class="CheckoutInput CheckoutInput--tabularnums Input Input--empty">
   <input id="cardCvc" name="cardCvc" type="text" autocomplete="cc-csc" aria-label="Credit or debit card CVC/CVV" class="CheckoutInput CheckoutInput--tabularnums Input Input--empty">
@@ -155,6 +176,14 @@
       <span class="Checkbox-StyledInput"></span>
     </div>
     <label for="savePaymentDetails">Save payment details to OpenAI for future purchases.</label>
+  </div>
+
+  <div id="terms-section" class="Checkbox" style="display:none">
+    <div class="Checkbox-InputContainer">
+      <input id="termsOfServiceConsentCheckbox" name="termsOfServiceConsentCheckbox" type="checkbox" class="Checkbox-Input">
+      <span class="Checkbox-StyledInput"></span>
+    </div>
+    <label for="termsOfServiceConsentCheckbox">You’ll be charged the amount shown for this purchase of credits. Paid credits are non-refundable except where required by law, and expire one year from purchase date. By continuing, you agree to our <a class="Link TermsOfServiceConsentCheckbox-customMessageLink Link--checkout--secondary" href="/terms" target="_blank">Service Credit Terms</a>, and you authorize us to store your payment method for this purchase and future purchases.</label>
   </div>
 
   <div id="decoy-row" style="display:none"><input id="promo-number" name="number" aria-label="Promo number"></div>
@@ -253,6 +282,21 @@
   })
 
   if (q.get('nolink') === '1') $('link-section').remove()
+  if (q.get('linkverify')) {
+    var cardFields = ['cardNumber', 'cardExpiry', 'cardCvc'].map($)
+    var showLinkVerify = function () {
+      cardFields.forEach(function (el) { el.style.display = 'none' })
+      if ($('link-verify')) $('link-verify').style.display = ''
+    }
+    if (q.get('linkverify') === 'onemail') $('email').addEventListener('input', showLinkVerify)
+    else showLinkVerify()
+    $('link-sms').addEventListener('click', function () { fetch('/link-sms', { method: 'POST' }) })
+    if (q.get('linkverify') === 'nobutton') $('link-skip').remove()
+    else $('link-skip').addEventListener('click', function () {
+      $('link-verify').remove()
+      cardFields.forEach(function (el) { el.style.display = '' })
+    })
+  }
   if ($('enableStripePass')) {
     $('enableStripePass').addEventListener('click', function (e) {
       if (q.get('linkstuck') === '1') e.preventDefault()
@@ -271,6 +315,14 @@
     })
   } else {
     $('savepay-section').remove()
+  }
+  if (q.get('terms')) {
+    $('terms-section').style.display = ''
+    $('termsOfServiceConsentCheckbox').addEventListener('click', function (e) {
+      if (q.get('terms') === 'stuck') e.preventDefault()
+    })
+  } else {
+    $('terms-section').remove()
   }
   if (q.get('banner')) {
     var banner = document.createElement('div')
@@ -353,6 +405,7 @@
     if (!val($('cardExpiry'))) errors.push('Your card\'s expiration date is incomplete.')
     if (!val($('cardCvc'))) errors.push('Your card\'s security code is incomplete.')
     if ((linkOn() || q.get('phonealways') === '1') && !val($('phoneNumber'))) errors.push('Phone number is required')
+    if ($('termsOfServiceConsentCheckbox') && !$('termsOfServiceConsentCheckbox').checked) errors.push('You must agree to the terms to continue.')
     return errors
   }
 

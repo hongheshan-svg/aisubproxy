@@ -108,3 +108,6 @@ func SetCFProbeURL(u string) func() {
 
 // IsCFChallengeTitle 判断标题是不是 Cloudflare 挑战页。
 var IsCFChallengeTitle = isCFChallengeTitle
+
+// AmountRendered 只判断一次金额是否已真正显示（不等待）。
+func AmountRendered(ctx context.Context, b *Browser) (bool, error) { return b.amountRendered(ctx) }

@@ -217,21 +217,25 @@ func TestProbeNoSubscriptionAccount(t *testing.T) {
 			t.Errorf("无订阅时 %s 应为 skipped 并写明原因: %+v", k, res[k])
 		}
 	}
-	d := res["checkout_modes"].Details
-	if a := d["without_redirect"].(map[string]any); a["shape"] != "custom_checkout_session" {
-		t.Errorf("不带 redirect: %v", a)
+	// 开通会话和自动付款同样不带 checkout_ui_mode，假服务器对它返回 custom_checkout_session；只建一次
+	if d := res["checkout_modes"].Details; d["shape"] != "custom_checkout_session" || d["processor_entity"] != "openai_llc" {
+		t.Errorf("开通会话详情不对: %v", d)
 	}
-	if a := d["with_redirect"].(map[string]any); a["shape"] != "url" || a["host"] != "pay.openai.com" || a["host_whitelisted"] != true {
-		t.Errorf("带 redirect: %v", a)
-	}
-	// 所有发出的请求都必须在白名单内
+	// 所有发出的请求都必须在白名单内；建会话只建一次
 	fake.mu.Lock()
+	checkouts := 0
 	for _, h := range fake.hits {
 		if !probeAllowedHits[h] {
 			t.Errorf("发出了白名单外的请求 %s", h)
 		}
+		if h == "POST /backend-api/payments/checkout" {
+			checkouts++
+		}
 	}
 	fake.mu.Unlock()
+	if checkouts != 1 {
+		t.Errorf("无订阅只应建 1 次开通会话，实际 POST checkout %d 次", checkouts)
+	}
 	// 浏览器：门户页用无 cookie 打开，chatgpt 页带 cookie
 	if len(br.opened) != 2 || !strings.HasPrefix(br.opened[0], "https://billing.stripe.com/") || br.opened[1] != "https://chatgpt.com/" {
 		t.Errorf("浏览器打开的页面不对: %v", br.opened)
@@ -264,8 +268,11 @@ func TestProbeSubscribedAccount(t *testing.T) {
 			t.Errorf("发出了白名单外的请求 %s", h)
 		}
 	}
-	if checkouts != 2 {
-		t.Errorf("有订阅只应建 2 次点数会话，实际 POST checkout %d 次", checkouts)
+	if checkouts != 1 {
+		t.Errorf("有订阅只应建 1 次点数会话（和自动付款同样的请求），实际 POST checkout %d 次", checkouts)
+	}
+	if d := res["credit_checkout"].Details; d["shape"] != "url" || d["host"] != "pay.openai.com" || d["host_whitelisted"] != true {
+		t.Errorf("点数会话详情不对: %v", d)
 	}
 	if previews != 3 {
 		t.Errorf("Plus 账号应预览 3 个更高档，实际 %d", previews)

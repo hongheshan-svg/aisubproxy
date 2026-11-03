@@ -28,10 +28,12 @@ type FieldCheck struct {
 type FillReport struct {
 	Fields        []FieldCheck
 	ManualAddress string // 手动地址入口：未点击或已点击几次
+	LinkVerify    string // Link 内嵌验证框（「Confirm it’s you」）的处理结果，没出现时为空
 	LinkSave      string // Link 保存勾选框的处理结果
 	Email         string // 邮箱框的处理结果
 	Phone         string // 手机框的检查结果
 	SavePayment   string // 「保存付款信息」勾选框的处理结果（只有点数单检查）
+	Terms         string // 「同意条款」勾选框的处理结果
 }
 
 // Lines 把结果写成时间线上的中文短句，失败时也能看到走到了哪一步。
@@ -45,7 +47,7 @@ func (r FillReport) Lines() []string {
 		out = append(out, fmt.Sprintf("字段「%s」：命中 %s（%s），%s", f.Label, f.Selector, where, f.Status))
 	}
 	for _, x := range []struct{ name, val string }{
-		{"手动地址", r.ManualAddress}, {"Link 保存", r.LinkSave}, {"邮箱", r.Email}, {"手机", r.Phone}, {"保存付款信息", r.SavePayment},
+		{"手动地址", r.ManualAddress}, {"Link 验证", r.LinkVerify}, {"Link 保存", r.LinkSave}, {"邮箱", r.Email}, {"手机", r.Phone}, {"保存付款信息", r.SavePayment}, {"同意条款", r.Terms},
 	} {
 		if x.val != "" {
 			out = append(out, x.name+"："+x.val)

@@ -68,8 +68,8 @@ type probeResult struct {
 type probeAPI interface {
 	Refresh(ctx context.Context, s *chatgpt.Session) error
 	GetJSON(ctx context.Context, s chatgpt.Session, path string, query url.Values, accountID string) (map[string]interface{}, error)
-	ModeCheckout(ctx context.Context, s chatgpt.Session, planName, country, currency string, redirect bool) (chatgpt.ProbeCheckout, error)
-	CreditCheckout(ctx context.Context, s chatgpt.Session, accountID string, redirect bool) (chatgpt.ProbeCheckout, error)
+	ModeCheckout(ctx context.Context, s chatgpt.Session, planName, country, currency string) (chatgpt.ProbeCheckout, error)
+	CreditCheckout(ctx context.Context, s chatgpt.Session, accountID string) (chatgpt.ProbeCheckout, error)
 }
 
 // probeBrowser 是探测用到的浏览器能力：没有任何点击、键入、填表。
@@ -557,35 +557,16 @@ func probeShapeText(co chatgpt.ProbeCheckout) string {
 	return "其他形态"
 }
 
-// probeCheckoutPair 分别「不带」「带」redirect 各建一次会话，汇总成结果。
-func (r *probeRun) probeCheckoutPair(key string, call func(redirect bool) (chatgpt.ProbeCheckout, error)) probeResult {
-	d := map[string]any{}
-	var parts []string
-	okCount := 0
-	for _, v := range []struct {
-		name     string
-		redirect bool
-	}{{"without_redirect", false}, {"with_redirect", true}} {
-		label := "不带 checkout_ui_mode"
-		if v.redirect {
-			label = `带 checkout_ui_mode:"redirect"`
-		}
-		co, err := call(v.redirect)
-		if err != nil {
-			d[v.name] = map[string]any{"error": probeErr(err)}
-			parts = append(parts, label+"：失败（"+probeErr(err)+"）")
-			continue
-		}
-		okCount++
-		d[v.name] = probeShape(co)
-		parts = append(parts, label+"：返回 "+probeShapeText(co))
-	}
-	if okCount == 0 {
-		res := r.fail(key, "两次建会话都失败。%s", strings.Join(parts, "；"))
-		res.Details = d
+// probeCheckoutOnce 建一次会话（请求和自动付款相同），汇总成结果。
+// 只建一次：ChatGPT 对短时间内反复建会话会返回 429（checkout_creation_rate_limited）。
+func (r *probeRun) probeCheckoutOnce(key string, call func() (chatgpt.ProbeCheckout, error)) probeResult {
+	co, err := call()
+	if err != nil {
+		res := r.fail(key, "建会话失败：%s", probeErr(err))
+		res.Details = map[string]any{"error": probeErr(err)}
 		return res
 	}
-	return r.ok(key, strings.Join(parts, "；"), d)
+	return r.ok(key, "返回 "+probeShapeText(co), probeShape(co))
 }
 
 func (r *probeRun) checkCheckoutModes() probeResult {
@@ -600,8 +581,8 @@ func (r *probeRun) checkCheckoutModes() probeResult {
 	if currency == "" || planName == "" {
 		return r.fail("checkout_modes", "无法确定地区 %s 的币种或 Plus 套餐名", country)
 	}
-	res := r.probeCheckoutPair("checkout_modes", func(redirect bool) (chatgpt.ProbeCheckout, error) {
-		return r.api.ModeCheckout(r.ctx, r.sess, planName, country, currency, redirect)
+	res := r.probeCheckoutOnce("checkout_modes", func() (chatgpt.ProbeCheckout, error) {
+		return r.api.ModeCheckout(r.ctx, r.sess, planName, country, currency)
 	})
 	note := ""
 	if r.region == "" {
@@ -619,8 +600,8 @@ func (r *probeRun) checkCreditCheckout() probeResult {
 	if !a.hasSub {
 		return r.skip("credit_checkout", "账号没有生效订阅，点数结账需要先订阅 Plus 或 Pro")
 	}
-	res := r.probeCheckoutPair("credit_checkout", func(redirect bool) (chatgpt.ProbeCheckout, error) {
-		return r.api.CreditCheckout(r.ctx, r.sess, a.id, redirect)
+	res := r.probeCheckoutOnce("credit_checkout", func() (chatgpt.ProbeCheckout, error) {
+		return r.api.CreditCheckout(r.ctx, r.sess, a.id)
 	})
 	res.Summary = "250 点：" + res.Summary
 	return res

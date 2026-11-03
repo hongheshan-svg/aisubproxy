@@ -1,0 +1,29 @@
+# gitleaks 配置：沿用默认规则，只放行下面这些已确认的假值。
+# 按「具体值」放行，不按目录或文件放行：测试文件里如果混进真密钥，照样会被拦下。
+# 新增放行前先确认它确实是假值，并在下面注明出处。
+title = "aisubproxy gitleaks config"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "测试用的假主密钥和假令牌，以及 MarsWallex 官方文档自带的示例凭据"
+regexes = [
+  # dbtest.SetMasterKey 等测试用的主密钥：分别是 0123…cdef、9876…dcba、fedc…3210 这几个 32 字节串，以及它们的 base64
+  '''^0123456789abcdef0123456789abcdef$''',
+  '''^9876543210fedcba9876543210fedcba$''',
+  '''^fedcba9876543210fedcba9876543210$''',
+  '''^MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=$''',
+  '''^OTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTBmZWRjYmE=$''',
+  '''^ZmVkY2JhOTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTA=$''',
+  # provider_registry_test.go：查不到的结果令牌
+  '''^tct_0123456789abcdef0123456789abcdef$''',
+  # marswallex_test.go：假的 api_token
+  '''^tok-SECRET-123$''',
+  # pay_probe_test.go：检查脱敏用的假 JWT
+  '''^eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiIxMjM0NTY3ODkwIn0\.sig_part-1$''',
+  # docs/marswallex-openapi-zh.md：官方文档里的 Authorization 示例，原文见 docs/marswallex-openapi-{zh,en}.json
+  '''^fZjOVab5E7xDfDEyXU75SFaI137s8iL6$''',
+  # deploy/app.env.example：APP_MASTER_KEY= 留空，规则跨行把下一行配置当成了值（只在扫描整个目录时出现）
+  '''^JWT_EXPIRATION_HOURS=\d+$''',
+]

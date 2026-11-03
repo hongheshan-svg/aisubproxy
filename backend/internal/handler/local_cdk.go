@@ -441,7 +441,7 @@ func localCDKRedeem(c *gin.Context, body map[string]any) {
 		return
 	}
 	o, err := engine.Submit(submitCtx, payengine.Request{
-		PlanKey: row.PlanKey, Region: row.Region, Session: raw,
+		Provider: row.Provider, PlanKey: row.PlanKey, Region: row.Region, Session: raw,
 		Source: "cdk", SourceRef: db.LocalCDKSourceRef(row.ID),
 	})
 	if err != nil {

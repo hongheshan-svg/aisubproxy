@@ -19,7 +19,7 @@ import (
 
 func (h *harness) submitFillPreview(t *testing.T) *Order {
 	t.Helper()
-	o, err := h.svc.Submit(ctx, Request{PlanKey: "plus", Region: "PH", Session: testSession, Source: "admin_test", SourceRef: "admin", DryRunFill: true})
+	o, err := h.svc.Submit(ctx, Request{Provider: testProvider, PlanKey: "plus", Region: "PH", Session: testSession, Source: "admin_test", SourceRef: "admin", DryRunFill: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,7 +134,7 @@ func TestPreviewCardExpiry(t *testing.T) {
 // 试运行单停在 filling 时服务重启：和其它提交前的单一样收敛，没有租约，不碰卡池。
 func TestDryRunFillRestartNeverTouchesPool(t *testing.T) {
 	h := newHarness(t)
-	o := &Order{OrderNo: "PODRYFILLRESTART", Source: "admin_test", SourceRef: "admin", DryRun: true, DryRunFill: true,
+	o := &Order{OrderNo: "PODRYFILLRESTART", Provider: testProvider, Source: "admin_test", SourceRef: "admin", DryRun: true, DryRunFill: true,
 		PlanKey: "plus", Region: "PH", Currency: "PHP", AccountEmail: "buyer@example.com", State: StateFilling}
 	if err := insertOrder(ctx, o); err != nil {
 		t.Fatal(err)
@@ -227,7 +227,7 @@ func TestDryRunColumnRoundTrip(t *testing.T) {
 	}
 	for i, c := range cases {
 		r := c.req
-		r.PlanKey, r.Region, r.Source, r.SourceRef = "plus", "PH", "admin_test", "admin"
+		r.Provider, r.PlanKey, r.Region, r.Source, r.SourceRef = testProvider, "plus", "PH", "admin_test", "admin"
 		r.Session = sessionFor(string(rune('a'+i)) + "@example.com")
 		o, err := h.svc.Submit(ctx, r)
 		if err != nil {

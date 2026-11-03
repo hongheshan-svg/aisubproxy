@@ -70,7 +70,7 @@ func newHarness(t *testing.T) *harness {
 		shotDir: t.TempDir(),
 	}
 	h.svc = New(Options{
-		Pool: h.pool,
+		Pools: map[string]Pool{testProvider: h.pool},
 		ChatGPT: func(proxyURL string) (ChatGPT, error) {
 			h.gpt.hit("New", proxyURL)
 			return h.gpt, nil
@@ -95,7 +95,7 @@ func (h *harness) start(t *testing.T) {
 
 func (h *harness) submitAs(t *testing.T, session string, dryRun bool) *Order {
 	t.Helper()
-	o, err := h.svc.Submit(ctx, Request{PlanKey: "plus", Region: "PH", Session: session, Source: "admin_test", SourceRef: "admin", DryRun: dryRun})
+	o, err := h.svc.Submit(ctx, Request{Provider: testProvider, PlanKey: "plus", Region: "PH", Session: session, Source: "admin_test", SourceRef: "admin", DryRun: dryRun})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,17 +135,17 @@ func assertNotSubmitted(t *testing.T, o *Order, code string) {
 
 func TestSubmitValidates(t *testing.T) {
 	h := newHarness(t)
-	_, err := h.svc.Submit(ctx, Request{PlanKey: "pro_5x", Region: "PH", Session: testSession, Source: "admin_test"})
+	_, err := h.svc.Submit(ctx, Request{Provider: testProvider, PlanKey: "pro_5x", Region: "PH", Session: testSession, Source: "admin_test"})
 	if !errors.Is(err, ErrPlanUnavailable) {
 		t.Fatalf("套餐未启用应为 ErrPlanUnavailable: %v", err)
 	}
-	_, err = h.svc.Submit(ctx, Request{PlanKey: "plus", Region: "PH", Session: `{"user":{"email":"a@x.com"},"accessToken":"at"}`, Source: "admin_test"})
+	_, err = h.svc.Submit(ctx, Request{Provider: testProvider, PlanKey: "plus", Region: "PH", Session: `{"user":{"email":"a@x.com"},"accessToken":"at"}`, Source: "admin_test"})
 	if !errors.Is(err, ErrBadSession) {
 		t.Fatalf("缺 sessionToken 应为 ErrBadSession: %v", err)
 	}
 
 	t.Setenv("APP_MASTER_KEY", "")
-	if _, err := h.svc.Submit(ctx, Request{PlanKey: "plus", Region: "PH", Session: testSession, Source: "admin_test"}); err == nil {
+	if _, err := h.svc.Submit(ctx, Request{Provider: testProvider, PlanKey: "plus", Region: "PH", Session: testSession, Source: "admin_test"}); err == nil {
 		t.Fatal("主密钥缺失应报错")
 	}
 	if _, total, _ := listOrders(ctx, "", 1, 0); total != 0 {
@@ -157,7 +157,7 @@ func TestSubmitValidates(t *testing.T) {
 	if o.State != StateQueued {
 		t.Fatalf("新单应为 queued: %s", o.State)
 	}
-	if _, err := h.svc.Submit(ctx, Request{PlanKey: "plus", Region: "PH", Session: testSession, Source: "admin_test"}); !errors.Is(err, ErrInflight) {
+	if _, err := h.svc.Submit(ctx, Request{Provider: testProvider, PlanKey: "plus", Region: "PH", Session: testSession, Source: "admin_test"}); !errors.Is(err, ErrInflight) {
 		t.Fatalf("同邮箱进行中应为 ErrInflight: %v", err)
 	}
 	g, err := getOrder(ctx, o.OrderNo)

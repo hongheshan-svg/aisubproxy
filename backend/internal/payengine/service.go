@@ -14,7 +14,6 @@ import (
 
 	"github.com/tuzi/cdk-recharge-system/internal/cardpool"
 	"github.com/tuzi/cdk-recharge-system/internal/chatgpt"
-	"github.com/tuzi/cdk-recharge-system/internal/marswallex"
 	"github.com/tuzi/cdk-recharge-system/internal/paybrowser"
 	"github.com/tuzi/cdk-recharge-system/internal/secretbox"
 )
@@ -22,12 +21,12 @@ import (
 // sessionAAD 是会话密文的 AAD。
 const sessionAAD = "pay_order_session"
 
-// Pool 是引擎用到的卡池能力，*cardpool.Service 直接满足。
+// Pool 是引擎用到的卡池能力，*cardpool.Service 直接满足。每家供卡型服务商一个，数据结构沿用 cardpool 包的类型。
 type Pool interface {
 	Acquire(context.Context, cardpool.AcquireRequest) (*cardpool.Lease, error)
 	Fund(context.Context, *cardpool.Lease, int64) (*cardpool.Order, error)
 	WaitOrder(context.Context, string) (*cardpool.Order, error)
-	Sensitive(context.Context, *cardpool.Lease) (*marswallex.CardSensitive, error)
+	Sensitive(context.Context, *cardpool.Lease) (*cardpool.CardSensitive, error)
 	WaitOTP(context.Context, string, time.Time) (string, error)
 	Release(context.Context, *cardpool.Lease, cardpool.Outcome) error
 	CardInfo(context.Context, string) (cardpool.CardInfo, error)
@@ -100,7 +99,9 @@ func MaxPayDuration(t Timeouts) time.Duration {
 
 // Options 为 Service 的依赖。
 type Options struct {
-	Pool    Pool
+	// Pools 按供卡型服务商名取卡池，单据的 provider 决定用哪个。取不到时绝不改用别家的卡池：
+	// 还没取卡就以 provider_unavailable 放弃，已经取卡或注资的转待人工。建好后不再改动。
+	Pools   map[string]Pool
 	ChatGPT func(proxyURL string) (ChatGPT, error)                               // nil → chatgpt.New
 	Browser func(ctx context.Context, proxyURL, shotDir string) (Browser, error) // nil → paybrowser.Launch
 	Now     func() time.Time                                                     // nil → time.Now；提交时间、确认时限与截图清理都用它
@@ -169,6 +170,21 @@ func New(o Options) *Service {
 
 func (s *Service) now() time.Time { return s.opts.Now() }
 
+// HasPool 判断引擎里有没有这家服务商的卡池。
+func (s *Service) HasPool(provider string) bool {
+	_, ok := s.poolFor(provider)
+	return ok
+}
+
+// poolFor 取这家服务商的卡池。名字为空或没有卡池时返回 false：调用方按 provider_unavailable 处理，绝不改用别家的卡池。
+func (s *Service) poolFor(provider string) (Pool, bool) {
+	if provider == "" {
+		return nil, false
+	}
+	p, ok := s.opts.Pools[provider]
+	return p, ok && p != nil
+}
+
 // ShotDir 返回截图根目录（每单一个子目录），供后台接口读取截图。
 func (s *Service) ShotDir() string { return s.opts.ShotDir }
 
@@ -201,9 +217,10 @@ func defaultShotDir() string {
 }
 
 // Request 是一次付款请求。DryRun 试运行到读金额；DryRunFill 试运行到填表（用公开测试卡走完 Fill，绝不点支付、不碰卡池），隐含 DryRun。
+// Provider 是供卡型服务商名，必填，且引擎里要有它的卡池。
 type Request struct {
-	PlanKey, Region, Session, Source, SourceRef string
-	DryRun, DryRunFill                          bool
+	Provider, PlanKey, Region, Session, Source, SourceRef string
+	DryRun, DryRunFill                                    bool
 }
 
 // badSessionError 保留 chatgpt 的错误说明，同时可被 errors.Is(err, ErrBadSession) 识别。
@@ -214,11 +231,18 @@ func (e *badSessionError) Unwrap() error        { return e.err }
 func (e *badSessionError) Is(target error) bool { return target == ErrBadSession }
 
 // Submit 校验并建单入队，立即返回。错误：ErrPlanUnavailable（套餐 × 地区不可用）、
-// ErrBadSession（会话无法解析、缺 sessionToken 或邮箱）、ErrInflight（同账号已有进行中单据）；
-// 主密钥缺失时也报错。出错时不建单。
+// ErrBadSession（会话无法解析、缺 sessionToken 或邮箱）、ErrInflight（同账号已有进行中单据）、
+// ErrProviderUnavailable（该服务商没有卡池）；主密钥缺失时也报错。出错时不建单。
 func (s *Service) Submit(ctx context.Context, r Request) (*Order, error) {
 	if strings.TrimSpace(r.Source) == "" {
 		return nil, fmt.Errorf("%w: 缺少来源", ErrBadRequest)
+	}
+	prov := strings.TrimSpace(r.Provider)
+	if prov == "" {
+		return nil, fmt.Errorf("%w: 缺少服务商", ErrBadRequest)
+	}
+	if !s.HasPool(prov) {
+		return nil, fmt.Errorf("%w: %s", ErrProviderUnavailable, prov)
 	}
 	dryRun := r.DryRun || r.DryRunFill
 	_, rc, err := ResolvePlan(r.PlanKey, r.Region, dryRun)
@@ -238,6 +262,7 @@ func (s *Service) Submit(ctx context.Context, r Request) (*Order, error) {
 		return nil, fmt.Errorf("加密会话失败: %w", err)
 	}
 	o := &Order{
+		Provider:      prov,
 		Source:        r.Source,
 		SourceRef:     r.SourceRef,
 		DryRun:        dryRun,
@@ -330,5 +355,9 @@ func (s *Service) Evidence(ctx context.Context, no string) ([]cardpool.Transacti
 	if o.SubmittedAt == nil || o.CardID == "" {
 		return []cardpool.Transaction{}, nil
 	}
-	return s.txnsSince(ctx, o.CardID, authWindowStart(*o.SubmittedAt))
+	pool, ok := s.poolFor(o.Provider)
+	if !ok {
+		return nil, fmt.Errorf("%w: %q", ErrProviderUnavailable, o.Provider)
+	}
+	return s.txnsSince(ctx, pool, o.CardID, authWindowStart(*o.SubmittedAt))
 }

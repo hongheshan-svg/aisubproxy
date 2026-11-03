@@ -17,7 +17,6 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/cardpool"
 	"github.com/tuzi/cdk-recharge-system/internal/chatgpt"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
-	"github.com/tuzi/cdk-recharge-system/internal/marswallex"
 	"github.com/tuzi/cdk-recharge-system/internal/paybrowser"
 	"github.com/tuzi/cdk-recharge-system/internal/secretbox"
 )
@@ -86,8 +85,8 @@ func newPayHarness(t *testing.T, tune func(*Timeouts)) *harness {
 	h.pool.waitOrder = func(_ context.Context, no string) (*cardpool.Order, error) {
 		return &cardpool.Order{OutOrderNo: no, State: cardpool.StateSuccess}, nil
 	}
-	h.pool.sensitive = func(*cardpool.Lease) (*marswallex.CardSensitive, error) {
-		return &marswallex.CardSensitive{CardID: testCardID, CardNo: testCardNo, CVV2: testCVV, ExpiryDate: "08/28"}, nil
+	h.pool.sensitive = func(*cardpool.Lease) (*cardpool.CardSensitive, error) {
+		return &cardpool.CardSensitive{CardID: testCardID, CardNo: testCardNo, CVV2: testCVV, ExpiryDate: "08/28"}, nil
 	}
 	h.pool.release = func(*cardpool.Lease, cardpool.Outcome) error { return nil }
 	h.pool.listTxns = func(cardpool.TxnFilter) ([]cardpool.Transaction, int, error) {
@@ -104,8 +103,13 @@ func newPayHarness(t *testing.T, tune func(*Timeouts)) *harness {
 
 // rebuild 用给定卡池重建引擎，其余依赖取 harness 的替身。
 func (h *harness) rebuild(pool Pool) {
+	h.rebuildPools(map[string]Pool{testProvider: pool})
+}
+
+// rebuildPools 按服务商给定卡池重建引擎。
+func (h *harness) rebuildPools(pools map[string]Pool) {
 	h.svc = New(Options{
-		Pool: pool,
+		Pools: pools,
 		ChatGPT: func(proxyURL string) (ChatGPT, error) {
 			h.gpt.hit("New", proxyURL)
 			return h.gpt, nil
@@ -156,7 +160,7 @@ func presetOrder(t *testing.T, email, state string, set map[string]any) *Order {
 	if err != nil {
 		t.Fatal(err)
 	}
-	o := &Order{Source: "admin_test", SourceRef: "admin", PlanKey: "plus", Region: "PH", Currency: "PHP",
+	o := &Order{Provider: testProvider, Source: "admin_test", SourceRef: "admin", PlanKey: "plus", Region: "PH", Currency: "PHP",
 		CapMinor: 120000, FundCents: 3000, AccountEmail: email, State: state, SessionSealed: sealed}
 	if err := insertOrder(ctx, o); err != nil {
 		t.Fatal(err)
@@ -2229,7 +2233,7 @@ func TestStartCleansStaleProfilesOnlyWithRealBrowser(t *testing.T) {
 	t.Run("默认工厂在 Start 返回前清理", func(t *testing.T) {
 		h := newPayHarness(t, nil)
 		dir := stale(t)
-		h.svc = New(Options{Pool: h.pool, Alert: h.alerts.add, ShotDir: h.shotDir, Timeouts: &h.timeouts})
+		h.svc = New(Options{Pools: map[string]Pool{testProvider: h.pool}, Alert: h.alerts.add, ShotDir: h.shotDir, Timeouts: &h.timeouts})
 		h.start(t)
 		if _, err := os.Lstat(dir); !os.IsNotExist(err) {
 			t.Fatalf("应清理: %v", err)
@@ -2243,7 +2247,7 @@ func TestStartCleansStaleProfilesOnlyWithRealBrowser(t *testing.T) {
 		if err := os.Mkdir(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		h.svc = New(Options{Pool: h.pool, Alert: h.alerts.add, ShotDir: h.shotDir, Timeouts: &h.timeouts})
+		h.svc = New(Options{Pools: map[string]Pool{testProvider: h.pool}, Alert: h.alerts.add, ShotDir: h.shotDir, Timeouts: &h.timeouts})
 		h.start(t)
 		if _, err := os.Lstat(dir); err != nil {
 			t.Fatalf("不应清理: %v", err)

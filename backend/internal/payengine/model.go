@@ -42,12 +42,15 @@ var (
 	ErrPlanUnavailable = errors.New("套餐不可用")
 	ErrBadSession      = errors.New("会话无效")
 	ErrBadRequest      = errors.New("请求参数无效")
+	// ErrProviderUnavailable 表示单据所属的供卡型服务商在本引擎里没有卡池。引擎绝不改用别家的卡池。
+	ErrProviderUnavailable = errors.New("该服务商没有可用的卡池")
 )
 
 // Order 是一张付款单据，字段与 pay_orders 列一一对应。DryRun、DryRunFill 共用 dry_run 列，见 dryRunColumn。
 type Order struct {
 	ID                int64  `json:"id"`
 	OrderNo           string `json:"order_no"`
+	Provider          string `json:"provider"` // 供卡型服务商，引擎按它取卡池；建单后不变
 	Source            string `json:"source"`
 	SourceRef         string `json:"source_ref"`
 	DryRun            bool   `json:"dry_run"`

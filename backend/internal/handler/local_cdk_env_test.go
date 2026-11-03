@@ -22,6 +22,7 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/marswallex/mwtest"
 	"github.com/tuzi/cdk-recharge-system/internal/paybrowser"
 	"github.com/tuzi/cdk-recharge-system/internal/payengine"
+	"github.com/tuzi/cdk-recharge-system/internal/provider"
 )
 
 const (
@@ -386,7 +387,7 @@ func setupLocalEnv(t *testing.T) *localEnv {
 	}
 
 	e.engine = payengine.New(payengine.Options{
-		Pool:     e.pool,
+		Pools:    map[string]payengine.Pool{string(provider.MarsWallex): e.pool},
 		ChatGPT:  func(string) (payengine.ChatGPT, error) { return e.gpt, nil },
 		Browser:  e.br.New,
 		Alert:    e.addAlert,

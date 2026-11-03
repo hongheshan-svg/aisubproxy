@@ -28,7 +28,7 @@ var settableColumns = map[string]bool{
 	"resolved_by": true, "resolve_note": true,
 }
 
-const orderColumns = `id, order_no, source, source_ref, dry_run, plan_key, region, currency, cap_minor, fund_cents,
+const orderColumns = `id, order_no, provider, source, source_ref, dry_run, plan_key, region, currency, cap_minor, fund_cents,
 	account_email, account_id, state, session_sealed, checkout_session_id, checkout_url, amount_minor, amount_text,
 	card_id, card_last4, lease_token, fund_order_no, billing_state, page_outcome, submitted_at, failure, error_code,
 	error_message, verify_until, next_check_at, resolved_by, resolve_note, created_at, updated_at, finished_at`
@@ -78,10 +78,10 @@ func insertOrder(ctx context.Context, o *Order) error {
 		return err
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, `INSERT INTO pay_orders (order_no, source, source_ref, dry_run, plan_key, region, currency,
+	res, err := tx.ExecContext(ctx, `INSERT INTO pay_orders (order_no, provider, source, source_ref, dry_run, plan_key, region, currency,
 		cap_minor, fund_cents, account_email, account_id, state, session_sealed, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		o.OrderNo, o.Source, o.SourceRef, dryRunColumn(o), o.PlanKey, o.Region, o.Currency,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		o.OrderNo, o.Provider, o.Source, o.SourceRef, dryRunColumn(o), o.PlanKey, o.Region, o.Currency,
 		o.CapMinor, o.FundCents, o.AccountEmail, o.AccountID, o.State, o.SessionSealed, o.CreatedAt, o.UpdatedAt)
 	if err != nil {
 		if isInflightConflict(err) {
@@ -182,7 +182,7 @@ type rowScanner interface{ Scan(dest ...any) error }
 func scanOrder(r rowScanner) (*Order, error) {
 	var o Order
 	var dry int
-	err := r.Scan(&o.ID, &o.OrderNo, &o.Source, &o.SourceRef, &dry, &o.PlanKey, &o.Region, &o.Currency, &o.CapMinor, &o.FundCents,
+	err := r.Scan(&o.ID, &o.OrderNo, &o.Provider, &o.Source, &o.SourceRef, &dry, &o.PlanKey, &o.Region, &o.Currency, &o.CapMinor, &o.FundCents,
 		&o.AccountEmail, &o.AccountID, &o.State, &o.SessionSealed, &o.CheckoutSessionID, &o.CheckoutURL, &o.AmountMinor, &o.AmountText,
 		&o.CardID, &o.CardLast4, &o.LeaseToken, &o.FundOrderNo, &o.BillingState, &o.PageOutcome, &o.SubmittedAt, &o.Failure, &o.ErrorCode,
 		&o.ErrorMessage, &o.VerifyUntil, &o.NextCheckAt, &o.ResolvedBy, &o.ResolveNote, &o.CreatedAt, &o.UpdatedAt, &o.FinishedAt)

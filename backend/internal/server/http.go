@@ -58,7 +58,11 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	// MarsWallex 卡池与付款引擎先建好并注入 handler，再注册路由；付款引擎依赖卡池，所以排在其后
 	pool := cardpool.New(cardPoolOptions(notify.SendText))
 	handler.SetCardPool(pool)
-	pay := payengine.New(payengine.Options{Pool: pool, Alert: alertSender("payengine", notify.SendText)})
+	pools, err := payPools(pool)
+	if err != nil {
+		return nil, err
+	}
+	pay := payengine.New(payengine.Options{Pools: pools, Alert: alertSender("payengine", notify.SendText)})
 	handler.SetPayEngine(pay)
 
 	// Setup routes
@@ -102,6 +106,18 @@ func cardPoolOptions(send func(string)) cardpool.Options {
 		Alert:              cardPoolAlert(send),
 		MarsWallexSelected: provider.MarsWallexSelected,
 	}
+}
+
+// payPools 是付款引擎按服务商取的卡池。每家注册了的供卡型服务商都必须在这里有卡池，漏了就拒绝启动：
+// 否则它的码能发、能兑换，付款时才发现没有卡池。目前只有 MarsWallex 一家，用的是本站的 MarsWallex 卡池。
+func payPools(mw payengine.Pool) (map[string]payengine.Pool, error) {
+	pools := map[string]payengine.Pool{string(provider.MarsWallex): mw}
+	for _, p := range provider.List() {
+		if _, ok := provider.AsCardSupply(p); ok && pools[string(p.Name())] == nil {
+			return nil, fmt.Errorf("供卡型服务商 %s 没有接入卡池", p.Name())
+		}
+	}
+	return pools, nil
 }
 
 // upstreamKeysConfigured 判断库里是否已配置 MarsWallex 或卡台 API Key（动钱上游）。

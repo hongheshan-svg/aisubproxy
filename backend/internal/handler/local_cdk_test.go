@@ -326,7 +326,7 @@ func TestLocalCDKOneOrderIndexStopsDirectSubmit(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			_, err := e.engine.Submit(context.Background(), payengine.Request{
-				PlanKey: "plus", Region: "PH", Session: localSession(fmt.Sprintf("d%d@example.com", i)), Source: "cdk", SourceRef: "42",
+				Provider: string(provider.MarsWallex), PlanKey: "plus", Region: "PH", Session: localSession(fmt.Sprintf("d%d@example.com", i)), Source: "cdk", SourceRef: "42",
 			})
 			switch {
 			case err == nil:

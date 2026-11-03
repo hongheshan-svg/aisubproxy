@@ -279,9 +279,18 @@ func (s *Service) markSensitive(ctx context.Context, cardID, token string, requi
 	return n == 1, nil
 }
 
+// CardSensitive 是付款引擎填表用的卡号信息，与发卡平台无关：别家供卡型服务商的卡池也返回它。
+// 只在内存里用，不落库、不记日志、不序列化。
+type CardSensitive struct {
+	CardID     string
+	CardNo     string
+	ExpiryDate string
+	CVV2       string
+}
+
 // Sensitive 实时查询完整卡号、CVV2、有效期，不落库、不记日志。先记下本次租约已取卡号再调接口：
 // 响应丢失时平台可能已经返回了卡号，宁可多算一次使用。
-func (s *Service) Sensitive(ctx context.Context, l *Lease) (*marswallex.CardSensitive, error) {
+func (s *Service) Sensitive(ctx context.Context, l *Lease) (*CardSensitive, error) {
 	c, err := s.leasedCard(ctx, l, true)
 	if err != nil {
 		return nil, err
@@ -297,7 +306,14 @@ func (s *Service) Sensitive(ctx context.Context, l *Lease) (*marswallex.CardSens
 	if !ok {
 		return nil, ErrLeaseInvalid
 	}
-	return client.GetCardSensitive(ctx, c.CardID)
+	sv, err := client.GetCardSensitive(ctx, c.CardID)
+	if err != nil {
+		return nil, err
+	}
+	if sv == nil {
+		return nil, errors.New("发卡平台没有返回卡号")
+	}
+	return &CardSensitive{CardID: sv.CardID, CardNo: sv.CardNo, ExpiryDate: sv.ExpiryDate, CVV2: sv.CVV2}, nil
 }
 
 // Release 释放租约并上报结果（aborted 不计入健康度），随后按 §6.4 回收。

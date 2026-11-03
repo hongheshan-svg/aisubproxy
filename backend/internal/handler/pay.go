@@ -21,6 +21,7 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/cardpool"
 	"github.com/tuzi/cdk-recharge-system/internal/paybrowser"
 	"github.com/tuzi/cdk-recharge-system/internal/payengine"
+	"github.com/tuzi/cdk-recharge-system/internal/provider"
 )
 
 // payEngine 为运行中的付款引擎；未启动时为 nil。
@@ -63,7 +64,7 @@ func payFail(c *gin.Context, err error) {
 		c.JSON(http.StatusConflict, gin.H{"error": payengine.ErrInflight.Error()})
 	case errors.Is(err, payengine.ErrBadSession):
 		c.JSON(http.StatusBadRequest, gin.H{"error": "会话无效"})
-	case errors.Is(err, payengine.ErrPlanUnavailable), errors.Is(err, payengine.ErrBadRequest):
+	case errors.Is(err, payengine.ErrPlanUnavailable), errors.Is(err, payengine.ErrBadRequest), errors.Is(err, payengine.ErrProviderUnavailable):
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 	case errors.Is(err, payengine.ErrNotFound):
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
@@ -84,9 +85,11 @@ func bindPayJSON(c *gin.Context, dst any) bool {
 }
 
 // AdminPaySubmit 建一张付款单据（测试或真实付款，由 dry_run、dry_run_fill 决定）。session 可以是 JSON 字符串，也可以直接是会话对象。
+// provider 是用哪家供卡型服务商的卡池，不填为 MarsWallex；必须是已注册的供卡型服务商。
 func AdminPaySubmit(c *gin.Context) {
 	payRoute(func(c *gin.Context, s *payengine.Service) {
 		var req struct {
+			Provider   string          `json:"provider"`
 			PlanKey    string          `json:"plan_key"`
 			Region     string          `json:"region"`
 			Session    json.RawMessage `json:"session"`
@@ -105,7 +108,18 @@ func AdminPaySubmit(c *gin.Context) {
 			}
 			session = str
 		}
+		prov := provider.MarsWallex
+		if v := strings.TrimSpace(req.Provider); v != "" {
+			p, _ := provider.Get(provider.Name(v))
+			cs, ok := provider.AsCardSupply(p)
+			if !ok {
+				c.JSON(http.StatusBadRequest, gin.H{"error": "只能选已注册的供卡型服务商"})
+				return
+			}
+			prov = cs.Name()
+		}
 		o, err := s.Submit(c.Request.Context(), payengine.Request{
+			Provider:   string(prov),
 			PlanKey:    strings.TrimSpace(req.PlanKey),
 			Region:     strings.TrimSpace(req.Region),
 			Session:    session,
@@ -118,7 +132,7 @@ func AdminPaySubmit(c *gin.Context) {
 			payFail(c, err)
 			return
 		}
-		auditAdmin(c, "pay_test_submit", fmt.Sprintf("plan=%s region=%s dry_run=%t dry_run_fill=%t order_no=%s", o.PlanKey, o.Region, o.DryRun, o.DryRunFill, o.OrderNo))
+		auditAdmin(c, "pay_test_submit", fmt.Sprintf("provider=%s plan=%s region=%s dry_run=%t dry_run_fill=%t order_no=%s", o.Provider, o.PlanKey, o.Region, o.DryRun, o.DryRunFill, o.OrderNo))
 		c.JSON(http.StatusOK, gin.H{"order_no": o.OrderNo, "order": o})
 	})(c)
 }

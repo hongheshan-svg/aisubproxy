@@ -18,6 +18,41 @@ export function channelLabel(...infos: Array<{ provider?: unknown; provider_disp
   return '本站'
 }
 
+// ---------- 码的种类：订阅开通码、Codex 点数码 ----------
+
+interface KindInfo { kind?: unknown; auto_renew?: unknown; requires_credit_terms?: unknown; credit_quantity?: unknown }
+
+/** 点数码：预览或预检带 requires_credit_terms=true 或 kind=credit。兑换前必须勾选须知。 */
+export function isCreditCode(info: KindInfo | null | undefined): boolean {
+  return info?.requires_credit_terms === true || info?.kind === 'credit'
+}
+
+/** 订阅开通码：kind=subscription 或明确 auto_renew=false（点数码不算）。 */
+export function isOneMonthCode(info: KindInfo | null | undefined): boolean {
+  if (!info || isCreditCode(info)) return false
+  return info.kind === 'subscription' || info.auto_renew === false
+}
+
+export const ONE_MONTH_TEXT = '本码开通一个月，到期不自动续费'
+
+/** 点数兑换须知，逐条显示；用户勾选同意后才能兑换（服务端同样要求 agree_credit_terms）。 */
+export const CREDIT_TERMS: readonly string[] = [
+  '仅限已订阅 Plus 或 Pro 的账号',
+  '按账号计费币种付款，码上的地区必须与之一致',
+  '点数 12 个月过期，不退款',
+]
+
+/** 点数码没勾须知时不能兑换，返回原因；其余情况返回空串。 */
+export function creditTermsBlock(info: KindInfo | null | undefined, agreed: boolean): string {
+  return isCreditCode(info) && !agreed ? '请先阅读并勾选点数兑换须知' : ''
+}
+
+/** 兑换请求体：点数码且已勾选时带上 agree_credit_terms:true，其余码保持原样。 */
+export function withCreditTerms<T extends Record<string, unknown>>(body: T, info: KindInfo | null | undefined, agreed: boolean): T & { agree_credit_terms?: true } {
+  if (isCreditCode(info) && agreed) return { ...body, agree_credit_terms: true as const }
+  return body
+}
+
 const STATUS_TEXT: Record<string, string> = {
   queued: '排队中',
   running: '处理中',
@@ -45,11 +80,12 @@ interface OrderLike { can_retry?: boolean; attempts_left?: number }
  * - failed_precharge 但次数用完：转人工，不要再提交
  * - declined / review：付款被拒或待核对，转人工，不能重兑
  */
-export function mwOutcome(status: string, order?: OrderLike | null): MwOutcome {
+export function mwOutcome(status: string, order?: OrderLike | null, credit = false): MwOutcome {
   const s = String(status || '').toLowerCase()
   const left = typeof order?.attempts_left === 'number' ? order.attempts_left : undefined
   switch (s) {
     case 'completed':
+      if (credit) return { kind: 'success', text: '点数购买完成，请到 Codex 查看点数余额。' }
       return { kind: 'success', text: '开通完成，请到 ChatGPT 账号确认套餐。' }
     case 'queued':
     case 'running':

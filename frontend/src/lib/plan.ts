@@ -30,6 +30,8 @@ export function isCardAttachPlan(plan: string, planFlow?: string): boolean {
 /** 档位可读名。续费档必须排在 'pro' 兜底之前，否则显示成「Pro 20x」看不出是续费。 */
 export function planLabel(value: string): string {
   const n = String(value || 'free').trim().toLowerCase()
+  // 本站付款的 Codex 点数档：credit + 点数数量（如 credit250）
+  if (/^credit\d+$/.test(n)) return `Codex 点数 ${n.slice(6)}`
   // X 先判：裸 premium_monthly 归 X；Grok 码由调用方按 product 补成 grok_ 前缀（见 RechargeView targetPlan）。
   if (isXPremiumPlan(n)) return 'X ' + n.replace(/^x_/, '').replace('premium', 'Premium').replace('plus', 'Plus').replace('super', 'Super').replace('ultra', 'Ultra').replace('_monthly', ' / month').replace('_yearly', ' / year')
   if (isGrokPlan(n)) return grokPlanLabel(n)
@@ -58,6 +60,8 @@ export function planSatisfied(currentPlan: string, requestedPlan: string, planFl
   // Grok 四档（Plus / Premium / Super / Ultra）与月/年付是并列商品，不存在「更高档已满足」，只认完全相同。
   if (isGrokPlan(req)) return !!current && grokBarePlan(current) === grokBarePlan(req)
   if (current.startsWith('x_')) return false
+  // 点数是消耗品，不存在「已满足」
+  if (/^credit\d+$/.test(req)) return false
   if (isCardAttachPlan(req, planFlow)) return false
   const currentRank =
     current.includes('promax') || current === 'pro_50x' ? 4 : current.includes('prolite') || current.includes('5x') || current === 'pro_5x'

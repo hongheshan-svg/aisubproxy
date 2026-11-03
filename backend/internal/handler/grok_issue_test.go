@@ -68,6 +68,7 @@ func TestGrokIssueUsesGrokCatalogueAndPrefixedPlan(t *testing.T) {
 	} {
 		req := httptest.NewRequest("POST", "/issue", strings.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Idempotency-Key", "test-key")
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != 200 {

@@ -168,8 +168,17 @@ func TestAgentExchangeReleaseAndFinishTransitions(t *testing.T) {
 		t.Fatalf("事后证实成功应能收尾: %v", err)
 	}
 	e, err := db.GetAgentExchange(id)
-	if err != nil || e.State != db.AgentExchangeDone || e.NewUpstreamID != 900 || e.NewCodePrefix != "ZC-NEW" {
-		t.Fatalf("%+v %v", e, err)
+	if err != nil || e.State != db.AgentExchangeDisabling || e.NewUpstreamID != 900 || e.NewCodePrefix != "ZC-NEW" {
+		t.Fatalf("新码已发出但旧码还没确认禁用，应停在 disabling: %+v %v", e, err)
+	}
+	if err := db.CompleteAgentCDKExchangeDisable(id); err != nil {
+		t.Fatal(err)
+	}
+	if e, _ := db.GetAgentExchange(id); e.State != db.AgentExchangeDone {
+		t.Fatalf("旧码确认禁用后才是 done: %+v", e)
+	}
+	if err := db.CompleteAgentCDKExchangeDisable(id); !errors.Is(err, db.ErrAgentExchangeState) {
+		t.Fatalf("只有 disabling 能转 done: %v", err)
 	}
 	if err := db.MarkAgentCDKExchangeUnknown(id, "x"); !errors.Is(err, db.ErrAgentExchangeState) {
 		t.Fatalf("done 不能退回 unknown: %v", err)
@@ -224,7 +233,7 @@ func TestResolveAgentExchangeOnlyFromUnknown(t *testing.T) {
 	if err := db.ResolveAgentExchangeIssued(id, 9, "卡台已查到"); err != nil {
 		t.Fatal(err)
 	}
-	if e, _ := db.GetAgentExchange(id); e.State != db.AgentExchangeDone || e.NewUpstreamID != 9 || e.Note != "卡台已查到" {
+	if e, _ := db.GetAgentExchange(id); e.State != db.AgentExchangeDisabling || e.NewUpstreamID != 9 || e.Note != "卡台已查到" {
 		t.Fatalf("%+v", e)
 	}
 	id2, _ := db.ReserveAgentCDKExchange(reservation("h2", "fp"), 20, now)

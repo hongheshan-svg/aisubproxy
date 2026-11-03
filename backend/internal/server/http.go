@@ -270,6 +270,8 @@ func setupRoutes(r *gin.Engine) {
 			admin.POST("/cardpool/cards/apply", handler.AdminCardPoolApplyCards)
 			admin.POST("/cardpool/cards/import", handler.AdminCardPoolImportCard)
 			admin.POST("/cardpool/cards/:id/refresh", handler.AdminCardPoolRefreshCard)
+			admin.PUT("/cardpool/cards/:id/limit", handler.AdminCardPoolSetCardLimit)
+			admin.GET("/cardpool/cards/:id/limit-usage", handler.AdminCardPoolCardLimitUsage)
 			admin.POST("/cardpool/cards/:id/disable", handler.AdminCardPoolDisableCard)
 			admin.POST("/cardpool/cards/:id/enable", handler.AdminCardPoolEnableCard)
 			admin.POST("/cardpool/cards/:id/freeze", handler.AdminCardPoolFreezeCard)

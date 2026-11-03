@@ -37,6 +37,7 @@ var fillFailureCodes = map[string]bool{
 	"card_sensitive_failed": true,
 	"card_expiry_invalid":   true,
 	"submit_not_clicked":    true,
+	"amount_changed":        true,
 }
 
 // BreakerStatus 是熔断的当前状态。

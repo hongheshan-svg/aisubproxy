@@ -224,7 +224,12 @@ func (e *notClickedError) Error() string { return e.err.Error() }
 func (e *notClickedError) Unwrap() error { return e.err }
 
 // chatgptAbort 把 ChatGPT 调用失败转成放弃原因；未授权一律按会话失效处理。
-func chatgptAbort(code, what string, err error) error {
+// Cloudflare 挑战不是会话失效：换会话没有用，要查该地区代理的出口 IP，所以单独一个错误码并告警。
+func (s *Service) chatgptAbort(j *job, code, what string, err error) error {
+	if errors.Is(err, chatgpt.ErrBlocked) {
+		s.opts.Alert(fmt.Sprintf("付款单 %s（地区 %s）%s：被 Cloudflare 拦截，请检查该地区代理的出口 IP；换会话没有用。", j.o.OrderNo, j.o.Region, what))
+		return abort("cf_challenge", "%s：被 Cloudflare 拦截，请检查该地区代理的出口 IP", what)
+	}
 	if errors.Is(err, chatgpt.ErrUnauthorized) {
 		return abort("session_invalid", "%s：会话已失效，请重新获取会话", what)
 	}
@@ -411,11 +416,11 @@ func (s *Service) check(ctx context.Context, j *job) error {
 		return abort("chatgpt_failed", "创建 ChatGPT 客户端失败：%v", err)
 	}
 	if err := j.gpt.Refresh(ctx, &j.sess); err != nil {
-		return chatgptAbort("chatgpt_failed", "刷新会话失败", err)
+		return s.chatgptAbort(j, "chatgpt_failed", "刷新会话失败", err)
 	}
 	acc, err := j.gpt.Account(ctx, j.sess)
 	if err != nil {
-		return chatgptAbort("chatgpt_failed", "查询账号失败", err)
+		return s.chatgptAbort(j, "chatgpt_failed", "查询账号失败", err)
 	}
 	j.note("account_id", acc.AccountID)
 	if acc.HasActiveSubscription {
@@ -435,7 +440,7 @@ func (s *Service) createLink(ctx context.Context, j *job) error {
 	}
 	co, err := j.gpt.CreateCheckout(ctx, j.sess, plan.ChatGPTPlanName, j.o.Region, j.o.Currency)
 	if err != nil {
-		return chatgptAbort("checkout_failed", "创建支付会话失败", err)
+		return s.chatgptAbort(j, "checkout_failed", "创建支付会话失败", err)
 	}
 	j.note("checkout_session_id", co.SessionID)
 	if co.URL == "" {

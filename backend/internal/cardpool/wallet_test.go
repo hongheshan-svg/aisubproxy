@@ -18,7 +18,7 @@ import (
 func accountPage(count, from, to int) mwtest.Reply {
 	var items []string
 	for i := from; i <= to; i++ {
-		items = append(items, fmt.Sprintf(`{"account_no":"A%03d","account_name":"n%d","account_status":"ACTIVE","account_type":"SUB_ACCOUNT","create_time":%d}`,
+		items = append(items, fmt.Sprintf(`{"account_no":"A%03d","account_name":"n%d","account_status":"ACTIVE","account_type":"SUB_ACCOUNT","balance_list":[],"create_time":%d}`,
 			i, i, 1700000000+i))
 	}
 	return mwtest.Reply{Body: fmt.Sprintf(`{"count":"%d","data":[%s]}`, count, strings.Join(items, ","))}
@@ -171,8 +171,8 @@ func TestCreateSubAccount(t *testing.T) {
 }
 
 const twoAccounts = `{"count":"2","data":[
-	{"account_no":"M1","account_name":"main","account_status":"ACTIVE","account_type":"MAIN"},
-	{"account_no":"S1","account_name":"sub","account_status":"%s","account_type":"SUB_ACCOUNT"}]}`
+	{"account_no":"M1","account_name":"main","account_status":"ACTIVE","account_type":"MAIN","balance_list":[]},
+	{"account_no":"S1","account_name":"sub","account_status":"%s","account_type":"SUB_ACCOUNT","balance_list":[]}]}`
 
 func TestSetSubAccountStatus(t *testing.T) {
 	s, mw, _, _ := newTestService(t)

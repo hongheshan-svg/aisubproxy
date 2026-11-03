@@ -94,6 +94,8 @@ func TestBreakerTrips(t *testing.T) {
 		{"连续 3 单填表失败", []bo{boFill, boFill, boFill}, true, BreakerReasonFill, 0, 3, 2},
 		{"三种填表失败码都算", []bo{boFill, boSens, boExpiry}, true, BreakerReasonFill, 0, 3, 2},
 		{"连续找不到支付按钮也算", []bo{boNoClick, boNoClick, boNoClick}, true, BreakerReasonFill, 0, 3, 2},
+		{"注资后金额变化也算", []bo{{state: StateFailed, failure: FailureNotSubmitted, code: "amount_changed"}, {state: StateFailed, failure: FailureNotSubmitted, code: "amount_changed"}, {state: StateFailed, failure: FailureNotSubmitted, code: "amount_changed"}}, true, BreakerReasonFill, 0, 3, 2},
+		{"打开页面阶段的金额问题没花钱不计入", []bo{{state: StateFailed, failure: FailureNotSubmitted, code: "amount_over_cap"}, {state: StateFailed, failure: FailureNotSubmitted, code: "amount_unreadable"}, {state: StateFailed, failure: FailureNotSubmitted, code: "amount_over_cap"}}, false, "", 0, 0, 0},
 		{"试运行填表失败不计入", []bo{{state: StateFailed, failure: FailureNotSubmitted, code: "dry_run_fill_failed", dryRun: true}, {state: StateFailed, failure: FailureNotSubmitted, code: "dry_run_fill_failed", dryRun: true}, {state: StateFailed, failure: FailureNotSubmitted, code: "dry_run_fill_failed", dryRun: true}}, false, "", 0, 0, 0},
 		{"提交过的单清零填表失败", []bo{boFill, boFill, boSuccess, boFill}, false, "", 0, 1, 0},
 		{"提交后失败也清零填表失败", []bo{boFill, boFill, boDeclined, boFill}, false, "", 1, 1, 0},

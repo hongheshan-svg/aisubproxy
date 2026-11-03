@@ -128,6 +128,37 @@ func issueDefinitelyFailed(err error) bool {
 	return errors.As(err, &opErr) && opErr.Op == "dial"
 }
 
+// finishDisableOldCode 禁用旧码，成功后把记录从 disabling 转为 done。禁用是幂等的，重复调用安全。
+// 记录不在 disabling（收尾写库失败留在 pending，或已被人工处理）时只禁用，不改状态。
+func finishDisableOldCode(ctx context.Context, cli *cardplatform.Client, exID, oldID int64) error {
+	if cli == nil {
+		return errors.New("卡台未配置")
+	}
+	if err := cli.DisableCDK(ctx, oldID); err != nil {
+		return err
+	}
+	_ = db.UpdateCardplatformCDKStatus(oldID, "disabled")
+	if exID > 0 {
+		if err := db.CompleteAgentCDKExchangeDisable(exID); err != nil && !errors.Is(err, db.ErrAgentExchangeState) {
+			log.Printf("[agent-exchange] 记录 %d 旧码已禁用但转 done 失败（下一轮维护会再试）: %v", exID, err)
+		}
+	}
+	return nil
+}
+
+// reportDisableFailure 换码后禁用旧码失败：旧码新码此刻都能兑换，同一次购买可能被付两次费，必须有人知道。
+func reportDisableFailure(exID, oldID, newID int64, err error, ip string) {
+	reason := err.Error()
+	if len(reason) > 200 {
+		reason = reason[:200]
+	}
+	log.Printf("[agent-exchange] 禁用旧码 %d 失败（新码 %d 已发出）: %v", oldID, newID, err)
+	_ = db.TouchAgentCDKExchange(exID, "禁用旧码失败："+reason)
+	db.WriteAudit("agent-swap", "agent_cdk_exchange_disable_failed",
+		fmt.Sprintf("id=%d old=%d new=%d reason=%s", exID, oldID, newID, reason), ip)
+	opsAlert(fmt.Sprintf("代理换码已发出新码，但禁用旧码失败：记录 %d，旧码 ID %d，新码 ID %d，原因：%s。旧码在卡台仍可兑换，系统会每 10 分钟自动重试禁用；若一直失败请到卡台手动禁用。", exID, oldID, newID, reason))
+}
+
 // agentExchangeConflict 这张旧码已有占位时的响应。
 func agentExchangeConflict(c *gin.Context, state string) {
 	msg := "该卡密已换过新码，不可重复兑换"
@@ -395,12 +426,9 @@ func PublicAgentCDKExchange(c *gin.Context) {
 		opsAlert(fmt.Sprintf("代理换码已发出新码但写库失败：记录 %d，旧码 ID %d，新码 ID %d。占位已保留，请到后台定论。", exID, upstreamID, newIt.ID))
 	}
 
-	// 禁用旧码（防再次兑换）
-	if err := cli.DisableCDK(ctx, upstreamID); err != nil {
-		log.Printf("[agent-exchange] disable old cdk %d failed: %v (new already issued id=%d)", upstreamID, err, newIt.ID)
-		// 不回滚新码；记录警告
-	} else {
-		_ = db.UpdateCardplatformCDKStatus(upstreamID, "disabled")
+	// 禁用旧码（防再次兑换）。失败不回滚新码，但记录停在 disabling：告警，并由维护循环重试，成功后才转 done（MO-08）
+	if err := finishDisableOldCode(ctx, cli, exID, upstreamID); err != nil {
+		reportDisableFailure(exID, upstreamID, newIt.ID, err, ip)
 	}
 
 	db.WriteAudit("agent-swap", "agent_cdk_exchange",
@@ -489,10 +517,9 @@ func AdminResolveAgentExchange(c *gin.Context) {
 		e, gerr := db.GetAgentExchange(id)
 		disabled := false
 		if gerr == nil && e.OldUpstreamID > 0 {
-			if derr := cardplatform.NewFromSettings().DisableCDK(context.WithoutCancel(c.Request.Context()), e.OldUpstreamID); derr != nil {
-				log.Printf("[agent-exchange] 定论后禁用旧码 %d 失败: %v", e.OldUpstreamID, derr)
+			if derr := finishDisableOldCode(context.WithoutCancel(c.Request.Context()), cardplatform.NewFromSettings(), id, e.OldUpstreamID); derr != nil {
+				reportDisableFailure(id, e.OldUpstreamID, req.NewCDKID, derr, c.ClientIP())
 			} else {
-				_ = db.UpdateCardplatformCDKStatus(e.OldUpstreamID, "disabled")
 				disabled = true
 			}
 			out["old_cdk_id"] = e.OldUpstreamID

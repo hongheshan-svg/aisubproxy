@@ -5,6 +5,7 @@
         <h2 class="text-base font-semibold text-ink">{{ info.display_name || info.name }}</h2>
         <el-tag size="small" type="info" effect="plain" data-testid="kind-tag">{{ info.kind_text || info.kind }}</el-tag>
         <span v-if="info.code_prefix" class="text-xs text-muted mono">码前缀 {{ info.code_prefix }}</span>
+        <router-link v-if="selectionPage(info.name)" :to="selectionPage(info.name)!" class="text-xs underline" data-testid="selection-link">选卡规则</router-link>
       </div>
       <el-tag v-if="readiness" :type="readiness.ok ? 'success' : 'danger'" size="small" data-testid="ready-tag">
         {{ readiness.ok ? '已就绪' : '未就绪' }}
@@ -77,7 +78,7 @@
 import { computed } from 'vue'
 import { formatMinor } from '../../../lib/pay'
 import {
-  centsToUsd, checkLink, checkTitle, needsFirstRealPayment, planNote,
+  centsToUsd, checkLink, checkTitle, needsFirstRealPayment, planNote, selectionPage,
   type ProviderInfo, type ProviderReadiness,
 } from '../../../lib/provider'
 

@@ -1,6 +1,6 @@
 <template>
   <div class="space-y-4">
-    <AdminPageHeader class="!mb-0" title="MarsWallex 对接" description="首次接入按 1 → 5 的顺序操作：选环境、填凭证、生成密钥对并把公钥交给 MarsWallex、测试连接、配置 Webhook。" />
+    <AdminPageHeader class="!mb-0" title="MarsWallex 接入配置" description="首次接入按 1 → 5 的顺序操作：选环境、填凭证、生成密钥对并把公钥交给 MarsWallex、测试连接、配置 Webhook。" />
     <div v-if="cfg && !cfg.master_key_ready" class="card warn-box">
       服务器未配置 APP_MASTER_KEY，无法保存密钥（API Token、私钥）；地址、Developer ID、平台公钥仍可保存
       <span v-if="cfg.master_key_error" class="text-xs">（{{ cfg.master_key_error }}）</span>

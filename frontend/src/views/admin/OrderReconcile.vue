@@ -1,6 +1,6 @@
 <template>
   <div class="pb-2 space-y-5">
-    <AdminPageHeader title="CDK 兑换订单" description="卡台 CDK 兑换订单：开通邮箱、用卡、开通时间、实付金额、CDK 消耗/释放状态" class="!mb-0">
+    <AdminPageHeader title="ZovoCard 兑换订单" description="ZovoCard 发出的码的兑换订单：开通邮箱、用卡、开通时间、实付金额、CDK 消耗/释放状态" class="!mb-0">
       <template #actions>
         <el-button :loading="loading" @click="load">刷新</el-button>
       </template>

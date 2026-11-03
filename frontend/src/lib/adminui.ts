@@ -89,7 +89,7 @@ export interface TabDef { name: string; label: string }
 export const PAGE_TABS: Record<string, TabDef[]> = {
   '/ops/cardpool': [
     { name: 'overview', label: '概览' }, { name: 'cards', label: '卡' }, { name: 'holders', label: '持卡人' },
-    { name: 'orders', label: '单据' }, { name: 'txns', label: '交易' }, { name: 'policy', label: '策略与健康度' },
+    { name: 'orders', label: '单据' }, { name: 'txns', label: '交易' }, { name: 'policy', label: '开卡与补卡策略' },
   ],
   '/ops/marswallex-wallet': [
     { name: 'accounts', label: '账户' }, { name: 'addresses', label: '充值地址' }, { name: 'conversion', label: '币种兑换' },
@@ -100,7 +100,7 @@ export const PAGE_TABS: Record<string, TabDef[]> = {
     { name: 'probe', label: '免付款探测' },
   ],
   '/ops/cdkeys': [
-    { name: 'codes', label: '卡密' }, { name: 'swaps', label: '代理换码核对' },
+    { name: 'codes', label: '卡密' }, { name: 'swaps', label: '代理换码' },
   ],
 }
 

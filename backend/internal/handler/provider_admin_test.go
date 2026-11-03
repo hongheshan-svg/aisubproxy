@@ -766,7 +766,7 @@ func TestReadinessConfigProblemIsPlainText(t *testing.T) {
 		t.Fatalf("config 应未通过: %v", mw)
 	}
 	detail, _ := cfg["detail"].(string)
-	if detail != "MarsWallex 凭证未配置完整，去 MarsWallex 对接页填写" {
+	if detail != "MarsWallex 凭证未配置完整，去 MarsWallex 接入配置页填写" {
 		t.Fatalf("说明不是人话: %q", detail)
 	}
 	if raw, _ := cfg["raw"].(string); !strings.Contains(raw, "not_sent/config") {

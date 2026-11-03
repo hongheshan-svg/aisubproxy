@@ -312,3 +312,22 @@ export function submissionTagType(s: SubmissionLike): 'success' | 'warning' | 'i
 export function canAbandonSubmission(s: SubmissionLike): boolean {
   return s.state === 'unknown' || (s.state === 'submitted' && !s.card_holder_id)
 }
+
+/** 卡池策略里的选卡字段，由「MarsWallex → 选卡规则」页通过 /cardpool/selection 单独保存。 */
+export const SELECTION_KEYS = ['plan_products', 'max_uses_per_card', 'health_window_hours', 'product_fail_threshold', 'card_fail_threshold', 'auto_suspend'] as const
+
+export interface Selection {
+  plan_products: Record<string, string[]>
+  max_uses_per_card: number
+  health_window_hours: number
+  product_fail_threshold: number
+  card_fail_threshold: number
+  auto_suspend: boolean
+}
+
+/** 去掉选卡字段：卡池页保存策略时不带它们，后端沿用当前值，免得冲掉选卡规则页刚改的内容。 */
+export function withoutSelection<T extends object>(p: T): Omit<T, (typeof SELECTION_KEYS)[number]> {
+  const out: Record<string, unknown> = { ...p }
+  for (const k of SELECTION_KEYS) delete out[k]
+  return out as Omit<T, (typeof SELECTION_KEYS)[number]>
+}

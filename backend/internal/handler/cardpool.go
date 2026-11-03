@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
 	"github.com/tuzi/cdk-recharge-system/internal/cardpool"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/marswallex"
@@ -452,17 +454,46 @@ func AdminCardPoolGetPolicy(c *gin.Context) {
 	})(c)
 }
 
+// policyWriteMu 串行化卡池策略的两个保存接口（PUT /policy、PUT /selection）。
+// 两者都是「读当前策略 → 合并 → 写整份 JSON」，不串行时会互相冲掉对方刚保存的字段。
+var policyWriteMu sync.Mutex
+
 func AdminCardPoolPutPolicy(c *gin.Context) {
 	poolRoute(func(c *gin.Context, s *cardpool.Service) {
+		// 选卡字段由「MarsWallex → 选卡规则」页单独保存（PUT /cardpool/selection），新的卡池页不再提交。
+		// 请求体里没出现的选卡字段沿用当前值；出现了照常使用（升级前还开着的旧卡池页会整份提交）。
+		// 按「键有没有出现」判断，不按零值判断。
+		// 先读完请求体再加锁、读当前策略：读当前值不能早于另一页的保存，上传慢的请求也不占着锁。
+		var raw map[string]json.RawMessage
+		if c.ShouldBindBodyWith(&raw, binding.JSON) != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "请求体无效"})
+			return
+		}
+		var absent []string
+		for _, k := range cardpool.SelectionKeys {
+			if _, ok := raw[k]; !ok {
+				absent = append(absent, k)
+			}
+		}
+		policyWriteMu.Lock()
+		defer policyWriteMu.Unlock()
+		cur, curErr := cardpool.LoadPolicy()
+		// 读不出当前策略时，没带的选卡字段无从沿用：拒绝保存，否则会被默认值顶掉
+		// （plan_products 清空，MarsWallex 就停止供卡）。整份提交照旧，见下面资金上限的说明。
+		if curErr != nil && len(absent) > 0 {
+			poolFail(c, curErr)
+			return
+		}
 		p := cardpool.DefaultPolicy()
 		// 旧前端不认识资金上限字段，保存时不传：沿用当前值，不能被默认值悄悄改掉。
 		// 其它字段不能这样打底（map 会被合并）。读不出来时 LoadPolicy 返回默认值，正好是安全的上限。
-		cur, _ := cardpool.LoadPolicy()
 		p.MaxFundCents, p.MaxWalletOpCents, p.DailyFundCapCents = cur.MaxFundCents, cur.MaxWalletOpCents, cur.DailyFundCapCents
 		p.ReplenishWhenUnselected = cur.ReplenishWhenUnselected
-		if !bindPoolJSON(c, &p) {
+		if c.ShouldBindBodyWith(&p, binding.JSON) != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "请求体无效"})
 			return
 		}
+		p.CopySelection(cur, absent...)
 		if p.PlanProducts == nil {
 			p.PlanProducts = map[string][]string{}
 		}
@@ -525,5 +556,60 @@ func AdminReprocessMarsWallexWebhookEvent(c *gin.Context) {
 		}
 		poolAudit(c, "reprocess_event", "event_id="+strconv.FormatInt(id, 10))
 		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})(c)
+}
+
+// AdminCardPoolGetSelection GET /api/v1/admin/cardpool/selection：只读选卡字段。
+func AdminCardPoolGetSelection(c *gin.Context) {
+	poolRoute(func(c *gin.Context, s *cardpool.Service) {
+		p, err := cardpool.LoadPolicy()
+		if err != nil {
+			poolFail(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, p.Selection())
+	})(c)
+}
+
+// AdminCardPoolPutSelection PUT /api/v1/admin/cardpool/selection：只改选卡字段，其余策略字段保持当前值。
+// 请求体里没带的选卡字段也保持当前值。
+func AdminCardPoolPutSelection(c *gin.Context) {
+	poolRoute(func(c *gin.Context, s *cardpool.Service) {
+		// 先读完请求体再加锁、读当前策略（同 PUT /policy）
+		var body json.RawMessage
+		if c.ShouldBindBodyWith(&body, binding.JSON) != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "请求体无效"})
+			return
+		}
+		policyWriteMu.Lock()
+		defer policyWriteMu.Unlock()
+		// 读不出当前策略时拒绝保存：否则其余字段会被默认值覆盖
+		cur, err := cardpool.LoadPolicy()
+		if err != nil {
+			poolFail(c, err)
+			return
+		}
+		sel := cur.Selection()
+		// plan_products 不能绑定到已有的 map 上（会和原来的合并，删掉的套餐删不掉）
+		sel.PlanProducts = nil
+		if c.ShouldBindBodyWith(&sel, binding.JSON) != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "请求体无效"})
+			return
+		}
+		if sel.PlanProducts == nil {
+			sel.PlanProducts = cur.PlanProducts
+		}
+		cur.ApplySelection(sel)
+		if err := cardpool.SavePolicy(cur); err != nil {
+			poolFail(c, err)
+			return
+		}
+		// 审计记保存后的选卡字段（只有产品 ID 与数值参数，没有密钥）
+		detail, err := json.Marshal(sel)
+		if err != nil {
+			detail = []byte("updated")
+		}
+		poolAudit(c, "selection", string(detail))
+		c.JSON(http.StatusOK, sel)
 	})(c)
 }

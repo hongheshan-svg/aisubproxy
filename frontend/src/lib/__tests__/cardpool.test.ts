@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { canAbandonSubmission, submissionLabel, submissionTagType, emptyCardholderForm, toCardholderPayload, validateCardholderForm, FLAG_LABEL, fmtTs, hasEmoji, isUncertain, isUnknownOutcome, kindLabel, ledgerPagerTotal, mainSellCurrencies, orderStateText, parseAmountCents, submitOutcome } from '../cardpool'
+import { canAbandonSubmission, submissionLabel, submissionTagType, emptyCardholderForm, toCardholderPayload, validateCardholderForm, FLAG_LABEL, fmtTs, hasEmoji, isUncertain, isUnknownOutcome, kindLabel, ledgerPagerTotal, mainSellCurrencies, orderStateText, parseAmountCents, submitOutcome, withoutSelection, SELECTION_KEYS } from '../cardpool'
 
 describe('cardpool lib', () => {
   it('parseAmountCents', () => {
@@ -183,5 +183,19 @@ describe('cardpool lib', () => {
       .toEqual(['USD', 'USDT'])
     expect(mainSellCurrencies([acct('MAIN', false, 'USD'), acct('MAIN', true, 'EUR')])).toEqual(['USDT', 'USD'])
     expect(mainSellCurrencies([{ account_type: 'MAIN', gone: false, balances: null }])).toEqual(['USDT'])
+  })
+})
+
+describe('withoutSelection', () => {
+  it('去掉 6 个选卡字段，保留其余字段，不改原对象', () => {
+    const p = {
+      plan_products: { plus: ['p1'] }, max_uses_per_card: 2, health_window_hours: 24, product_fail_threshold: 3,
+      card_fail_threshold: 2, auto_suspend: true, card_name_prefix: 'POOL', max_fund_cents: 500,
+    }
+    const out = withoutSelection(p)
+    expect(out).toEqual({ card_name_prefix: 'POOL', max_fund_cents: 500 })
+    expect(p.max_uses_per_card).toBe(2)
+    expect(Object.keys(p)).toHaveLength(8)
+    expect([...SELECTION_KEYS]).toEqual(['plan_products', 'max_uses_per_card', 'health_window_hours', 'product_fail_threshold', 'card_fail_threshold', 'auto_suspend'])
   })
 })

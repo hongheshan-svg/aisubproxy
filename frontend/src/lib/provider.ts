@@ -222,6 +222,16 @@ export const CHECK_HINTS: Record<string, CheckHint> = {
   balance: { title: '卡台余额', link: { to: '/ops/integration', label: '去卡台页' } },
 }
 
+/** 各服务商的选卡规则页（卡头、用卡顺序）。没有的服务商不显示入口。 */
+export const SELECTION_PAGE: Record<string, string> = {
+  zovocard: '/ops/card-selection',
+  marswallex: '/ops/marswallex-selection',
+}
+
+export function selectionPage(provider: string): string | undefined {
+  return SELECTION_PAGE[provider]
+}
+
 /** 检查项标题：接口给的 title 优先，其次按 key 查表，最后显示 key。 */
 export function checkTitle(key: string, title?: string): string {
   return (title && title.trim()) || CHECK_HINTS[key]?.title || key

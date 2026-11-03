@@ -1,6 +1,6 @@
 <template>
   <div class="space-y-4">
-    <AdminPageHeader title="卡池" description="MarsWallex 卡池：库存、卡、持卡人、单据、交易与策略" class="!mb-0" />
+    <AdminPageHeader title="MarsWallex 卡池" description="库存、卡、持卡人、单据、交易，以及开卡与补卡策略" class="!mb-0" />
 
     <div class="card">
       <el-tabs v-model="tab">
@@ -286,8 +286,12 @@
           />
         </el-tab-pane>
 
-        <!-- ============ 策略与健康度 ============ -->
-        <el-tab-pane label="策略与健康度" name="policy">
+        <!-- ============ 开卡与补卡策略 ============ -->
+        <el-tab-pane label="开卡与补卡策略" name="policy">
+          <div class="text-sm text-muted mb-3" data-test="selection-moved">
+            选卡规则（各套餐的卡产品优先级、自动停用、健康度）已移到
+            <router-link to="/ops/marswallex-selection" class="text-primary">MarsWallex → 选卡规则</router-link>。
+          </div>
           <div v-if="policy" class="space-y-4">
             <el-form label-position="top" class="policy-form" @submit.prevent>
               <div class="grid-form">
@@ -300,26 +304,11 @@
                 <el-form-item label="卡名前缀（1-10 位字母数字）">
                   <el-input v-model="policy.card_name_prefix" maxlength="10" />
                 </el-form-item>
-                <el-form-item label="单卡最大使用次数（1-100）">
-                  <el-input-number v-model="policy.max_uses_per_card" :min="1" :max="100" />
-                </el-form-item>
                 <el-form-item label="租期（分钟，5-240）">
                   <el-input-number v-model="policy.lease_minutes" :min="5" :max="240" />
                 </el-form-item>
                 <el-form-item label="用完后注销等待（天，0-90）">
                   <el-input-number v-model="policy.cancel_after_days" :min="0" :max="90" />
-                </el-form-item>
-                <el-form-item label="健康度统计窗口（小时，1-720）">
-                  <el-input-number v-model="policy.health_window_hours" :min="1" :max="720" />
-                </el-form-item>
-                <el-form-item label="产品失败阈值（1-100）">
-                  <el-input-number v-model="policy.product_fail_threshold" :min="1" :max="100" />
-                </el-form-item>
-                <el-form-item label="单卡失败阈值（1-100）">
-                  <el-input-number v-model="policy.card_fail_threshold" :min="1" :max="100" />
-                </el-form-item>
-                <el-form-item label="自动暂停">
-                  <el-switch v-model="policy.auto_suspend" />
                 </el-form-item>
               </div>
 
@@ -348,30 +337,6 @@
                 </el-select>
               </el-form-item>
 
-              <div class="text-sm font-semibold text-ink mb-1">各套餐的产品优先级（自上而下）</div>
-              <div v-for="key in planKeys" :key="key" class="plan-box">
-                <div class="flex items-center gap-2 mb-2">
-                  <b class="mono">{{ key }}</b>
-                  <span v-if="key === 'default'" class="text-xs text-subtle">兜底</span>
-                  <el-button v-if="key !== 'default'" size="small" text type="danger" @click="removePlan(key)">删除套餐</el-button>
-                </div>
-                <div v-for="(pid, i) in policy.plan_products[key]" :key="pid" class="flex items-center gap-2 mb-1">
-                  <span class="text-xs text-muted w-5">{{ i + 1 }}.</span>
-                  <span class="flex-1 text-sm">{{ productLabel(pid) }}</span>
-                  <el-button size="small" text :disabled="i === 0" @click="moveProduct(key, i, -1)">上移</el-button>
-                  <el-button size="small" text :disabled="i === policy.plan_products[key].length - 1" @click="moveProduct(key, i, 1)">下移</el-button>
-                  <el-button size="small" text type="danger" @click="policy.plan_products[key].splice(i, 1)">移除</el-button>
-                </div>
-                <el-select :model-value="''" placeholder="添加产品" style="width: 260px" size="small" @change="(v: string) => addProduct(key, v)">
-                  <el-option v-for="p in products.filter((x) => !policy!.plan_products[key].includes(x.product_id))"
-                    :key="p.product_id" :label="productLabel(p.product_id)" :value="p.product_id" />
-                </el-select>
-              </div>
-              <div class="flex items-center gap-2 mt-2 mb-4">
-                <el-input v-model="newPlanKey" size="small" placeholder="新增套餐 key" style="width: 200px" class="mono" />
-                <el-button size="small" @click="addPlan">添加套餐</el-button>
-              </div>
-
               <div class="text-sm font-semibold text-ink mb-1">各产品目标数</div>
               <el-table :data="targetRows" size="small" border empty-text="暂无产品" class="mb-2">
                 <el-table-column label="产品" min-width="200">
@@ -397,38 +362,6 @@
             </div>
           </div>
 
-          <div class="mt-6">
-            <div class="flex items-center justify-between mb-2">
-              <h3 class="text-lg font-bold text-ink">健康度</h3>
-              <el-button size="small" :loading="healthLoading" @click="loadHealth">刷新</el-button>
-            </div>
-            <el-table :data="health" size="small" border empty-text="暂无数据" v-loading="healthLoading">
-              <el-table-column label="产品" min-width="180">
-                <template #default="{ row }">{{ productLabel(row.product_id) }}</template>
-              </el-table-column>
-              <el-table-column prop="plan_key" label="套餐" width="110" />
-              <el-table-column label="24h 成功/失败" width="130">
-                <template #default="{ row }">{{ row.success_24h }} / {{ row.failed_24h }}</template>
-              </el-table-column>
-              <el-table-column label="7d 成功/失败" width="130">
-                <template #default="{ row }">{{ row.success_7d }} / {{ row.failed_7d }}</template>
-              </el-table-column>
-              <el-table-column label="状态" width="90">
-                <template #default="{ row }">
-                  <el-tag size="small" :type="row.suspended ? 'danger' : 'success'">{{ row.suspended ? '已暂停' : '正常' }}</el-tag>
-                </template>
-              </el-table-column>
-              <el-table-column prop="reason" label="原因" min-width="160" show-overflow-tooltip />
-              <el-table-column label="暂停时间" min-width="150">
-                <template #default="{ row }">{{ fmtTs(row.suspended_at) }}</template>
-              </el-table-column>
-              <el-table-column label="操作" width="90">
-                <template #default="{ row }">
-                  <el-button v-if="row.suspended" size="small" type="success" plain @click="resumeProduct(row)">恢复</el-button>
-                </template>
-              </el-table-column>
-            </el-table>
-          </div>
         </el-tab-pane>
       </el-tabs>
     </div>
@@ -610,7 +543,7 @@ import { useRouter } from 'vue-router'
 import CardholderForm from './components/CardholderForm.vue'
 import {
   ORDER_KINDS, canAbandonSubmission, errText, submissionLabel, submissionTagType, fmtTs, isUncertain, kindLabel, money, poolApi as api,
-  orderStateText, orderToast, type CardholderFormValue,
+  orderStateText, orderToast, withoutSelection, type CardholderFormValue,
 } from '../../lib/cardpool'
 import { dialog } from '../../lib/dialog'
 import { useAuthStore } from '../../stores/auth'
@@ -665,10 +598,6 @@ interface Policy {
   max_wallet_op_cents: number
   daily_fund_cap_cents: number
   replenish_when_unselected: boolean
-}
-interface Health {
-  product_id: string; plan_key: string; success_24h: number; failed_24h: number
-  success_7d: number; failed_7d: number; suspended: boolean; suspended_at: number | null; reason: string
 }
 
 const PAGE_SIZE = 20
@@ -1318,21 +1247,13 @@ async function saveLimit() {
   else limitError.value = errText(r, '设置失败')
 }
 
-// ---------- 策略与健康度 ----------
+// ---------- 开卡与补卡策略（选卡字段在 MarsWallexSelection 页单独保存） ----------
 const policy = ref<Policy | null>(null)
 const openAmountText = ref('0.00')
 const policySaving = ref(false)
 const policyError = ref('')
 // 三个资金上限在界面上用美元文本编辑，提交时换算成分
 const limitText = reactive({ fund: '', wallet: '', daily: '' })
-const newPlanKey = ref('')
-const health = ref<Health[]>([])
-const healthLoading = ref(false)
-
-const planKeys = computed(() => {
-  const keys = Object.keys(policy.value?.plan_products || {})
-  return keys.sort((a, b) => (a === 'default' ? -1 : b === 'default' ? 1 : a.localeCompare(b)))
-})
 
 // 目标数表：覆盖全部已知产品（缺的行由 ensureTargetRows 在加载时补上），保存时只保留有值的
 const targetRows = computed(() => {
@@ -1365,25 +1286,6 @@ async function loadPolicy() {
   limitText.fund = centsToUsd(p.max_fund_cents)
   limitText.wallet = centsToUsd(p.max_wallet_op_cents)
   limitText.daily = centsToUsd(p.daily_fund_cap_cents)
-}
-
-function addProduct(key: string, pid: string) {
-  if (pid && policy.value && !policy.value.plan_products[key].includes(pid)) policy.value.plan_products[key].push(pid)
-}
-function moveProduct(key: string, i: number, d: number) {
-  const list = policy.value!.plan_products[key]
-  const j = i + d
-  if (j < 0 || j >= list.length) return
-  ;[list[i], list[j]] = [list[j], list[i]]
-}
-function addPlan() {
-  const k = newPlanKey.value.trim()
-  if (!k || !policy.value) return
-  if (!policy.value.plan_products[k]) policy.value.plan_products[k] = []
-  newPlanKey.value = ''
-}
-function removePlan(key: string) {
-  if (policy.value) delete policy.value.plan_products[key]
 }
 
 async function savePolicy() {
@@ -1423,7 +1325,8 @@ async function savePolicy() {
     if (!ok) return
   }
   // PUT 会替换整份策略：带上从服务器加载的全部字段，只改表单里编辑的值。
-  const body: Policy = {
+  // 选卡字段不带：后端沿用当前值，免得冲掉「MarsWallex → 选卡规则」页刚保存的内容。
+  const body = withoutSelection({
     ...policy.value,
     max_fund_cents: fund.cents,
     max_wallet_op_cents: wallet.cents,
@@ -1432,7 +1335,7 @@ async function savePolicy() {
     product_targets: Object.fromEntries(
       Object.entries(policy.value.product_targets).filter(([, t]) => t.target > 0 || t.daily_limit > 0),
     ),
-  }
+  })
   policySaving.value = true
   try {
     const r = await api<Policy>('/policy', 'PUT', body)
@@ -1447,24 +1350,6 @@ async function savePolicy() {
   }
 }
 
-async function loadHealth() {
-  healthLoading.value = true
-  try {
-    const r = await api<{ items: Health[] }>('/health')
-    if (!r.ok) return dialog.toast(errText(r, '加载健康度失败'), 'err')
-    health.value = r.data.items
-  } finally {
-    healthLoading.value = false
-  }
-}
-async function resumeProduct(row: Health) {
-  const ok = await dialog.confirm(`恢复产品 ${productLabel(row.product_id)}（套餐 ${row.plan_key || '—'}）？`, { title: '恢复', okText: '恢复' })
-  if (!ok) return
-  const r = await api('/health/resume', 'POST', { product_id: row.product_id, plan_key: row.plan_key })
-  if (!r.ok) return dialog.toast(errText(r, '恢复失败'), 'err')
-  dialog.toast('已恢复', 'ok')
-  loadHealth()
-}
 
 // ---------- 标签切换 / 生命周期 ----------
 function onTab(t: string) {
@@ -1476,7 +1361,6 @@ function onTab(t: string) {
   else if (t === 'policy') {
     if (!holders.value.length) loadHolders()
     loadPolicy()
-    loadHealth()
   }
 }
 watch(tab, onTab)
@@ -1526,12 +1410,6 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
   column-gap: 16px;
-}
-.plan-box {
-  padding: 10px 12px;
-  margin-bottom: 8px;
-  border: 1px solid rgba(127, 127, 127, 0.25);
-  border-radius: 8px;
 }
 .otp {
   font-size: 22px;

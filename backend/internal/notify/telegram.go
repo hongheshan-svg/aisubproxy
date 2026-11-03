@@ -292,7 +292,7 @@ func NotifyNewOrder(taskID, cdkCode, sessionJSON string) {
 			"🎟 CDK: <code>%s</code>\n"+
 			"📧 账号: %s\n"+
 			"🕐 %s（北京时间）\n"+
-			"请到后台「CDK 兑换订单」处理",
+			"请到后台「ZovoCard → 兑换订单」处理",
 		escapeHTML(taskID), escapeHTML(maskTail(cdkCode, 4)), escapeHTML(email), now,
 	)
 	SendText(text)

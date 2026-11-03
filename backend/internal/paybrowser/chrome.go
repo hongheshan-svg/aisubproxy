@@ -141,7 +141,8 @@ type Browser struct {
 	worldMu sync.Mutex
 	worlds  map[cdp.FrameID]runtime.ExecutionContextID // 各 frame 里本包专用的隔离执行环境
 
-	clickPay func(context.Context, *elem) error // 仅供测试：替换点支付按钮的动作，用来模拟点击中途出错
+	clickPay      func(context.Context, *elem) error // 仅供测试：替换点支付按钮的动作，用来模拟点击中途出错
+	beforeRecheck func(context.Context) error        // 仅供测试：内嵌页点击前复查按钮之前执行，用来模拟这期间页面重绘
 }
 
 // Launch 启动一个全新的 Chrome：临时用户目录，不带自动化标记，按 o 配置代理。

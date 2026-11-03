@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -458,5 +459,129 @@ func TestEmbeddedPayButtonStateNotUnique(t *testing.T) {
 	time.Sleep(4 * time.Second)
 	if st := b.PayButtonState(ctx); st != "不唯一（2 个）" {
 		t.Fatalf("支付按钮状态 = %q，期望「不唯一（2 个）」", st)
+	}
+}
+
+// fillSubmitEmbedded 填表并点支付。
+func fillSubmitEmbedded(t *testing.T, b *paybrowser.Browser, ctx context.Context) {
+	t.Helper()
+	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+		t.Fatalf("Fill: %v", err)
+	}
+	if err := b.Submit(ctx); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+}
+
+// 点击后页面跳离 /checkout/：WaitOutcome 立即返回「页面已离开结账页」，不等到超时；只点一次，之后再提交被拒。
+func TestEmbeddedSubmitOnceAndLeave(t *testing.T) {
+	needChrome(t)
+	t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "leave=1")
+
+	fillSubmitEmbedded(t, b, ctx)
+	start := time.Now()
+	out, msg, err := b.WaitOutcome(ctx, 20*time.Second)
+	took := time.Since(start)
+	if err != nil || out != paybrowser.OutcomeUnknown || msg != "页面已离开结账页" {
+		t.Fatalf("WaitOutcome = %q, %q, %v，期望 unknown、「页面已离开结账页」、无错误", out, msg, err)
+	}
+	if took >= 10*time.Second {
+		t.Fatalf("WaitOutcome 用了 %v，离开结账页后应立即返回（10 秒内）", took)
+	}
+	if n := len(f.payments()); n != 1 {
+		t.Fatalf("仿造页收到 %d 次提交，期望 1 次", n)
+	}
+	if n := f.doneVisits(); n != 1 {
+		t.Fatalf("跳到 /done %d 次，期望 1 次", n)
+	}
+	if err := b.Submit(ctx); !errors.Is(err, paybrowser.ErrAlreadySubmitted) {
+		t.Fatalf("再次 Submit = %v，期望 ErrAlreadySubmitted", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if n := len(f.payments()); n != 1 {
+		t.Fatalf("再次 Submit 后仿造页收到 %d 次提交，期望仍是 1 次", n)
+	}
+}
+
+// 填表后页面重绘出第二个提交按钮（Review Focus 1）：Submit 不点，返回「不唯一」，LockSubmit 证明没点过。
+func TestEmbeddedSubmitRefusesSecondButton(t *testing.T) {
+	needChrome(t)
+	t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+	t.Cleanup(paybrowser.SetFieldWait(2 * time.Second))
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "rerender=1")
+
+	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+		t.Fatalf("Fill: %v", err)
+	}
+	time.Sleep(4 * time.Second)
+	err := b.Submit(ctx)
+	if err == nil || !strings.Contains(err.Error(), "支付按钮不唯一（找到 2 个），没有点击") {
+		t.Fatalf("Submit = %v，期望「支付按钮不唯一（找到 2 个），没有点击」", err)
+	}
+	if b.LockSubmit() {
+		t.Fatal("按钮不唯一时没有点击，LockSubmit 应返回 false")
+	}
+	time.Sleep(300 * time.Millisecond)
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("按钮不唯一时仿造页收到 %d 次提交，期望 0 次", n)
+	}
+}
+
+// 主页面上的中文拒付提示不在拒付词表里（Review Focus 2）：不能判成被拒，也不能判成成功，等到超时返回 unknown。
+func TestEmbeddedChineseDeclineIsUnknown(t *testing.T) {
+	needChrome(t)
+	t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+	f := newFakeEmbedded(t)
+	const text = "你的银行卡被拒绝"
+	b, ctx := openEmbedded(t, f, "decline="+url.QueryEscape(text))
+
+	fillSubmitEmbedded(t, b, ctx)
+	out, msg, err := b.WaitOutcome(ctx, 3*time.Second)
+	if err != nil || out != paybrowser.OutcomeUnknown {
+		t.Fatalf("WaitOutcome = %q, %q, %v，期望 unknown、无错误", out, msg, err)
+	}
+	// 这段文字确实出现过、被当成认不出的提示记下，而不是根本没看到
+	if msg != text {
+		t.Fatalf("超时说明 = %q，期望最后一条未识别提示 %q", msg, text)
+	}
+}
+
+// 点击后当前页面弹出 3DS 验证框：返回 challenge。
+func TestEmbeddedChallenge(t *testing.T) {
+	needChrome(t)
+	t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "challenge=1")
+
+	fillSubmitEmbedded(t, b, ctx)
+	if out, msg, err := b.WaitOutcome(ctx, 15*time.Second); err != nil || out != paybrowser.OutcomeChallenge {
+		t.Fatalf("WaitOutcome = %q, %q, %v，期望 challenge", out, msg, err)
+	}
+}
+
+// 找到唯一按钮之后、点击之前页面又冒出第二个提交按钮（Review Focus 1）：点击那一刻重新数，不是 1 个就不点、不置位。
+func TestEmbeddedSubmitRechecksAtClick(t *testing.T) {
+	needChrome(t)
+	t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "")
+
+	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+		t.Fatalf("Fill: %v", err)
+	}
+	paybrowser.AddPayButtonBeforeRecheck(b)
+	err := b.Submit(ctx)
+	if err == nil || !strings.Contains(err.Error(), "支付按钮不唯一（找到 2 个），没有点击") {
+		t.Fatalf("Submit = %v，期望「支付按钮不唯一（找到 2 个），没有点击」", err)
+	}
+	if b.LockSubmit() {
+		t.Fatal("点击前复查不通过时没有点击，LockSubmit 应返回 false")
+	}
+	time.Sleep(300 * time.Millisecond)
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("点击前复查不通过时仿造页收到 %d 次提交，期望 0 次", n)
 	}
 }

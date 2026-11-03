@@ -88,6 +88,15 @@ func FailClick(b *Browser, afterMouse bool, err error) {
 	}
 }
 
+// AddPayButtonBeforeRecheck 让内嵌页 Submit 找到唯一的支付按钮之后、点击前复查之前，
+// 往仿造页主页面再插一个可见的提交按钮，模拟这期间页面重绘。
+func AddPayButtonBeforeRecheck(b *Browser) {
+	b.beforeRecheck = func(ctx context.Context) error {
+		const js = `document.getElementById('buttons').appendChild(Object.assign(document.createElement('button'), { type: 'submit', textContent: '升级至 Pro' })) && true`
+		return chromedp.Evaluate(js, nil).Do(ctx)
+	}
+}
+
 // MaskPageText 抹掉页面文字里的邮箱和长数字串。
 var MaskPageText = maskPageText
 

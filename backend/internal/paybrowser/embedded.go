@@ -12,7 +12,7 @@ import (
 	"github.com/chromedp/cdproto/runtime"
 )
 
-// chatgpt.com 内嵌结账页（设计 2026-11-03 §5.5、§5.6）专用的脚本与函数。
+// chatgpt.com 内嵌结账页（设计 2026-11-03 §5.5、§5.6、§5.8）专用的脚本与函数。
 //
 // 卡片字段在 js.stripe.com 的 Payment Element iframe 里，选择器与托管页共用 Sel。
 // 金额只认 iframe 里给读屏软件的英文说明「Payment amount: $100.00 Currency: usd …」：
@@ -58,6 +58,20 @@ const embeddedAmountJS = `(() => {
 
 // countVisibleJS 数本 frame 里 sel 命中的可见元素个数。
 const countVisibleJS = `((sel, visible) => Array.from(document.querySelectorAll(sel)).filter(visible).length)`
+
+// uniquePayButtonJS 在一次求值里数本 frame 里 sel 命中的可见元素：正好一个且可用时返回它；
+// 正好一个但不可用时返回 'disabled'；个数不是 1 时返回个数。数和取在同一次求值里，中间页面插不进别的脚本。
+const uniquePayButtonJS = `((sel, visible, enabled) => {
+	const list = Array.from(document.querySelectorAll(sel)).filter(visible)
+	if (list.length !== 1) return list.length
+	return enabled.call(list[0]) ? list[0] : 'disabled'
+})`
+
+// checkoutPrefix 是内嵌结账页的路径前缀；主页面路径不再以它开头，就是已经离开结账页。
+const checkoutPrefix = "/checkout/"
+
+// leftCheckoutMsg 是离开结账页时 WaitOutcome 返回的说明。
+const leftCheckoutMsg = "页面已离开结账页"
 
 // embeddedSeen 是一轮里看到的内嵌页就绪情况，三样同时成立才算打开成功。
 type embeddedSeen struct {
@@ -158,6 +172,53 @@ func (b *Browser) countVisible(ctx context.Context, f frameRef, sel string) (int
 		return 0, err
 	}
 	return n, nil
+}
+
+// embeddedPayButton 在主页面找唯一可见、可用的支付按钮，找不到返回 nil。*n 记下这次看到的可见按钮个数，读不出时为 -1。
+func (b *Browser) embeddedPayButton(ctx context.Context, main frameRef, n *int) *elem {
+	*n = -1
+	r, err := b.eval(ctx, main, fmt.Sprintf("%s(%s, %s, %s)", uniquePayButtonJS, mustJSON(embeddedPayButton), visibleJS, payEnabledJS))
+	switch {
+	case err != nil:
+		return nil
+	case r.ObjectID != "":
+		*n = 1
+		return &elem{frame: main, obj: r.ObjectID, sel: embeddedPayButton}
+	case r.Type == runtime.TypeString: // 唯一但不可用
+		*n = 1
+		return nil
+	}
+	var count int
+	if json.Unmarshal(r.Value, &count) == nil {
+		*n = count
+	}
+	return nil
+}
+
+// embeddedPayButtonErr 说明内嵌页为什么没点支付。n 是最后一次看到的可见按钮个数（见 embeddedPayButton）。
+func embeddedPayButtonErr(n int) error {
+	switch {
+	case n < 0:
+		return errors.New("支付按钮读不出，没有点击")
+	case n == 1:
+		return errors.New("支付按钮不可点击（可能有字段未通过页面校验），没有点击")
+	}
+	return fmt.Errorf("支付按钮不唯一（找到 %d 个），没有点击", n)
+}
+
+// leftCheckout 读主页面的 location.pathname，不再以 /checkout/ 开头时返回 true。
+// 读不出（比如页面正在跳转、旧文档的执行环境已失效）时按还在结账页处理，下一轮再读。
+func (b *Browser) leftCheckout(ctx context.Context, main frameRef) bool {
+	r, exc, err := runtime.Evaluate(`location.pathname`).WithContextID(main.ctx).WithReturnByValue(true).Do(ctx)
+	if err != nil {
+		b.forgetWorld(main.id)
+		return false
+	}
+	var path string
+	if exc != nil || json.Unmarshal(r.Value, &path) != nil {
+		return false
+	}
+	return !strings.HasPrefix(path, checkoutPrefix)
 }
 
 // embeddedAmountText 在各 frame 里找 Payment amount 读屏文字，返回所在父元素的文字；找不到返回空串。读不出的 frame 跳过。

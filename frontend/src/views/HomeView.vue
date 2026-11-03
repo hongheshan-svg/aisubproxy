@@ -1,43 +1,96 @@
 <template>
   <div class="u-page">
     <UserPageHeader :eyebrow="t('hero.redeemEyebrow')" :title="t('home.heroTitle')" :subtitle="t('home.heroSub')" badges />
-    <div class="u-main max-w-6xl">
-      <!-- Main Services -->
-      <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-6 animate-slideInUp">
-        <router-link
-          v-for="svc in services"
-          :key="svc.to"
-          :to="svc.to"
-          class="card card-hover group svc-card"
-        >
-          <span class="grid h-12 w-12 place-items-center rounded-2xl" style="background: var(--primary-soft); color: var(--primary)" v-html="svc.icon" />
-          <h3 class="mt-4 text-xl font-bold text-ink">{{ svc.title }}</h3>
-          <p class="mt-1 text-sm text-subtle">{{ svc.en }}</p>
-          <div class="mt-5 space-y-2 text-sm text-muted">
-            <div v-for="line in svc.points" :key="line" class="flex items-center gap-2">
-              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 shrink-0" style="color: var(--primary)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
-              <span>{{ line }}</span>
+    <div class="u-main max-w-6xl space-y-16">
+      <!-- 三步充值 -->
+      <section class="card animate-slideInUp" data-testid="quick-steps" aria-labelledby="quick-title">
+        <div class="text-center">
+          <h2 id="quick-title" class="text-2xl font-bold text-ink">{{ t('home.quick.title') }}</h2>
+          <p class="mt-2 text-sm text-muted">{{ t('home.quick.sub') }}</p>
+        </div>
+        <ol class="mt-8 grid gap-6 md:grid-cols-3">
+          <li v-for="(s, i) in quickSteps" :key="s.title" class="space-y-2">
+            <div class="flex items-center gap-3">
+              <span class="grid h-8 w-8 shrink-0 place-items-center rounded-full text-sm font-bold" style="background: var(--primary-soft); color: var(--primary)">{{ i + 1 }}</span>
+              <h3 class="font-bold text-ink">{{ s.title }}</h3>
             </div>
-          </div>
-          <div class="mt-6 text-sm font-medium app-link">{{ svc.cta }} →</div>
-        </router-link>
-      </div>
+            <p class="text-sm text-muted leading-relaxed">{{ s.desc }}</p>
+            <ul v-if="s.creds" class="space-y-1 text-sm text-muted">
+              <li v-for="c in s.creds" :key="c" class="flex gap-2">
+                <span aria-hidden="true" style="color: var(--primary)">•</span>
+                <span>{{ c }}</span>
+              </li>
+            </ul>
+          </li>
+        </ol>
+        <div class="mt-8 flex flex-wrap justify-center gap-3">
+          <router-link to="/recharge" class="btn-primary">{{ t('home.quick.ctaSingle') }}</router-link>
+          <router-link to="/batch" class="btn-secondary">{{ t('home.quick.ctaBatch') }}</router-link>
+        </div>
+      </section>
 
-      <!-- Flow Section -->
-      <div class="mt-16 pt-12 border-t bd">
-        <h3 class="text-2xl font-bold text-ink mb-10 text-center">{{ t('home.flowTitle') }}</h3>
-        <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-8">
-          <div v-for="flow in flows" :key="flow.title" class="space-y-4">
-            <h4 class="font-bold text-ink">{{ flow.title }}</h4>
-            <div class="space-y-3 text-sm text-muted">
-              <div v-for="(step, i) in flow.steps" :key="i" class="flex gap-3">
-                <span class="grid h-6 w-6 shrink-0 place-items-center rounded-full text-xs font-bold" style="background: var(--primary-soft); color: var(--primary)">{{ i + 1 }}</span>
-                <span>{{ step }}</span>
+      <!-- 入口 -->
+      <section aria-labelledby="services-title">
+        <h2 id="services-title" class="text-2xl font-bold text-ink mb-6 text-center">{{ t('home.servicesTitle') }}</h2>
+        <div class="grid md:grid-cols-2 lg:grid-cols-4 gap-6">
+          <router-link
+            v-for="svc in services"
+            :key="svc.to"
+            :to="svc.to"
+            class="card card-hover group svc-card"
+          >
+            <span class="grid h-12 w-12 place-items-center rounded-2xl" style="background: var(--primary-soft); color: var(--primary)" v-html="svc.icon" />
+            <h3 class="mt-4 text-xl font-bold text-ink">{{ svc.title }}</h3>
+            <p class="mt-1 text-sm text-subtle">{{ svc.en }}</p>
+            <div class="mt-5 space-y-2 text-sm text-muted">
+              <div v-for="line in svc.points" :key="line" class="flex items-center gap-2">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 shrink-0" style="color: var(--primary)" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+                <span>{{ line }}</span>
               </div>
             </div>
+            <div class="mt-6 text-sm font-medium app-link">{{ svc.cta }} →</div>
+          </router-link>
+        </div>
+      </section>
+
+      <!-- 兑换后怎么查 -->
+      <section class="pt-12 border-t bd" data-testid="query-guide" aria-labelledby="query-title">
+        <div class="text-center mb-8">
+          <h2 id="query-title" class="text-2xl font-bold text-ink">{{ t('home.query.title') }}</h2>
+          <p class="mt-2 text-sm text-muted">{{ t('home.query.sub') }}</p>
+        </div>
+        <div class="grid gap-6 md:grid-cols-3">
+          <div v-for="q in queries" :key="q.title" class="card flex flex-col">
+            <h3 class="font-bold text-ink">{{ q.title }}</h3>
+            <p class="mt-2 flex-1 text-sm text-muted leading-relaxed">{{ q.desc }}</p>
+            <router-link :to="q.to" class="mt-4 text-sm font-medium app-link">{{ q.cta }} →</router-link>
           </div>
         </div>
-      </div>
+      </section>
+
+      <!-- 常见问题 -->
+      <section id="help" class="pt-12 border-t bd" aria-labelledby="faq-title">
+        <div class="text-center mb-8">
+          <h2 id="faq-title" class="text-2xl font-bold text-ink">{{ t('home.faq.title') }}</h2>
+          <p class="mt-2 text-sm text-muted">{{ t('home.faq.sub') }}</p>
+        </div>
+        <div class="mx-auto max-w-3xl space-y-3">
+          <details v-for="item in faqs" :key="item.key" class="card faq-item">
+            <summary class="faq-q font-semibold text-ink">{{ item.q }}</summary>
+            <div class="mt-3 space-y-2 text-sm text-muted leading-relaxed">
+              <template v-if="item.key === 'session'">
+                <p><SessionHelp /></p>
+                <p>{{ t('sessionHelp.tokenRule') }}</p>
+              </template>
+              <template v-else-if="item.key === 'claude'">
+                <p>{{ t('claude.hint') }}</p>
+                <p>{{ t('claude.findOrg') }}</p>
+              </template>
+              <p v-else>{{ item.a }}</p>
+            </div>
+          </details>
+        </div>
+      </section>
     </div>
   </div>
 </template>
@@ -46,8 +99,19 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import UserPageHeader from '../components/UserPageHeader.vue'
+import SessionHelp from '../components/SessionHelp.vue'
 
 const { t } = useI18n({ useScope: 'global' })
+
+const quickSteps = computed(() => [
+  { title: t('home.quick.s1.title'), desc: t('home.quick.s1.desc') },
+  {
+    title: t('home.quick.s2.title'),
+    desc: t('home.quick.s2.desc'),
+    creds: [t('home.quick.creds.gpt'), t('home.quick.creds.claude'), t('home.quick.creds.grok'), t('home.quick.creds.x')],
+  },
+  { title: t('home.quick.s3.title'), desc: t('home.quick.s3.desc') },
+])
 
 const services = computed(() => [
   {
@@ -84,10 +148,24 @@ const services = computed(() => [
   },
 ])
 
-const flows = computed(() => [
-  { title: t('home.flows.submit.title'), steps: [t('home.flows.submit.s1'), t('home.flows.submit.s2'), t('home.flows.submit.s3')] },
-  { title: t('home.flows.batch.title'), steps: [t('home.flows.batch.s1'), t('home.flows.batch.s2'), t('home.flows.batch.s3')] },
-  { title: t('home.flows.lookup.title'), steps: [t('home.flows.lookup.s1'), t('home.flows.lookup.s2'), t('home.flows.lookup.s3')] },
-  { title: t('home.flows.billing.title'), steps: [t('home.flows.billing.s1'), t('home.flows.billing.s2'), t('home.flows.billing.s3')] },
+const queries = computed(() => [
+  { to: '/recharge', title: t('home.query.progress.title'), desc: t('home.query.progress.desc'), cta: t('home.query.progress.cta') },
+  { to: '/history', title: t('home.query.status.title'), desc: t('home.query.status.desc'), cta: t('home.query.status.cta') },
+  { to: '/billing', title: t('home.query.billing.title'), desc: t('home.query.billing.desc'), cta: t('home.query.billing.cta') },
 ])
+
+// session 和 claude 的答案是固定说明（带链接或两段），在模板里单独渲染
+const faqs = computed(() => ['entry', 'pending', 'session', 'claude', 'used', 'failed', 'agent'].map((key) => ({
+  key,
+  q: t(`home.faq.${key}.q`),
+  a: key === 'session' || key === 'claude' ? '' : t(`home.faq.${key}.a`),
+})))
 </script>
+
+<style scoped>
+.faq-item { padding-top: 1rem; padding-bottom: 1rem; }
+.faq-q { cursor: pointer; list-style: none; display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
+.faq-q::-webkit-details-marker { display: none; }
+.faq-q::after { content: '+'; flex-shrink: 0; font-size: 1.25rem; line-height: 1; color: var(--primary); }
+details[open] > .faq-q::after { content: '−'; }
+</style>

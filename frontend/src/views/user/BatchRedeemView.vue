@@ -6,6 +6,7 @@
       <RedeemModeTabs />
       <p class="hint-line text-sm text-muted mb-3">{{ t('xPremium.batchHint') }}</p>
       <p class="hint-line text-sm text-muted mb-3">{{ t('grok.batchHint') }}</p>
+      <p class="hint-line text-sm text-muted mb-3">{{ t('claude.batchHint') }}</p>
 
       <div class="card space-y-4">
         <div class="flex items-start gap-3 pb-3 border-b bd">
@@ -179,6 +180,7 @@
               </div>
             </div>
             <template v-if="credMode === 'session'">
+              <p class="text-xs text-muted leading-relaxed"><SessionHelp /></p>
               <p
                 v-if="currentExcelIdx >= 0 && sessionPool[currentExcelIdx]?.email"
                 class="text-xs text-muted"
@@ -335,7 +337,9 @@ import { useI18n } from 'vue-i18n'
 import UserPageHeader from '../../components/UserPageHeader.vue'
 import RedeemModeTabs from '../../components/RedeemModeTabs.vue'
 import ExcelImportBlock from '../../components/ExcelImportBlock.vue'
+import SessionHelp from '../../components/SessionHelp.vue'
 import { isGrokCredential } from '../../lib/grok'
+import { isClaudePreview } from '../../lib/claude'
 import {
   AUTO_SUBMIT_CONCURRENCY,
   BATCH_MAX_KEYS,
@@ -777,6 +781,11 @@ async function handleVerifyBatch() {
           }
         }
         const body = data?.data || data || {}
+        // Claude 码要填 Organization ID（两次核对、确认免费账号），批量页不配对，交给单张兑换
+        if (isClaudePreview(body)) {
+          const msg = t('claude.batchSingleOnly')
+          return { ...item, status: 'verify_fail' as const, verifyMsg: msg, error: msg }
+        }
         return {
           ...item,
           status: 'waiting_session' as const,

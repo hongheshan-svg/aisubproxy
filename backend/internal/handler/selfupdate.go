@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
@@ -19,7 +20,7 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 )
 
-// 在线更新的安全加固：发布包签名校验、升级前自检、数据库备份、回滚、容器内禁用。
+// 在线更新的安全加固：发布包签名校验、升级前自检、数据库备份、回滚。
 
 // releasePublicKeyB64 为发布签名公钥（ed25519，base64）。私钥只在 GitHub Actions 的
 // RELEASE_SIGNING_KEY Secret 中；没有它签不出能被安装的发布包。测试会替换此值。
@@ -45,14 +46,15 @@ var selfBinaryPath = func() string {
 // maxUpdateBackups 为保留的升级备份数，更早的自动删除，避免占满磁盘。
 const maxUpdateBackups = 3
 
-const containerUpdateHint = "当前为 Docker 部署，在线更新已禁用（容器重建后会退回镜像里的版本）：请拉取新代码后重建镜像，或改用 deploy/install.sh 的 systemd 部署"
+// containerMarkers 是 Docker / Podman 在容器里放的标记文件。测试会清空它，免得在容器里跑测试时走错分支。
+var containerMarkers = []string{"/.dockerenv", "/run/.containerenv"}
 
 // inContainer 判断是否运行在容器中：显式 CDK_DEPLOY_MODE=docker，或存在 Docker / Podman 的标记文件。
 func inContainer() bool {
 	if strings.EqualFold(strings.TrimSpace(os.Getenv("CDK_DEPLOY_MODE")), "docker") {
 		return true
 	}
-	for _, p := range []string{"/.dockerenv", "/run/.containerenv"} {
+	for _, p := range containerMarkers {
 		if _, err := os.Stat(p); err == nil {
 			return true
 		}
@@ -177,55 +179,74 @@ func latestBackup(updDir string) (string, error) {
 	return "", fmt.Errorf("%s 下没有可用的升级备份", updDir)
 }
 
+// rollbackPaths 是命令行回滚读写的位置。
+type rollbackPaths struct {
+	UpdDir  string // 升级备份所在目录；出问题的版本也留存到这里的 failed-*
+	Bin     string // 要恢复的程序
+	Web     string // 要恢复的前端目录
+	Ver     string // 要恢复的版本号文件
+	Restart string // 回滚后让管理员执行的重启命令
+}
+
 // RollbackLatest 用最新的升级备份恢复程序、前端文件和版本号；出问题的当前版本移到 updates/failed-*。
 // 数据库不自动恢复（迁移只加不改，旧版本可以直接用新库），备份路径会打印出来。
 func RollbackLatest(root, binPath, web string, w io.Writer) error {
-	updDir := filepath.Join(root, "updates")
-	bak, err := latestBackup(updDir)
+	_, err := rollbackWith(rollbackPaths{
+		UpdDir:  filepath.Join(root, updatesDirName),
+		Bin:     binPath,
+		Web:     web,
+		Ver:     filepath.Join(root, "VERSION"),
+		Restart: "systemctl restart cdk-recharge",
+	}, w)
+	return err
+}
+
+// rollbackWith 按 p 执行回滚，返回恢复到的版本号（备份里没有 VERSION 时为「未知」）。
+func rollbackWith(p rollbackPaths, w io.Writer) (string, error) {
+	bak, err := latestBackup(p.UpdDir)
 	if err != nil {
-		return err
+		return "", err
 	}
-	failed := filepath.Join(updDir, "failed-"+time.Now().Format("20060102-150405"))
+	failed := filepath.Join(p.UpdDir, "failed-"+time.Now().Format("20060102-150405"))
 	if err := os.MkdirAll(failed, 0o755); err != nil {
-		return err
+		return "", err
 	}
-	if _, err := os.Stat(binPath); err == nil {
-		if err := copyFile(binPath, filepath.Join(failed, "cdk-recharge")); err != nil {
-			return fmt.Errorf("留存当前程序失败: %w", err)
+	if _, err := os.Stat(p.Bin); err == nil {
+		if err := copyFile(p.Bin, filepath.Join(failed, "cdk-recharge")); err != nil {
+			return "", fmt.Errorf("留存当前程序失败: %w", err)
 		}
 	}
-	verPath := filepath.Join(root, "VERSION")
-	if _, err := os.Stat(verPath); err == nil {
-		_ = copyFile(verPath, filepath.Join(failed, "VERSION"))
+	if _, err := os.Stat(p.Ver); err == nil {
+		_ = copyFile(p.Ver, filepath.Join(failed, "VERSION"))
 	}
 
 	// 程序：先写 .rollback 再改名覆盖，运行中的进程仍用旧 inode
-	tmp := binPath + ".rollback"
+	tmp := p.Bin + ".rollback"
 	if err := copyFile(filepath.Join(bak, "cdk-recharge"), tmp); err != nil {
-		return fmt.Errorf("写入备份程序失败: %w", err)
+		return "", fmt.Errorf("写入备份程序失败: %w", err)
 	}
 	if err := os.Chmod(tmp, 0o755); err != nil {
-		return err
+		return "", err
 	}
-	if err := os.Rename(tmp, binPath); err != nil {
-		return fmt.Errorf("恢复程序失败: %w", err)
+	if err := os.Rename(tmp, p.Bin); err != nil {
+		return "", fmt.Errorf("恢复程序失败: %w", err)
 	}
 	// 前端
 	if st, err := os.Stat(filepath.Join(bak, "web")); err == nil && st.IsDir() {
-		if _, err := os.Stat(web); err == nil {
-			if err := os.Rename(web, filepath.Join(failed, "web")); err != nil {
-				return fmt.Errorf("移走当前前端文件失败: %w", err)
+		if _, err := os.Stat(p.Web); err == nil {
+			if err := os.Rename(p.Web, filepath.Join(failed, "web")); err != nil {
+				return "", fmt.Errorf("移走当前前端文件失败: %w", err)
 			}
 		}
-		if err := copyDir(filepath.Join(bak, "web"), web); err != nil {
-			return fmt.Errorf("恢复前端文件失败: %w", err)
+		if err := copyDir(filepath.Join(bak, "web"), p.Web); err != nil {
+			return "", fmt.Errorf("恢复前端文件失败: %w", err)
 		}
 	}
 	// 版本号
 	restored := "未知"
 	if b, err := os.ReadFile(filepath.Join(bak, "VERSION")); err == nil {
-		if err := os.WriteFile(verPath, b, 0o644); err != nil {
-			return err
+		if err := os.WriteFile(p.Ver, b, 0o644); err != nil {
+			return "", err
 		}
 		restored = strings.TrimSpace(string(b))
 	}
@@ -234,12 +255,46 @@ func RollbackLatest(root, binPath, web string, w io.Writer) error {
 	if _, err := os.Stat(filepath.Join(bak, "cdk_recharge.db")); err == nil {
 		fmt.Fprintf(w, "升级前的数据库备份：%s（未自动恢复；新库可直接被旧版本使用）\n", filepath.Join(bak, "cdk_recharge.db"))
 	}
-	fmt.Fprintln(w, "请执行：systemctl restart cdk-recharge")
+	fmt.Fprintln(w, "请执行："+p.Restart)
+	return restored, nil
+}
+
+// rollbackRuntime 是容器内的回滚：把 <数据目录>/updates 里最新的升级备份恢复到 <数据目录>/runtime，
+// 并删掉 boot.json，让恢复后的版本重新计启动次数。image 为镜像里的版本，为空表示不知道。
+func rollbackRuntime(data, image string, w io.Writer) error {
+	rt := runtimeDirOf(data)
+	restored, err := rollbackWith(rollbackPaths{
+		UpdDir:  filepath.Join(data, updatesDirName),
+		Bin:     filepath.Join(rt, "cdk-recharge"),
+		Web:     filepath.Join(rt, "web"),
+		Ver:     filepath.Join(rt, "VERSION"),
+		Restart: "docker restart cdk-recharge",
+	}, w)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(filepath.Join(rt, bootFileName)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("清除 %s 失败: %w", bootFileName, err)
+	}
+	if c, ok := compareVersions(restored, image); ok && c <= 0 {
+		v := strings.TrimPrefix(restored, "v")
+		fmt.Fprintf(w, "注意：恢复的 v%s 不比镜像里的 v%s 新，重启后仍以镜像版本运行，数据卷里的 runtime 会被删掉。"+
+			"要换回 v%s，请改用该版本的镜像：deploy/docker-deploy.sh --version %s\n", v, image, v, v)
+	}
 	return nil
 }
 
-// Rollback 用于命令行 `cdk-recharge rollback`。
+// Rollback 用于命令行 `cdk-recharge rollback`。容器内（docker exec 运行镜像里的程序）作用于数据卷的 runtime 目录。
 func Rollback(w io.Writer) error {
+	if inContainer() {
+		data := dataDir()
+		exe := currentExe()
+		image := ""
+		if !isWithin(exe, runtimeDirOf(data)) {
+			image = imageVersion(exe)
+		}
+		return rollbackRuntime(data, image, w)
+	}
 	return RollbackLatest(installRoot(), selfBinaryPath(), webDir(), w)
 }
 
@@ -250,8 +305,8 @@ func LocalVersion() string {
 
 // updateHint 说明为什么不能在线更新（为空表示可以）。
 func updateHint() string {
-	if inContainer() {
-		return containerUpdateHint
+	if !updateEnabled() {
+		return "已设置 UPDATE_ENABLED=0，一键更新已关闭"
 	}
 	return ""
 }

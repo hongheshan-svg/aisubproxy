@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"os"
 
 	"github.com/gin-gonic/gin"
@@ -29,6 +30,10 @@ func main() {
 		}
 	}
 
+	// Docker 部署：数据卷里有更新的在线升级版本时换过去运行（exec 成功则不返回）。
+	// 必须在加载配置、打开数据库之前；原生部署什么也不做。
+	handler.RuntimeHandoff()
+
 	ctx := context.Background()
 
 	// Load configuration
@@ -50,10 +55,16 @@ func main() {
 		log.Fatalf("Failed to initialize server: %v", err)
 	}
 
-	// Start server
+	// Start server：先监听，确认端口开了再提供服务
 	addr := fmt.Sprintf("%s:%d", cfg.Server.Host, cfg.Server.Port)
 	log.Printf("Starting server on %s", addr)
-	if err := srv.Run(addr); err != nil {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		log.Fatalf("Server error: %v", err)
+	}
+	// 数据库已打开、HTTP 已开始监听：在线升级的新版本算启动成功，清零启动次数；退回过镜像版本的在这里告警
+	handler.RuntimeBootCompleted()
+	if err := srv.Serve(ln); err != nil {
 		log.Fatalf("Server error: %v", err)
 	}
 }

@@ -79,19 +79,43 @@ func TestVerifyBundleSignature(t *testing.T) {
 	}
 }
 
-func TestUpdateDisabledInContainer(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-	t.Setenv("UPDATE_ENABLED", "1")
+// noContainerMarkers 让 inContainer 只看 CDK_DEPLOY_MODE：在容器里跑测试时也不会走错分支。
+func noContainerMarkers(t *testing.T) {
+	t.Helper()
+	old := containerMarkers
+	containerMarkers = nil
+	t.Cleanup(func() { containerMarkers = old })
+}
+
+func TestUpdateEnabledInContainer(t *testing.T) {
+	noContainerMarkers(t)
 	t.Setenv("CDK_DEPLOY_MODE", "docker")
+	t.Setenv("UPDATE_ENABLED", "")
+	if !updateEnabled() || updateHint() != "" {
+		t.Fatalf("容器内也应允许在线更新：enabled=%v hint=%q", updateEnabled(), updateHint())
+	}
+	if deployMode() != "docker" {
+		t.Fatalf("deployMode() = %q", deployMode())
+	}
+}
+
+func TestUpdateDisabledByEnvInContainer(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	noContainerMarkers(t)
+	t.Setenv("CDK_DEPLOY_MODE", "docker")
+	t.Setenv("UPDATE_ENABLED", "0")
 	if updateEnabled() {
-		t.Fatal("容器内应禁用在线更新")
+		t.Fatal("UPDATE_ENABLED=0 应关闭在线更新")
+	}
+	if !strings.Contains(updateHint(), "UPDATE_ENABLED=0") {
+		t.Fatalf("updateHint() = %q", updateHint())
 	}
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPost, "/api/v1/admin/system/update", strings.NewReader(`{"confirm":true}`))
 	c.Request.Header.Set("Content-Type", "application/json")
 	AdminSystemUpdate(c)
-	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "Docker") {
+	if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "UPDATE_ENABLED=0") {
 		t.Fatalf("got %d %s", w.Code, w.Body.String())
 	}
 }
@@ -293,6 +317,7 @@ func startFakeGitHub(t *testing.T, rel fakeRelease) {
 func setupInstall(t *testing.T) (root, bin string, reexecCalled chan string) {
 	t.Helper()
 	dbtest.Open(t)
+	noContainerMarkers(t)
 	root = t.TempDir()
 	bin = filepath.Join(root, "cdk-recharge")
 	mustWrite(t, bin, "#!/bin/sh\necho 1.5.0\n")
@@ -305,7 +330,13 @@ func setupInstall(t *testing.T) (root, bin string, reexecCalled chan string) {
 	oldBin, oldExec := selfBinaryPath, reexecFn
 	selfBinaryPath = func() string { return bin }
 	reexecCalled = make(chan string, 1)
-	reexecFn = func(p string) error { reexecCalled <- p; return nil }
+	reexecFn = func(p string, env []string) error {
+		if env != nil {
+			t.Errorf("原生部署重启应沿用当前环境变量，得到 %q", env)
+		}
+		reexecCalled <- p
+		return nil
+	}
 	t.Cleanup(func() { selfBinaryPath, reexecFn = oldBin, oldExec })
 	updMu.Lock()
 	updRunning, updSnap = true, updateState{Phase: "checking"}

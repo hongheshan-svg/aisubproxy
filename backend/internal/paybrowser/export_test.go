@@ -22,6 +22,15 @@ func ProfileDir(b *Browser) string { return b.dir }
 // ChromeIdentity 决定以哪个系统用户启动 Chrome。
 var ChromeIdentity = chromeIdentity
 
+// ChromeEnv 算出 Chrome 进程能拿到的环境变量。
+var ChromeEnv = chromeEnv
+
+// WrapChromeCmd 把启动 Chrome 的命令改成经 env -i 启动。
+var WrapChromeCmd = wrapChromeCmd
+
+// HomeInProfile 表示本平台上 Chrome 的 HOME 是否指向临时用户目录。
+const HomeInProfile = homeInProfile
+
 // SocketAlive 判断 unix socket 是否有进程在监听。
 var SocketAlive = socketAlive
 

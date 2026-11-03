@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Secure payment input frame</title>
+<style>
+  body { font-family: sans-serif; margin: 8px; }
+  label { display: block; margin: 6px 0; }
+  .p-HiddenText { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+</style>
+</head>
+<body>
+<!--
+  仿造的 Stripe Payment Element 卡片 iframe（测试用），照设计文档 §2 的真实 DOM，由与结账页跨站的服务提供。
+  卡片字段 id 与 card.html 相同。给读屏软件的金额说明放在视觉隐藏的容器里：
+    <p>Payment amount: {amount}</p><p>Currency: {currency}</p><p>Payment mode: Live mode. Test data not accepted.</p>
+  三段之间没有空白，和 React 渲染出来的一样。
+
+  查询参数：
+    amount=文字      金额原文（默认 $100.00）
+    currency=代码    币种代码（默认 usd）
+    nocurrency=1     去掉 Currency 那一段（模拟 Stripe 改了读屏文字）
+    noamount=1       没有读屏金额容器
+    savepay=1        「保存付款信息」勾选框一开始就勾上
+    addr=1           卡号框输入满 16 位后才出现国家（选项 US、PH）和邮编
+  结账页发来 collect 消息时回传各字段的值和卡号框收到的真实按键次数（与 card.html 相同的协议）。
+-->
+<label>Card number <input id="payment-numberInput" name="number" autocomplete="cc-number" inputmode="numeric"></label>
+<label>Expiration date <input id="payment-expiryInput" name="expiry" autocomplete="cc-exp" inputmode="numeric"></label>
+<label>Security code <input id="payment-cvcInput" name="cvc" autocomplete="cc-csc" inputmode="numeric"></label>
+<div id="address"></div>
+<label><input type="checkbox" id="payment-savePaymentInput" name="savePayment" class="p-Checkbox-input"> Save payment details to OpenAI OpCo, LLC for future purchases</label>
+<script>
+  var q = new URLSearchParams(location.search)
+
+  if (q.get('noamount') !== '1') {
+    var box = document.createElement('div')
+    box.className = 'p-HiddenText'
+    var lines = ['Payment amount: ' + (q.get('amount') || '$100.00')]
+    if (q.get('nocurrency') !== '1') lines.push('Currency: ' + (q.get('currency') || 'usd'))
+    lines.push('Payment mode: Live mode. Test data not accepted.')
+    lines.forEach(function (text) {
+      var p = document.createElement('p')
+      p.textContent = text
+      box.appendChild(p)
+    })
+    document.body.insertBefore(box, document.body.firstChild)
+  }
+
+  if (q.get('savepay') === '1') document.getElementById('payment-savePaymentInput').checked = true
+
+  var number = document.getElementById('payment-numberInput')
+  var numberKeys = 0
+  number.addEventListener('keydown', function (e) {
+    if (e.isTrusted && e.key.length === 1) numberKeys++
+  })
+  if (q.get('addr') === '1') {
+    number.addEventListener('input', function () {
+      if (document.getElementById('payment-countryInput') || number.value.replace(/\D/g, '').length < 16) return
+      document.getElementById('address').innerHTML =
+        '<label>Country or region <select id="payment-countryInput" name="country" autocomplete="billing country">' +
+        '<option value="US">United States</option><option value="PH">Philippines</option></select></label>' +
+        '<label>ZIP <input id="payment-postalCodeInput" name="postalCode" autocomplete="billing postal-code"></label>'
+    })
+  }
+
+  function val(id) {
+    var el = document.getElementById(id)
+    return el ? el.value : ''
+  }
+  window.addEventListener('message', function (e) {
+    if (e.source !== parent || !e.data || e.data.type !== 'collect') return
+    parent.postMessage({
+      type: 'card',
+      number: val('payment-numberInput'), expiry: val('payment-expiryInput'), cvc: val('payment-cvcInput'),
+      numberKeys: numberKeys,
+      country: val('payment-countryInput'), zip: val('payment-postalCodeInput'),
+      savePayment: document.getElementById('payment-savePaymentInput').checked
+    }, '*')
+  })
+</script>
+</body>
+</html>

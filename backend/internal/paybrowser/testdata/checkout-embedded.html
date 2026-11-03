@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>ChatGPT</title>
+<style>
+  body { font-family: sans-serif; width: 960px; margin: 24px auto; display: flex; gap: 32px; }
+  main { width: 520px; }
+  #card-frame { border: 1px solid #ccc; width: 480px; height: 300px; }
+  #challenge-modal { position: fixed; inset: 0; background: rgba(0, 0, 0, .5); display: flex; align-items: center; justify-content: center; }
+  #challenge-modal iframe { border: 0; width: 420px; height: 280px; background: #fff; }
+</style>
+</head>
+<body>
+<!--
+  仿造的 chatgpt.com 内嵌结账页（测试用），照设计文档 §2 的真实 DOM：
+  左栏是档位按钮（type="button"，引擎不碰）、Card / PayPal 标签、Stripe Payment Element 的卡片 iframe；
+  卡片 iframe 是 card-embedded.html，由另一个服务（__CARD_ORIGIN__，与本页跨站）提供，同真实页面上的 js.stripe.com。
+  主页面只有一个 button[type="submit"]，文字随账号语言（这里用中文）；右栏「今日应付金额」没有 id，不参与读金额。
+
+  查询参数：
+    twobuttons=1    主页面有两个可见的 button[type="submit"]
+    nobutton=1      主页面一个 button[type="submit"] 都没有
+    leave=1         提交成功后跳到 /done（离开结账页）
+    decline=文字    点击后主页面显示带这段文字的 [role="alert"]
+    challenge=1     点击后插入 iframe[name="stripe-challenge-frame"]，指向卡片服务的 acs.html
+    rerender=1      页面加载 1.5 秒后再插入一个可见的提交按钮（模拟填表后页面重绘）
+    其余参数原样传给卡片 iframe（amount、currency、nocurrency、noamount、savepay、addr，见 card-embedded.html）
+  点击提交后用 collect 消息向卡片 iframe 取字段值，POST 到本服务的 /pay，供测试断言。
+-->
+<main>
+  <div id="tiers">
+    <button type="button" aria-pressed="true">US$100</button>
+    <button type="button" aria-pressed="false">US$200</button>
+    <button type="button" aria-pressed="false">US$500</button>
+  </div>
+  <form id="checkout-form">
+    <div role="tablist">
+      <button type="button" role="tab" aria-selected="true">Card</button>
+      <button type="button" role="tab" aria-selected="false">PayPal</button>
+    </div>
+    <iframe id="card-frame" name="__privateStripeFrame1" title="Secure payment input frame"></iframe>
+    <div id="buttons"><button type="submit">升级至 Pro</button></div>
+    <p>点击「升级至 Pro」即表示你同意我们的条款。</p>
+  </form>
+</main>
+<aside>
+  <div>今日应付金额</div>
+  <div id="summary-amount"></div>
+</aside>
+
+<script>
+  var CARD_ORIGIN = '__CARD_ORIGIN__'
+  var q = new URLSearchParams(location.search)
+  var own = ['twobuttons', 'nobutton', 'leave', 'decline', 'challenge', 'rerender']
+  var cardQuery = new URLSearchParams()
+  q.forEach(function (v, k) {
+    if (own.indexOf(k) < 0) cardQuery.append(k, v)
+  })
+  var cardFrame = document.getElementById('card-frame')
+  cardFrame.src = CARD_ORIGIN + '/card-embedded.html?' + cardQuery
+  document.getElementById('summary-amount').textContent = q.get('amount') || 'US$100.00'
+
+  var buttons = document.getElementById('buttons')
+  function addButton() {
+    var b = document.createElement('button')
+    b.type = 'submit'
+    b.textContent = '升级至 Pro'
+    buttons.appendChild(b)
+  }
+  if (q.get('nobutton') === '1') buttons.innerHTML = ''
+  if (q.get('twobuttons') === '1') addButton()
+  if (q.get('rerender') === '1') setTimeout(addButton, 1500)
+
+  var form = document.getElementById('checkout-form')
+  form.addEventListener('submit', function (e) {
+    e.preventDefault()
+    cardFrame.contentWindow.postMessage({ type: 'collect' }, CARD_ORIGIN)
+  })
+
+  function afterPay() {
+    if (q.get('challenge') === '1') {
+      var modal = document.createElement('div')
+      modal.id = 'challenge-modal'
+      var frame = document.createElement('iframe')
+      frame.name = 'stripe-challenge-frame'
+      frame.src = CARD_ORIGIN + '/acs.html?wrap=1'
+      modal.appendChild(frame)
+      document.body.appendChild(modal)
+    }
+    if (q.get('decline')) {
+      var note = document.createElement('div')
+      note.setAttribute('role', 'alert')
+      note.textContent = q.get('decline')
+      form.appendChild(note)
+    }
+    if (q.get('leave') === '1') location.href = '/done'
+  }
+
+  window.addEventListener('message', function (e) {
+    if (e.origin !== CARD_ORIGIN || !e.data || e.data.type !== 'card') return
+    var d = e.data
+    var body = {
+      number: d.number, expiry: d.expiry, cvc: d.cvc, numberKeys: d.numberKeys,
+      country: d.country, zip: d.zip, savePayment: d.savePayment
+    }
+    fetch('/pay', { method: 'POST', body: JSON.stringify(body) }).then(afterPay)
+  })
+</script>
+</body>
+</html>

@@ -65,8 +65,7 @@ var (
 )
 
 const (
-	pageLoadTimeout = 60 * time.Second
-	pollInterval    = 250 * time.Millisecond
+	pollInterval = 250 * time.Millisecond
 
 	formWait     = 30 * time.Second       // 等卡号框出现（含点开「新卡」入口）
 	keyDelay     = 35 * time.Millisecond  // 卡号类字段逐字键入的间隔
@@ -80,6 +79,8 @@ const (
 )
 
 var (
+	// pageLoadTimeout 是打开支付页、等页面就绪的时限。
+	pageLoadTimeout = 60 * time.Second
 	// fieldWait 是卡号框出现后，等其余各字段、支付按钮、验证码框的时限。
 	fieldWait = 10 * time.Second
 	// declineSettle 是判到被拒或校验错误后再看一会儿的时长：文字之后紧跟着 3DS 或成功的，以后者为准。
@@ -121,8 +122,16 @@ const (
 	PageEmbedded                 // chatgpt.com 内嵌结账页
 )
 
-// Open 先注入 cookie 再打开支付页，等到金额元素出现为止，最多 60 秒。
-// kind 只记在 Browser 上，供后续按页面类型分支使用。
+// pageKind 返回 Open 时记下的页面类型。
+func (b *Browser) pageKind() PageKind {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.kind
+}
+
+// Open 先注入 cookie 再打开支付页，等到页面就绪为止，最多 pageLoadTimeout（60 秒）。
+// kind 记在 Browser 上，之后各步按页面类型分支。托管页等金额元素出现；
+// 内嵌页等卡号框、金额读屏文字和唯一的支付按钮，等不到时认出 Cloudflare 挑战页（见 waitEmbedded）。
 func (b *Browser) Open(ctx context.Context, url string, kind PageKind, cookies []Cookie) error {
 	b.mu.Lock()
 	b.kind = kind
@@ -150,6 +159,9 @@ func (b *Browser) Open(ctx context.Context, url string, kind PageKind, cookies [
 	}
 	if err != nil {
 		return openErr("打开支付页失败", err)
+	}
+	if kind == PageEmbedded {
+		return b.waitEmbedded(ctx)
 	}
 
 	tick := time.NewTicker(pollInterval)
@@ -208,7 +220,11 @@ func (b *Browser) amountRendered(ctx context.Context) (bool, error) {
 // WaitRendered 等支付页真正显示出来：金额可见、所在区域完全不透明、没有被遮挡、淡入动画已结束。
 // Stripe 会先把金额放进 DOM、盖着加载骨架再淡入，Open 返回时画面上可能还是骨架，这时截图没有用。
 // 最多等 max；等不到返回 false 而不报错，因为这只影响截图，不能因此中断付款。只读页面，不点击、不输入。
+// 内嵌页的金额是隐藏的读屏文字，改为等卡号框可见。
 func (b *Browser) WaitRendered(ctx context.Context, max time.Duration) bool {
+	if b.pageKind() == PageEmbedded {
+		return b.waitCardVisible(ctx, max)
+	}
 	ctx, cancel := context.WithTimeout(ctx, max)
 	defer cancel()
 	tick := time.NewTicker(pollInterval)
@@ -233,7 +249,11 @@ func openErr(what string, err error) error {
 }
 
 // ReadAmount 读取支付页汇总区的应付总额，返回最小单位金额与页面原文。
+// 内嵌页读 Payment amount 读屏文字，返回规范化原文（如 "100.00 USD"，见 normalizeEmbeddedAmount）。
 func (b *Browser) ReadAmount(ctx context.Context, currency string) (minor int64, text string, err error) {
+	if b.pageKind() == PageEmbedded {
+		return b.readEmbeddedAmount(ctx, currency)
+	}
 	text, err = b.amountText(ctx)
 	if err != nil {
 		return 0, "", fmt.Errorf("读取金额失败: %w", err)

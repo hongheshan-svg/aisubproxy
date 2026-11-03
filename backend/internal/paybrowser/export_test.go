@@ -111,3 +111,13 @@ var IsCFChallengeTitle = isCFChallengeTitle
 
 // AmountRendered 只判断一次金额是否已真正显示（不等待）。
 func AmountRendered(ctx context.Context, b *Browser) (bool, error) { return b.amountRendered(ctx) }
+
+// SetPageLoadTimeout 设置打开支付页的时限，返回恢复函数。用来测「一直等不到」的情形，免得每个用例等满 60 秒。
+func SetPageLoadTimeout(d time.Duration) (restore func()) {
+	old := pageLoadTimeout
+	pageLoadTimeout = d
+	return func() { pageLoadTimeout = old }
+}
+
+// NormalizeEmbeddedAmount 把内嵌页读屏金额文字规范成「数字 + 空格 + 大写币种代码」。
+var NormalizeEmbeddedAmount = normalizeEmbeddedAmount

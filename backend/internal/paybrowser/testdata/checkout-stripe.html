@@ -76,6 +76,8 @@
     challengeby=src           3DS 框没有 name，只靠 src 里的 three-ds 识别
     nopay=1                   没有支付按钮
     paydisabled=1             支付按钮一直 disabled
+    savepay=on|off            多一个「保存付款信息」勾选框（买点数时可能出现），on 为默认勾上；文案照前端包里的 "Save payment details to {merchantName} for future purchases."，DOM 结构是推断
+    savepaystuck=1            「保存付款信息」勾选框点了也取消不掉
   每次提交把收到的全部字段 POST 到本服务的 /pay，供测试断言；点到支付按钮就 POST /submit-attempt（前端校验拦下时也算）。
 -->
 <section id="summary">
@@ -145,6 +147,14 @@
       </select>
       <input id="phoneNumber" name="phoneNumber" type="tel" autocomplete="tel" aria-label="Phone number" aria-required="true" class="CheckoutInput PhoneNumberInput-input SignUpForm-phoneInput CheckoutInput--hasPlaceholderIcon Input Input--empty">
     </div>
+  </div>
+
+  <div id="savepay-section" class="Checkbox" style="display:none">
+    <div class="Checkbox-InputContainer">
+      <input id="savePaymentDetails" name="savePaymentDetails" type="checkbox" class="Checkbox-Input">
+      <span class="Checkbox-StyledInput"></span>
+    </div>
+    <label for="savePaymentDetails">Save payment details to OpenAI for future purchases.</label>
   </div>
 
   <div id="decoy-row" style="display:none"><input id="promo-number" name="number" aria-label="Promo number"></div>
@@ -253,6 +263,15 @@
   }
 
   if (q.get('nocvc') === '1') $('cardCvc').remove()
+  if (q.get('savepay') === 'on' || q.get('savepay') === 'off') {
+    $('savepay-section').style.display = ''
+    $('savePaymentDetails').checked = q.get('savepay') === 'on'
+    $('savePaymentDetails').addEventListener('click', function (e) {
+      if (q.get('savepaystuck') === '1') e.preventDefault()
+    })
+  } else {
+    $('savepay-section').remove()
+  }
   if (q.get('banner')) {
     var banner = document.createElement('div')
     banner.setAttribute('role', 'alert')
@@ -376,7 +395,8 @@
       number: val($('cardNumber')), expiry: val($('cardExpiry')), cvc: val($('cardCvc')), numberKeys: numberKeys,
       name: val(addr('Name')), country: val(addr('Country')), line1: val(addr('AddressLine1')), city: val(addr('Locality')),
       state: val(addr('AdministrativeArea')), zip: val(addr('PostalCode')),
-      email: val($('email')), phone: val($('phoneNumber')), decoyNumber: val($('promo-number')), linkSave: linkOn()
+      email: val($('email')), phone: val($('phoneNumber')), decoyNumber: val($('promo-number')), linkSave: linkOn(),
+      savePayment: !!$('savePaymentDetails') && $('savePaymentDetails').checked
     }
     fetch('/pay', { method: 'POST', body: JSON.stringify(body) }).then(function () {
       if (q.get('notice')) {

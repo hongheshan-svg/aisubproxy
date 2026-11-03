@@ -47,8 +47,9 @@ type FormBrowser interface {
 	Open(context.Context, string, []paybrowser.Cookie) error
 	ReadAmount(context.Context, string) (int64, string, error)
 	Fill(context.Context, paybrowser.Card, paybrowser.Billing) error
-	FillReport() paybrowser.FillReport // 最近一次 Fill 的字段命中与核对结果，不含值
-	Diagnose(context.Context) []string // 定位页面问题的几行文字，已脱敏
+	FillReport() paybrowser.FillReport     // 最近一次 Fill 的字段命中与核对结果，不含值
+	PayButtonState(context.Context) string // 只读支付按钮的状态，绝不点击
+	Diagnose(context.Context) []string     // 定位页面问题的几行文字，已脱敏
 	Shot(context.Context, string, paybrowser.ShotScope) (string, error)
 	Close()
 }
@@ -197,10 +198,10 @@ func defaultShotDir() string {
 	return filepath.Join(filepath.Dir(dbPath), "pay-shots")
 }
 
-// Request 是一次付款请求。
+// Request 是一次付款请求。DryRun 试运行到读金额；DryRunFill 试运行到填表（用公开测试卡走完 Fill，绝不点支付、不碰卡池），隐含 DryRun。
 type Request struct {
 	PlanKey, Region, Session, Source, SourceRef string
-	DryRun                                      bool
+	DryRun, DryRunFill                          bool
 }
 
 // badSessionError 保留 chatgpt 的错误说明，同时可被 errors.Is(err, ErrBadSession) 识别。
@@ -217,7 +218,8 @@ func (s *Service) Submit(ctx context.Context, r Request) (*Order, error) {
 	if strings.TrimSpace(r.Source) == "" {
 		return nil, fmt.Errorf("%w: 缺少来源", ErrBadRequest)
 	}
-	_, rc, err := ResolvePlan(r.PlanKey, r.Region, r.DryRun)
+	dryRun := r.DryRun || r.DryRunFill
+	_, rc, err := ResolvePlan(r.PlanKey, r.Region, dryRun)
 	if err != nil {
 		return nil, err
 	}
@@ -236,7 +238,8 @@ func (s *Service) Submit(ctx context.Context, r Request) (*Order, error) {
 	o := &Order{
 		Source:        r.Source,
 		SourceRef:     r.SourceRef,
-		DryRun:        r.DryRun,
+		DryRun:        dryRun,
+		DryRunFill:    r.DryRunFill,
 		PlanKey:       r.PlanKey,
 		Region:        r.Region,
 		Currency:      rc.Currency,

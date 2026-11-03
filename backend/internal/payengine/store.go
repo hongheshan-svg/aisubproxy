@@ -48,6 +48,20 @@ func isInflightConflict(err error) bool {
 	return strings.Contains(se.Error(), "pay_orders.account_email")
 }
 
+// dry_run 列的取值：0 真实付款，1 试运行到读金额，2 试运行到填表。
+// 不加新列：只要不是 0 就是试运行，旧版本程序读到 2 也不会当成真实付款。
+const dryRunFillValue = 2
+
+func dryRunColumn(o *Order) int {
+	switch {
+	case o.DryRunFill:
+		return dryRunFillValue
+	case o.DryRun:
+		return 1
+	}
+	return 0
+}
+
 // insertOrder 写入一张新单据并记一条创建事件；状态为空时取 queued。
 // 同一邮箱已有未终态单据时返回 ErrInflight。
 func insertOrder(ctx context.Context, o *Order) error {
@@ -67,7 +81,7 @@ func insertOrder(ctx context.Context, o *Order) error {
 	res, err := tx.ExecContext(ctx, `INSERT INTO pay_orders (order_no, source, source_ref, dry_run, plan_key, region, currency,
 		cap_minor, fund_cents, account_email, account_id, state, session_sealed, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		o.OrderNo, o.Source, o.SourceRef, o.DryRun, o.PlanKey, o.Region, o.Currency,
+		o.OrderNo, o.Source, o.SourceRef, dryRunColumn(o), o.PlanKey, o.Region, o.Currency,
 		o.CapMinor, o.FundCents, o.AccountEmail, o.AccountID, o.State, o.SessionSealed, o.CreatedAt, o.UpdatedAt)
 	if err != nil {
 		if isInflightConflict(err) {
@@ -176,6 +190,7 @@ func scanOrder(r rowScanner) (*Order, error) {
 		return nil, err
 	}
 	o.DryRun = dry != 0
+	o.DryRunFill = dry == dryRunFillValue
 	return &o, nil
 }
 

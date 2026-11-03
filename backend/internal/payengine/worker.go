@@ -369,7 +369,7 @@ func (s *Service) release(ctx context.Context, j *job, l *cardpool.Lease, o card
 	}
 }
 
-// run 依次执行步骤 2–4；试运行在读完金额后以 previewed 结束，真实付款单交给 pay。
+// run 依次执行步骤 2–4；试运行在读完金额后以 previewed 结束（试运行到填表多走一步填表，见 previewFill），真实付款单交给 pay。
 func (s *Service) run(ctx context.Context, j *job) error {
 	if err := s.check(ctx, j); err != nil {
 		return err
@@ -379,6 +379,9 @@ func (s *Service) run(ctx context.Context, j *job) error {
 	}
 	if err := s.openPage(ctx, j); err != nil {
 		return err
+	}
+	if j.o.DryRunFill {
+		return s.previewFill(ctx, j)
 	}
 	if j.o.DryRun {
 		return s.end(ctx, j, StatePreviewed, "info", "试运行完成，应付 "+j.o.AmountText, nil)
@@ -455,6 +458,9 @@ func (s *Service) openPage(ctx context.Context, j *job) error {
 		return abort("browser_failed", "浏览器无法启动：%s", msg)
 	}
 	j.browser = b
+	if j.o.DryRun {
+		b.LockSubmit() // 试运行单：浏览器对象本身拒绝点击，不只靠流程分支
+	}
 
 	pctx, cancel := context.WithTimeout(ctx, s.t.PageLoad)
 	defer cancel()

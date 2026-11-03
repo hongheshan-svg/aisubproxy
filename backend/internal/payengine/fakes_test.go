@@ -311,6 +311,11 @@ func (b *fakeBrowser) FillReport() paybrowser.FillReport {
 	return b.f.report
 }
 
+func (b *fakeBrowser) PayButtonState(context.Context) string {
+	b.hit("PayButtonState")
+	return "可点击"
+}
+
 func (b *fakeBrowser) Diagnose(c context.Context) []string {
 	b.hit("Diagnose")
 	if b.f.diagnose != nil {

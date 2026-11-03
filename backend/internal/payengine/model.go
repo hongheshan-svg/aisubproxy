@@ -44,13 +44,14 @@ var (
 	ErrBadRequest      = errors.New("请求参数无效")
 )
 
-// Order 是一张付款单据，字段与 pay_orders 列一一对应。
+// Order 是一张付款单据，字段与 pay_orders 列一一对应。DryRun、DryRunFill 共用 dry_run 列，见 dryRunColumn。
 type Order struct {
 	ID                int64  `json:"id"`
 	OrderNo           string `json:"order_no"`
 	Source            string `json:"source"`
 	SourceRef         string `json:"source_ref"`
 	DryRun            bool   `json:"dry_run"`
+	DryRunFill        bool   `json:"dry_run_fill"` // 试运行到填表：DryRun 也为 true
 	PlanKey           string `json:"plan_key"`
 	Region            string `json:"region"`
 	Currency          string `json:"currency"`

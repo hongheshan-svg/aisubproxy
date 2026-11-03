@@ -25,6 +25,9 @@ const (
 // 进入它之前必须把 filling → submitted 写入成功（条件更新，同一单只能成功一次），写失败就不点。
 // 确认协程与重启恢复都不持有浏览器，走不到这里。
 func (s *Service) pay(ctx context.Context, j *job) error {
+	if j.o.DryRun {
+		return abort("dry_run_refused", "试运行单不能进入付款流程")
+	}
 	if err := s.fundCard(ctx, j); err != nil {
 		return err
 	}
@@ -157,10 +160,14 @@ func (s *Service) noteFillReport(ctx context.Context, j *job, b FormBrowser, pre
 // notePageDiag 把页面定位信息写进时间线。开始填卡后 Diagnose 不再读正文，也不截图。
 // 这里的 ctx 必须是单据的 ctx，不能用已经超时的步骤 ctx，否则最需要定位信息的时候反而读不到。
 func (s *Service) notePageDiag(ctx context.Context, j *job, b FormBrowser, what string) {
+	s.notePage(ctx, j, b, "warn", what)
+}
+
+func (s *Service) notePage(ctx context.Context, j *job, b FormBrowser, level, what string) {
 	dctx, cancel := context.WithTimeout(ctx, diagTimeout)
 	defer cancel()
 	for _, line := range b.Diagnose(dctx) {
-		s.event(ctx, j, "warn", what+" "+j.scrub(line), "")
+		s.event(ctx, j, level, what+" "+j.scrub(line), "")
 	}
 }
 

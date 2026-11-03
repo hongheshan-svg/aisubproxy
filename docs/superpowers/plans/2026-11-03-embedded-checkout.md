@@ -174,7 +174,7 @@
   - `leave=1`：提交成功后跳到 `/done`；
   - `decline=<文字>`：点击后主页面显示带这段文字的 `[role="alert"]`；
   - `challenge=1`：点击后插入 `iframe[name="stripe-challenge-frame"]`，指向 `acs.html`；
-  - `rerender=1`：页面加载 1.5 秒后再插入一个可见的提交按钮；
+  - `rerender=1`：页面加载 3 秒后再插入一个可见的提交按钮（2026-11-04 由 1.5 秒放宽，防 CI 机器慢时 Open 前就出现第二个按钮）；
   - 其余参数原样传给卡片 iframe 的地址。
 - **`card-embedded.html`**：
   - 卡片字段：`#payment-numberInput`、`#payment-expiryInput`、`#payment-cvcInput`，与 `card.html` 相同。
@@ -261,7 +261,7 @@
   // TestEmbeddedSavePaymentUnchecked：url("savepay=1")
   Fill 后 b.EnsureNoSavePayment(ctx) 返回 nil；随后读到 #payment-savePaymentInput 未勾选
 
-  // TestEmbeddedPayButtonStateNotUnique：url("rerender=1")，等 2 秒后
+  // TestEmbeddedPayButtonStateNotUnique：url("rerender=1")，Open 成功后等 4 秒
   b.PayButtonState(ctx) 含 "不唯一"
   ```
   `testCard` 用 `4242424242424242`、12、三年后的两位年份、123。
@@ -307,7 +307,7 @@
   len(f.payments()) == 1；f.doneVisits() == 1
   errors.Is(b.Submit(ctx), paybrowser.ErrAlreadySubmitted)；len(f.payments()) 仍为 1
 
-  // TestEmbeddedSubmitRefusesSecondButton：url("rerender=1")，Fill 后等 2 秒
+  // TestEmbeddedSubmitRefusesSecondButton：url("rerender=1")，Fill 后等 4 秒
   b.Submit(ctx) 返回错误，含 "不唯一"；b.LockSubmit() == false（证明没点）；len(f.payments()) == 0
 
   // TestEmbeddedChineseDeclineIsUnknown：url("decline=" + url.QueryEscape("你的银行卡被拒绝"))，Fill、Submit 后

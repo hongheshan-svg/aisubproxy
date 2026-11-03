@@ -51,7 +51,7 @@ export function centsToUsd(cents: number | null | undefined): string {
 
 // ---------- 就绪检查 ----------
 
-export interface ReadinessCheck { key: string; ok: boolean; detail: string }
+export interface ReadinessCheck { key: string; ok: boolean; detail: string; raw?: string }
 export interface ProviderReadiness { provider: string; ok: boolean; problems: string[]; checks: ReadinessCheck[] }
 
 export interface CheckHint { title: string; link?: { to: string; label: string } }

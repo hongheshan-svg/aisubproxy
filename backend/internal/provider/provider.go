@@ -234,6 +234,8 @@ type Check struct {
 	Key    string `json:"key"`
 	OK     bool   `json:"ok"`
 	Detail string `json:"detail"`
+	// Raw 是底层错误的原文，只给可展开的详情和排查用，不作为页面正文。
+	Raw string `json:"raw,omitempty"`
 }
 
 // Readiness 是就绪检查的结果。Problems 为空即就绪。
@@ -256,7 +258,12 @@ func (r *Readiness) Pass(key, detail string) {
 
 // Fail 记一项没通过的检查，整体变为未就绪。
 func (r *Readiness) Fail(key, detail string) {
+	r.FailRaw(key, detail, "")
+}
+
+// FailRaw 与 Fail 相同，但把底层错误原文放进 Raw：界面正文只用 detail 这句人话。
+func (r *Readiness) FailRaw(key, detail, raw string) {
 	r.OK = false
 	r.Problems = append(r.Problems, detail)
-	r.Checks = append(r.Checks, Check{Key: key, Detail: detail})
+	r.Checks = append(r.Checks, Check{Key: key, Detail: detail, Raw: raw})
 }

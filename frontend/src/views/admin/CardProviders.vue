@@ -46,6 +46,10 @@
               <span class="min-w-0">
                 <b>{{ checkTitle(c.key) }}</b>
                 <span class="text-muted"> — {{ c.detail }}</span>
+                <details v-if="c.raw" class="text-xs text-muted mt-0.5">
+                  <summary class="cursor-pointer">详情</summary>
+                  <code class="break-all">{{ c.raw }}</code>
+                </details>
                 <router-link v-if="!c.ok && CHECK_HINTS[c.key]?.link" :to="CHECK_HINTS[c.key].link!.to" class="ml-2 underline">
                   {{ CHECK_HINTS[c.key].link!.label }}
                 </router-link>

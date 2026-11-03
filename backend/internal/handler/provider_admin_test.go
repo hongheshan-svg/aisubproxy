@@ -738,6 +738,33 @@ func TestAdminProviderReadiness(t *testing.T) {
 	}
 }
 
+// 凭证未配置时，就绪项的说明是人话，原始串只进 raw 详情字段。
+func TestReadinessConfigProblemIsPlainText(t *testing.T) {
+	e := newLocalEnv(t)
+	localSet(t, "marswallex_developer_id", "")
+	m := localJSON(t, e.do("GET", "/admin/providers/readiness", ""))
+	mw := m["providers"].(map[string]any)["marswallex"].(map[string]any)
+	var cfg map[string]any
+	for _, it := range mw["checks"].([]any) {
+		if c := it.(map[string]any); c["key"] == "config" {
+			cfg = c
+		}
+	}
+	if cfg == nil || cfg["ok"] != false {
+		t.Fatalf("config 应未通过: %v", mw)
+	}
+	detail, _ := cfg["detail"].(string)
+	if detail != "MarsWallex 凭证未配置完整，去 MarsWallex 对接页填写" {
+		t.Fatalf("说明不是人话: %q", detail)
+	}
+	if raw, _ := cfg["raw"].(string); !strings.Contains(raw, "not_sent/config") {
+		t.Fatalf("原始串应放进 raw: %q", raw)
+	}
+	if problems := localBody(t, mw["problems"]); strings.Contains(problems, "not_sent/") || strings.Contains(detail, "not_sent/") {
+		t.Fatalf("problems 与 detail 不能含原始串: %s", problems)
+	}
+}
+
 // 公开接口的主钱包同步有限频，不能让它带着打平台账户接口。
 func TestPublicReadinessThrottlesWalletSync(t *testing.T) {
 	e := newLocalEnv(t)

@@ -39,25 +39,10 @@
       <el-tab-pane label="代理换码核对" name="swaps" />
     </el-tabs>
 
-    <div v-if="tab === 'codes'" class="flex flex-wrap items-center gap-3">
-      <span class="text-sm text-muted">发码服务商</span>
-      <el-radio-group v-model="provider" size="small" :disabled="issuing">
-        <el-radio-button value="zovocard">ZovoCard</el-radio-button>
-        <el-radio-button value="marswallex">MarsWallex</el-radio-button>
-      </el-radio-group>
-      <span v-if="defaultProviderError" class="text-xs text-warn">默认服务商读取失败，已先选 ZovoCard：{{ defaultProviderError }}</span>
-      <span v-else-if="defaultProvider" class="text-xs text-muted">
-        当前默认：{{ defaultProvider === 'marswallex' ? 'MarsWallex' : 'ZovoCard' }}
-        <router-link to="/ops/providers" class="underline ml-1">切换默认</router-link>
-      </span>
-    </div>
+    <IssueProviderBar v-if="tab === 'codes'" v-model:provider="provider" v-model:product="directProduct" :reg="registry"
+      :products="productOptions" :notice="providerNotice" :error="registryError" :busy="issuing || loadingMeta" @product-change="onProductChange" />
 
-    <template v-if="tab === 'codes' && provider === 'zovocard'">
-    <label class="text-sm">{{ t('xPremium.product') }}
-      <select v-model="directProduct" class="input !w-48" :disabled="issuing || loadingMeta" @change="loadMeta">
-        <option value="gpt">ChatGPT</option><option value="x">X Premium</option><option value="grok">Grok</option><option value="claude">Claude</option>
-      </select>
-    </label>
+    <template v-if="tab === 'codes' && codeListKind === 'cardplatform'">
     <ApiErrorNotice :message="metaError" />
     <el-button v-if="!configured" type="warning" size="small" @click="$router.push('/ops/integration')">
       去配置 API Key
@@ -281,7 +266,7 @@
             </button>
           </template>
         </el-table-column>
-        <el-table-column label="服务商" width="92"><template #default>ZovoCard</template></el-table-column>
+        <el-table-column label="服务商" width="92"><template #default>{{ providerLabel(provider) }}</template></el-table-column>
         <el-table-column prop="plan" label="套餐" width="100">
           <template #default="{ row }">{{ planLabel(row.plan) }}</template>
         </el-table-column>
@@ -343,7 +328,10 @@
     </section>
     </template>
 
-    <LocalCdkPanel v-else-if="tab === 'codes'" />
+    <LocalCdkPanel v-else-if="tab === 'codes' && codeListKind === 'local'" :key="provider" :provider="provider" :product="directProduct" />
+    <section v-else-if="tab === 'codes' && provider" class="card text-sm text-muted" data-testid="no-code-list">
+      这家服务商的码请在它自己的后台管理。
+    </section>
     <AgentExchangePanel v-else-if="tab === 'swaps'" />
   </div>
 </template>
@@ -352,8 +340,12 @@
 import ApiErrorNotice from '../../components/ApiErrorNotice.vue'
 import LocalCdkPanel from './components/LocalCdkPanel.vue'
 import AgentExchangePanel from './components/AgentExchangePanel.vue'
+import { useIssueProvider } from '../../lib/useIssueProvider'
+import IssueProviderBar from './components/IssueProviderBar.vue'
 import { useRouteTab } from '../../lib/useRouteTab'
-import { adminApi } from '../../lib/provider'
+import {
+  loadRegistry, providerCodeList, providerLabel, registry,
+} from '../../lib/provider'
 import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { useI18n } from 'vue-i18n'
 const { t } = useI18n()
@@ -365,14 +357,21 @@ import { copyToClipboard } from '../../lib/clipboard'
 import { isCardAttachPlan } from '../../lib/plan'
 
 const tab = useRouteTab('/ops/cdkeys')
-const provider = ref<'zovocard' | 'marswallex'>('zovocard')
-const defaultProvider = ref('')
-const defaultProviderError = ref('')
-async function loadDefaultProvider() {
-  const r = await adminApi('/providers/default')
-  if (!r.ok) { defaultProviderError.value = (r.data && r.data.error) || '网络错误'; return }
-  defaultProvider.value = r.data.provider
-  provider.value = r.data.provider === 'marswallex' ? 'marswallex' : 'zovocard'
+const registryError = ref('')
+const productOptions = computed(() => {
+  const l = registry.value?.products
+  return l && l.length ? l : [{ key: 'gpt', label: 'ChatGPT' }, { key: 'x', label: 'X Premium' }, { key: 'grok', label: 'Grok' }, { key: 'claude', label: 'Claude' }]
+})
+const codeListKind = computed(() => providerCodeList(registry.value, provider.value))
+async function loadProviderRegistry() {
+  const r = await loadRegistry(true)
+  if (!r.ok) { registryError.value = (r.data && (r.data as any).error) || '网络错误'; return }
+  registryError.value = ''
+  applyPreselect()
+}
+async function onProductChange() {
+  await loadMeta()
+  applyPreselect()
 }
 
 const RECENT_KEY = 'cdk_recent_issued_v1'
@@ -418,6 +417,7 @@ const form = reactive({
   // 将来卡台若改默认地区，「没指定」和「明确指定了 PH」该走不同的路。
   payment_country: '',
 })
+const { provider, notice: providerNotice, apply: applyPreselect } = useIssueProvider(directProduct, computed(() => form.plan), (k) => planLabel(k))
 // ★地区清单只认卡台下发的 payment_regions★，本站不写死。
 // 写死的那份和卡台的校验表迟早不一致，而不一致时两边都不报错：
 // 多出来的地区发码被拒，少了的地区卡台支持了却选不到。
@@ -1285,8 +1285,8 @@ async function issue() {
   issuing.value = true
   try {
     const payload = {
-      // 必须明说是 ZovoCard：服务端留空时按「默认服务商」发码，默认切到 MarsWallex 后会发错
-      provider: 'zovocard',
+      // 必须明说是哪一家：服务端留空时按配置的默认服务商发码，配置改了就会发错
+      provider: provider.value,
       plan: form.plan,
       product: directProduct.value,
       count: form.count,
@@ -1437,11 +1437,13 @@ async function refreshAll() {
 }
 
 onMounted(async () => {
-  loadDefaultProvider()
+  const reg = loadProviderRegistry()
   loadCodeCache()
   loadPersistedRecent()
   if (recentCodes.value.length) issueOpen.value = true
   await refreshAll()
+  await reg
+  applyPreselect()
   // 若本机有历史完整码而服务器库为空，自动静默回填一次
   const localN = Object.values(codeCache.value).filter((v) => isFullCode(v?.code || '')).length
   if (localN > 0 && storeStats.fullInStore === 0) {

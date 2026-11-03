@@ -1,13 +1,137 @@
-// 卡服务商（ZovoCard / MarsWallex）后台页面的公共函数：接口、就绪检查、本地码状态、金额换算。
+// 卡服务商后台页面的公共函数：服务商注册表、接口、就绪检查、本地码状态、金额换算。
+// 服务商的名称、类型、码列表方式都取自 GET /api/v1/admin/providers，这里不写死任何一家。
+import { ref } from 'vue'
 import { authFetch } from './api'
 import type { Resp } from './cardpool'
 
-export type ProviderId = 'zovocard' | 'marswallex'
+export type ProviderId = string
 
-export const PROVIDER_LABEL: Record<string, string> = { zovocard: 'ZovoCard', marswallex: 'MarsWallex' }
+// ---------- 服务商注册表（GET /admin/providers） ----------
 
+export type ProviderKind = 'upstream' | 'card_supply' | string
+/** cardplatform = 卡台码列表；local = 本地码列表；空 = 没有列表 */
+export type CodeListKind = 'cardplatform' | 'local' | ''
+
+export interface ProviderInfo {
+  name: string
+  display_name: string
+  kind: ProviderKind
+  kind_text?: string
+  products: string[]
+  code_prefix?: string
+  code_list: CodeListKind | string
+}
+export interface ProductInfo { key: string; label: string }
+export interface CapabilityRow {
+  product: string; plan: string; comment?: string
+  support: Record<string, boolean>; notes?: Record<string, string>
+}
+export interface Registry {
+  providers: ProviderInfo[]
+  products: ProductInfo[]
+  default: string
+  by_product: Record<string, string>
+  effective: Record<string, string>
+  warnings: string[]
+  capabilities: CapabilityRow[]
+}
+export interface NotReady { provider: string; problems: string[] }
+
+/** 注册表的共享缓存：各页面共用，保存配置后用 setRegistry 刷新。 */
+export const registry = ref<Registry | null>(null)
+
+export function normalizeRegistry(d: any): Registry {
+  return {
+    providers: Array.isArray(d?.providers) ? d.providers.map((p: any) => ({ ...p, products: p.products || [] })) : [],
+    products: Array.isArray(d?.products) ? d.products : [],
+    default: String(d?.default || ''),
+    by_product: d?.by_product || {},
+    effective: d?.effective || {},
+    warnings: Array.isArray(d?.warnings) ? d.warnings : [],
+    capabilities: Array.isArray(d?.capabilities) ? d.capabilities : [],
+  }
+}
+
+export function setRegistry(d: any) { registry.value = normalizeRegistry(d) }
+
+let inflight: Promise<Resp<any>> | null = null
+/** 读取注册表并写入共享缓存。同时多处调用只发一次请求；force 为真时忽略缓存重新读。 */
+export async function loadRegistry(force = false): Promise<Resp<any>> {
+  if (!force && registry.value) return { ok: true, status: 200, data: registry.value }
+  if (inflight) return inflight
+  inflight = adminApi('/providers').then((r) => {
+    if (r.ok) setRegistry(r.data)
+    return r
+  }).finally(() => { inflight = null })
+  return inflight
+}
+
+export function findProvider(reg: Registry | null | undefined, name: string): ProviderInfo | undefined {
+  return reg?.providers.find((p) => p.name === name)
+}
+
+/** 显示名：注册表里有就用显示名，取不到显示 name 本身。 */
 export function providerLabel(p: string): string {
-  return PROVIDER_LABEL[p] ?? (p || '—')
+  return findProvider(registry.value, p)?.display_name || p || '—'
+}
+
+export function productLabel(reg: Registry | null | undefined, key: string): string {
+  return reg?.products.find((x) => x.key === key)?.label || key
+}
+
+export function providerCodeList(reg: Registry | null | undefined, name: string): CodeListKind {
+  const c = findProvider(reg, name)?.code_list
+  return c === 'cardplatform' || c === 'local' ? c : ''
+}
+
+/** 某产品下，全局默认或产品单独配置给出的服务商（接口的 effective 优先，缺失时自己算）。 */
+export function effectiveProvider(reg: Registry, product: string): string {
+  return reg.effective?.[product] || reg.by_product?.[product] || reg.default || ''
+}
+
+/**
+ * 服务商是否支持某产品的某个档位。服务商的 products 不含该产品，则不支持；
+ * 能力矩阵里没有这一行时（拿不到数据）视为支持，由服务端校验兜底，不在前端误拦。
+ */
+export function supportsPlan(reg: Registry, name: string, product: string, plan: string): boolean {
+  const p = findProvider(reg, name)
+  if (!p || !p.products.includes(product)) return false
+  const row = reg.capabilities.find((c) => c.product === product && c.plan === plan)
+  if (!row) return true
+  return row.support?.[name] === true
+}
+
+/** 这个服务商在这个产品下不支持的档位（用于配置表格的小字说明）。 */
+export function unsupportedPlans(reg: Registry, name: string, product: string): { plan: string; comment: string }[] {
+  return reg.capabilities
+    .filter((c) => c.product === product && c.support?.[name] !== true)
+    .map((c) => ({ plan: c.plan, comment: c.comment || '' }))
+}
+
+export interface IssuePick { provider: string; notice: string }
+
+/**
+ * 发码弹窗的预选：先取该产品的配置（没有就用全局默认）。预选那家不支持这个档位时，
+ * 改选第一家支持的，并给出提示；都不支持就保留预选（让服务端拒绝并说明原因，不在前端悄悄换）。
+ */
+export function pickIssueProvider(
+  reg: Registry, product: string, plan: string, labelOfPlan: (plan: string) => string = (p) => p,
+): IssuePick {
+  const pre = reg.by_product?.[product] || reg.default || reg.providers[0]?.name || ''
+  if (!plan || supportsPlan(reg, pre, product, plan)) return { provider: pre, notice: '' }
+  const alt = reg.providers.find((p) => supportsPlan(reg, p.name, product, plan))
+  if (!alt) return { provider: pre, notice: '' }
+  const row = reg.capabilities.find((c) => c.product === product && c.plan === plan)
+  const planText = labelOfPlan(plan) || row?.comment || plan
+  const which = reg.by_product?.[product] ? '配置为用' : '默认用'
+  return {
+    provider: alt.name,
+    notice: `${productLabel(reg, product)} ${which} ${providerLabel2(reg, pre)}，它暂不支持 ${planText}，已改用 ${alt.display_name || alt.name}`,
+  }
+}
+
+function providerLabel2(reg: Registry, name: string): string {
+  return findProvider(reg, name)?.display_name || name || '—'
 }
 
 /** 调用 /api/v1/admin 下的接口（服务商、本地码、换码核对共用），可带额外请求头。 */
@@ -51,8 +175,12 @@ export function centsToUsd(cents: number | null | undefined): string {
 
 // ---------- 就绪检查 ----------
 
-export interface ReadinessCheck { key: string; ok: boolean; detail: string; raw?: string }
-export interface ProviderReadiness { provider: string; ok: boolean; problems: string[]; checks: ReadinessCheck[] }
+export interface ReadinessCheck { key: string; ok: boolean; detail: string; raw?: string; title?: string }
+export interface ProviderExtra { label: string; value: string }
+export interface ProviderReadiness {
+  provider: string; ok: boolean; problems: string[]; checks: ReadinessCheck[]
+  extras?: ProviderExtra[]; warnings?: string[]; combos?: Combo[]
+}
 
 export interface CheckHint { title: string; link?: { to: string; label: string } }
 
@@ -70,8 +198,9 @@ export const CHECK_HINTS: Record<string, CheckHint> = {
   balance: { title: '卡台余额', link: { to: '/ops/integration', label: '去卡台页' } },
 }
 
-export function checkTitle(key: string): string {
-  return CHECK_HINTS[key]?.title ?? key
+/** 检查项标题：接口给的 title 优先，其次按 key 查表，最后显示 key。 */
+export function checkTitle(key: string, title?: string): string {
+  return (title && title.trim()) || CHECK_HINTS[key]?.title || key
 }
 
 /** 首笔真实付款这一条是否未通过：需要在界面上单独、醒目地说明。 */
@@ -115,7 +244,7 @@ export function classifyIssueFailure(status: number, d: any): IssueFailure {
     }
   }
   if (status === 400 && Array.isArray(d?.problems) && d.problems.length) {
-    return { kind: 'not_ready', message: err || 'MarsWallex 未就绪，不能发码', problems: d.problems.map(String) }
+    return { kind: 'not_ready', message: err || '该服务商未就绪，不能发码', problems: d.problems.map(String) }
   }
   if (status === 400 && d?.plan && d?.provider) {
     return { kind: 'unsupported', message: err || '该服务商不支持这个产品或档位' }

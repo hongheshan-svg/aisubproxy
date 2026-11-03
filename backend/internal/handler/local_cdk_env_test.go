@@ -22,6 +22,7 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/marswallex/mwtest"
 	"github.com/tuzi/cdk-recharge-system/internal/paybrowser"
 	"github.com/tuzi/cdk-recharge-system/internal/payengine"
+	"github.com/tuzi/cdk-recharge-system/internal/provider"
 )
 
 const (
@@ -386,7 +387,7 @@ func setupLocalEnv(t *testing.T) *localEnv {
 	}
 
 	e.engine = payengine.New(payengine.Options{
-		Pool:     e.pool,
+		Pools:    map[string]payengine.Pool{string(provider.MarsWallex): e.pool},
 		ChatGPT:  func(string) (payengine.ChatGPT, error) { return e.gpt, nil },
 		Browser:  e.br.New,
 		Alert:    e.addAlert,
@@ -418,6 +419,8 @@ func localTestRouter() *gin.Engine {
 	admin.GET("/cdks", AdminListLocalCDKs)
 	admin.POST("/cdks/:id/disable", AdminDisableLocalCDK)
 	admin.POST("/cdks/:id/enable", AdminEnableLocalCDK)
+	admin.GET("/providers", AdminListProviders)
+	admin.PUT("/providers/config", AdminPutProviderConfig)
 	admin.GET("/providers/default", AdminGetDefaultProvider)
 	admin.PUT("/providers/default", AdminPutDefaultProvider)
 	admin.GET("/providers/readiness", AdminProviderReadiness)
@@ -472,8 +475,14 @@ func (e *localEnv) start() {
 
 var localOrderSeq int
 
-// insertOrder 直接写一张付款单。
+// insertOrder 直接写一张 MarsWallex 付款单。
 func (e *localEnv) insertOrder(source, ref string, dry int, email, state, failure string, submitted bool) string {
+	e.t.Helper()
+	return e.insertProviderOrder("marswallex", source, ref, dry, email, state, failure, submitted)
+}
+
+// insertProviderOrder 直接写一张指定服务商的付款单。
+func (e *localEnv) insertProviderOrder(prov, source, ref string, dry int, email, state, failure string, submitted bool) string {
 	e.t.Helper()
 	localOrderSeq++
 	no := fmt.Sprintf("PO-LOCAL-%d", localOrderSeq)
@@ -485,8 +494,8 @@ func (e *localEnv) insertOrder(source, ref string, dry int, email, state, failur
 	if state == "succeeded" || state == "failed" || state == "needs_review" {
 		finished = now
 	}
-	if _, err := db.DB.Exec(`INSERT INTO pay_orders (order_no, source, source_ref, dry_run, plan_key, region, account_email, state, failure, submitted_at, finished_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?, 'plus', 'PH', ?, ?, ?, ?, ?, ?, ?)`, no, source, ref, dry, email, state, failure, sub, finished, now, now); err != nil {
+	if _, err := db.DB.Exec(`INSERT INTO pay_orders (order_no, provider, source, source_ref, dry_run, plan_key, region, account_email, state, failure, submitted_at, finished_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, 'plus', 'PH', ?, ?, ?, ?, ?, ?, ?)`, no, prov, source, ref, dry, email, state, failure, sub, finished, now, now); err != nil {
 		e.t.Fatal(err)
 	}
 	return no

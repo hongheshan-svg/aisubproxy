@@ -20,6 +20,8 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/db/dbtest"
 	"github.com/tuzi/cdk-recharge-system/internal/paybrowser"
 	"github.com/tuzi/cdk-recharge-system/internal/payengine"
+	"github.com/tuzi/cdk-recharge-system/internal/provider"
+	"github.com/tuzi/cdk-recharge-system/internal/provider/providertest"
 )
 
 const (
@@ -51,7 +53,8 @@ func payEnv(t *testing.T) (*payengine.Service, string) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	s := payengine.New(payengine.Options{ShotDir: dir, Alert: func(string) {}})
+	// 引擎不启动，卡池不会被调用；只是让 MarsWallex 的单能建
+	s := payengine.New(payengine.Options{Pools: map[string]payengine.Pool{string(provider.MarsWallex): cardpool.New(cardpool.Options{})}, ShotDir: dir, Alert: func(string) {}})
 	SetPayEngine(s)
 	t.Cleanup(func() { SetPayEngine(nil) })
 	return s, dir
@@ -137,6 +140,42 @@ func TestPaySubmitMapsErrors(t *testing.T) {
 	big := `{"plan_key":"plus","region":"PH","dry_run":true,"session":"` + strings.Repeat("x", 70<<10) + `"}`
 	if w := post(big); w.Code != 400 || !strings.Contains(w.Body.String(), "请求体无效") {
 		t.Fatalf("超过 64KB 应 400「请求体无效」: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// 后台测试付款按服务商建单：不填为 MarsWallex；上游型、未注册的、没有卡池的都拒绝，不会换成别家。
+func TestPaySubmitProvider(t *testing.T) {
+	payEnv(t)
+	providertest.Register(t, providertest.NewTestCard(), providertest.NewTestUp())
+	post := func(prov, email string) *httptest.ResponseRecorder {
+		b, _ := json.Marshal(map[string]any{"provider": prov, "plan_key": "plus", "region": "PH", "session": paySession(email), "dry_run": true})
+		return payDo(AdminPaySubmit, "POST", "/orders", "/orders", string(b))
+	}
+	for _, tc := range []struct{ prov, want string }{
+		{"zovocard", "只能选已注册的供卡型服务商"},
+		{string(providertest.TestUp), "只能选已注册的供卡型服务商"},
+		{"nope", "只能选已注册的供卡型服务商"},
+		{string(providertest.TestCard), "该服务商没有可用的卡池"},
+	} {
+		if w := post(tc.prov, tc.prov+"@example.com"); w.Code != 400 || !strings.Contains(w.Body.String(), tc.want) {
+			t.Fatalf("%s: %d %s", tc.prov, w.Code, w.Body.String())
+		}
+	}
+	if _, total, _ := payEngine.List(context.Background(), "", 1, 10); total != 0 {
+		t.Fatalf("拒绝时不应建单: %d", total)
+	}
+	for _, prov := range []string{"", "marswallex"} {
+		w := post(prov, "ok"+prov+"@example.com")
+		var resp struct {
+			Order payengine.Order `json:"order"`
+		}
+		_ = json.Unmarshal(w.Body.Bytes(), &resp)
+		if w.Code != 200 || resp.Order.Provider != "marswallex" {
+			t.Fatalf("%q: %d %s", prov, w.Code, w.Body.String())
+		}
+	}
+	if a := payAudit(t); !strings.Contains(a, "provider=marswallex") {
+		t.Fatalf("审计应记服务商: %s", a)
 	}
 }
 

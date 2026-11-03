@@ -65,10 +65,13 @@ func pageOutcomeNote(out paybrowser.Outcome) string {
 
 // fundCard 是步骤 5：选卡、记下租约、注资并等注资单定论。资金操作绝不自动重发：Fund 只调一次，结果不明就放弃，由卡池对账收敛。
 func (s *Service) fundCard(ctx context.Context, j *job) error {
+	if j.pool == nil { // run 第一步已经取过；这里再拦一次，没有卡池绝不往下走
+		return abort("provider_unavailable", "%s，未取卡、未注资", providerUnavailableText(j.o.Provider))
+	}
 	if err := s.advance(ctx, j, StateFunding, "选卡注资", nil); err != nil {
 		return err
 	}
-	l, err := s.opts.Pool.Acquire(ctx, cardpool.AcquireRequest{PlanKey: j.o.PlanKey, OrderRef: j.o.OrderNo, AccountEmail: j.o.AccountEmail, Currency: fundCurrency})
+	l, err := j.pool.Acquire(ctx, cardpool.AcquireRequest{PlanKey: j.o.PlanKey, OrderRef: j.o.OrderNo, AccountEmail: j.o.AccountEmail, Currency: fundCurrency})
 	if errors.Is(err, cardpool.ErrNoCard) {
 		return abort("no_card", "选卡失败：%v", err)
 	}
@@ -81,7 +84,7 @@ func (s *Service) fundCard(ctx context.Context, j *job) error {
 	j.note("lease_token", l.Token)
 
 	// 姓名先于注资确认：缺姓名填不了表，没必要先把钱转进卡里
-	info, err := s.opts.Pool.CardInfo(ctx, l.CardID)
+	info, err := j.pool.CardInfo(ctx, l.CardID)
 	if err != nil {
 		return abort("card_info_failed", "读取卡信息失败：%v", err)
 	}
@@ -100,14 +103,14 @@ func (s *Service) fundCard(ctx context.Context, j *job) error {
 
 	fctx, cancel := context.WithTimeout(ctx, s.t.Fund)
 	defer cancel()
-	fo, err := s.opts.Pool.Fund(fctx, l, j.o.FundCents)
+	fo, err := j.pool.Fund(fctx, l, j.o.FundCents)
 	if err != nil {
 		return fundAbort(err)
 	}
 	if err := s.advance(ctx, j, StateFunding, "已提交注资，等待到账", map[string]any{"fund_order_no": fo.OutOrderNo}); err != nil {
 		return err
 	}
-	done, err := s.opts.Pool.WaitOrder(fctx, fo.OutOrderNo)
+	done, err := j.pool.WaitOrder(fctx, fo.OutOrderNo)
 	if err != nil {
 		return fundAbort(err)
 	}
@@ -132,7 +135,7 @@ func (s *Service) fillCard(ctx context.Context, j *job) error {
 	}
 	fctx, cancel := context.WithTimeout(ctx, s.t.Fill)
 	defer cancel()
-	sv, err := s.opts.Pool.Sensitive(fctx, j.lease)
+	sv, err := j.pool.Sensitive(fctx, j.lease)
 	if err != nil {
 		return abort("card_sensitive_failed", "取卡号失败：%v", err)
 	}
@@ -258,7 +261,7 @@ func (s *Service) answerChallenge(ctx context.Context, j *job) error {
 
 	octx, cancel := context.WithTimeout(ctx, s.t.OTP)
 	defer cancel()
-	otp, err := s.opts.Pool.WaitOTP(octx, j.o.CardID, time.Unix(*j.o.SubmittedAt, 0))
+	otp, err := j.pool.WaitOTP(octx, j.o.CardID, time.Unix(*j.o.SubmittedAt, 0))
 	if errors.Is(err, context.DeadlineExceeded) {
 		return errors.New("等待验证码超时")
 	}

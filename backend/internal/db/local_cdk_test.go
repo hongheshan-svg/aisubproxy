@@ -38,8 +38,14 @@ func insertLocalCDK(t *testing.T, i int) db.LocalCDK {
 
 var orderSeq int
 
-// addOrder 直接写一张付款单。email 留空时按序号生成，避开同邮箱在途索引。
+// addOrder 直接写一张 MarsWallex 付款单。email 留空时按序号生成，避开同邮箱在途索引。
 func addOrder(t *testing.T, source, ref string, dry int, email, state, failure string, submitted bool) string {
+	t.Helper()
+	return addProviderOrder(t, "marswallex", source, ref, dry, email, state, failure, submitted)
+}
+
+// addProviderOrder 直接写一张指定服务商的付款单。
+func addProviderOrder(t *testing.T, provider, source, ref string, dry int, email, state, failure string, submitted bool) string {
 	t.Helper()
 	orderSeq++
 	no := fmt.Sprintf("PO-TEST-%d", orderSeq)
@@ -50,8 +56,8 @@ func addOrder(t *testing.T, source, ref string, dry int, email, state, failure s
 	if submitted {
 		sub = int64(1234)
 	}
-	if _, err := db.DB.Exec(`INSERT INTO pay_orders (order_no, source, source_ref, dry_run, plan_key, region, account_email, state, failure, submitted_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?, 'plus', 'PH', ?, ?, ?, ?, 1, 1)`, no, source, ref, dry, email, state, failure, sub); err != nil {
+	if _, err := db.DB.Exec(`INSERT INTO pay_orders (order_no, provider, source, source_ref, dry_run, plan_key, region, account_email, state, failure, submitted_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, 'plus', 'PH', ?, ?, ?, ?, 1, 1)`, no, provider, source, ref, dry, email, state, failure, sub); err != nil {
 		t.Fatalf("写入付款单 %s/%s: %v", state, failure, err)
 	}
 	return no
@@ -282,13 +288,16 @@ func TestHasRealSucceededPayOrderGate(t *testing.T) {
 	dbtest.Open(t)
 	check := func(want bool) {
 		t.Helper()
-		got, err := db.HasRealSucceededPayOrder(localCtx)
+		got, err := db.HasRealSucceededPayOrder(localCtx, "marswallex")
 		if err != nil {
 			t.Fatal(err)
 		}
 		if got != want {
 			t.Fatalf("门槛 %v，期望 %v", got, want)
 		}
+	}
+	if _, err := db.HasRealSucceededPayOrder(localCtx, " "); err == nil {
+		t.Fatal("没有服务商时不能给结论")
 	}
 	check(false)
 	addOrder(t, "admin_test", "admin", 1, "", "succeeded", "", false) // 试运行到读金额
@@ -303,8 +312,19 @@ func TestHasRealSucceededPayOrderGate(t *testing.T) {
 		t.Fatal(err)
 	}
 	check(false)
+	// 别家的成功单、服务商不明的成功单都不算
+	addProviderOrder(t, "testcard", "admin_test", "admin", 0, "", "succeeded", "", true)
+	addProviderOrder(t, "", "admin_test", "admin", 0, "", "succeeded", "", true)
+	check(false)
 	addOrder(t, "admin_test", "admin", 0, "", "succeeded", "", true)
 	check(true)
+	// 按服务商分别计算：testcard 自己的成功单让它过门槛，MarsWallex 的不帮它
+	if ok, err := db.HasRealSucceededPayOrder(localCtx, "testcard"); err != nil || !ok {
+		t.Fatal(ok, err)
+	}
+	if ok, err := db.HasRealSucceededPayOrder(localCtx, "othercard"); err != nil || ok {
+		t.Fatal(ok, err)
+	}
 }
 
 func TestLocalCDKDisableEnableAndExchange(t *testing.T) {
@@ -425,13 +445,13 @@ func TestRecentCDKBindingForEmail(t *testing.T) {
 	dbtest.Open(t)
 	dbtest.SetMasterKey(t)
 	sess := `{"user":{"email":"Mixed.Case@Example.com"},"sessionToken":"tok-1"}`
-	if err := db.BindCDKSession("ZC-AAA", "tok-a", sess); err != nil {
+	if err := db.BindCDKSession("zovocard", "ZC-AAA", "tok-a", sess); err != nil {
 		t.Fatal(err)
 	}
 	since := time.Now().Add(-15 * time.Minute)
 	check := func(email string, since time.Time, want bool) {
 		t.Helper()
-		got, err := db.HasRecentCDKBindingForEmail(localCtx, email, since)
+		got, err := db.HasRecentCDKBindingForEmail(localCtx, email, since, "marswallex")
 		if err != nil || got != want {
 			t.Fatalf("%s: %v %v，期望 %v", email, got, err, want)
 		}
@@ -440,6 +460,13 @@ func TestRecentCDKBindingForEmail(t *testing.T) {
 	check("other@example.com", since, false)
 	check("", since, false)
 	check("mixed.case@example.com", time.Now().Add(time.Hour), false) // 窗外
+	// 自己写的绑定不算跨服务商冲突，别家的算
+	if got, err := db.HasRecentCDKBindingForEmail(localCtx, "mixed.case@example.com", since, "zovocard"); err != nil || got {
+		t.Fatal("ZovoCard 自己的绑定不算冲突", got, err)
+	}
+	if got, err := db.HasRecentCDKBindingForEmail(localCtx, "mixed.case@example.com", since, "testup"); err != nil || !got {
+		t.Fatal("对 testup 来说 ZovoCard 的绑定是别家", got, err)
+	}
 
 	// 会话清空后邮箱还在，互斥仍然有效
 	if err := db.ClearCDKSessionByCode("ZC-AAA"); err != nil {
@@ -448,7 +475,7 @@ func TestRecentCDKBindingForEmail(t *testing.T) {
 	check("mixed.case@example.com", since, true)
 
 	// 只有令牌的占位行也能按令牌取邮箱
-	if err := db.BindCDKSession("", "tok-b", `{"user":{"email":"b@example.com"},"sessionToken":"x"}`); err != nil {
+	if err := db.BindCDKSession("zovocard", "", "tok-b", `{"user":{"email":"b@example.com"},"sessionToken":"x"}`); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := db.GetAccountEmailByRedemptionToken("tok-b"); err != nil || got != "b@example.com" {
@@ -460,7 +487,7 @@ func TestRecentCDKBindingForEmail(t *testing.T) {
 
 	// 密钥换了解不开：返回错误让调用方拒绝，不能当成「没有绑定」放行
 	t.Setenv("APP_MASTER_KEY", "OTg3NjU0MzIxMGZlZGNiYTk4NzY1NDMyMTBmZWRjYmE=")
-	if _, err := db.HasRecentCDKBindingForEmail(localCtx, "mixed.case@example.com", since); err == nil {
+	if _, err := db.HasRecentCDKBindingForEmail(localCtx, "mixed.case@example.com", since, "marswallex"); err == nil {
 		t.Fatal("解不开时应报错")
 	}
 }

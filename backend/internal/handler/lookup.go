@@ -47,7 +47,7 @@ func LookupCDKStatus(c *gin.Context) {
 		return
 	}
 
-	if provider.ResolveCode(code) == provider.MarsWallex && !localRateCheck(c, localRateQuery) {
+	if _, local := provider.CardSupplyForCode(code); local && !localRateCheck(c, localRateQuery) {
 		return
 	}
 	resp := lookupOneCDK(c.Request.Context(), code, deviceFrom(c))
@@ -88,8 +88,8 @@ func LookupCDKStatusBatch(c *gin.Context) {
 		return
 	}
 
-	// 只有批次里有本地码才计入限流：纯 ZovoCard 的批量查询行为不变
-	if slices.ContainsFunc(codes, func(code string) bool { return provider.ResolveCode(code) == provider.MarsWallex }) &&
+	// 只有批次里有本地码才计入限流：纯上游码的批量查询行为不变
+	if slices.ContainsFunc(codes, func(code string) bool { _, local := provider.CardSupplyForCode(code); return local }) &&
 		!localRateCheck(c, localRateQuery) {
 		return
 	}
@@ -161,10 +161,25 @@ func applyLookupFailure(resp *cdkLookupResult, notes string, reusable bool) {
 	}
 }
 
+// lookupOneCDK 查一张码：按码分派，供卡型查本地，上游型交给它的查询能力，没有这个能力的按「未找到」。
 func lookupOneCDK(ctx context.Context, code, deviceID string) cdkLookupResult {
-	if provider.ResolveCode(code) == provider.MarsWallex {
-		return localCDKLookup(ctx, code)
+	p, err := provider.ForCode(code)
+	if err != nil {
+		return cdkLookupResult{CDKCode: code, Status: "unknown", Message: "未找到该卡密记录"}
 	}
+	if cs, ok := provider.AsCardSupply(p); ok {
+		return localCDKLookup(ctx, cs, code)
+	}
+	if a, ok := upstreamAdapterFor(p.Name()); ok {
+		if l, ok := a.(upstreamLookuper); ok {
+			return l.Lookup(ctx, code, deviceID)
+		}
+	}
+	return cdkLookupResult{CDKCode: code, Status: "unknown", Message: "未找到该卡密记录"}
+}
+
+// zovoCardLookup 是 ZovoCard 的卡密查询：本站的码表、绑定和卡台订单。
+func zovoCardLookup(ctx context.Context, code, deviceID string) cdkLookupResult {
 	resp := cdkLookupResult{CDKCode: code, Status: "unknown", Message: "未找到该卡密记录"}
 	redeemOK := false
 	reusable := false

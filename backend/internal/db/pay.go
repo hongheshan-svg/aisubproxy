@@ -42,5 +42,31 @@ func MigratePay() error {
 			return err
 		}
 	}
-	return nil
+	// 单据属于哪家供卡型服务商，引擎按它取卡池。加列之前只有 MarsWallex 一家供卡
+	return addProviderColumn("pay_orders", "marswallex")
+}
+
+// addProviderColumn 给 table 加 provider 列（非空文本，默认空串），并在同一个事务里把已有的行补成 backfill。
+// 列已经存在就什么都不做，所以可以在旧库上重复执行：补值只在加列的那一次发生。
+// 之后写入的行必须自己带 provider；空值不会在下次启动被悄悄改成某一家，按「服务商未知」处理。
+func addProviderColumn(table, backfill string) error {
+	var n int
+	if err := DB.QueryRow(`SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = 'provider'`, table).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	tx, err := DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`ALTER TABLE ` + table + ` ADD COLUMN provider TEXT NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`UPDATE `+table+` SET provider = ?`, backfill); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

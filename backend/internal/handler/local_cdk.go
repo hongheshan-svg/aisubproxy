@@ -20,7 +20,8 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/secretbox"
 )
 
-// 本地码（MarsWallex）的公开接口。入口是现有的 /public/cdk/*，按码或令牌的前缀分流到这里，前端不用改协议。
+// 本地码（供卡型服务商，如 MarsWallex）的公开接口。入口是现有的 /public/cdk/*，按码或令牌分派到这里（见 cdk_dispatch.go），
+// 前端不用改协议。哪家服务商由前缀给出候选，以库里码行的 provider 为准；响应都带服务商字段（见 localReply）。
 //
 // 这些接口不要登录，又会触发真实注资，所以：
 //   - 响应全部从白名单字段生成，绝不返回卡号、卡尾号、代理、内部错误和时间线原文。
@@ -96,7 +97,7 @@ func localRateCheck(c *gin.Context, kind string) bool {
 	if localRateAllow(kind, c.ClientIP()) {
 		return true
 	}
-	c.JSON(http.StatusTooManyRequests, gin.H{"error": "请求过于频繁，请稍后再试"})
+	localReply(c, http.StatusTooManyRequests, gin.H{"error": "请求过于频繁，请稍后再试"})
 	return false
 }
 
@@ -121,40 +122,50 @@ func lockLocalCDK(id int64) (func(), bool) {
 	}, true
 }
 
-// isLocalCDKRequest 判断预检、兑换请求归不归本地处理：令牌或码有一个是本地的就是。这样 MW 码和 mwt 令牌绝不会发往 ZovoCard。
-func isLocalCDKRequest(body map[string]any) bool {
-	return provider.ResolveToken(str(body["redemption_token"])) == provider.MarsWallex ||
-		provider.ResolveCode(str(body["code"])) == provider.MarsWallex
+// ownsToken、ownsCode 判断令牌、码的前缀是不是这家供卡型服务商的。
+func ownsToken(cs provider.CardSupply, token string) bool {
+	p, ok := provider.CardSupplyForToken(token)
+	return ok && p.Name() == cs.Name()
 }
 
-// localCDKFromBody 按令牌或码找到这张码。两个都给时必须是同一张。出错时已写好响应，第二个返回值为 false。
-func localCDKFromBody(c *gin.Context, body map[string]any) (db.LocalCDK, bool) {
+func ownsCode(cs provider.CardSupply, code string) bool {
+	p, ok := provider.CardSupplyForCode(code)
+	return ok && p.Name() == cs.Name()
+}
+
+// localCDKFromBody 按令牌或码找到这家的这张码。两个都给时必须是同一张。出错时已写好响应，第二个返回值为 false。
+// 前缀只是候选：库里码行的 provider 必须就是这一家，对不上和查不到一样按「码不存在」处理，绝不转给上游或别家。
+func localCDKFromBody(c *gin.Context, cs provider.CardSupply, body map[string]any) (db.LocalCDK, bool) {
 	ctx := c.Request.Context()
 	tok, code := str(body["redemption_token"]), str(body["code"])
 	var row db.LocalCDK
 	var err error
 	switch {
-	case provider.ResolveToken(tok) == provider.MarsWallex:
+	case ownsToken(cs, tok):
 		row, err = db.GetLocalCDKByTokenHash(ctx, provider.HashToken(tok))
 		if err == nil && code != "" {
 			if other, cerr := db.GetLocalCDKByCode(ctx, provider.NormalizeCode(code)); cerr != nil || other.ID != row.ID {
 				err = db.ErrLocalCDKNotFound
 			}
 		}
-	case provider.ResolveCode(code) == provider.MarsWallex:
+	case ownsCode(cs, code):
 		row, err = db.GetLocalCDKByCode(ctx, provider.NormalizeCode(code))
 	default:
+		err = db.ErrLocalCDKNotFound
+	}
+	if err == nil && row.Provider != string(cs.Name()) {
 		err = db.ErrLocalCDKNotFound
 	}
 	if err == nil {
 		return row, true
 	}
+	// 码不存在时不带服务商字段：前缀只是候选，不能说这张码属于哪家
 	if errors.Is(err, db.ErrLocalCDKNotFound) {
 		c.JSON(http.StatusNotFound, gin.H{"error": localCDKNotFoundText})
 		return row, false
 	}
 	log.Printf("[local-cdk] 查询码失败: %v", err)
-	c.JSON(http.StatusServiceUnavailable, gin.H{"error": localCDKUnavailableText})
+	localReply(c, http.StatusServiceUnavailable, gin.H{"error": localCDKUnavailableText})
 	return row, false
 }
 
@@ -162,18 +173,18 @@ func localCDKFromBody(c *gin.Context, body map[string]any) (db.LocalCDK, bool) {
 func localCDKRefuse(c *gin.Context, row db.LocalCDK, v db.LocalCDKView) {
 	switch v.Status {
 	case db.LocalCDKReserved:
-		c.JSON(http.StatusConflict, gin.H{"error": localCDKBusyText + "（已使用，可查询进度）", "status": v.Status})
+		localReply(c, http.StatusConflict, gin.H{"error": localCDKBusyText + "（已使用，可查询进度）", "status": v.Status})
 	case db.LocalCDKConsumed:
-		c.JSON(http.StatusConflict, gin.H{"error": localCDKUsedText, "status": v.Status})
+		localReply(c, http.StatusConflict, gin.H{"error": localCDKUsedText, "status": v.Status})
 	case db.LocalCDKFailed:
 		alertLocalCDKExhausted(row, v)
-		c.JSON(http.StatusConflict, gin.H{"error": localCDKUsedText + "，已转人工处理", "status": v.Status})
+		localReply(c, http.StatusConflict, gin.H{"error": localCDKUsedText + "，已转人工处理", "status": v.Status})
 	default:
 		if v.Reason == db.LocalReasonExchanged {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "该卡密已换发新码，请使用新码", "status": v.Status})
+			localReply(c, http.StatusBadRequest, gin.H{"error": "该卡密已换发新码，请使用新码", "status": v.Status})
 			return
 		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": "卡密已禁用", "status": v.Status})
+		localReply(c, http.StatusBadRequest, gin.H{"error": "卡密已禁用", "status": v.Status})
 	}
 }
 
@@ -183,22 +194,22 @@ func alertLocalCDKExhausted(row db.LocalCDK, v db.LocalCDKView) {
 		return
 	}
 	opsAlertDaily("local-cdk-exhausted-"+strconv.FormatInt(row.ID, 10),
-		fmt.Sprintf("MarsWallex 码 %d（%s，%s/%s）已 %d 次走到注资后失败，不再自动重试，请人工处理。", row.ID, row.CodePrefix, row.PlanKey, row.Region, v.FundedFailures), time.Now())
+		fmt.Sprintf("%s 码 %d（%s，%s/%s）已 %d 次走到注资后失败，不再自动重试，请人工处理。", provider.DisplayName(provider.Name(row.Provider)), row.ID, row.CodePrefix, row.PlanKey, row.Region, v.FundedFailures), time.Now())
 }
 
 // localCDKPreview 预览：只读，不写任何东西，令牌由码算出。
-func localCDKPreview(c *gin.Context, code string) {
+func localCDKPreview(c *gin.Context, cs provider.CardSupply, code string) {
 	if !localRateCheck(c, localRateMutate) {
 		return
 	}
-	row, ok := localCDKFromBody(c, map[string]any{"code": code})
+	row, ok := localCDKFromBody(c, cs, map[string]any{"code": code})
 	if !ok {
 		return
 	}
 	v, err := db.LocalCDKViewOf(c.Request.Context(), row)
 	if err != nil {
 		log.Printf("[local-cdk] 码 %d 派生状态失败: %v", row.ID, err)
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": localCDKUnavailableText})
+		localReply(c, http.StatusServiceUnavailable, gin.H{"error": localCDKUnavailableText})
 		return
 	}
 	if !v.Redeemable() {
@@ -206,7 +217,7 @@ func localCDKPreview(c *gin.Context, code string) {
 		return
 	}
 	resp := gin.H{
-		"provider":                 string(provider.MarsWallex),
+		"provider":                 row.Provider,
 		"status":                   v.Status,
 		"product":                  row.Product,
 		"plan":                     row.PlanKey,
@@ -214,18 +225,18 @@ func localCDKPreview(c *gin.Context, code string) {
 		"plan_flow":                "direct",
 		"region":                   row.Region,
 		"payment_country":          row.Region,
-		"redemption_token":         provider.TokenForCode(code),
+		"redemption_token":         provider.TokenFor(cs, code),
 		"attempts_left":            v.AttemptsLeft,
 		"requires_no_subscription": true,
 	}
-	if note := provider.PlanNote(provider.MarsWallex, row.PlanKey); note != "" {
+	if note := cs.PlanNote(row.PlanKey); note != "" {
 		resp["plan_note"] = note
 	}
 	if _, rc, err := payengine.ResolvePlan(row.PlanKey, row.Region, false); err == nil {
 		resp["currency"] = rc.Currency
 	}
 	c.Header("Cache-Control", "no-store")
-	c.JSON(http.StatusOK, resp)
+	localReply(c, http.StatusOK, resp)
 }
 
 // localPreflightPayload 是预检令牌封装的内容。整个令牌是 secretbox 密文，只有本站能解开，篡改、跨码、过期都用不了。
@@ -277,7 +288,7 @@ func openLocalPreflight(id int64, token string, now time.Time) (string, error) {
 func localCredentialSession(c *gin.Context, body map[string]any) (string, bool) {
 	cred, _ := body["credential"].(map[string]any)
 	if cred != nil && strings.EqualFold(str(cred["mode"]), "mailbox") {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "该卡密只支持粘贴 session 兑换"})
+		localReply(c, http.StatusBadRequest, gin.H{"error": "该卡密只支持粘贴 session 兑换"})
 		return "", false
 	}
 	return str(cred["session"]), true
@@ -285,38 +296,37 @@ func localCredentialSession(c *gin.Context, body map[string]any) (string, bool) 
 
 func parseLocalSession(c *gin.Context, raw string) (chatgpt.Session, bool) {
 	if raw == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请先粘贴完整的 session JSON"})
+		localReply(c, http.StatusBadRequest, gin.H{"error": "请先粘贴完整的 session JSON"})
 		return chatgpt.Session{}, false
 	}
 	if len(raw) > localSessionMaxLen {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "session 内容过长"})
+		localReply(c, http.StatusBadRequest, gin.H{"error": "session 内容过长"})
 		return chatgpt.Session{}, false
 	}
 	sess, err := chatgpt.ParseSession(raw)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "会话无效，请粘贴完整的 session JSON"})
+		localReply(c, http.StatusBadRequest, gin.H{"error": "会话无效，请粘贴完整的 session JSON"})
 		return chatgpt.Session{}, false
 	}
 	return sess, true
 }
 
-// localCDKReady 是预检和兑换共用的检查。公开接口只给固定文案，原因留给后台的就绪接口。
-func localCDKReady(c *gin.Context, row db.LocalCDK) bool {
-	r, _ := checkMarsWallex(c.Request.Context(), row.PlanKey, row.Region, syncWalletThrottled)
-	if r.OK {
+// localCDKReady 是预检和兑换共用的检查，按这家服务商计算。公开接口只给固定文案，原因留给后台的就绪接口。
+func localCDKReady(c *gin.Context, cs provider.CardSupply, row db.LocalCDK) bool {
+	if st := checkCardSupply(c.Request.Context(), cs, row.PlanKey, row.Region, true); st.Readiness.OK {
 		return true
 	}
-	c.JSON(http.StatusServiceUnavailable, gin.H{"error": localCDKUnavailableText})
+	localReply(c, http.StatusServiceUnavailable, gin.H{"error": localCDKUnavailableText})
 	return false
 }
 
 // localCDKPreflight 预检：不调上游、不落库，通过后把会话封进预检令牌。
-func localCDKPreflight(c *gin.Context, body map[string]any) {
+func localCDKPreflight(c *gin.Context, cs provider.CardSupply, body map[string]any) {
 	if !localRateCheck(c, localRateMutate) {
 		return
 	}
 	c.Header("Cache-Control", "no-store")
-	row, ok := localCDKFromBody(c, body)
+	row, ok := localCDKFromBody(c, cs, body)
 	if !ok {
 		return
 	}
@@ -324,7 +334,7 @@ func localCDKPreflight(c *gin.Context, body map[string]any) {
 	v, err := db.LocalCDKViewOf(ctx, row)
 	if err != nil {
 		log.Printf("[local-cdk] 码 %d 派生状态失败: %v", row.ID, err)
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": localCDKUnavailableText})
+		localReply(c, http.StatusServiceUnavailable, gin.H{"error": localCDKUnavailableText})
 		return
 	}
 	if !v.Redeemable() {
@@ -339,28 +349,28 @@ func localCDKPreflight(c *gin.Context, body map[string]any) {
 	if !ok {
 		return
 	}
-	if !localCDKReady(c, row) {
+	if !localCDKReady(c, cs, row) {
 		return
 	}
-	blocked, err := crossProviderBlocked(ctx, sess.Email)
+	blocked, err := crossProviderBlocked(ctx, sess.Email, cs.Name())
 	if err != nil {
 		log.Printf("[local-cdk] 码 %d 互斥检查失败: %v", row.ID, err)
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": localCDKUnavailableText})
+		localReply(c, http.StatusServiceUnavailable, gin.H{"error": localCDKUnavailableText})
 		return
 	}
 	if blocked {
-		c.JSON(http.StatusConflict, gin.H{"error": crossProviderBusyText})
+		localReply(c, http.StatusConflict, gin.H{"error": crossProviderBusyText})
 		return
 	}
 	token, err := sealLocalPreflight(row.ID, raw, time.Now())
 	if err != nil {
 		log.Printf("[local-cdk] 码 %d 封装预检令牌失败: %v", row.ID, err)
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": localCDKUnavailableText})
+		localReply(c, http.StatusServiceUnavailable, gin.H{"error": localCDKUnavailableText})
 		return
 	}
 	// 不返回 plan：前端把预检里的 plan 当成账号当前套餐。这里没查账号，当前套餐要等引擎 check 才知道
-	c.JSON(http.StatusOK, gin.H{
-		"provider":                 string(provider.MarsWallex),
+	localReply(c, http.StatusOK, gin.H{
+		"provider":                 row.Provider,
 		"preflight_token":          token,
 		"email":                    sess.Email,
 		"account_email":            sess.Email,
@@ -369,19 +379,19 @@ func localCDKPreflight(c *gin.Context, body map[string]any) {
 	})
 }
 
-// localCDKRedeem 兑换。熔断、未就绪、跨服务商冲突都在建单之前拒绝，不占用码。
-func localCDKRedeem(c *gin.Context, body map[string]any) {
+// localCDKRedeem 兑换（含干净失败后的重兑）。熔断、未就绪、跨服务商冲突都在建单之前拒绝，不占用码。
+func localCDKRedeem(c *gin.Context, cs provider.CardSupply, body map[string]any) {
 	if !localRateCheck(c, localRateMutate) {
 		return
 	}
 	c.Header("Cache-Control", "no-store")
-	row, ok := localCDKFromBody(c, body)
+	row, ok := localCDKFromBody(c, cs, body)
 	if !ok {
 		return
 	}
 	unlock, ok := lockLocalCDK(row.ID)
 	if !ok {
-		c.JSON(http.StatusConflict, gin.H{"error": localCDKBusyText})
+		localReply(c, http.StatusConflict, gin.H{"error": localCDKBusyText})
 		return
 	}
 	defer unlock()
@@ -391,20 +401,20 @@ func localCDKRedeem(c *gin.Context, body map[string]any) {
 	row, err := db.GetLocalCDK(ctx, row.ID)
 	if err != nil {
 		log.Printf("[local-cdk] 码重读失败: %v", err)
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": localCDKUnavailableText})
+		localReply(c, http.StatusServiceUnavailable, gin.H{"error": localCDKUnavailableText})
 		return
 	}
 	v, err := db.LocalCDKViewOf(ctx, row)
 	if err != nil {
 		log.Printf("[local-cdk] 码 %d 派生状态失败: %v", row.ID, err)
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": localCDKUnavailableText})
+		localReply(c, http.StatusServiceUnavailable, gin.H{"error": localCDKUnavailableText})
 		return
 	}
 	if !v.Redeemable() {
 		localCDKRefuse(c, row, v)
 		return
 	}
-	if !localCDKReady(c, row) {
+	if !localCDKReady(c, cs, row) {
 		return
 	}
 	raw, ok := localRedeemSession(c, row, body)
@@ -417,18 +427,18 @@ func localCDKRedeem(c *gin.Context, body map[string]any) {
 	}
 	release, ok := holdAccountExclusive(normEmail(sess.Email))
 	if !ok {
-		c.JSON(http.StatusConflict, gin.H{"error": crossProviderBusyText})
+		localReply(c, http.StatusConflict, gin.H{"error": crossProviderBusyText})
 		return
 	}
 	defer release()
-	blocked, err := crossProviderBlocked(ctx, sess.Email)
+	blocked, err := crossProviderBlocked(ctx, sess.Email, cs.Name())
 	if err != nil {
 		log.Printf("[local-cdk] 码 %d 互斥检查失败: %v", row.ID, err)
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": localCDKUnavailableText})
+		localReply(c, http.StatusServiceUnavailable, gin.H{"error": localCDKUnavailableText})
 		return
 	}
 	if blocked {
-		c.JSON(http.StatusConflict, gin.H{"error": crossProviderBusyText})
+		localReply(c, http.StatusConflict, gin.H{"error": crossProviderBusyText})
 		return
 	}
 
@@ -437,11 +447,11 @@ func localCDKRedeem(c *gin.Context, body map[string]any) {
 	defer cancel()
 	engine := payEngine
 	if engine == nil { // 就绪检查之后被摘掉
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": localCDKUnavailableText})
+		localReply(c, http.StatusServiceUnavailable, gin.H{"error": localCDKUnavailableText})
 		return
 	}
 	o, err := engine.Submit(submitCtx, payengine.Request{
-		PlanKey: row.PlanKey, Region: row.Region, Session: raw,
+		Provider: row.Provider, PlanKey: row.PlanKey, Region: row.Region, Session: raw,
 		Source: "cdk", SourceRef: db.LocalCDKSourceRef(row.ID),
 	})
 	if err != nil {
@@ -451,12 +461,12 @@ func localCDKRedeem(c *gin.Context, body map[string]any) {
 	db.WriteAudit("public", "local_cdk_redeem", fmt.Sprintf("cdk=%d order=%s", row.ID, o.OrderNo), c.ClientIP())
 
 	token := str(body["redemption_token"])
-	if provider.ResolveToken(token) != provider.MarsWallex {
-		token = provider.TokenForCode(str(body["code"]))
+	if !ownsToken(cs, token) {
+		token = provider.TokenFor(cs, str(body["code"]))
 	}
 	public := localOrderPublic(db.LocalCDKView{Status: db.LocalCDKReserved, Latest: &db.LocalCDKOrder{State: o.State, AccountEmail: sess.Email}}, row)
-	c.JSON(http.StatusOK, gin.H{
-		"provider":         string(provider.MarsWallex),
+	localReply(c, http.StatusOK, gin.H{
+		"provider":         row.Provider,
 		"redemption_token": token,
 		"status":           public["status"],
 		"message":          public["message"],
@@ -475,17 +485,17 @@ func localRedeemSession(c *gin.Context, row db.LocalCDK, body map[string]any) (s
 	}
 	token := str(body["preflight_token"])
 	if token == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请先完成账号预检"})
+		localReply(c, http.StatusBadRequest, gin.H{"error": "请先完成账号预检"})
 		return "", false
 	}
 	raw, err := openLocalPreflight(row.ID, token, time.Now())
 	if errors.Is(err, errLocalPreflightInvalid) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "预检已失效，请重新检测账号"})
+		localReply(c, http.StatusBadRequest, gin.H{"error": "预检已失效，请重新检测账号"})
 		return "", false
 	}
 	if err != nil {
 		log.Printf("[local-cdk] 码 %d 解开预检令牌失败: %v", row.ID, err)
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": localCDKUnavailableText})
+		localReply(c, http.StatusServiceUnavailable, gin.H{"error": localCDKUnavailableText})
 		return "", false
 	}
 	return raw, true
@@ -495,17 +505,17 @@ func localRedeemSession(c *gin.Context, row db.LocalCDK, body map[string]any) (s
 func localCDKSubmitFailed(c *gin.Context, row db.LocalCDK, err error) {
 	switch {
 	case db.IsLocalCDKOrderConflict(err):
-		c.JSON(http.StatusConflict, gin.H{"error": localCDKBusyText})
+		localReply(c, http.StatusConflict, gin.H{"error": localCDKBusyText})
 	case errors.Is(err, payengine.ErrInflight):
-		c.JSON(http.StatusConflict, gin.H{"error": crossProviderBusyText})
+		localReply(c, http.StatusConflict, gin.H{"error": crossProviderBusyText})
 	case errors.Is(err, payengine.ErrBadSession):
-		c.JSON(http.StatusBadRequest, gin.H{"error": "会话无效，请粘贴完整的 session JSON"})
+		localReply(c, http.StatusBadRequest, gin.H{"error": "会话无效，请粘贴完整的 session JSON"})
 	case errors.Is(err, payengine.ErrPlanUnavailable):
 		log.Printf("[local-cdk] 码 %d 建单时套餐不可用: %v", row.ID, err)
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": localCDKUnavailableText})
+		localReply(c, http.StatusServiceUnavailable, gin.H{"error": localCDKUnavailableText})
 	default:
 		log.Printf("[local-cdk] 码 %d 建单失败: %v", row.ID, err)
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": localCDKUnavailableText})
+		localReply(c, http.StatusServiceUnavailable, gin.H{"error": localCDKUnavailableText})
 	}
 }
 
@@ -600,17 +610,17 @@ func writeLocalResult(c *gin.Context, row db.LocalCDK, extra gin.H) {
 	v, err := db.LocalCDKViewOf(c.Request.Context(), row)
 	if err != nil {
 		log.Printf("[local-cdk] 码 %d 派生状态失败: %v", row.ID, err)
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": localCDKUnavailableText})
+		localReply(c, http.StatusServiceUnavailable, gin.H{"error": localCDKUnavailableText})
 		return
 	}
 	if v.Latest == nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "未找到该卡密的兑换记录"})
+		localReply(c, http.StatusNotFound, gin.H{"error": "未找到该卡密的兑换记录"})
 		return
 	}
 	alertLocalCDKExhausted(row, v)
 	public := localOrderPublic(v, row)
 	resp := gin.H{
-		"provider": string(provider.MarsWallex),
+		"provider": row.Provider,
 		"status":   public["status"],
 		"stage":    public["stage"],
 		"message":  public["message"],
@@ -621,15 +631,15 @@ func writeLocalResult(c *gin.Context, row db.LocalCDK, extra gin.H) {
 		resp[k] = val
 	}
 	c.Header("Cache-Control", "no-store")
-	c.JSON(http.StatusOK, resp)
+	localReply(c, http.StatusOK, resp)
 }
 
 // localCDKResult 按令牌查结果。
-func localCDKResult(c *gin.Context, token string) {
+func localCDKResult(c *gin.Context, cs provider.CardSupply, token string) {
 	if !localRateCheck(c, localRateQuery) {
 		return
 	}
-	row, ok := localCDKFromBody(c, map[string]any{"redemption_token": token})
+	row, ok := localCDKFromBody(c, cs, map[string]any{"redemption_token": token})
 	if !ok {
 		return
 	}
@@ -637,24 +647,24 @@ func localCDKResult(c *gin.Context, token string) {
 }
 
 // localCDKResultByCode 按码查结果，顺带把令牌给前端恢复轮询。
-func localCDKResultByCode(c *gin.Context, code string) {
+func localCDKResultByCode(c *gin.Context, cs provider.CardSupply, code string) {
 	if !localRateCheck(c, localRateQuery) {
 		return
 	}
-	row, ok := localCDKFromBody(c, map[string]any{"code": code})
+	row, ok := localCDKFromBody(c, cs, map[string]any{"code": code})
 	if !ok {
 		return
 	}
 	norm := provider.NormalizeCode(code)
 	writeLocalResult(c, row, gin.H{
 		"cdk_code":            norm,
-		"redemption_token":    provider.TokenForCode(norm),
+		"redemption_token":    provider.TokenFor(cs, norm),
 		"has_session_binding": false,
 	})
 }
 
-// localCDKLookup 是卡密查询页的本地分支。
-func localCDKLookup(ctx context.Context, code string) cdkLookupResult {
+// localCDKLookup 是卡密查询页的本地分支。库里码行的服务商对不上时按未找到处理。
+func localCDKLookup(ctx context.Context, cs provider.CardSupply, code string) cdkLookupResult {
 	norm := provider.NormalizeCode(code)
 	resp := cdkLookupResult{CDKCode: code, Status: "unknown", Message: "未找到该卡密记录"}
 	row, err := db.GetLocalCDKByCode(ctx, norm)
@@ -662,6 +672,9 @@ func localCDKLookup(ctx context.Context, code string) cdkLookupResult {
 		if !errors.Is(err, db.ErrLocalCDKNotFound) {
 			log.Printf("[local-cdk] 查询码失败: %v", err)
 		}
+		return resp
+	}
+	if row.Provider != string(cs.Name()) {
 		return resp
 	}
 	v, err := db.LocalCDKViewOf(ctx, row)
@@ -699,19 +712,22 @@ func localCDKLookup(ctx context.Context, code string) cdkLookupResult {
 	return resp
 }
 
-// localCDKExchange 是代理换码的本地分支，调用前已通过限流和密码校验。
+// localCDKExchange 是代理换码的本地分支，调用前已通过限流和密码校验。新码是同一家服务商的码。
 // 只有确认没点过支付的失败才能换；被拒、待人工、在途、从未兑换一律拒绝。新码继承注资后失败的次数，换码不能绕过上限。
-func localCDKExchange(c *gin.Context, code, ip string) {
+func localCDKExchange(c *gin.Context, cs provider.CardSupply, code, ip string) {
 	ctx := c.Request.Context()
 	norm := provider.NormalizeCode(code)
 	row, err := db.GetLocalCDKByCode(ctx, norm)
+	if err == nil && row.Provider != string(cs.Name()) {
+		err = db.ErrLocalCDKNotFound
+	}
 	if errors.Is(err, db.ErrLocalCDKNotFound) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "本站未找到该完整卡密（仅支持本站发过的码）"})
 		return
 	}
 	if err != nil {
 		log.Printf("[local-cdk] 查询码失败: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试"})
+		localReply(c, http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试"})
 		return
 	}
 	codeHash := db.HashCDKCode(norm)
@@ -721,44 +737,44 @@ func localCDKExchange(c *gin.Context, code, ip string) {
 	}
 	unlock, ok := lockLocalCDK(row.ID)
 	if !ok {
-		c.JSON(http.StatusConflict, gin.H{"error": localCDKBusyText})
+		localReply(c, http.StatusConflict, gin.H{"error": localCDKBusyText})
 		return
 	}
 	defer unlock()
 	if row, err = db.GetLocalCDK(ctx, row.ID); err != nil { // 拿到锁之后重读，等锁之前的那份可能已经过期
 		log.Printf("[local-cdk] 码重读失败: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试"})
+		localReply(c, http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试"})
 		return
 	}
 	v, err := db.LocalCDKViewOf(ctx, row)
 	if err != nil {
 		log.Printf("[local-cdk] 码 %d 派生状态失败: %v", row.ID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试"})
+		localReply(c, http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试"})
 		return
 	}
 	if v.Status != db.LocalCDKUnused {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "不符合换码条件（需充值失败且未发起支付）", "status": v.Status})
+		localReply(c, http.StatusBadRequest, gin.H{"error": "不符合换码条件（需充值失败且未发起支付）", "status": v.Status})
 		return
 	}
 	// 只看这张码自己的单：继承来的次数不算它失败过，从未兑换就换等于白拿新码
 	if v.Latest == nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "该卡密尚无兑换失败记录，不能换新码", "hint": "仅限充值失败且未扣款的卡密"})
+		localReply(c, http.StatusBadRequest, gin.H{"error": "该卡密尚无兑换失败记录，不能换新码", "hint": "仅限充值失败且未扣款的卡密"})
 		return
 	}
-	// 新码也是新发的 MarsWallex 码，硬门槛照样要过
-	switch passed, err := db.HasRealSucceededPayOrder(ctx); {
+	// 新码也是这家新发的码，硬门槛照样要过
+	switch passed, err := db.HasRealSucceededPayOrder(ctx, row.Provider); {
 	case err != nil:
 		log.Printf("[local-cdk] 查询真实付款记录失败: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试"})
+		localReply(c, http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试"})
 		return
 	case !passed:
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": localCDKUnavailableText})
+		localReply(c, http.StatusServiceUnavailable, gin.H{"error": localCDKUnavailableText})
 		return
 	}
-	fresh, err := provider.GenerateLocalCode()
+	fresh, err := provider.GenerateCode(cs)
 	if err != nil {
 		log.Printf("[local-cdk] 生成新码失败: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试"})
+		localReply(c, http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试"})
 		return
 	}
 	// OldID 必须是 0：这张记录的 old_upstream_id 指卡台的码 ID，人工定论时会拿它去禁用卡台的码，本地 ID 不能填进去
@@ -773,11 +789,11 @@ func localCDKExchange(c *gin.Context, code, ip string) {
 	case errors.Is(err, db.ErrAgentExchangeDailyLimit):
 		limit := agentSwapDailyLimit()
 		opsAlertDaily("agent-swap-daily-limit", fmt.Sprintf("代理换码已达今日上限（%d 张），后续请求已拒绝。如果不是正常业务量，请检查换码密码是否泄露。", limit), time.Now())
-		c.JSON(http.StatusTooManyRequests, gin.H{"error": fmt.Sprintf("代理换码已达今日上限（%d 张），请联系管理员", limit)})
+		localReply(c, http.StatusTooManyRequests, gin.H{"error": fmt.Sprintf("代理换码已达今日上限（%d 张），请联系管理员", limit)})
 		return
 	case err != nil:
 		log.Printf("[local-cdk] 码 %d 换码占位失败: %v", row.ID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试"})
+		localReply(c, http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试"})
 		return
 	}
 	newID, err := db.ExchangeLocalCDK(context.WithoutCancel(ctx), row.ID, db.NewLocalCDK{
@@ -791,16 +807,16 @@ func localCDKExchange(c *gin.Context, code, ip string) {
 			log.Printf("[local-cdk] 换码记录 %d 释放占位失败: %v", exID, rerr)
 		}
 		if errors.Is(err, db.ErrLocalCDKNotExchangeable) {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "不符合换码条件（需充值失败且未发起支付）"})
+			localReply(c, http.StatusBadRequest, gin.H{"error": "不符合换码条件（需充值失败且未发起支付）"})
 			return
 		}
 		log.Printf("[local-cdk] 码 %d 换码失败: %v", row.ID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试"})
+		localReply(c, http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试"})
 		return
 	}
 	if err := db.FinishAgentCDKExchange(exID, newID, fresh.Prefix); err != nil {
 		log.Printf("[local-cdk] 换码记录 %d 收尾失败 new=%d: %v", exID, newID, err)
-		opsAlert(fmt.Sprintf("MarsWallex 换码已发出新码但写库失败：记录 %d，旧码 %d，新码 %d。占位已保留，请到后台定论。", exID, row.ID, newID))
+		opsAlert(fmt.Sprintf("%s 换码已发出新码但写库失败：记录 %d，旧码 %d，新码 %d。占位已保留，请到后台定论。", cs.DisplayName(), exID, row.ID, newID))
 	} else if err := db.CompleteAgentCDKExchangeDisable(exID); err != nil {
 		// 旧码和新码在 ExchangeLocalCDK 的事务里一起换好，本地码不存在两张都能兑的时刻。这里只是记账，失败了维护循环会补上
 		log.Printf("[local-cdk] 换码记录 %d 转完成失败: %v", exID, err)
@@ -808,9 +824,9 @@ func localCDKExchange(c *gin.Context, code, ip string) {
 	db.WriteAudit("agent-swap", "local_cdk_exchange",
 		fmt.Sprintf("old=%d new=%d plan=%s region=%s carried=%d", row.ID, newID, row.PlanKey, row.Region, v.FundedFailures), ip)
 	c.Header("Cache-Control", "no-store")
-	c.JSON(http.StatusOK, gin.H{
+	localReply(c, http.StatusOK, gin.H{
 		"ok":              true,
-		"provider":        string(provider.MarsWallex),
+		"provider":        row.Provider,
 		"plan":            row.PlanKey,
 		"old_cdk_id":      row.ID,
 		"old_code_prefix": row.CodePrefix,

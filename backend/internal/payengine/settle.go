@@ -157,8 +157,13 @@ func (s *Service) isRunning(no string) bool {
 }
 
 // verifyOrder 检查一张确认中的单据，定论规则见 spec §6。账号已开通即成功；到期前的任何错误都只记事件、等下次检查。
+// 单据所属服务商没有卡池时（重启后换了版本、这家被去掉）：已经提交过，查不了授权也释放不了租约，直接转人工，绝不用别家的卡池。
 func (s *Service) verifyOrder(ctx context.Context, o *Order) {
 	j := &job{o: o}
+	if _, ok := s.jobPool(j); !ok {
+		s.verifyEscalate(ctx, j, "provider_unavailable", providerUnavailableText(o.Provider)+"，无法核对授权交易")
+		return
+	}
 	opened, accErr := s.verifyAccount(ctx, j)
 	if ctx.Err() != nil {
 		return // 停机：下次启动接着查
@@ -198,7 +203,7 @@ func declineExtra(t Timeouts, pageOutcome string) int64 {
 // 继续等下次检查，等到 exhausted（见 declineExtra）仍不全就转人工。
 // 本地证据都说可以定论时，先补拉一次交易再看：Webhook 不通时本地交易表只靠 15 分钟一次的定时补拉，宽限期内看不到授权。
 func (s *Service) verifyDeclined(ctx context.Context, j *job, accErr error, exhausted bool) {
-	approved, pending, err := s.verifyAuth(ctx, j.o)
+	approved, pending, err := s.verifyAuth(ctx, j.pool, j.o)
 	if ctx.Err() != nil {
 		return
 	}
@@ -244,7 +249,7 @@ func (s *Service) backfillAndRecheck(ctx context.Context, j *job) (approved, pen
 	}
 	bctx, cancel := context.WithTimeout(ctx, s.t.Backfill)
 	defer cancel()
-	_, err = s.opts.Pool.BackfillRecent(bctx, days)
+	_, err = j.pool.BackfillRecent(bctx, days)
 	if ctx.Err() != nil {
 		return false, false, ctx.Err()
 	}
@@ -252,7 +257,7 @@ func (s *Service) backfillAndRecheck(ctx context.Context, j *job) (approved, pen
 	if err != nil {
 		return false, false, err
 	}
-	approved, pending, err = s.verifyAuth(ctx, j.o)
+	approved, pending, err = s.verifyAuth(ctx, j.pool, j.o)
 	if ctx.Err() != nil {
 		return false, false, ctx.Err()
 	}
@@ -359,7 +364,7 @@ func authWindowStart(submittedAt int64) int64 {
 // 只看 AUTH 与 SETTLE：approved 算成功，failed 不算，其余任何取值（含空串、未知值）都算未定论。
 // 文档枚举 AUTH 为 approved/failed/pending、SETTLE 为 approved/pending，平台未实测，所以默认不放行：
 // 把已扣款的单定成 declined 是最贵的错误，多一次人工核对不是。平台状态原样入库，比较时不区分大小写。
-func (s *Service) verifyAuth(ctx context.Context, o *Order) (approved, pending bool, err error) {
+func (s *Service) verifyAuth(ctx context.Context, pool Pool, o *Order) (approved, pending bool, err error) {
 	if o.CardID == "" {
 		return false, false, errors.New("单据没有记录卡")
 	}
@@ -367,7 +372,7 @@ func (s *Service) verifyAuth(ctx context.Context, o *Order) (approved, pending b
 	if o.SubmittedAt != nil {
 		since = authWindowStart(*o.SubmittedAt)
 	}
-	list, err := s.txnsSince(ctx, o.CardID, since)
+	list, err := s.txnsSince(ctx, pool, o.CardID, since)
 	if err != nil {
 		return false, false, err
 	}
@@ -387,11 +392,11 @@ func (s *Service) verifyAuth(ctx context.Context, o *Order) (approved, pending b
 
 // txnsSince 返回该卡在 since 之后的交易（新的在前）。交易按时间倒序分页，翻到全部读完或出现早于 since 的记录为止。
 // 时间只精确到秒，与 since 同一秒的算在内。
-func (s *Service) txnsSince(ctx context.Context, cardID string, since int64) ([]cardpool.Transaction, error) {
+func (s *Service) txnsSince(ctx context.Context, pool Pool, cardID string, since int64) ([]cardpool.Transaction, error) {
 	out := []cardpool.Transaction{}
 	seen := 0
 	for page := 1; ; page++ {
-		list, total, err := s.opts.Pool.ListTransactions(ctx, cardpool.TxnFilter{CardID: cardID, Page: page, PageSize: txnPageSize})
+		list, total, err := pool.ListTransactions(ctx, cardpool.TxnFilter{CardID: cardID, Page: page, PageSize: txnPageSize})
 		if err != nil {
 			return nil, err
 		}
@@ -460,6 +465,7 @@ func leaseFromOrder(o *Order) *cardpool.Lease {
 // recoverOrders 收敛上次运行遗留的单据，必须在第一次派发之前完成：
 // 提交之前的中间状态判 failed / not_submitted 并释放租约；submitted、requires_3ds 转 verifying 继续确认，绝不再点支付；
 // 页面被拒或校验错误的 verifying 单补上宽限期。queued 留给工作协程，其余 verifying 留给确认协程。有单据没收敛时返回错误，由工作协程重试。
+// 已经取卡或注资、但所属服务商没有卡池的单转待人工：租约释放不了，卡里可能有钱，绝不交给别家的卡池。
 func (s *Service) recoverOrders(ctx context.Context) error {
 	stale, err := ordersInStates(ctx, StateChecking, StateLinkCreated, StateOpening, StateFunding, StateFilling)
 	if err != nil {
@@ -468,6 +474,12 @@ func (s *Service) recoverOrders(ctx context.Context) error {
 	var errs []error
 	for i := range stale {
 		j := &job{o: &stale[i]}
+		if _, ok := s.jobPool(j); !ok && touchedCard(j.o) {
+			if err := s.escalateUnpooled(ctx, j); err != nil {
+				errs = append(errs, fmt.Errorf("单据 %s: %w", j.o.OrderNo, err))
+			}
+			continue
+		}
 		s.release(ctx, j, leaseFromOrder(j.o), cardpool.Outcome{Result: cardpool.ResultAborted})
 		if err := s.fail(ctx, j, &stepFailure{code: "service_restart", msg: restartMessage}); err != nil {
 			errs = append(errs, fmt.Errorf("单据 %s: %w", j.o.OrderNo, err))
@@ -493,6 +505,22 @@ func (s *Service) recoverOrders(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// touchedCard 判断单据是否已经取卡或提交过注资：这之后放弃就可能有钱留在卡上。
+func touchedCard(o *Order) bool {
+	return o.CardID != "" || o.LeaseToken != "" || o.FundOrderNo != ""
+}
+
+// escalateUnpooled 把已经取卡或注资、但所属服务商没有卡池的未提交单转待人工并告警。
+// 没有提交，钱不会被 ChatGPT 扣走，但可能留在卡上，要人工到该服务商的后台处理。
+func (s *Service) escalateUnpooled(ctx context.Context, j *job) error {
+	msg := providerUnavailableText(j.o.Provider) + "：服务重启时这单已经取卡或注资，租约无法释放，请到该服务商的后台核对卡上余额"
+	if err := s.end(ctx, j, StateNeedsReview, "error", msg, map[string]any{"error_code": "provider_unavailable", "error_message": msg}); err != nil {
+		return err
+	}
+	s.opts.Alert(fmt.Sprintf("付款单 %s 转待人工：%s", j.o.OrderNo, msg))
+	return nil
 }
 
 // restoreDeclineGrace 让页面被拒或校验错误的单重新等够 DeclineGrace：停机期间授权推送送不到，

@@ -11,7 +11,6 @@ import (
 
 	"github.com/tuzi/cdk-recharge-system/internal/cardpool"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
-	"github.com/tuzi/cdk-recharge-system/internal/marswallex"
 	"github.com/tuzi/cdk-recharge-system/internal/paybrowser"
 )
 
@@ -703,15 +702,15 @@ func TestPreSubmitFailuresReleaseAborted(t *testing.T) {
 			}
 		}, 0},
 		{"取卡号失败", "card_sensitive_failed", func(h *harness) {
-			h.pool.sensitive = func(*cardpool.Lease) (*marswallex.CardSensitive, error) { return nil, boom }
+			h.pool.sensitive = func(*cardpool.Lease) (*cardpool.CardSensitive, error) { return nil, boom }
 		}, 1},
 		{"有效期无法解析", "card_expiry_invalid", func(h *harness) {
-			h.pool.sensitive = func(*cardpool.Lease) (*marswallex.CardSensitive, error) {
-				return &marswallex.CardSensitive{CardNo: testCardNo, CVV2: testCVV, ExpiryDate: "13/99"}, nil
+			h.pool.sensitive = func(*cardpool.Lease) (*cardpool.CardSensitive, error) {
+				return &cardpool.CardSensitive{CardNo: testCardNo, CVV2: testCVV, ExpiryDate: "13/99"}, nil
 			}
 		}, 1},
 		{"租约已失效", "card_sensitive_failed", func(h *harness) {
-			h.pool.sensitive = func(*cardpool.Lease) (*marswallex.CardSensitive, error) { return nil, cardpool.ErrLeaseInvalid }
+			h.pool.sensitive = func(*cardpool.Lease) (*cardpool.CardSensitive, error) { return nil, cardpool.ErrLeaseInvalid }
 			h.pool.release = func(*cardpool.Lease, cardpool.Outcome) error { return cardpool.ErrLeaseInvalid }
 		}, 1},
 	}
@@ -929,8 +928,8 @@ func TestCVVIsCardFragmentScrubbed(t *testing.T) {
 	const card, spaced, cvv = "4539148803436467", "4539 1488 0343 6467", "803"
 	logs := captureLog(t)
 	h := newPayHarness(t, nil)
-	h.pool.sensitive = func(*cardpool.Lease) (*marswallex.CardSensitive, error) {
-		return &marswallex.CardSensitive{CardID: testCardID, CardNo: card, CVV2: cvv, ExpiryDate: "08/28"}, nil
+	h.pool.sensitive = func(*cardpool.Lease) (*cardpool.CardSensitive, error) {
+		return &cardpool.CardSensitive{CardID: testCardID, CardNo: card, CVV2: cvv, ExpiryDate: "08/28"}, nil
 	}
 	h.br.fill = func(paybrowser.Card, paybrowser.Billing) error {
 		return fmt.Errorf("输入框内容 %s / %s，cvc %s 校验失败", card, spaced, cvv)

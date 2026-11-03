@@ -536,11 +536,17 @@ func IsLocalCDKOrderConflict(err error) bool {
 	return strings.Contains(se.Error(), "pay_orders.source_ref")
 }
 
-// HasRealSucceededPayOrder 是否已有一笔系统自动确认成功的真实付款单：发 MarsWallex 码的硬门槛。
+// HasRealSucceededPayOrder 该供卡型服务商是否已有一笔系统自动确认成功的真实付款单：发它的码的硬门槛，按服务商分别计算。
 // dry_run 非 0 的都是试运行（1 到读金额、2 到填表），不算。resolved_by 非空是人工定论的单，不能证明系统能自己走通，也不算。
-func HasRealSucceededPayOrder(ctx context.Context) (bool, error) {
+// 别家的成功单不算：一家走通不能证明另一家的卡和流程也能走通。
+func HasRealSucceededPayOrder(ctx context.Context, provider string) (bool, error) {
+	provider = strings.TrimSpace(provider)
+	if provider == "" {
+		return false, errors.New("硬门槛查询缺少服务商")
+	}
 	var n int
-	err := DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM (SELECT 1 FROM pay_orders WHERE dry_run = 0 AND state = 'succeeded' AND resolved_by = '' LIMIT 1)`).Scan(&n)
+	err := DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM (SELECT 1 FROM pay_orders
+		WHERE dry_run = 0 AND state = 'succeeded' AND resolved_by = '' AND provider = ? LIMIT 1)`, provider).Scan(&n)
 	return n > 0, err
 }
 
@@ -556,16 +562,17 @@ func HasOpenPayOrderForEmail(ctx context.Context, email string) (bool, error) {
 	return n > 0, err
 }
 
-// HasRecentCDKBindingForEmail 该账号在 since 之后是否在 ZovoCard 预检里绑定过会话。
+// HasRecentCDKBindingForEmail 该账号在 since 之后是否在别家（provider 不等于 except）的上游预检里绑定过会话。
+// except 是正在检查的那一家：自己的绑定不算跨服务商冲突。provider 为空的行（服务商不明）一律算别家。
 // 邮箱是随机 nonce 的密文，不能按值查，只能把时间窗内的行逐个解开比较。
 // 解不开就返回错误，由调用方按拒绝处理：不知道是不是同一个账号时不能放行付款。
-func HasRecentCDKBindingForEmail(ctx context.Context, email string, since time.Time) (bool, error) {
+func HasRecentCDKBindingForEmail(ctx context.Context, email string, since time.Time, except string) (bool, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
 	if email == "" {
 		return false, nil
 	}
 	rows, err := DB.QueryContext(ctx, `SELECT session_payload, account_email_sealed FROM cdk_session_bindings
-		WHERE session_bound_at >= ? AND (account_email_sealed != '' OR TRIM(session_payload) != '')`, since.Unix())
+		WHERE session_bound_at >= ? AND provider != ? AND (account_email_sealed != '' OR TRIM(session_payload) != '')`, since.Unix(), strings.TrimSpace(except))
 	if err != nil {
 		return false, err
 	}

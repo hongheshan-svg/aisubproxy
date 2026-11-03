@@ -256,10 +256,29 @@ func PublicAgentCDKExchange(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "请输入完整卡密"})
 		return
 	}
-	if provider.ResolveCode(code) == provider.MarsWallex {
-		localCDKExchange(c, code, ip)
+	p, ok := routeCode(c, code)
+	if !ok {
 		return
 	}
+	if cs, ok := provider.AsCardSupply(p); ok {
+		withCardSupply(c, cs)
+		localCDKExchange(c, cs, code, ip)
+		return
+	}
+	a, ok := upstreamOrFail(c, p)
+	if !ok {
+		return
+	}
+	ex, ok := a.(upstreamExchanger)
+	if !ok {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "该服务商不支持代理换码"})
+		return
+	}
+	ex.Exchange(c, code, ip)
+}
+
+// zovoCardExchange 是 ZovoCard 的代理换码：在卡台上查单、发新码、禁用旧码。入口和分派在 PublicAgentCDKExchange。
+func zovoCardExchange(c *gin.Context, code, ip string) {
 	codeHash := db.HashCDKCode(code)
 	// 这里只是快速拒绝，真正防并发的是下面发码前的原子占位
 	if st := db.AgentCDKExchangeState(codeHash); st != "" {

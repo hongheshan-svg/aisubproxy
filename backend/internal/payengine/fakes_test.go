@@ -8,7 +8,6 @@ import (
 
 	"github.com/tuzi/cdk-recharge-system/internal/cardpool"
 	"github.com/tuzi/cdk-recharge-system/internal/chatgpt"
-	"github.com/tuzi/cdk-recharge-system/internal/marswallex"
 	"github.com/tuzi/cdk-recharge-system/internal/paybrowser"
 )
 
@@ -78,13 +77,16 @@ type releaseCall struct {
 	Outcome cardpool.Outcome
 }
 
+// testProvider 是测试单据所属的供卡型服务商名。引擎只按名字取卡池，不认识具体是哪家。
+const testProvider = "marswallex"
+
 // fakePool 记录调用；对应的函数字段未设置时方法返回 errFakeUnset。函数字段须在 Start 之前设好。
 type fakePool struct {
 	callLog
 	acquire   func(cardpool.AcquireRequest) (*cardpool.Lease, error)
 	fund      func(context.Context, *cardpool.Lease, int64) (*cardpool.Order, error)
 	waitOrder func(context.Context, string) (*cardpool.Order, error)
-	sensitive func(*cardpool.Lease) (*marswallex.CardSensitive, error)
+	sensitive func(*cardpool.Lease) (*cardpool.CardSensitive, error)
 	waitOTP   func(context.Context, string, time.Time) (string, error)
 	release   func(*cardpool.Lease, cardpool.Outcome) error
 	cardInfo  func(string) (cardpool.CardInfo, error)
@@ -119,7 +121,7 @@ func (p *fakePool) WaitOrder(c context.Context, no string) (*cardpool.Order, err
 	return nil, errFakeUnset
 }
 
-func (p *fakePool) Sensitive(_ context.Context, l *cardpool.Lease) (*marswallex.CardSensitive, error) {
+func (p *fakePool) Sensitive(_ context.Context, l *cardpool.Lease) (*cardpool.CardSensitive, error) {
 	p.hit("Sensitive", l)
 	if p.sensitive != nil {
 		return p.sensitive(l)

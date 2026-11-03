@@ -20,7 +20,7 @@ func TestDefaultProviderLoadSave(t *testing.T) {
 	if n, err := LoadDefault(); err != nil || n != MarsWallex {
 		t.Fatal(n, err)
 	}
-	// 库里的非法值按 ZovoCard，不能变成别的
+	// 库里的非法值按兜底上游，不能变成别的
 	if err := db.SetSetting(SettingDefault, "bogus"); err != nil {
 		t.Fatal(err)
 	}
@@ -78,6 +78,9 @@ func TestCapabilitiesFromSupports(t *testing.T) {
 	byKey := map[string]Capability{}
 	for _, r := range rows {
 		byKey[r.Product+"/"+r.Plan] = r
+		if r.Notes == nil || r.Support == nil {
+			t.Fatalf("support、notes 要总是对象: %+v", r)
+		}
 	}
 	if r := byKey["gpt/plus"]; !r.Support[MarsWallex] || !r.Support[ZovoCard] {
 		t.Fatalf("%+v", r)
@@ -92,34 +95,36 @@ func TestCapabilitiesFromSupports(t *testing.T) {
 	}
 }
 
-func TestResolveOnlyLooksAtTheCode(t *testing.T) {
+func TestBuiltinRouting(t *testing.T) {
 	for _, code := range []string{"MW-AAAAA-BBBBB", "mw-aaaaa", "  MW-AAAAA  ", "\xe2\x80\x8bMW-AAAAA\xef\xbb\xbf", "\xe3\x80\x80mw-a"} {
-		if ResolveCode(code) != MarsWallex {
-			t.Errorf("%q 应归 MarsWallex", code)
+		if p, err := ForCode(code); err != nil || p.Name() != MarsWallex {
+			t.Errorf("%q 应归 MarsWallex: %v %v", code, p, err)
 		}
 	}
 	for _, code := range []string{"ZC-AAAA", "SXC-AAAA", "", "MWX-AAA", "M-W-AAA", "XMW-AAA"} {
-		if ResolveCode(code) != ZovoCard {
-			t.Errorf("%q 应归 ZovoCard", code)
+		if p, err := ForCode(code); err != nil || p.Name() != ZovoCard {
+			t.Errorf("%q 应归 ZovoCard: %v %v", code, p, err)
 		}
 	}
 	for _, tok := range []string{"mwt_abc", "MWT_ABC", "  mwt_abc "} {
-		if ResolveToken(tok) != MarsWallex {
+		if p, err := ForToken(tok); err != nil || p.Name() != MarsWallex {
 			t.Errorf("%q 应归 MarsWallex", tok)
 		}
 	}
 	for _, tok := range []string{"tok-1", "", "mw_abc"} {
-		if ResolveToken(tok) != ZovoCard {
+		if p, err := ForToken(tok); err != nil || p.Name() != ZovoCard {
 			t.Errorf("%q 应归 ZovoCard", tok)
 		}
 	}
 }
 
-func TestGenerateLocalCode(t *testing.T) {
+func TestGenerateCode(t *testing.T) {
+	mw, _ := Get(MarsWallex)
+	cs, _ := AsCardSupply(mw)
 	re := regexp.MustCompile(`^MW-[A-HJ-NP-Z2-9]{5}(-[A-HJ-NP-Z2-9]{5}){4}$`)
 	seen := map[string]bool{}
 	for i := 0; i < 2000; i++ {
-		c, err := GenerateLocalCode()
+		c, err := GenerateCode(cs)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -136,10 +141,10 @@ func TestGenerateLocalCode(t *testing.T) {
 		if c.CodeHash != db.HashCDKCode(strings.ToLower(c.Code)) {
 			t.Fatal("哈希要和大小写无关")
 		}
-		if ResolveToken(c.Token) != MarsWallex || HashToken(c.Token) != c.TokenHash {
+		if p, _ := ForToken(c.Token); p.Name() != MarsWallex || HashToken(c.Token) != c.TokenHash {
 			t.Fatalf("令牌: %+v", c)
 		}
-		if TokenForCode(" "+strings.ToLower(c.Code)+" ") != c.Token {
+		if TokenFor(cs, " "+strings.ToLower(c.Code)+" ") != c.Token {
 			t.Fatal("同一张码的令牌要稳定")
 		}
 		if strings.Contains(c.Token, c.Code[3:8]) || c.Token == c.CodeHash || c.TokenHash == c.CodeHash {
@@ -148,14 +153,38 @@ func TestGenerateLocalCode(t *testing.T) {
 	}
 }
 
+// 令牌算法不能变：已发出的 MarsWallex 码入库的是令牌哈希，变了就再也兑换不了。
+func TestMarsWallexTokenStable(t *testing.T) {
+	mw, _ := Get(MarsWallex)
+	cs, _ := AsCardSupply(mw)
+	// 与改造前的实现逐字一致：mwt_ + sha256("local_cdk_token:" + 规范化的码) 的前 32 位十六进制
+	if got := TokenFor(cs, " mw-aaaaa-bbbbb-ccccc-ddddd-eeeee "); got != "mwt_85d68b5e8b1bb3d668b97598d4a60f19" {
+		t.Fatal(got)
+	}
+}
+
 func TestReadinessCollectsProblems(t *testing.T) {
 	r := NewReadiness(MarsWallex)
-	r.Pass("a", "好")
-	if !r.OK || len(r.Problems) != 0 {
+	r.Pass("a", "甲", "好")
+	if !r.OK || len(r.Problems) != 0 || r.Checks[0].Title != "甲" {
 		t.Fatalf("%+v", r)
 	}
-	r.Fail("b", "坏")
-	if r.OK || len(r.Problems) != 1 || r.Problems[0] != "坏" || len(r.Checks) != 2 || r.Checks[1].OK {
+	r.Fail("b", "乙", "坏")
+	if r.OK || len(r.Problems) != 1 || r.Problems[0] != "坏" || len(r.Checks) != 2 || r.Checks[1].OK || r.Checks[1].Title != "乙" {
 		t.Fatalf("%+v", r)
+	}
+}
+
+func TestKindText(t *testing.T) {
+	if KindUpstream.Text() != "上游发码" || KindCardSupply.Text() != "供卡·本站付款" {
+		t.Fatal(KindUpstream.Text(), KindCardSupply.Text())
+	}
+	zc, _ := Get(ZovoCard)
+	mw, _ := Get(MarsWallex)
+	if CodeList(zc) != "cardplatform" || CodeList(mw) != "local" {
+		t.Fatal(CodeList(zc), CodeList(mw))
+	}
+	if got := Names(); len(got) != 2 || got[0] != ZovoCard || got[1] != MarsWallex {
+		t.Fatalf("内置两家，按注册顺序: %v", got)
 	}
 }

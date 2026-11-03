@@ -107,8 +107,9 @@ func TestDefaultProviderOnlyAffectsNewIssues(t *testing.T) {
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "ZC-FAKE-ISSUED-CODE-0001") {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}
-	if m := localJSON(t, w); m["server_stored"] != true || m["provider"] != nil {
-		t.Fatalf("ZovoCard 响应字段不能变: %v", m)
+	// 原有字段不变，按设计 §3.4 加上服务商
+	if m := localJSON(t, w); m["server_stored"] != true || m["provider"] != "zovocard" || m["provider_display_name"] != "ZovoCard" {
+		t.Fatalf("ZovoCard 响应字段: %v", m)
 	}
 	if e.zovo.hits("/openapi/v1/gpt-direct/cdks") != 1 {
 		t.Fatalf("%v", e.zovo.paths)
@@ -244,6 +245,7 @@ func TestReadinessBlocksLocalIssue(t *testing.T) {
 				t.Fatal(err)
 			}
 		}, "未启用"},
+		// 原始错误只进就绪接口的 raw 详情，发码的 problems 只有人话（见 TestReadinessConfigProblemIsPlainText）
 		{"MarsWallex 未配置", func(e *localEnv) { localSet(t, db.SettingMarsWallexDeveloperID, "") }, "凭证未配置完整"},
 		{"主钱包余额不足", func(e *localEnv) { e.setWallet("1.00") }, "主钱包余额不足"},
 		{"今日注资额度用完", func(e *localEnv) {
@@ -603,7 +605,7 @@ func TestAdminDisableEnableLocalCDK(t *testing.T) {
 		t.Fatalf("%s", a)
 	}
 	// 禁用后不能预览、预检、兑换
-	token := provider.TokenForCode(code)
+	token := mwToken(code)
 	sessBody := localBody(t, map[string]any{"redemption_token": token, "credential": map[string]any{"mode": "session", "session": localSession("a@example.com")}})
 	if w := e.do("POST", "/public/cdk/preview", localBody(t, map[string]any{"code": code})); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "禁用") {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
@@ -667,14 +669,25 @@ func TestAdminDisableEnableLocalCDK(t *testing.T) {
 	}
 }
 
-// 就绪接口：两家状态、组合明细、能力矩阵。
+// 就绪接口：每家的状态、extras、warnings，供卡型另有组合明细；能力矩阵。原来顶层的 combos、zovocard 去掉。
 func TestAdminProviderReadiness(t *testing.T) {
 	e := newLocalEnv(t)
 	m := localJSON(t, e.do("GET", "/admin/providers/readiness", ""))
-	if m["default"] != "zovocard" {
+	if m["default"] != "zovocard" || localBody(t, m["by_product"]) != "{}" || m["combos"] != nil || m["zovocard"] != nil {
 		t.Fatalf("%v", m)
 	}
 	providers := m["providers"].(map[string]any)
+	if len(providers) != 2 {
+		t.Fatalf("内置两家: %v", providers)
+	}
+	for name, v := range providers {
+		st := v.(map[string]any)
+		for _, k := range []string{"provider", "ok", "problems", "checks", "extras", "warnings"} {
+			if _, ok := st[k]; !ok {
+				t.Fatalf("%s 缺 %s: %v", name, k, st)
+			}
+		}
+	}
 	mw := providers["marswallex"].(map[string]any)
 	if mw["ok"] != false || !strings.Contains(localBody(t, mw["problems"]), "需要一笔系统自动确认成功的真实付款") {
 		t.Fatalf("硬门槛要列为原因: %v", mw)
@@ -688,17 +701,17 @@ func TestAdminProviderReadiness(t *testing.T) {
 		t.Fatalf("%v", checks)
 	}
 	zc := providers["zovocard"].(map[string]any)
-	if zc["ok"] != true {
-		t.Fatalf("%v", zc)
+	if zc["ok"] != true || zc["combos"] != nil {
+		t.Fatalf("上游型没有 combos: %v", zc)
 	}
-	if det := m["zovocard"].(map[string]any); det["balance"] == nil {
-		t.Fatalf("%v", det)
+	if extras := localBody(t, zc["extras"]); !strings.Contains(extras, "卡台余额") || !strings.Contains(extras, "可用余额") {
+		t.Fatalf("卡台余额放进 ZovoCard 的 extras: %v", zc)
 	}
 	if !strings.Contains(localBody(t, m["capabilities"]), "仅限无订阅账号") {
 		t.Fatalf("%v", m["capabilities"])
 	}
-	// 组合明细
-	combos := m["combos"].([]any)
+	// 组合明细在 MarsWallex 自己那一项里
+	combos := mw["combos"].([]any)
 	if len(combos) != 2 {
 		t.Fatalf("%v", combos)
 	}
@@ -712,7 +725,7 @@ func TestAdminProviderReadiness(t *testing.T) {
 	e.seedRealPayment()
 	m = localJSON(t, e.do("GET", "/admin/providers/readiness?plan=plus&region=ph", ""))
 	mw = m["providers"].(map[string]any)["marswallex"].(map[string]any)
-	if mw["ok"] != true || len(m["combos"].([]any)) != 1 {
+	if mw["ok"] != true || len(mw["combos"].([]any)) != 1 {
 		t.Fatalf("%v", m)
 	}
 	// 不支持或没启用的组合

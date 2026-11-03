@@ -15,6 +15,8 @@ import (
 )
 
 var providerAdminRoutes = []struct{ method, path string }{
+	{"GET", "/api/v1/admin/providers"},
+	{"PUT", "/api/v1/admin/providers/config"},
 	{"GET", "/api/v1/admin/providers/default"},
 	{"PUT", "/api/v1/admin/providers/default"},
 	{"GET", "/api/v1/admin/providers/readiness"},

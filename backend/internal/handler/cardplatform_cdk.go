@@ -220,14 +220,16 @@ func zovoCardIssueCDKs(c *gin.Context, req cdkIssueRequest) {
 		// 超时/断线时卡台可能已经出码。立刻从卡台列表把完整码捞回本站。
 		if recovered, recErr := cli.SyncUpstreamFullCodesSince(c.Request.Context(), "unused", plan, 10, issueStartedAt); recErr == nil && recovered != nil && recovered.Imported > 0 {
 			c.JSON(http.StatusOK, gin.H{
-				"requested":     req.Count,
-				"issued":        recovered.Codes,
-				"count":         len(recovered.Codes),
-				"stored_count":  recovered.Imported,
-				"store_failed":  0,
-				"server_stored": true,
-				"recovered":     true,
-				"msg":           fmt.Sprintf("发码请求未完成，已从卡台找回 %d 张完整码", recovered.Imported),
+				"provider":              string(provider.ZovoCard),
+				"provider_display_name": provider.DisplayName(provider.ZovoCard),
+				"requested":             req.Count,
+				"issued":                recovered.Codes,
+				"count":                 len(recovered.Codes),
+				"stored_count":          recovered.Imported,
+				"store_failed":          0,
+				"server_stored":         true,
+				"recovered":             true,
+				"msg":                   fmt.Sprintf("发码请求未完成，已从卡台找回 %d 张完整码", recovered.Imported),
 			})
 			return
 		}
@@ -284,12 +286,14 @@ func zovoCardIssueCDKs(c *gin.Context, req cdkIssueRequest) {
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"requested":     res.Requested,
-		"issued":        issued,
-		"count":         len(issued),
-		"stored_count":  stored,
-		"store_failed":  storeFailed,
-		"server_stored": true,
+		"provider":              string(provider.ZovoCard),
+		"provider_display_name": provider.DisplayName(provider.ZovoCard),
+		"requested":             res.Requested,
+		"issued":                issued,
+		"count":                 len(issued),
+		"stored_count":          stored,
+		"store_failed":          storeFailed,
+		"server_stored":         true,
 	})
 }
 
@@ -974,19 +978,9 @@ func proxyPublicJSON(c *gin.Context, status int, raw json.RawMessage) {
 	c.Data(status, "application/json; charset=utf-8", raw)
 }
 
-// PublicCDKPreview POST /api/v1/public/cdk/preview
-func PublicCDKPreview(c *gin.Context) {
-	var body map[string]any
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
-		return
-	}
+// zovoCardPreview 是 ZovoCard 的预览：转发卡台。入口和分派在 PublicCDKPreview。
+func zovoCardPreview(c *gin.Context, body map[string]any) {
 	code := str(body["code"])
-	// 码的归属只看码本身。MW 码绝不发往卡台，也不走 BindCDKRedemptionToken（它会把完整码明文写库）
-	if provider.ResolveCode(code) == provider.MarsWallex {
-		localCDKPreview(c, code)
-		return
-	}
 	cli := cardplatform.NewFromSettings()
 	st, raw, err := cli.Preview(c.Request.Context(), code, deviceFrom(c))
 	if err != nil {
@@ -996,32 +990,18 @@ func PublicCDKPreview(c *gin.Context) {
 	// 成功时记下 code ↔ redemption_token，供后续绑定 session / 账单查卡密
 	if st >= 200 && st < 300 {
 		if tok := extractJSONString(raw, "redemption_token", "token"); tok != "" {
-			_ = db.BindCDKRedemptionToken(code, tok)
+			_ = db.BindCDKRedemptionToken(string(provider.ZovoCard), code, tok)
 		}
 		// 嵌套 data
 		if tok := extractJSONNestedString(raw, "data", "redemption_token"); tok != "" {
-			_ = db.BindCDKRedemptionToken(code, tok)
+			_ = db.BindCDKRedemptionToken(string(provider.ZovoCard), code, tok)
 		}
 	}
 	proxyPublicJSON(c, st, raw)
 }
 
-// PublicCDKPreflight POST /api/v1/public/cdk/preflight
-func PublicCDKPreflight(c *gin.Context) {
-	var body map[string]any
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
-		return
-	}
-	if isLocalCDKRequest(body) {
-		localCDKPreflight(c, body)
-		return
-	}
-	release, ok := holdZovoCardAccount(c, body)
-	if !ok {
-		return
-	}
-	defer release()
+// zovoCardPreflight 是 ZovoCard 的预检：转发卡台并绑定会话。入口、分派和跨服务商互斥在 PublicCDKPreflight。
+func zovoCardPreflight(c *gin.Context, body map[string]any) {
 	cli := cardplatform.NewFromSettings()
 	st, raw, err := cli.Preflight(c.Request.Context(), body, deviceFrom(c))
 	if err != nil {
@@ -1043,7 +1023,7 @@ func PublicCDKPreflight(c *gin.Context) {
 	sess := extractCredentialSession(body["credential"])
 	if sess != "" && !cardplatform.IsXPremiumCredential(sess) && !cardplatform.IsGrokCredential(sess) && (code != "" || tok != "") {
 		// 这份副本只用来记账号邮箱；存不下不影响兑换（会话已随预检发给卡台），只是之后凭卡密查不到账单
-		if err := db.BindCDKSession(code, tok, sess); err != nil {
+		if err := db.BindCDKSession(string(provider.ZovoCard), code, tok, sess); err != nil {
 			log.Printf("[cdk-preflight] bind session failed code=%s tok=%s: %v", shortTok(code), shortTok(tok), err)
 			if errors.Is(err, secretbox.ErrNoMasterKey) || errors.Is(err, secretbox.ErrBadMasterKey) {
 				opsAlertDaily("cdk-session-nokey", "APP_MASTER_KEY 缺失或不合法：兑换预检的用户会话已拒绝保存（不影响兑换），这些卡密之后无法凭卡密查账单。", time.Now())
@@ -1055,22 +1035,8 @@ func PublicCDKPreflight(c *gin.Context) {
 	proxyPublicJSON(c, st, raw)
 }
 
-// PublicCDKRedeem POST /api/v1/public/cdk/redeem
-func PublicCDKRedeem(c *gin.Context) {
-	var body map[string]any
-	if err := c.ShouldBindJSON(&body); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
-		return
-	}
-	if isLocalCDKRequest(body) {
-		localCDKRedeem(c, body)
-		return
-	}
-	release, ok := holdZovoCardAccount(c, body)
-	if !ok {
-		return
-	}
-	defer release()
+// zovoCardRedeem 是 ZovoCard 的兑换：转发卡台。入口、分派和跨服务商互斥在 PublicCDKRedeem。
+func zovoCardRedeem(c *gin.Context, body map[string]any) {
 	// 有选卡配置就向卡台声明 strict，避免被卡台自己的 537872/星链级联盖过。
 	injectRedeemCardPolicy(body)
 	// 本站坏卡黑名单 → 本单排除这些卡：CDK 走 CDK 自己的选卡规则。实时读黑名单、纯选卡维度
@@ -1089,17 +1055,8 @@ func PublicCDKRedeem(c *gin.Context) {
 	proxyPublicJSON(c, st, raw)
 }
 
-// PublicCDKResult GET /api/v1/public/cdk/result?token=
-func PublicCDKResult(c *gin.Context) {
-	token := strings.TrimSpace(c.Query("token"))
-	if token == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "token required"})
-		return
-	}
-	if provider.ResolveToken(token) == provider.MarsWallex {
-		localCDKResult(c, token)
-		return
-	}
+// zovoCardResult 是 ZovoCard 按令牌查结果：转发卡台。入口和分派在 PublicCDKResult。
+func zovoCardResult(c *gin.Context, token string) {
 	cli := cardplatform.NewFromSettings()
 	st, raw, err := cli.Result(c.Request.Context(), token, deviceFrom(c))
 	if err != nil {
@@ -1123,21 +1080,9 @@ func PublicCDKResult(c *gin.Context) {
 	proxyPublicJSON(c, st, raw)
 }
 
-// PublicCDKResultByCode GET /api/v1/public/cdk/result-by-code?code=
-// 用卡密反查本站绑定的 redemption_token，再转发卡台 result（刷新进度 / 任务查询用）
-func PublicCDKResultByCode(c *gin.Context) {
-	code := strings.TrimSpace(c.Query("code"))
-	if code == "" {
-		code = strings.TrimSpace(c.Query("cdk_code"))
-	}
-	if code == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "code required"})
-		return
-	}
-	if provider.ResolveCode(code) == provider.MarsWallex {
-		localCDKResultByCode(c, code)
-		return
-	}
+// zovoCardResultByCode 是 ZovoCard 按码查结果：用卡密反查本站绑定的 redemption_token，再转发卡台 result（刷新进度 / 任务查询用）。
+// 入口和分派在 PublicCDKResultByCode。
+func zovoCardResultByCode(c *gin.Context, code string) {
 	bind, err := db.GetBindingByCDK(code)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询绑定失败"})

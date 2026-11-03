@@ -168,7 +168,7 @@ func TestLocalCDKPublicResponsesWhitelisted(t *testing.T) {
 			if _, err := db.DB.Exec(`INSERT INTO pay_order_events (order_no, at, state, level, message) VALUES (?, 1, ?, 'info', ?)`, no, tc.state, leak); err != nil {
 				t.Fatal(err)
 			}
-			token := provider.TokenForCode(code)
+			token := mwToken(code)
 			for _, path := range []string{
 				"/public/cdk/result?token=" + token,
 				"/public/cdk/result-by-code?code=" + code,
@@ -255,7 +255,7 @@ func TestLocalCDKRedeemOnce(t *testing.T) {
 	e := setupLocalEnv(t)
 	e.seedRealPayment()
 	code, id := e.issueCode("plus", "PH")
-	token := provider.TokenForCode(code)
+	token := mwToken(code)
 
 	var wg sync.WaitGroup
 	var ok, rejected atomic.Int32
@@ -326,7 +326,7 @@ func TestLocalCDKOneOrderIndexStopsDirectSubmit(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			_, err := e.engine.Submit(context.Background(), payengine.Request{
-				PlanKey: "plus", Region: "PH", Session: localSession(fmt.Sprintf("d%d@example.com", i)), Source: "cdk", SourceRef: "42",
+				Provider: string(provider.MarsWallex), PlanKey: "plus", Region: "PH", Session: localSession(fmt.Sprintf("d%d@example.com", i)), Source: "cdk", SourceRef: "42",
 			})
 			switch {
 			case err == nil:
@@ -382,7 +382,7 @@ func TestLocalCDKBadSessionBeforeOrder(t *testing.T) {
 	e := newLocalEnv(t)
 	e.seedRealPayment()
 	code, id := e.issueCode("plus", "PH")
-	token := provider.TokenForCode(code)
+	token := mwToken(code)
 	for _, sess := range []string{"", "not-json", `{"user":{"email":"a@example.com"}}`, `{"sessionToken":"x"}`, strings.Repeat("x", localSessionMaxLen+1)} {
 		for _, path := range []string{"/public/cdk/preflight", "/public/cdk/redeem"} {
 			w := e.do("POST", path, localBody(t, map[string]any{"redemption_token": token, "credential": map[string]any{"mode": "session", "session": sess}}))
@@ -412,7 +412,7 @@ func TestLocalCDKPreflightTokenGuards(t *testing.T) {
 	codeA, idA := e.issueCode("plus", "PH")
 	codeB, idB := e.issueCode("plus", "PH")
 	tokenA, pfA := e.preflight(codeA, localSession("a@example.com"))
-	tokenB := provider.TokenForCode(codeB)
+	tokenB := mwToken(codeB)
 
 	if !strings.HasPrefix(pfA, localPreflightPrefix) || strings.Contains(pfA, paySessionToken) {
 		t.Fatalf("预检令牌不能带会话明文: %s", pfA)
@@ -471,7 +471,7 @@ func TestLocalCDKRequestCannotOverridePlan(t *testing.T) {
 		t.Fatalf("%s %s %s %d", plan, region, ref, dry)
 	}
 	// 只带码也能拿到令牌继续查进度
-	if m := localJSON(t, w); m["redemption_token"] != provider.TokenForCode(code) {
+	if m := localJSON(t, w); m["redemption_token"] != mwToken(code) {
 		t.Fatalf("%v", m)
 	}
 }
@@ -495,7 +495,7 @@ func TestLocalCDKRedeemByDerivedState(t *testing.T) {
 			code, id := e.issueCode("plus", "PH")
 			e.insertOrder("cdk", db.LocalCDKSourceRef(id), 0, "other@example.com", tc.state, tc.failure, tc.submitted)
 			before := cdkOrderCount(t, id)
-			token := provider.TokenForCode(code)
+			token := mwToken(code)
 			if w := e.do("POST", "/public/cdk/redeem", localBody(t, map[string]any{"redemption_token": token, "credential": map[string]any{"mode": "session", "session": sess}})); w.Code != http.StatusConflict {
 				t.Fatalf("%d %s", w.Code, w.Body.String())
 			}
@@ -516,7 +516,7 @@ func TestLocalCDKPrechargeFailuresDoNotCount(t *testing.T) {
 	e.gpt.setRefreshErr(chatgpt.ErrUnauthorized)
 	e.start()
 	code, id := e.issueCode("plus", "PH")
-	token := provider.TokenForCode(code)
+	token := mwToken(code)
 	body := localBody(t, map[string]any{"redemption_token": token, "credential": map[string]any{"mode": "session", "session": localSession("buyer@example.com")}})
 	assertRetryable := func(what, text string) {
 		t.Helper()
@@ -596,7 +596,7 @@ func TestLocalCDKFundedFailuresLimit(t *testing.T) {
 	e.br.setErrs(errors.New("填表失败"), nil)
 	e.start()
 	code, id := e.issueCode("plus", "PH")
-	token := provider.TokenForCode(code)
+	token := mwToken(code)
 	body := localBody(t, map[string]any{"redemption_token": token, "credential": map[string]any{"mode": "session", "session": localSession("buyer@example.com")}})
 	for i := 1; i <= db.MaxLocalCDKFundedFailures; i++ {
 		// 第 2 次是按钮没点到：它记过提交时间又清掉，紧接着的第 3 次不能被一码一单的索引挡住
@@ -684,7 +684,7 @@ func TestLocalCDKRedeemRateLimited(t *testing.T) {
 	e := newLocalEnv(t)
 	e.seedRealPayment()
 	code, id := e.issueCode("plus", "PH")
-	token := provider.TokenForCode(code)
+	token := mwToken(code)
 	bad := localBody(t, map[string]any{"redemption_token": token, "credential": map[string]any{"mode": "session", "session": "not-json"}})
 	for i := 0; i < localRateLimits[localRateMutate]; i++ {
 		if w := e.do("POST", "/public/cdk/redeem", bad); w.Code != http.StatusBadRequest {
@@ -743,7 +743,7 @@ func TestLocalCDKUnavailableRefusesWithoutOrder(t *testing.T) {
 			e := newLocalEnv(t)
 			e.seedRealPayment()
 			code, id := e.issueCode("plus", "PH")
-			token := provider.TokenForCode(code)
+			token := mwToken(code)
 			resetWalletSyncThrottle()
 			setup(e)
 			body := localBody(t, map[string]any{"redemption_token": token, "credential": map[string]any{"mode": "session", "session": sess}})
@@ -805,7 +805,7 @@ func TestLocalCDKRoutingIsCaseInsensitive(t *testing.T) {
 	code, _ := e.issueCode("plus", "PH")
 	for _, v := range []string{strings.ToLower(code), "  " + code + "  ", "\xe2\x80\x8b" + code + "\xef\xbb\xbf"} {
 		w := e.do("POST", "/public/cdk/preview", localBody(t, map[string]any{"code": v}))
-		if w.Code != http.StatusOK || localJSON(t, w)["redemption_token"] != provider.TokenForCode(code) {
+		if w.Code != http.StatusOK || localJSON(t, w)["redemption_token"] != mwToken(code) {
 			t.Fatalf("%q: %d %s", v, w.Code, w.Body.String())
 		}
 	}
@@ -942,7 +942,7 @@ func TestLocalCDKPreflightOmitsCurrentPlan(t *testing.T) {
 	e := newLocalEnv(t)
 	e.seedRealPayment()
 	code, _ := e.issueCode("plus", "PH")
-	token := provider.TokenForCode(code)
+	token := mwToken(code)
 	w := e.do("POST", "/public/cdk/preflight", localBody(t, map[string]any{"code": code, "redemption_token": token, "credential": map[string]any{"mode": "session", "session": localSession("Buyer@Example.com")}}))
 	if w.Code != http.StatusOK {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
@@ -983,7 +983,7 @@ func TestCrossProviderInflightBlocked(t *testing.T) {
 			if w.Code != http.StatusConflict {
 				t.Fatalf("%s 兑换: %d %s", state, w.Code, w.Body.String())
 			}
-			if err := db.BindCDKSession("ZC-FAKE-0001", "zc-tok-1", sess); err != nil {
+			if err := db.BindCDKSession("zovocard", "ZC-FAKE-0001", "zc-tok-1", sess); err != nil {
 				t.Fatal(err)
 			}
 			w = e.do("POST", "/public/cdk/redeem", `{"redemption_token":"zc-tok-1","preflight_token":"pf-1"}`)
@@ -1038,7 +1038,7 @@ func TestCrossProviderInflightBlocked(t *testing.T) {
 			t.Fatalf("%d %s", w.Code, w.Body.String())
 		}
 		code, id := e.issueCode("plus", "PH")
-		token := provider.TokenForCode(code)
+		token := mwToken(code)
 		body := localBody(t, map[string]any{"redemption_token": token, "credential": map[string]any{"mode": "session", "session": sess}})
 		for _, path := range []string{"/public/cdk/preflight", "/public/cdk/redeem"} {
 			if w := e.do("POST", path, body); w.Code != http.StatusConflict {
@@ -1097,13 +1097,16 @@ func TestCrossProviderInflightBlocked(t *testing.T) {
 	})
 
 	t.Run("账号锁：ZovoCard 转发期间 MarsWallex 进不来，反过来也一样", func(t *testing.T) {
-		release, ok := holdAccountShared(email)
+		release, ok := holdAccountShared(email, provider.ZovoCard)
 		if !ok {
 			t.Fatal("共享锁")
 		}
-		rel2, ok := holdAccountShared(email)
+		rel2, ok := holdAccountShared(email, provider.ZovoCard)
 		if !ok {
 			t.Fatal("ZovoCard 之间不互斥")
+		}
+		if _, ok := holdAccountShared(email, "testup"); ok {
+			t.Fatal("别的上游要等 ZovoCard 转发完")
 		}
 		if _, ok := holdAccountExclusive(email); ok {
 			t.Fatal("有共享锁时不能取独占锁")
@@ -1117,7 +1120,7 @@ func TestCrossProviderInflightBlocked(t *testing.T) {
 		if !ok {
 			t.Fatal("独占锁")
 		}
-		if _, ok := holdAccountShared(email); ok {
+		if _, ok := holdAccountShared(email, provider.ZovoCard); ok {
 			t.Fatal("有独占锁时不能取共享锁")
 		}
 		if _, ok := holdAccountExclusive(email); ok {
@@ -1215,7 +1218,7 @@ func TestLocalCDKRateLimit(t *testing.T) {
 		}
 	}
 	// 结果查询是另一个桶，额度大得多
-	if w := e.result(provider.TokenForCode(code)); w.Code == http.StatusTooManyRequests {
+	if w := e.result(mwToken(code)); w.Code == http.StatusTooManyRequests {
 		t.Fatal("轮询不该被变更接口的额度挡住")
 	}
 	if localRateLimits[localRateQuery] < 3600/3*5 {
@@ -1232,7 +1235,7 @@ func TestLocalCDKOnlyHashesStored(t *testing.T) {
 	e := newLocalEnv(t)
 	e.seedRealPayment()
 	code, id := e.issueCode("plus", "PH")
-	token := provider.TokenForCode(code)
+	token := mwToken(code)
 	var codeHash, tokenHash, prefix string
 	if err := db.DB.QueryRow(`SELECT code_hash, token_hash, code_prefix FROM local_cdks WHERE id = ?`, id).Scan(&codeHash, &tokenHash, &prefix); err != nil {
 		t.Fatal(err)

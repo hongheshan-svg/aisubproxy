@@ -127,6 +127,7 @@ type job struct {
 	shots   int            // 已截图张数，用作截图名序号
 	pending map[string]any // 随下一次状态写入一并落库的列
 
+	pool       Pool            // 单据所属服务商的卡池，见 jobPool；整张单只用这一个
 	lease      *cardpool.Lease // 提交前放弃时要释放的租约；提交之后由确认阶段按单据字段释放
 	holderName string          // 持卡人英文名，填表用
 	secrets    []string        // 要从文字里抹掉的 CVV、验证码
@@ -361,13 +362,38 @@ func (s *Service) abandonNotClicked(ctx context.Context, j *job, e *notClickedEr
 	s.abandon(ctx, j, &stepFailure{code: "submit_not_clicked", msg: "支付按钮没有被点击：" + e.Error()})
 }
 
+// jobPool 取单据所属服务商的卡池，取到后记在 job 上。取不到时返回 false，绝不改用别家的卡池。
+func (s *Service) jobPool(j *job) (Pool, bool) {
+	if j.pool != nil {
+		return j.pool, true
+	}
+	p, ok := s.poolFor(j.o.Provider)
+	if ok {
+		j.pool = p
+	}
+	return p, ok
+}
+
+// providerUnavailableText 是单据所属服务商没有卡池时的说明。
+func providerUnavailableText(provider string) string {
+	if provider == "" {
+		return "单据没有记录服务商，无法确定用哪家的卡池"
+	}
+	return fmt.Sprintf("服务商 %q 没有可用的卡池", provider)
+}
+
 // release 释放租约并上报用卡结果。租约已失效（到期被卡池收回等）或其它错误都只记 warn 事件，不重试：
-// 卡池会自行回收到期租约，单据结果不受影响。
+// 卡池会自行回收到期租约，单据结果不受影响。单据所属服务商没有卡池时也只记 warn，绝不交给别家的卡池。
 func (s *Service) release(ctx context.Context, j *job, l *cardpool.Lease, o cardpool.Outcome) {
 	if l == nil {
 		return
 	}
-	err := s.opts.Pool.Release(ctx, l, o)
+	pool, ok := s.jobPool(j)
+	if !ok {
+		s.event(ctx, j, "warn", providerUnavailableText(j.o.Provider)+"，租约没有释放", "")
+		return
+	}
+	err := pool.Release(ctx, l, o)
 	switch {
 	case err == nil:
 	case errors.Is(err, cardpool.ErrLeaseInvalid):
@@ -378,7 +404,11 @@ func (s *Service) release(ctx context.Context, j *job, l *cardpool.Lease, o card
 }
 
 // run 依次执行步骤 2–4；试运行在读完金额后以 previewed 结束（试运行到填表多走一步填表，见 previewFill），真实付款单交给 pay。
+// 第一步先确认单据所属服务商有卡池：建单时查过，重启后换了版本、这家被去掉时，这里还没取卡、没注资，放弃不动钱。
 func (s *Service) run(ctx context.Context, j *job) error {
+	if _, ok := s.jobPool(j); !ok {
+		return abort("provider_unavailable", "%s，未取卡、未注资", providerUnavailableText(j.o.Provider))
+	}
 	if err := s.check(ctx, j); err != nil {
 		return err
 	}

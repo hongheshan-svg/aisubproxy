@@ -2,16 +2,16 @@
   <div class="space-y-4" data-panel="local-cdk">
     <!-- ============ 发码 ============ -->
     <section class="card space-y-3">
-      <h2 class="text-base font-semibold text-ink">发 MarsWallex 码</h2>
+      <h2 class="text-base font-semibold text-ink">发 {{ name }} 码</h2>
       <p class="text-sm text-muted">
-        MarsWallex 码由本站生成，兑换时用卡池里的卡注资付款。完整码只在发码成功后显示这一次，本站只存哈希，关闭后无法再次查看。
+        {{ name }} 码由本站生成，兑换时用这家的虚拟卡注资付款。完整码只在发码成功后显示这一次，本站只存哈希，关闭后无法再次查看。
       </p>
 
       <ApiErrorNotice :message="readinessError" />
       <el-button v-if="readinessError" size="small" :loading="loadingReadiness" @click="loadReadiness">重试</el-button>
 
       <div v-if="mw && !mw.ok" class="alert alert-error text-sm" role="alert" data-testid="not-ready">
-        <b>MarsWallex 未就绪，暂时不能发码：</b>
+        <b>{{ name }} 未就绪，暂时不能发码：</b>
         <ul class="list-disc pl-5">
           <li v-for="p in mw.problems" :key="p">{{ p }}</li>
         </ul>
@@ -54,7 +54,7 @@
 
       <div class="flex flex-wrap items-center gap-3">
         <el-button type="primary" :loading="issuing" :disabled="!!blockReason" @click="issue()">
-          {{ issuing ? '发码中…' : `发 ${count} 张 MarsWallex 码` }}
+          {{ issuing ? '发码中…' : `发 ${count} 张 ${name} 码` }}
         </el-button>
         <span v-if="blockReason" class="text-sm text-muted" data-testid="block-reason">{{ blockReason }}</span>
       </div>
@@ -79,7 +79,7 @@
     <section class="card space-y-3">
       <div class="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 class="text-base font-semibold text-ink">MarsWallex 码列表</h2>
+          <h2 class="text-base font-semibold text-ink">{{ name }} 码列表</h2>
           <p class="text-xs text-muted mt-0.5">共 {{ total }} 条 · 状态由码和付款单派生，不会和单据对不上</p>
         </div>
         <div class="flex flex-wrap items-center gap-2">
@@ -187,6 +187,9 @@ const ISSUE_MAX = 200
 const PAGE_SIZE = 20
 const STATUS_OPTIONS: Record<string, string> = { unused: '未使用', reserved: '处理中', consumed: '已兑换', failed: '已失败', disabled: '已禁用' }
 
+const props = withDefaults(defineProps<{ provider: string; product?: string }>(), { product: 'gpt' })
+const name = computed(() => providerLabel(props.provider))
+
 // ---------- 就绪与组合 ----------
 const mw = ref<ProviderReadiness | null>(null)
 const combos = ref<Combo[]>([])
@@ -205,11 +208,11 @@ async function loadReadiness() {
   if (!r.ok) {
     mw.value = null
     combos.value = []
-    readinessError.value = errText(r, '读取 MarsWallex 就绪状态失败')
+    readinessError.value = errText(r, `读取 ${name.value} 就绪状态失败`)
     return
   }
-  mw.value = r.data.providers?.marswallex || null
-  combos.value = r.data.combos || []
+  mw.value = r.data.providers?.[props.provider] || null
+  combos.value = mw.value?.combos || []
   if (!combos.value.some((c) => comboId(c) === comboKey.value)) {
     comboKey.value = comboId(combos.value.find((c) => c.ok) || combos.value[0] || ({ plan: '', region: '' } as Combo))
     if (comboKey.value === '|') comboKey.value = ''
@@ -232,7 +235,7 @@ const blockReason = computed(() => {
   if (loadingReadiness.value) return '正在读取就绪状态…'
   if (readinessError.value) return '就绪状态读取失败，不能发码'
   if (!mw.value) return '就绪状态未知'
-  if (!mw.value.ok) return `MarsWallex 未就绪：${mw.value.problems?.[0] || '见上方原因'}`
+  if (!mw.value.ok) return `${name.value} 未就绪：${mw.value.problems?.[0] || '见上方原因'}`
   if (!combos.value.length) return '没有已启用的套餐和地区，请先到付款配置里启用'
   if (!combo.value) return '请选择套餐和地区'
   if (!combo.value.ok) return `该组合不可发：${(combo.value.problems || []).join('；')}`
@@ -253,7 +256,7 @@ const saved = ref(false)
 function payloadOf() {
   const c = combo.value!
   return {
-    provider: 'marswallex', product: 'gpt', plan: c.plan, region: c.region, count: count.value,
+    provider: props.provider, product: props.product, plan: c.plan, region: c.region, count: count.value,
     funding_confirmed: true, note: note.value.trim(),
   }
 }
@@ -264,10 +267,10 @@ async function issue(skipConfirm = false): Promise<boolean> {
   const n = count.value
   if (!skipConfirm) {
     const ok = await dialog.confirm(
-      `服务商：MarsWallex\n套餐 / 地区：${c.label || c.plan} / ${c.region}\n数量：${n} 张\n` +
+      `服务商：${name.value}\n套餐 / 地区：${c.label || c.plan} / ${c.region}\n数量：${n} 张\n` +
         `每张码兑换时注资 ${centsToUsd(c.fund_cents)} 美元，应付上限 ${formatMinor(c.cap_minor, c.currency)}；${n} 张最多共注资 ${centsToUsd(c.fund_cents * n)} 美元。\n` +
         `发码本身不扣款，用户兑换时才从卡池付款。${noteOf(c) ? '\n注意：' + noteOf(c) : ''}\n确认发码？`,
-      { title: '确认发 MarsWallex 码', okText: `发 ${n} 张`, danger: true },
+      { title: `确认发 ${name.value} 码`, okText: `发 ${n} 张`, danger: true },
     )
     if (!ok) return false
   }
@@ -347,7 +350,7 @@ function exportResult() {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `marswallex-cdk-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '')}.txt`
+  a.download = `${props.provider}-cdk-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '')}.txt`
   document.body.appendChild(a)
   a.click()
   a.remove()
@@ -386,7 +389,7 @@ async function load() {
   const my = ++seq
   loading.value = true
   listError.value = ''
-  const q = new URLSearchParams({ page: String(page.value), page_size: String(PAGE_SIZE), provider: 'marswallex' })
+  const q = new URLSearchParams({ page: String(page.value), page_size: String(PAGE_SIZE), provider: props.provider })
   if (fStatus.value) q.set('status', fStatus.value)
   if (fPlan.value.trim()) q.set('plan', fPlan.value.trim())
   const r = await adminApi<any>('/cdks?' + q.toString())

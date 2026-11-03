@@ -773,6 +773,16 @@ func TestReadinessConfigProblemIsPlainText(t *testing.T) {
 	if raw, _ := cfg["raw"].(string); !strings.Contains(raw, "not_sent/config") {
 		t.Fatalf("原始串应放进 raw: %q", raw)
 	}
+	if link, _ := cfg["link"].(map[string]any); link["to"] != "/ops/marswallex" || link["label"] != "去配置 MarsWallex" {
+		t.Fatalf("MarsWallex 的 config 检查项应带跳转链接: %v", cfg["link"])
+	}
+	for _, it := range mw["checks"].([]any) {
+		if c := it.(map[string]any); c["key"] == "first_real_payment" {
+			if link, _ := c["link"].(map[string]any); link["to"] != "/ops/marswallex-pay" {
+				t.Fatalf("first_real_payment 应带链接: %v", c)
+			}
+		}
+	}
 	if problems := localBody(t, mw["problems"]); strings.Contains(problems, "not_sent/") || strings.Contains(detail, "not_sent/") {
 		t.Fatalf("problems 与 detail 不能含原始串: %s", problems)
 	}

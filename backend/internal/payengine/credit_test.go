@@ -287,9 +287,7 @@ func TestCreditAuthMismatchNeedsReview(t *testing.T) {
 				t.Fatalf("应转人工: %+v", g)
 			}
 			assertReleases(t, h, cardpool.ResultAborted)
-			if len(h.alerts.Texts()) == 0 {
-				t.Fatal("转人工应告警")
-			}
+			waitAlerts(t, h, 1) // 转人工应告警
 		})
 	}
 }
@@ -600,11 +598,17 @@ func TestCreditCardSavedCheck(t *testing.T) {
 			if g.State != StateSucceeded || g.CardSaved != c.want {
 				t.Fatalf("card_saved 应为 %s: %+v", c.want, g)
 			}
-			if got := len(h.alerts.Texts()) > 0; got != c.alert {
-				t.Fatalf("告警 %v，期望 %v: %v", got, c.alert, h.alerts.Texts())
+			// 告警在写成功定论之后才发：单据进终态时告警可能还没发出，要等
+			if c.alert {
+				if a := waitAlerts(t, h, 1); !strings.Contains(a[0], "尾号 4242") {
+					t.Fatalf("告警应写尾号: %v", a)
+				}
+				return
 			}
-			if c.alert && !strings.Contains(h.alerts.Texts()[0], "尾号 4242") {
-				t.Fatalf("告警应写尾号: %v", h.alerts.Texts())
+			// 核对结论的事件写完，这一单就不会再发告警了
+			waitEvent(t, g.OrderNo, "已核对：我们的卡没有被存进用户账号")
+			if a := h.alerts.Texts(); len(a) != 0 {
+				t.Fatalf("不应告警: %v", a)
 			}
 		})
 	}

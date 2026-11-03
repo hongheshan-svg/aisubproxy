@@ -135,11 +135,8 @@ func TestUnknownProviderAfterCardNeedsReview(t *testing.T) {
 	if h.gpt.count("Account") != 0 {
 		t.Fatal("没有卡池时确认阶段直接转人工，不查账号")
 	}
-	alerts := strings.Join(h.alerts.Texts(), "\n")
 	for _, o := range []*Order{funded, filling, verifying} {
-		if !strings.Contains(alerts, o.OrderNo) {
-			t.Fatalf("转待人工应告警 %s: %s", o.OrderNo, alerts)
-		}
+		waitAlertContaining(t, h, o.OrderNo) // 转待人工应告警
 	}
 	ev, _ := listEvents(ctx, verifying.OrderNo)
 	found := false

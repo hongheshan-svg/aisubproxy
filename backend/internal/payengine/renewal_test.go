@@ -121,7 +121,7 @@ func TestRenewalVerifyFailureRetriesThenFails(t *testing.T) {
 	if g.SessionSealed == "" {
 		t.Fatal("自动重试用完后会话留到 1 小时，给管理员手动重试")
 	}
-	if a := h.alerts.Texts(); len(a) != 1 || !strings.Contains(a[0], o.OrderNo) || !strings.Contains(a[0], "关闭续费失败") || strings.Contains(a[0], testAccessToken) {
+	if a := waitAlerts(t, h, 1); len(a) != 1 || !strings.Contains(a[0], o.OrderNo) || !strings.Contains(a[0], "关闭续费失败") || strings.Contains(a[0], testAccessToken) {
 		t.Fatalf("应告警一次: %v", a)
 	}
 	waitEvent(t, o.OrderNo, "已自动重试 3 次")
@@ -245,9 +245,11 @@ func TestRenewalNeverForDryRun(t *testing.T) {
 			t.Fatalf("试运行单不涉及续费: %+v", g)
 		}
 	}
-	dry := presetSucceeded(t, h, "dry@example.com", nil)
-	if _, err := db.DB.Exec(`UPDATE pay_orders SET dry_run = 1 WHERE order_no = ?`, dry.OrderNo); err != nil {
-		t.Fatal(err)
+	// dry_run 和 renewal_state=pending 在同一条 UPDATE 里写入：续费协程已在跑，分两步写的话，
+	// 它可能在中间把这单当成正常单处理（机器慢时 CI 上出现过）
+	dry := presetSucceeded(t, h, "dry@example.com", map[string]any{"dry_run": 1})
+	if !dry.DryRun || dry.RenewalState != RenewalPending {
+		t.Fatalf("预置的试运行单不符: %+v", dry)
 	}
 	time.Sleep(50 * time.Millisecond)
 	if n := h.gpt.count("CancelRenewal") + h.gpt.count("SubscriptionStatus"); n != 0 {
@@ -284,7 +286,7 @@ func TestSessionKeptAtMostOneHour(t *testing.T) {
 	if g := waitSessionCleared(t, review.OrderNo); g.State != StateNeedsReview {
 		t.Fatalf("待人工单只清会话: %+v", g)
 	}
-	if a := h.alerts.Texts(); len(a) != 1 || !strings.Contains(a[0], pending.OrderNo) {
+	if a := waitAlerts(t, h, 1); len(a) != 1 || !strings.Contains(a[0], pending.OrderNo) {
 		t.Fatalf("应为待处理的那张告警一次: %v", a)
 	}
 	if n := h.gpt.count("CancelRenewal"); n != 0 {
@@ -313,7 +315,7 @@ func TestRenewalSkipsSessionExpiredDuringDowntime(t *testing.T) {
 	if n := h.gpt.count("CancelRenewal"); n != 0 {
 		t.Fatalf("超期会话不应再调用取消接口: %d", n)
 	}
-	if a := h.alerts.Texts(); len(a) != 1 || !strings.Contains(a[0], o.OrderNo) {
+	if a := waitAlerts(t, h, 1); len(a) != 1 || !strings.Contains(a[0], o.OrderNo) {
 		t.Fatalf("应告警一次让用户自己关续费: %v", a)
 	}
 }
@@ -384,7 +386,7 @@ func TestRenewalPendingWithoutSessionSkipped(t *testing.T) {
 	if n := h.gpt.count("CancelRenewal"); n != 0 {
 		t.Fatalf("没有会话不能调用: %d", n)
 	}
-	if a := h.alerts.Texts(); len(a) != 1 || !strings.Contains(a[0], "自行在 ChatGPT 设置里关闭续费") {
+	if a := waitAlerts(t, h, 1); len(a) != 1 || !strings.Contains(a[0], "自行在 ChatGPT 设置里关闭续费") {
 		t.Fatalf("%v", a)
 	}
 }

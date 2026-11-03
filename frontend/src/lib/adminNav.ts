@@ -1,4 +1,6 @@
 // 后台侧栏菜单的纯逻辑：菜单由 /ops 子路由的 meta（title / group / icon）生成，折叠状态可持久化。
+// 服务商分组里的菜单项用短名（如「选卡规则」），meta.fullTitle 是带服务商名的完整页名（如「ZovoCard 选卡规则」），
+// 用于浏览器标签页标题、读屏标签、折叠时的提示和手机上的面包屑（这些地方看不到分组名）。
 import type { RouteRecordRaw } from 'vue-router'
 
 export const OPS = '/ops'
@@ -6,7 +8,7 @@ export const NAV_STORE_KEY = 'ops-sidenav'
 export const MOBILE_MAX = 900
 export const NARROW_MAX = 1200
 
-export interface NavItem { path: string; title: string; group: string; icon: string }
+export interface NavItem { path: string; title: string; fullTitle: string; group: string; icon: string }
 export interface NavGroup { name: string; items: NavItem[] }
 export type NavPref = 'expanded' | 'collapsed' | ''
 
@@ -16,9 +18,15 @@ export function buildNavItems(routes: readonly RouteRecordRaw[]): NavItem[] {
   for (const c of root?.children || []) {
     const m = (c.meta || {}) as Record<string, string>
     if (!m.title) continue
-    out.push({ path: c.path ? `${OPS}/${c.path}` : OPS, title: m.title, group: m.group || '', icon: m.icon || 'Document' })
+    out.push({ path: c.path ? `${OPS}/${c.path}` : OPS, title: m.title, fullTitle: m.fullTitle || m.title, group: m.group || '', icon: m.icon || 'Document' })
   }
   return out
+}
+
+// 浏览器标签页标题：完整页名 · 站点名
+export function pageTitle(meta: { title?: string; fullTitle?: string }, brandName: string): string {
+  const brand = brandName || '控制台'
+  return `${meta.fullTitle || meta.title || brand} · ${brand}`
 }
 
 export function groupNavItems(items: NavItem[]): NavGroup[] {

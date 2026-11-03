@@ -3,8 +3,9 @@
     <AdminPageHeader title="卡服务商" description="按产品选择新发的 CDK 由哪家卡服务商处理，并查看各家是否就绪。" class="!mb-0" />
 
     <div class="alert alert-info text-sm">
-      「卡台选卡规则」管的是 ZovoCard 内部用哪个卡头，和这里的发码服务商不是一回事。
-      <router-link to="/ops/card-selection" class="underline">去看卡台选卡规则</router-link>
+      这里选的是新发的码由哪家服务商处理。每家服务商内部用哪种卡、按什么顺序用，在各家的「选卡规则」里设置：
+      <router-link to="/ops/card-selection" class="underline">ZovoCard 选卡规则</router-link>、
+      <router-link to="/ops/marswallex-selection" class="underline">MarsWallex 选卡规则</router-link>。
     </div>
 
     <ApiErrorNotice :message="loadError" />

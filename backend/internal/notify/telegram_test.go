@@ -233,7 +233,7 @@ func TestNotifyNewOrderMasksSensitiveFields(t *testing.T) {
 			t.Fatalf("通知里不应出现 %q: %s", bad, text)
 		}
 	}
-	for _, want := range []string{"****9876", "bu***@example.com", "T-1"} {
+	for _, want := range []string{"****9876", "bu***@example.com", "T-1", "「ZovoCard → 兑换订单」"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("通知里应有 %q: %s", want, text)
 		}

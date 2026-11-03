@@ -92,6 +92,8 @@ func TestCardPoolRoutesRequireService(t *testing.T) {
 		{AdminCardPoolCards, "GET", "/x"},
 		{AdminCardPoolSensitive, "POST", "/x"},
 		{AdminCardPoolPutPolicy, "PUT", "/x"},
+		{AdminCardPoolGetSelection, "GET", "/x"},
+		{AdminCardPoolPutSelection, "PUT", "/x"},
 		{AdminReprocessMarsWallexWebhookEvent, "POST", "/x"},
 	}
 	for _, tc := range cases {

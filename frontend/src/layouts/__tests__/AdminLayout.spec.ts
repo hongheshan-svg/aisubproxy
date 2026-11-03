@@ -11,7 +11,7 @@ import { ZINDEX_INJECTION_KEY } from 'element-plus/es/hooks/use-z-index/index.mj
 import { installElement } from '../../element'
 import AdminLayout from '../AdminLayout.vue'
 import {
-  buildNavItems, groupNavItems, isCollapsed, NAV_STORE_KEY, readNavPref, writeNavPref,
+  buildNavItems, groupNavItems, isCollapsed, NAV_STORE_KEY, pageTitle, readNavPref, writeNavPref,
 } from '../../lib/adminNav'
 import { SKINS } from '../../theme'
 
@@ -33,16 +33,17 @@ const routes = [
     component: AdminLayout,
     children: [
       { path: '', component: Stub, meta: { title: '总览', group: '', icon: 'Odometer' } },
-      { path: 'cdkeys', component: Stub, meta: { title: 'CDK 卡密', group: '卡密业务', icon: 'Tickets' } },
-      { path: 'orders', component: Stub, meta: { title: 'CDK 兑换订单', group: '卡密业务', icon: 'Document' } },
-      { path: 'marswallex-wallet', component: Stub, meta: { title: 'MarsWallex 钱包', group: '资金与付款', icon: 'Wallet' } },
-      { path: 'cardpool', component: Stub, meta: { title: '卡池', group: '资金与付款', icon: 'CreditCard' } },
-      { path: 'marswallex-pay', component: Stub, meta: { title: '自动付款', group: '资金与付款', icon: 'Money' } },
-      { path: 'providers', component: Stub, meta: { title: '卡服务商', group: '服务商接入', icon: 'Coin' } },
-      { path: 'integration', component: Stub, meta: { title: '卡台 ZovoCard', group: '服务商接入', icon: 'Connection' } },
-      { path: 'card-selection', component: Stub, meta: { title: '卡台选卡规则', group: '服务商接入', icon: 'Operation' } },
-      { path: 'webhooks', component: Stub, meta: { title: '卡台 Webhook', group: '服务商接入', icon: 'Bell' } },
-      { path: 'marswallex', component: Stub, meta: { title: 'MarsWallex 对接', group: '服务商接入', icon: 'Platform' } },
+      { path: 'cdkeys', component: Stub, meta: { title: 'CDK 卡密', group: '卡密与付款', icon: 'Tickets' } },
+      { path: 'marswallex-pay', component: Stub, meta: { title: '自动付款', group: '卡密与付款', icon: 'Money' } },
+      { path: 'providers', component: Stub, meta: { title: '卡服务商', group: '卡密与付款', icon: 'Coin' } },
+      { path: 'integration', component: Stub, meta: { title: '接入配置', fullTitle: 'ZovoCard 接入配置', group: 'ZovoCard', icon: 'Connection' } },
+      { path: 'card-selection', component: Stub, meta: { title: '选卡规则', fullTitle: 'ZovoCard 选卡规则', group: 'ZovoCard', icon: 'Operation' } },
+      { path: 'orders', component: Stub, meta: { title: '兑换订单', fullTitle: 'ZovoCard 兑换订单', group: 'ZovoCard', icon: 'Document' } },
+      { path: 'webhooks', component: Stub, meta: { title: 'Webhook', fullTitle: 'ZovoCard Webhook', group: 'ZovoCard', icon: 'Bell' } },
+      { path: 'marswallex', component: Stub, meta: { title: '接入配置', fullTitle: 'MarsWallex 接入配置', group: 'MarsWallex', icon: 'Platform' } },
+      { path: 'marswallex-wallet', component: Stub, meta: { title: '钱包', fullTitle: 'MarsWallex 钱包', group: 'MarsWallex', icon: 'Wallet' } },
+      { path: 'cardpool', component: Stub, meta: { title: '卡池', fullTitle: 'MarsWallex 卡池', group: 'MarsWallex', icon: 'CreditCard' } },
+      { path: 'marswallex-selection', component: Stub, meta: { title: '选卡规则', fullTitle: 'MarsWallex 选卡规则', group: 'MarsWallex', icon: 'Operation' } },
       { path: 'appearance', component: Stub, meta: { title: '外观与品牌', group: '系统', icon: 'Brush' } },
       { path: 'audit', component: Stub, meta: { title: '审计日志', group: '系统', icon: 'List' } },
       { path: 'update', component: Stub, meta: { title: '版本更新', group: '系统', icon: 'Refresh' } },
@@ -66,20 +67,29 @@ async function render(path: string) {
 }
 
 describe('AdminLayout 左侧菜单', () => {
-  it('按 route.meta 渲染 14 个菜单项、4 个分组标题，且不再有顶部胶囊导航', async () => {
+  it('按 route.meta 渲染 15 个菜单项、4 个分组标题，且不再有顶部胶囊导航', async () => {
     const html = await render('/ops/cardpool')
-    expect((html.match(/class="[^"]*\bsn-item\b/g) || []).length).toBe(14)
+    expect((html.match(/class="[^"]*\bsn-item\b/g) || []).length).toBe(15)
     expect((html.match(/class="[^"]*\bsn-group\b/g) || []).length).toBe(4)
-    for (const g of ['卡密业务', '资金与付款', '服务商接入', '系统']) expect(html).toContain(g)
+    for (const g of ['卡密与付款', 'ZovoCard', 'MarsWallex', '系统']) expect(html).toContain(g)
     expect(html).not.toContain('nav-pills')
     expect(html).not.toContain('topnav')
   })
 
   it('当前页高亮，面包屑显示「分组 / 页面」', async () => {
     const html = await render('/ops/cardpool')
-    expect(html).toMatch(/class="[^"]*\bsn-item\b[^"]*\bactive\b[^"]*"[^>]*aria-label="卡池"/)
-    expect(html).toMatch(/class="crumb-group"[^>]*>资金与付款</)
+    expect(html).toMatch(/class="[^"]*\bsn-item\b[^"]*\bactive\b[^"]*"[^>]*aria-label="MarsWallex 卡池"/)
+    expect(html).toMatch(/class="crumb-group"[^>]*>MarsWallex</)
     expect(html).toMatch(/class="[^"]*\bcrumb-page\b[^"]*"[^>]*>卡池</)
+  })
+
+  it('同名菜单项用完整页名区分：读屏标签和手机面包屑用 fullTitle', async () => {
+    const html = await render('/ops/marswallex-selection')
+    expect(html).toContain('aria-label="ZovoCard 选卡规则"')
+    expect(html).toMatch(/class="[^"]*\bsn-item\b[^"]*\bactive\b[^"]*"[^>]*aria-label="MarsWallex 选卡规则"/)
+    expect(html).toMatch(/class="[^"]*\bcrumb-full\b[^"]*"[^>]*>MarsWallex 选卡规则</)
+    // 通用页面没有 fullTitle，不多出一份
+    expect(await render('/ops/providers')).not.toContain('crumb-full')
   })
 
   it('面包屑第三级：默认标签与 ?tab= 指定的标签', async () => {
@@ -115,9 +125,18 @@ describe('菜单数据与折叠状态', () => {
 
   it('分组保持路由定义顺序', () => {
     const gs = groupNavItems(buildNavItems(routes as any))
-    expect(gs.map((g) => g.name)).toEqual(['', '卡密业务', '资金与付款', '服务商接入', '系统'])
+    expect(gs.map((g) => g.name)).toEqual(['', '卡密与付款', 'ZovoCard', 'MarsWallex', '系统'])
     expect(gs[0].items[0].path).toBe('/ops')
-    expect(gs[2].items.map((i) => i.title)).toEqual(['MarsWallex 钱包', '卡池', '自动付款'])
+    expect(gs[3].items.map((i) => i.title)).toEqual(['接入配置', '钱包', '卡池', '选卡规则'])
+    expect(gs[3].items.map((i) => i.fullTitle)).toEqual(['MarsWallex 接入配置', 'MarsWallex 钱包', 'MarsWallex 卡池', 'MarsWallex 选卡规则'])
+    // 没设 fullTitle 时等于 title
+    expect(gs[1].items[0].fullTitle).toBe('CDK 卡密')
+  })
+
+  it('浏览器标签页标题用 fullTitle', () => {
+    expect(pageTitle({ title: '卡池', fullTitle: 'MarsWallex 卡池' }, '我的站')).toBe('MarsWallex 卡池 · 我的站')
+    expect(pageTitle({ title: '卡服务商' }, '')).toBe('卡服务商 · 控制台')
+    expect(pageTitle({}, '我的站')).toBe('我的站 · 我的站')
   })
 
   it('折叠偏好写入 localStorage[ops-sidenav] 并可读回', () => {

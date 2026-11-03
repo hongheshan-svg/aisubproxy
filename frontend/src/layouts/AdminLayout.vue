@@ -30,7 +30,7 @@
           <el-tooltip
             v-for="it in g.items"
             :key="it.path"
-            :content="it.title"
+            :content="it.fullTitle"
             placement="right"
             :disabled="!railMode"
           >
@@ -38,7 +38,7 @@
               :to="it.path"
               class="sn-item"
               :class="{ active: isActive(it.path) }"
-              :aria-label="it.title"
+              :aria-label="it.fullTitle"
               :aria-current="isActive(it.path) ? 'page' : undefined"
               @click="drawerOpen = false"
             >
@@ -99,7 +99,8 @@
             <span class="crumb-group">{{ currentMeta.group }}</span>
             <span class="crumb-sep">/</span>
           </template>
-          <span class="crumb-page" :class="{ 'crumb-link': !!crumbTab }">{{ currentMeta.title }}</span>
+          <span class="crumb-page" :class="{ 'crumb-link': !!crumbTab, 'crumb-short': currentMeta.hasFull }">{{ currentMeta.title }}</span>
+          <span v-if="currentMeta.hasFull" class="crumb-page crumb-full" :class="{ 'crumb-link': !!crumbTab }">{{ currentMeta.fullTitle }}</span>
           <template v-if="crumbTab">
             <span class="crumb-sep">/</span>
             <span class="crumb-page crumb-tab">{{ crumbTab }}</span>
@@ -146,7 +147,7 @@ import { siteBrand } from '../theme'
 import ThemeToggle from '../components/ThemeToggle.vue'
 import { PAGE_TABS, tabCrumb, zovoEnv, marsEnv, type EnvBadge } from '../lib/adminui'
 import {
-  buildNavItems, groupNavItems, readNavPref, writeNavPref, isCollapsed, MOBILE_MAX, OPS, type NavPref,
+  buildNavItems, groupNavItems, pageTitle, readNavPref, writeNavPref, isCollapsed, MOBILE_MAX, OPS, type NavPref,
 } from '../lib/adminNav'
 
 const route = useRoute()
@@ -160,7 +161,9 @@ const navItems = computed(() => buildNavItems(router.options.routes))
 const groups = computed(() => groupNavItems(navItems.value))
 const currentMeta = computed(() => {
   const m = route.meta as Record<string, string>
-  return { title: m.title || brand.value.name || '控制台', group: m.group || '' }
+  const title = m.title || brand.value.name || '控制台'
+  const fullTitle = m.fullTitle || title
+  return { title, fullTitle, hasFull: fullTitle !== title, group: m.group || '' }
 })
 
 // 面包屑第三级：页内标签（?tab=）
@@ -231,8 +234,8 @@ onBeforeUnmount(() => {
 })
 watch(() => route.path, () => { drawerOpen.value = false })
 watch(
-  () => [currentMeta.value.title, brand.value.name],
-  () => { if (typeof document !== 'undefined') document.title = `${currentMeta.value.title} · ${brand.value.name || '控制台'}` },
+  () => [currentMeta.value.fullTitle, brand.value.name],
+  () => { if (typeof document !== 'undefined') document.title = pageTitle(currentMeta.value, brand.value.name) },
   { immediate: true },
 )
 
@@ -401,6 +404,10 @@ async function submitPwd() {
 .env-badge.env-custom, .env-badge.env-unknown { color: var(--err, #dc2626); border-color: currentColor; }
 .env-badge.env-unconfigured { color: var(--ink-3); }
 .is-mobile .crumb-group, .is-mobile .crumb-group + .crumb-sep { display: none; }
+/* 手机上不显示分组，页面名换成带服务商名的完整页名 */
+.crumb-full { display: none; }
+.is-mobile .crumb-short { display: none; }
+.is-mobile .crumb-full { display: inline; }
 .is-mobile .env-badge { padding: 4px 6px; font-size: 11px; }
 .crumb-link { font-weight: 500; color: var(--ink-2); }
 .crumb-tab { font-weight: 600; }

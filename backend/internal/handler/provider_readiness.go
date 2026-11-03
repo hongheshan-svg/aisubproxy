@@ -78,7 +78,7 @@ func checkMarsWallex(ctx context.Context, plan, region string, syncWallet wallet
 
 	if _, err := MarsWallexClient(); err != nil {
 		log.Printf("[provider] MarsWallex 配置不完整: %v", err)
-		r.FailRaw("config", "MarsWallex 凭证", "MarsWallex 凭证未配置完整，去 MarsWallex 对接页填写", err.Error())
+		r.FailRaw("config", "MarsWallex 凭证", "MarsWallex 凭证未配置完整，去 MarsWallex 接入配置页填写", err.Error())
 	} else {
 		r.Pass("config", "MarsWallex 凭证", "MarsWallex 配置齐全")
 	}

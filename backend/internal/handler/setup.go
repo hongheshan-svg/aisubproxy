@@ -215,7 +215,7 @@ func validAdminUsername(u string) bool {
 		return false
 	}
 	for _, r := range u {
-		if !(unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_') {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' {
 			return false
 		}
 	}

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -53,10 +54,8 @@ func getUpdateState() updateState {
 	return updSnap
 }
 
+// updateEnabled 判断是否允许一键更新。容器内也允许：新版本写到数据卷的 runtime 目录（见 currentUpdateLayout）。
 func updateEnabled() bool {
-	if inContainer() {
-		return false
-	}
 	v := strings.TrimSpace(strings.ToLower(os.Getenv("UPDATE_ENABLED")))
 	if v == "0" || v == "false" || v == "no" || v == "off" {
 		return false
@@ -86,6 +85,53 @@ func webDir() string {
 	return filepath.Join(installRoot(), "web")
 }
 
+// updateLayout 是一次在线升级读写的位置。
+// 原生：新文件原地替换安装目录里正在用的那份，临时文件和备份在 <安装目录>/updates。
+// 容器：镜像目录不动，新程序、前端、版本号写到数据卷的 <数据目录>/runtime，临时文件和备份写到 <数据目录>/updates
+// （与 runtime 在同一文件系统上，改名是原子的）；下次启动由 RuntimeHandoff 接管。
+type updateLayout struct {
+	Container  bool
+	UpdDir     string // 临时文件与备份
+	CurBin     string // 当前在跑的程序（备份来源）
+	CurWeb     string // 当前的前端（备份来源）
+	CurVer     string // 当前的版本号文件（备份来源）
+	Bin        string // 新程序写到这里
+	Web        string // 新前端写到这里
+	Ver        string // 新版本号写到这里
+	RuntimeDir string // 仅容器：在线升级的 runtime 目录
+}
+
+func currentUpdateLayout() updateLayout {
+	root := installRoot()
+	l := updateLayout{
+		UpdDir: filepath.Join(root, updatesDirName),
+		CurBin: selfBinaryPath(),
+		CurWeb: webDir(),
+		CurVer: filepath.Join(root, "VERSION"),
+	}
+	if !inContainer() {
+		l.Bin, l.Web, l.Ver = l.CurBin, l.CurWeb, l.CurVer
+		return l
+	}
+	data := dataDir()
+	rt := runtimeDirOf(data)
+	l.Container = true
+	l.RuntimeDir = rt
+	l.UpdDir = filepath.Join(data, updatesDirName)
+	l.Bin = filepath.Join(rt, "cdk-recharge")
+	l.Web = filepath.Join(rt, "web")
+	l.Ver = filepath.Join(rt, "VERSION")
+	return l
+}
+
+// deployMode 是部署方式：docker 或 native，供「版本更新」页决定显示哪种说明。
+func deployMode() string {
+	if inContainer() {
+		return "docker"
+	}
+	return "native"
+}
+
 // AdminSystemUpdateStatus GET /api/v1/admin/system/update/status
 func AdminSystemUpdateStatus(c *gin.Context) {
 	st := getUpdateState()
@@ -99,6 +145,7 @@ func AdminSystemUpdateStatus(c *gin.Context) {
 		"goarch":      runtime.GOARCH,
 		"can_update":  updateEnabled() && runtime.GOOS == "linux",
 		"update_hint": updateHint(),
+		"deploy_mode": deployMode(),
 	})
 }
 
@@ -106,10 +153,6 @@ func AdminSystemUpdateStatus(c *gin.Context) {
 // body: { "target": "1.2.0" | "latest", "confirm": true }
 // 在线下载 GitHub Release 预编译包 → 校验 → 热替换 web+二进制 → re-exec（亚秒级重载，不碰 app.env/data）
 func AdminSystemUpdate(c *gin.Context) {
-	if inContainer() {
-		c.JSON(http.StatusForbidden, gin.H{"error": containerUpdateHint})
-		return
-	}
 	if !updateEnabled() {
 		c.JSON(http.StatusForbidden, gin.H{"error": "UPDATE_ENABLED=0，未开启一键更新"})
 		return
@@ -195,8 +238,8 @@ func runSeamlessUpdate(target, username string) {
 		s.Progress = 10
 	})
 
-	root := installRoot()
-	updDir := filepath.Join(root, "updates")
+	l := currentUpdateLayout()
+	updDir := l.UpdDir
 	_ = os.MkdirAll(updDir, 0o755)
 	staging := filepath.Join(updDir, "staging-"+version+"-"+fmt.Sprintf("%d", time.Now().Unix()))
 	_ = os.RemoveAll(staging)
@@ -278,29 +321,34 @@ func runSeamlessUpdate(target, username string) {
 		s.Message = "热替换前端静态资源…"
 		s.Progress = 75
 	})
-	// 备份
+	// 备份当前在跑的版本（容器里第一次升级时就是镜像里的程序、前端和版本号）
 	bak := filepath.Join(updDir, "backup-"+time.Now().Format("20060102-150405"))
 	_ = os.MkdirAll(bak, 0o755)
-	binDst := selfBinaryPath()
 	// 备份旧二进制
-	if _, err := os.Stat(binDst); err == nil {
-		_ = copyFile(binDst, filepath.Join(bak, "cdk-recharge"))
+	if _, err := os.Stat(l.CurBin); err == nil {
+		_ = copyFile(l.CurBin, filepath.Join(bak, "cdk-recharge"))
 	}
 	// 备份 web
-	wd := webDir()
-	if st, err := os.Stat(wd); err == nil && st.IsDir() {
-		_ = copyDir(wd, filepath.Join(bak, "web"))
+	if st, err := os.Stat(l.CurWeb); err == nil && st.IsDir() {
+		_ = copyDir(l.CurWeb, filepath.Join(bak, "web"))
 	}
 	// 备份版本号与数据库（数据库备份失败则中止：没有可回退的数据就不升级）
-	if _, err := os.Stat(filepath.Join(root, "VERSION")); err == nil {
-		_ = copyFile(filepath.Join(root, "VERSION"), filepath.Join(bak, "VERSION"))
+	if _, err := os.Stat(l.CurVer); err == nil {
+		_ = copyFile(l.CurVer, filepath.Join(bak, "VERSION"))
 	}
 	if err := backupDatabase(filepath.Join(bak, "cdk_recharge.db")); err != nil {
 		failUpdate("备份数据库失败，已中止更新: " + err.Error())
 		return
 	}
+	if l.Container {
+		if err := os.MkdirAll(l.RuntimeDir, 0o755); err != nil {
+			failUpdate("创建 runtime 目录失败: " + err.Error())
+			return
+		}
+	}
 
 	// 热替换 web：先写到 web.next，再原子改名（不删 data/app.env）
+	wd := l.Web
 	webNext := wd + ".next"
 	webPrev := wd + ".prev"
 	_ = os.RemoveAll(webNext)
@@ -328,14 +376,9 @@ func runSeamlessUpdate(target, username string) {
 		s.Message = "热替换二进制…"
 		s.Progress = 88
 	})
-	// 写 VERSION
-	if verSrc != "" {
-		_ = copyFile(verSrc, filepath.Join(root, "VERSION"))
-	} else {
-		_ = os.WriteFile(filepath.Join(root, "VERSION"), []byte(version+"\n"), 0o644)
-	}
 
 	// 新二进制写到 .new，chmod，再 rename 覆盖（运行中 inode 仍用旧文件，直到 re-exec）
+	binDst := l.Bin
 	binNew := binDst + ".new"
 	if err := copyFile(binSrc, binNew); err != nil {
 		failUpdate("写入新二进制失败: " + err.Error())
@@ -350,6 +393,22 @@ func runSeamlessUpdate(target, username string) {
 		}
 		_ = os.Chmod(binDst, 0o755)
 		_ = os.Remove(binNew)
+	}
+	// 写 VERSION：放在程序之后，容器的启动接管以它为准，程序没换成功就不会有新版本号
+	if verSrc != "" {
+		_ = copyFile(verSrc, l.Ver)
+	} else {
+		_ = os.WriteFile(l.Ver, []byte(version+"\n"), 0o644)
+	}
+
+	// 容器：这次 exec 就是一次接管，计一次启动（新版本完成启动后清零）；起不来时容器重启，由启动接管继续计数
+	var env []string
+	if l.Container {
+		boot := bootState{Version: version, BootCount: 1, LastAttemptAt: time.Now().UTC().Format(time.RFC3339)}
+		if err := saveBoot(osFS{}, l.RuntimeDir, boot); err != nil {
+			log.Printf("[update] 写 boot.json 失败（下次启动时重新计数）: %v", err)
+		}
+		env = handoffEnviron(os.Environ(), l.RuntimeDir, version)
 	}
 
 	db.WriteAudit(username, "system_update_applied", "target="+version+" bak="+filepath.Base(bak), "")
@@ -366,8 +425,14 @@ func runSeamlessUpdate(target, username string) {
 	// 延迟 re-exec，让状态接口还能被读一次
 	go func() {
 		time.Sleep(400 * time.Millisecond)
-		// 优先同进程 re-exec（PID 不变，systemd 无感，亚秒恢复）
-		if err := reexecFn(binDst); err != nil {
+		// 优先同进程 re-exec（PID 不变，systemd 无感，亚秒恢复）。容器里 PID 1 也不变，容器不用重启
+		if err := reexecFn(binDst, env); err != nil {
+			if l.Container {
+				// 程序没跑起来，不算一次启动；下次容器启动由启动接管换过去
+				_ = saveBoot(osFS{}, l.RuntimeDir, bootState{Version: version})
+				failUpdate("重载失败: " + err.Error() + "。新版本已写入数据卷，执行 docker restart cdk-recharge 即可启用；要退回：" + containerRollbackHint)
+				return
+			}
 			// 回退 systemctl restart
 			_ = trySystemctlRestart()
 			// 若仍失败，标记 failed（进程若还活着）
@@ -388,7 +453,8 @@ func failUpdate(msg string) {
 	updMu.Unlock()
 }
 
-func reexecBinary(bin string) error {
+// reexecBinary 原地换成 bin 运行（进程号不变）。env 为空时沿用当前的环境变量。
+func reexecBinary(bin string, env []string) error {
 	path := bin
 	if path == "" {
 		var err error
@@ -406,7 +472,10 @@ func reexecBinary(bin string) error {
 	} else {
 		args[0] = path
 	}
-	return syscall.Exec(path, args, os.Environ())
+	if env == nil {
+		env = os.Environ()
+	}
+	return syscall.Exec(path, args, env)
 }
 
 func trySystemctlRestart() error {
@@ -514,7 +583,7 @@ func resolveReleaseBundle(target string) (assetURL, version, shaURL, sigURL stri
 			return a.BrowserDownloadURL, version, shaURL, sigURL, nil
 		}
 	}
-	return "", "", "", "", fmt.Errorf("Release v%s 未找到预编译包 cdk-bundle-linux-amd64.tgz。请先用 git tag 触发 CI 发布，或手动上传 bundle 到 Release", version)
+	return "", "", "", "", fmt.Errorf("release v%s 未找到预编译包 cdk-bundle-linux-amd64.tgz。请先用 git tag 触发 CI 发布，或手动上传 bundle 到 Release", version)
 }
 
 func downloadFile(url, dest string, progress func(done, total int64)) error {
@@ -636,7 +705,7 @@ func extractTarGz(tgzPath, dest string) error {
 			if err := os.MkdirAll(target, 0o755); err != nil {
 				return err
 			}
-		case tar.TypeReg, tar.TypeRegA:
+		case tar.TypeReg:
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}

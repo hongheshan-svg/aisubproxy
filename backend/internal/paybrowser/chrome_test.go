@@ -161,7 +161,7 @@ func TestInstallHintByDeployMode(t *testing.T) {
 	if !strings.Contains(paybrowser.InstallHint, "install.sh | sudo bash -s -- --browser-deps") {
 		t.Errorf("InstallHint 应是可直接执行的 curl 命令: %s", paybrowser.InstallHint)
 	}
-	for _, want := range []string{"docker compose up -d --build", "seccomp"} {
+	for _, want := range []string{"docker-deploy.sh", "seccomp"} {
 		if !strings.Contains(paybrowser.DockerInstallHint, want) {
 			t.Errorf("DockerInstallHint 缺少 %q: %s", want, paybrowser.DockerInstallHint)
 		}
@@ -299,6 +299,10 @@ func TestChromeIdentity(t *testing.T) {
 	}
 	missing := func(name string) (*user.User, error) { return nil, user.UnknownUserError(name) }
 	rootUID := func(name string) (*user.User, error) { return &user.User{Username: name, Uid: "0", Gid: "0"}, nil }
+	// 超过 31 位：转成 int 在 32 位平台会溢出，必须拒绝
+	hugeUID := func(name string) (*user.User, error) {
+		return &user.User{Username: name, Uid: "4294967294", Gid: "985"}, nil
+	}
 
 	cases := []struct {
 		name     string
@@ -311,6 +315,7 @@ func TestChromeIdentity(t *testing.T) {
 		{"root 且有专用用户", 0, found, &syscall.Credential{Uid: 990, Gid: 985, Groups: []uint32{}}, false},
 		{"root 但专用用户不存在", 0, missing, nil, true},
 		{"root 且专用用户 uid 为 0", 0, rootUID, nil, true},
+		{"root 且专用用户 uid 超过 31 位", 0, hugeUID, nil, true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

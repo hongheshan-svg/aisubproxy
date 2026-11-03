@@ -93,6 +93,11 @@
         在线下载发布包 → 热替换二进制与前端 → 进程 re-exec 重载。
         <b>不修改</b> app.env / 数据库。需 Release 挂有 <code>cdk-bundle-linux-amd64.tgz</code>（git tag 触发 CI 自动上传）。
       </p>
+      <p v-if="isDocker" class="text-xs text-subtle leading-relaxed">
+        Docker 部署：新版本保存在数据卷里，删掉容器重建后仍然生效；连续 3 次启动失败会自动退回镜像自带的版本。
+        也可以换镜像升级：在部署目录运行 <code>deploy/docker-deploy.sh --version X.Y.Z</code>（版本号不带 v）。
+        回滚在线升级：<code>docker exec cdk-recharge /app/cdk-recharge rollback &amp;&amp; docker restart cdk-recharge</code>
+      </p>
     </section>
   </div>
 </template>
@@ -105,6 +110,8 @@ import { authFetch } from '../../lib/api'
 const versionLoading = ref(false)
 const versionError = ref('')
 const versionInfo = ref<any>({})
+// 后端 deploy_mode：docker 或 native
+const isDocker = computed(() => versionInfo.value.deploy_mode === 'docker')
 
 const updating = ref(false)
 const updatePhase = ref('')
@@ -204,7 +211,9 @@ async function waitForReload() {
     }
   }
   updateFailed.value = true
-  updateError.value = '重载超时：请手动刷新页面并检查 systemctl status cdk-recharge'
+  updateError.value = isDocker.value
+    ? '重载超时：请手动刷新页面，并用 docker logs cdk-recharge 查看日志'
+    : '重载超时：请手动刷新页面并检查 systemctl status cdk-recharge'
   updating.value = false
 }
 

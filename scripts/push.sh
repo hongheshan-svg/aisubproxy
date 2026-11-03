@@ -164,7 +164,7 @@ mapfile -t BAD_TO_PUSH < <(
 )
 
 print_bad() {
-  local line hash short who subj
+  local hash short who subj
   while IFS=$'\t' read -r hash short who subj; do
     [[ -z "${hash:-}" ]] && continue
     echo "  $short  $who  $subj"

@@ -287,9 +287,9 @@ func ListActiveBlockedCardIDs() ([]int64, error) {
 
 // CardHealthPolicy 本站卡健康策略（site_settings）。
 type CardHealthPolicy struct {
-	Enabled        bool   `json:"enabled"`
-	FailThreshold  int    `json:"fail_threshold"`  // 默认 2
-	FreezeOnBlock  bool   `json:"freeze_on_block"` // 判定坏卡后调卡台冻结
+	Enabled       bool `json:"enabled"`
+	FailThreshold int  `json:"fail_threshold"`  // 默认 2
+	FreezeOnBlock bool `json:"freeze_on_block"` // 判定坏卡后调卡台冻结
 	// RequireKnownEmail：失败记录邮箱均为 unknown 时不拉黑（避免无邮箱误伤）
 	RequireKnownEmail bool `json:"require_known_email"`
 }
@@ -304,4 +304,3 @@ func DefaultCardHealthPolicy() CardHealthPolicy {
 		RequireKnownEmail: true,
 	}
 }
-

@@ -53,7 +53,20 @@ sudo /opt/cdk-recharge/cdk-recharge rollback && sudo systemctl restart cdk-recha
 
 每次升级前，程序、前端和数据库都会备份到 `/opt/cdk-recharge/updates/backup-*`，只保留最新 3 份。
 
-Docker 部署不支持在线升级（容器重建后会退回镜像里的版本），请拉取新代码后重建镜像。发布新版本的方法见 [deploy/README-release.md](deploy/README-release.md)。
+**Docker 部署**
+
+每次发版同时发布 Docker 镜像 `ghcr.io/hongheshan-svg/aisubproxy:X.Y.Z`，版本号不带 `v`。安装和换版本都用同一个脚本：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hongheshan-svg/aisubproxy/master/deploy/docker-deploy.sh | sudo bash -s -- --domain 你的域名
+# 指定版本：… | sudo bash -s -- --version X.Y.Z
+```
+
+- 部署目录默认是 `/opt/cdk-recharge`。请备份其中的 `.env`：里面的 `APP_MASTER_KEY` 丢失后，已保存的 MarsWallex 密钥将无法解密。
+- 后台「版本更新」也能一键升级。新版本保存在数据卷里，重建容器后仍然生效。新版本连续 3 次启动失败时，会自动退回镜像自带的版本。
+- 回滚在线升级：`docker exec cdk-recharge /app/cdk-recharge rollback && docker restart cdk-recharge`
+
+发布新版本的方法见 [deploy/README-release.md](deploy/README-release.md)。
 
 ## 主要特性
 
@@ -100,20 +113,16 @@ Docker 部署不支持在线升级（容器重建后会退回镜像里的版本�
 
 ### 前置要求
 - Docker 和 Docker Compose
-- Node.js 18+ (本地开发前端)
-- Go 1.26+ (本地开发后端)
+- Node.js 24+ (本地开发前端)
+- Go 1.27+ (本地开发后端)
 
 ### 使用 Docker Compose 运行
 
 ```bash
-# 启动所有服务
-docker-compose up
+# 从本仓库源码构建并启动（不叠加 docker-compose.build.yml 时拉取已发布的镜像）
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 
-# 访问应用
-# 前端: http://localhost:5173
-# 后端 API: http://localhost:8080
-# PostgreSQL: localhost:5432 (user: postgres, password: postgres)
-# Redis: localhost:6379
+# 访问：先把 Caddyfile 里的 :YOUR_DOMAIN 改成 :80，再打开 http://localhost（Caddy 反代到 cdk 服务的 8080 端口）
 ```
 
 ### 本地开发
@@ -275,24 +284,26 @@ npm run test
 
 ### Docker 镜像构建
 ```bash
-docker-compose build
+docker compose -f docker-compose.yml -f docker-compose.build.yml build
 ```
+
+发版时的镜像由 GitHub Actions 用已签名的发布包构建（Dockerfile 的 `release` 目标），推送到 GHCR。
 
 ### 生产环境部署
 见上文「[服务器安装与升级](#服务器安装与升级)」；发布流程见 [deploy/README-release.md](deploy/README-release.md)。
 
 ## 常见问题
 
-**Q: 如何重置数据库？**
+**Q: 如何重置数据库？**（会删除全部数据）
 ```bash
-docker-compose down -v
-docker-compose up
+docker compose down -v
+docker compose up -d
 ```
 
 **Q: 如何查看日志？**
 ```bash
-docker-compose logs -f backend
-docker-compose logs -f frontend
+docker compose logs -f cdk          # Docker 部署
+journalctl -u cdk-recharge -f       # systemd 部署
 ```
 
 **Q: 默认管理员账户是什么？**

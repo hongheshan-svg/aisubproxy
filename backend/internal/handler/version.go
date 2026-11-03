@@ -96,6 +96,7 @@ func AdminSystemVersion(c *gin.Context) {
 		"update_enabled":   updateEnabled(),
 		"one_click_ready":  update && hasBundle && updateEnabled(),
 		"update_hint":      updateHint(),
+		"deploy_mode":      deployMode(),
 		"checked_at":       time.Now().UTC().Format(time.RFC3339),
 	}
 	if errMsg != "" {

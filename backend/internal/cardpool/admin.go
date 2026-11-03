@@ -813,6 +813,6 @@ func (s *Service) CardTransfers(ctx context.Context, cardID string) ([]CardTrans
 		}
 		rows = append(rows, row)
 	}
-	sort.SliceStable(rows, func(i, j int) bool { return rows[i].CreateTime.Time.After(rows[j].CreateTime.Time) })
+	sort.SliceStable(rows, func(i, j int) bool { return rows[i].CreateTime.After(rows[j].CreateTime.Time) })
 	return rows, nil
 }

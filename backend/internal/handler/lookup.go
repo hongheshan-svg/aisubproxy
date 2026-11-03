@@ -328,7 +328,6 @@ func zovoCardLookup(ctx context.Context, code, deviceID string) cdkLookupResult 
 					switch {
 					case os == "completed" || os == "success" || os == "done" || os == "paid":
 						clearSessionAfterCompleted(code, tok)
-						redeemOK = true
 						resp.Status, resp.Used = "used", true
 						resp.CanResubmit = false
 						resp.Message = "卡密使用成功"

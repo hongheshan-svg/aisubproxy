@@ -1,7 +1,7 @@
 services:
   cdk:
-    build: .
-    image: cdk-recharge:latest
+    # 默认拉发布好的镜像；开发时从源码构建：docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+    image: ghcr.io/hongheshan-svg/aisubproxy:${CDK_VERSION:-latest}
     container_name: cdk-recharge
     restart: unless-stopped
     # Chrome 带沙箱运行需要创建用户命名空间，Docker 默认 seccomp 不放行 clone、unshare。
@@ -21,6 +21,7 @@ services:
       WEB_DIR: /app/web
       INSTALL_MODE: ${INSTALL_MODE:-wizard}
       JWT_SECRET: ${JWT_SECRET:-}
+      APP_MASTER_KEY: ${APP_MASTER_KEY:-}
       TRUSTED_PROXIES: 172.16.0.0/12
     healthcheck:
       test: ["CMD", "curl", "-f", "http://127.0.0.1:8080/health"]

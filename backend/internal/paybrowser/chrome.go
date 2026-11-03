@@ -27,7 +27,7 @@ import (
 const InstallHint = "curl -fsSL https://raw.githubusercontent.com/hongheshan-svg/aisubproxy/master/deploy/install.sh | sudo bash -s -- --browser-deps"
 
 // DockerInstallHint 是 Docker 部署的处理方法：容器里没有安装脚本可跑，浏览器依赖在镜像里。
-const DockerInstallHint = "Docker 部署的浏览器依赖在镜像里：请用仓库的 docker-compose.yml 重建镜像（docker compose up -d --build），它带有 security_opt；自己 docker run 的请加 --security-opt seccomp=deploy/chrome-seccomp.json"
+const DockerInstallHint = "Docker 部署的浏览器依赖在镜像里：请在部署目录重跑 deploy/docker-deploy.sh，它会换上这一版的 docker-compose.yml（带 security_opt）并重建容器；自己 docker run 的请加 --security-opt seccomp=deploy/chrome-seccomp.json"
 
 // installHint 按部署方式给出提示：镜像里设了 CDK_DEPLOY_MODE=docker。
 func installHint() string {
@@ -161,7 +161,16 @@ func Launch(ctx context.Context, o LaunchOptions) (*Browser, error) {
 	if err != nil {
 		return nil, fmt.Errorf("创建 Chrome 临时目录失败: %w", err)
 	}
-	sandbox, err := sandboxOptions(dir)
+	mode, display := modeHeadless, ""
+	if env, ok := pickDisplay(); ok {
+		mode = modeHeadful
+		display = os.Getenv("DISPLAY")
+		if env != "" {
+			display = strings.TrimPrefix(env, "DISPLAY=")
+		}
+	}
+	// Chrome 只拿到白名单环境变量（不带密钥），DISPLAY 也经由这里给
+	sandbox, err := sandboxOptions(dir, display)
 	if err != nil {
 		_ = os.RemoveAll(dir)
 		return nil, err
@@ -190,13 +199,7 @@ func Launch(ctx context.Context, o LaunchOptions) (*Browser, error) {
 			opts = append(opts, chromedp.Flag("proxy-bypass-list", "<-loopback>"))
 		}
 	}
-	mode := modeHeadless
-	if env, ok := pickDisplay(); ok {
-		mode = modeHeadful
-		if env != "" {
-			opts = append(opts, chromedp.Env(env))
-		}
-	} else {
+	if mode == modeHeadless {
 		opts = append(opts, chromedp.Flag("headless", "new"))
 	}
 

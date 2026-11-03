@@ -6,20 +6,6 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/provider"
 )
 
-// cardSupplyOf 取已注册的供卡型服务商。
-func cardSupplyOf(t testing.TB, n provider.Name) provider.CardSupply {
-	t.Helper()
-	p, ok := provider.Get(n)
-	if !ok {
-		t.Fatalf("服务商 %s 没有注册", n)
-	}
-	cs, ok := provider.AsCardSupply(p)
-	if !ok {
-		t.Fatalf("服务商 %s 不是供卡型", n)
-	}
-	return cs
-}
-
 // mwToken 是 MarsWallex 码的兑换令牌。
 func mwToken(code string) string {
 	p, _ := provider.Get(provider.MarsWallex)

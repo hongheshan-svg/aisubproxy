@@ -1,0 +1,8 @@
+# 覆盖文件：让 cdk 服务从本仓库源码构建，而不是拉 GHCR 镜像。
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
+services:
+  cdk:
+    build:
+      context: .
+      target: runtime
+    image: cdk-recharge:dev

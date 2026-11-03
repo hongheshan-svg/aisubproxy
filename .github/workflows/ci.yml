@@ -1,39 +1,50 @@
-# 开 PR 或推送到 master 时跑后端与前端的构建和测试。发布仍由 release.yml 在推送 v* 标签时进行。
+# 开 PR、推送到 master 时跑构建、测试与检查；release.yml 发版前也会调用本工作流（workflow_call）。
+# 第三方 Action 都固定到提交 SHA（注释里是版本号），由 Dependabot 负责更新。
+# 漏洞扫描不在这里：见 security.yml（只提醒，不卡合并和发版）。
 name: ci
 
 on:
   pull_request:
   push:
     branches: [master]
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   backend:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: backend
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          # 与 release.yml 一致，用 go.mod 声明的最低版本编译，能发现误用新版标准库
-          go-version: '1.24.x'
+          go-version: '1.27.x'
           cache-dependency-path: backend/go.sum
 
       - name: Allow Chrome sandbox
-        # Ubuntu 24.04 默认限制非特权用户命名空间，Chrome 沙箱起不来；付款浏览器的测试要求带沙箱运行
+        # Ubuntu 24.04 默认限制非特权用户命名空间，Chrome 沙箱起不来；付款引擎有用到真实 Chrome 的测试
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      - name: gofmt
+        run: |
+          out="$(gofmt -l .)"
+          if [ -n "$out" ]; then
+            echo "以下文件没有 gofmt，请运行 gofmt -w：" >&2
+            echo "$out" >&2
+            exit 1
+          fi
 
       - name: Build
         run: go build ./...
@@ -41,8 +52,39 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.15.0
+          working-directory: backend
+
       - name: Test
-        run: go test ./...
+        # paybrowser 要跑约 9 分钟，放在 backend-browser 里并行
+        run: |
+          mapfile -t pkgs < <(go list ./... | grep -v '/internal/paybrowser')
+          go test -race "${pkgs[@]}"
+
+  backend-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27.x'
+          cache-dependency-path: backend/go.sum
+
+      - name: Allow Chrome sandbox
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      - name: Test paybrowser
+        run: go test -race -timeout 30m ./internal/paybrowser/...
 
   frontend:
     runs-on: ubuntu-latest
@@ -52,12 +94,12 @@ jobs:
         working-directory: frontend
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '20'
+          node-version: '24'
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
@@ -69,3 +111,107 @@ jobs:
 
       - name: Build
         run: npm run build
+
+  release-build:
+    # 与 release.yml 相同的静态编译，平时就验证，免得发版时才发现链接失败
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27.x'
+          cache-dependency-path: backend/go.sum
+
+      - name: Build static backend
+        working-directory: backend
+        run: bash ../scripts/build-linux-backend.sh "$RUNNER_TEMP/cdk-recharge" "0.0.0-ci"
+
+      - name: Check static linking
+        run: |
+          file "$RUNNER_TEMP/cdk-recharge"
+          file "$RUNNER_TEMP/cdk-recharge" | grep -Eq 'statically linked|static-pie linked'
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Allow Chrome sandbox
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      - name: Setup Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build image (from source, not pushed)
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          push: false
+          tags: cdk-recharge:ci
+          build-args: VERSION=0.0.0-ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test
+        run: bash scripts/docker-smoke.sh cdk-recharge:ci
+
+  lint-meta:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27.x'
+          cache: false
+
+      - name: shellcheck
+        run: shellcheck -S warning deploy/*.sh scripts/*.sh
+
+      - name: actionlint
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          "$(go env GOPATH)/bin/actionlint"
+
+  gitleaks:
+    # 只检查本仓库自己的提交，不受外部漏洞库更新影响，所以是必过项
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27.x'
+          cache: false
+
+      - name: Install gitleaks
+        run: go install github.com/zricethezav/gitleaks/v8@v8.30.1
+
+      - name: Scan
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          bin="$(go env GOPATH)/bin/gitleaks"
+          if [ "$EVENT" = "pull_request" ]; then
+            # PR 只扫本次新增的提交
+            "$bin" git --redact --exit-code 1 --log-opts="${BASE_SHA}..${HEAD_SHA}" .
+          else
+            "$bin" git --redact --exit-code 1 .
+          fi

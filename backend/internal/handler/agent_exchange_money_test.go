@@ -173,7 +173,7 @@ func TestAgentExchangeConcurrentRequestsIssueOnce(t *testing.T) {
 	}
 	close(release)
 	wg.Wait()
-	if !((codes[0] == 200 && codes[1] == 409) || (codes[0] == 409 && codes[1] == 200)) {
+	if (codes[0] != 200 || codes[1] != 409) && (codes[0] != 409 || codes[1] != 200) {
 		t.Fatalf("应一个 200 一个 409: %v", codes)
 	}
 	if u.issued.Load() != 1 || u.disabled.Load() != 1 {

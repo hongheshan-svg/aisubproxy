@@ -336,7 +336,7 @@ import { copyToClipboard } from '../../lib/clipboard'
 import { isCardAttachPlan } from '../../lib/plan'
 
 const RECENT_KEY = 'cdk_recent_issued_v1'
-/** 浏览器兜底缓存（历史本机数据）；主存储已改为服务器 SQLite */
+/** 旧版本把完整码写入 localStorage 的键。现在不再写入，只在升级时读出一次并删除（见 loadCodeCache） */
 const CODE_CACHE_KEY = 'cdk_full_code_cache_v1'
 /** 卡台完整码形如 GPTD-xxxxxxxxxxxx-xxxxxxxxxxxx-xxxxxxxxxxxx（约 43 字符） */
 const FULL_CODE_MIN_LEN = 20
@@ -977,22 +977,16 @@ function extractFullCode(item: any): string {
   return ''
 }
 
+/** 升级迁移：旧版本缓存的完整码只读进内存（供回填服务器），随后立即删除 localStorage 里的旧缓存。 */
 function loadCodeCache() {
   try {
     const raw = localStorage.getItem(CODE_CACHE_KEY)
+    localStorage.removeItem(CODE_CACHE_KEY)
     if (!raw) return
     const o = JSON.parse(raw)
     if (o && typeof o === 'object') codeCache.value = o
   } catch {
     /* ignore */
-  }
-}
-
-function saveCodeCache() {
-  try {
-    localStorage.setItem(CODE_CACHE_KEY, JSON.stringify(codeCache.value))
-  } catch {
-    /* ignore quota */
   }
 }
 
@@ -1014,8 +1008,8 @@ function rememberIssued(items: any[], plan: string) {
     if (prefix) next[`pfx:${prefix}`] = entry
     next[`code:${code}`] = entry
   }
+  // 完整码只在内存中保留（页面刷新即失效），主存储是服务器 SQLite；不写 localStorage
   codeCache.value = next
-  saveCodeCache()
 }
 
 function lookupFullCode(row: any): string {

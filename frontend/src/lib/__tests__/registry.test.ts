@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import { nextTick, ref } from 'vue'
 import {
-  normalizeRegistry, pickIssueProvider, providerCodeList, providerLabel, registry, setRegistry, supportsPlan, unsupportedPlans,
+  checkTitle, normalizeRegistry, pickIssueProvider, providerCodeList, providerLabel, registry, setRegistry, supportsPlan, unsupportedPlans,
 } from '../provider'
 import { useIssueProvider } from '../useIssueProvider'
 import { registryFixture } from './registryFixture'
@@ -84,5 +84,14 @@ describe('发码预选', () => {
     u.apply()
     expect(u.provider.value).toBe('zovocard')
     expect(u.notice.value).toBe('')
+  })
+})
+
+describe('检查项标题', () => {
+  it('有 title 用 title，没有退回按 key 查表，再没有显示 key', () => {
+    expect(checkTitle('breaker', '付款熔断（接口）')).toBe('付款熔断（接口）')
+    expect(checkTitle('breaker')).toBe('付款熔断')
+    expect(checkTitle('breaker', '  ')).toBe('付款熔断')
+    expect(checkTitle('zz_custom_check')).toBe('zz_custom_check')
   })
 })

@@ -25,7 +25,7 @@
         <li v-for="c in readiness.checks || []" :key="c.key" class="flex gap-2 items-start">
           <span :class="c.ok ? 'text-ok' : 'text-err'" class="shrink-0 w-4" aria-hidden="true">{{ c.ok ? '✓' : '✗' }}</span>
           <span class="min-w-0">
-            <b>{{ checkTitle(c.key) }}</b>
+            <b>{{ checkTitle(c.key, c.title) }}</b>
             <span class="text-muted"> — {{ c.detail }}</span>
             <details v-if="c.raw" class="text-xs text-muted mt-0.5">
               <summary class="cursor-pointer">详情</summary>

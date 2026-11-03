@@ -175,7 +175,7 @@ export function centsToUsd(cents: number | null | undefined): string {
 
 // ---------- 就绪检查 ----------
 
-export interface ReadinessCheck { key: string; ok: boolean; detail: string; raw?: string }
+export interface ReadinessCheck { key: string; ok: boolean; detail: string; raw?: string; title?: string }
 export interface ProviderExtra { label: string; value: string }
 export interface ProviderReadiness {
   provider: string; ok: boolean; problems: string[]; checks: ReadinessCheck[]
@@ -198,8 +198,9 @@ export const CHECK_HINTS: Record<string, CheckHint> = {
   balance: { title: '卡台余额', link: { to: '/ops/integration', label: '去卡台页' } },
 }
 
-export function checkTitle(key: string): string {
-  return CHECK_HINTS[key]?.title ?? key
+/** 检查项标题：接口给的 title 优先，其次按 key 查表，最后显示 key。 */
+export function checkTitle(key: string, title?: string): string {
+  return (title && title.trim()) || CHECK_HINTS[key]?.title || key
 }
 
 /** 首笔真实付款这一条是否未通过：需要在界面上单独、醒目地说明。 */

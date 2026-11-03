@@ -28,7 +28,17 @@ async function render(comp: any, locale: 'zh' | 'en' = 'zh') {
   return renderToString(app)
 }
 
-const text = (html: string) => html.replace(/<!--.*?-->/g, '').replace(/<[^>]+>/g, '').replace(/\s+/g, ' ')
+// 逐字符跳过 <...>（含 Vue SSR 的 <!--[--> 注释）取正文。Vue 已把正文和属性里的 < > 转义，不会误删正文。
+function text(html: string) {
+  let out = ''
+  let inTag = false
+  for (const ch of html) {
+    if (ch === '<') inTag = true
+    else if (ch === '>') inTag = false
+    else if (!inTag) out += ch
+  }
+  return out.replace(/\s+/g, ' ')
+}
 
 describe('Session 获取说明', () => {
   it('文字与指定说明一致，链接新开页且不带来源', async () => {

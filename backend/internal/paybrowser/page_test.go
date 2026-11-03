@@ -189,7 +189,7 @@ func TestOpenAndReadAmount(t *testing.T) {
 		ctx := openCtx(t)
 
 		cookies := []paybrowser.Cookie{{Name: sessionCookie, Value: "sess-abc123", Domain: host}}
-		if err := b.Open(ctx, f.urlOf(k, ""), cookies); err != nil {
+		if err := b.Open(ctx, f.urlOf(k, ""), paybrowser.PageHosted, cookies); err != nil {
 			t.Fatalf("Open: %v", err)
 		}
 		if v := f.gotSession(); v != "sess-abc123" {
@@ -265,7 +265,7 @@ func TestProxyAuth(t *testing.T) {
 	pu.User = url.UserPassword("alice", "s3cret")
 
 	b := launch(t, paybrowser.LoopbackProxy(paybrowser.LaunchOptions{ProxyURL: pu.String()}))
-	if err := b.Open(openCtx(t), f.url(""), nil); err != nil {
+	if err := b.Open(openCtx(t), f.url(""), paybrowser.PageHosted, nil); err != nil {
 		t.Fatalf("经代理 Open 失败: %v", err)
 	}
 	if proxy.challenged.Load() == 0 || proxy.authorized.Load() == 0 {
@@ -293,7 +293,7 @@ func openKind(t *testing.T, f *fakeCheckout, k checkoutKind, query string, o pay
 	t.Helper()
 	b := launch(t, o)
 	ctx := openCtx(t)
-	if err := b.Open(ctx, f.urlOf(k, query), nil); err != nil {
+	if err := b.Open(ctx, f.urlOf(k, query), paybrowser.PageHosted, nil); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	return b, ctx
@@ -714,7 +714,7 @@ func TestScanBeforeClickBoundedOnBusyPage(t *testing.T) {
 	t.Cleanup(srv.Close)
 	b := launch(t, paybrowser.LaunchOptions{})
 	ctx := openCtx(t)
-	if err := b.Open(ctx, srv.URL, nil); err != nil {
+	if err := b.Open(ctx, srv.URL, paybrowser.PageHosted, nil); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 

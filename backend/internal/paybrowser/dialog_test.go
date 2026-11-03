@@ -127,7 +127,7 @@ func TestWaitOutcomeAnswersDialogs(t *testing.T) {
 			}
 			srv := servePage(t, html)
 			b := launch(t, paybrowser.LaunchOptions{ShotDir: t.TempDir()})
-			if err := b.Open(openCtx(t), srv.URL, nil); err != nil {
+			if err := b.Open(openCtx(t), srv.URL, paybrowser.PageHosted, nil); err != nil {
 				t.Fatalf("Open: %v", err)
 			}
 			r := boundedWaitOutcome(t, b, context.Background(), 10*time.Second)
@@ -163,7 +163,7 @@ func TestWaitOutcomeBusyPage(t *testing.T) {
 
 	b := launch(t, paybrowser.LaunchOptions{ShotDir: t.TempDir()})
 	dir := paybrowser.ProfileDir(b)
-	if err := b.Open(openCtx(t), srv.URL, nil); err != nil {
+	if err := b.Open(openCtx(t), srv.URL, paybrowser.PageHosted, nil); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	select {

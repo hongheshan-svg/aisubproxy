@@ -4,6 +4,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/tuzi/cdk-recharge-system/internal/paybrowser"
 )
 
 // 不可信的支付链接：子域名、http、带端口、相似域名、chatgpt.com、带账号信息、末尾带点、没有协议等，一律拒绝。
@@ -102,4 +104,23 @@ func TestOpenPageRechecksCheckoutURL(t *testing.T) {
 		}
 	}
 	j.closeBrowser()
+}
+
+func TestCheckoutPageKind(t *testing.T) {
+	cases := []struct {
+		url  string
+		want paybrowser.PageKind
+	}{
+		{"https://chatgpt.com/checkout/openai_llc/cs_live_abc", paybrowser.PageEmbedded},
+		{"HTTPS://CHATGPT.COM/checkout/a/b", paybrowser.PageEmbedded},
+		{"https://pay.openai.com/c/pay/x", paybrowser.PageHosted},
+		{"https://checkout.stripe.com/c/pay/x", paybrowser.PageHosted},
+		{"", paybrowser.PageHosted},
+		{"::bad", paybrowser.PageHosted},
+	}
+	for _, c := range cases {
+		if got := checkoutPageKind(c.url); got != c.want {
+			t.Errorf("checkoutPageKind(%q) = %v，期望 %v", c.url, got, c.want)
+		}
+	}
 }

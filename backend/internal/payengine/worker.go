@@ -566,7 +566,7 @@ func (s *Service) openPage(ctx context.Context, j *job) error {
 
 	pctx, cancel := context.WithTimeout(ctx, s.t.PageLoad)
 	defer cancel()
-	if err := b.Open(pctx, j.o.CheckoutURL, sessionCookies(j.sess)); err != nil {
+	if err := b.Open(pctx, j.o.CheckoutURL, checkoutPageKind(j.o.CheckoutURL), sessionCookies(j.sess)); err != nil {
 		s.notePageDiag(ctx, j, b, "打开支付页失败")
 		sctx, cancelShot := context.WithTimeout(ctx, diagTimeout)
 		defer cancelShot()
@@ -613,4 +613,13 @@ func formatMinor(v int64, currency string) string {
 	}
 	div := int64(math.Pow10(exp))
 	return fmt.Sprintf("%d.%0*d", v/div, exp, v%div)
+}
+
+// checkoutPageKind 按链接域名决定页面类型：主机名是 chatgpt.com 为内嵌页，其余（含解析失败）按托管页。
+func checkoutPageKind(raw string) paybrowser.PageKind {
+	u, err := url.Parse(raw)
+	if err != nil || strings.ToLower(u.Hostname()) != "chatgpt.com" {
+		return paybrowser.PageHosted
+	}
+	return paybrowser.PageEmbedded
 }

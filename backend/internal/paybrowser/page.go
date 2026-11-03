@@ -113,8 +113,21 @@ const amountJS = `(sels => {
 	return ''
 })`
 
+// PageKind 是支付页的类型，由引擎按链接域名决定。
+type PageKind int
+
+const (
+	PageHosted   PageKind = iota // Stripe 托管页
+	PageEmbedded                 // chatgpt.com 内嵌结账页
+)
+
 // Open 先注入 cookie 再打开支付页，等到金额元素出现为止，最多 60 秒。
-func (b *Browser) Open(ctx context.Context, url string, cookies []Cookie) error {
+// kind 只记在 Browser 上，供后续按页面类型分支使用。
+func (b *Browser) Open(ctx context.Context, url string, kind PageKind, cookies []Cookie) error {
+	b.mu.Lock()
+	b.kind = kind
+	b.mu.Unlock()
+
 	ctx, cancel := context.WithTimeout(ctx, pageLoadTimeout)
 	defer cancel()
 

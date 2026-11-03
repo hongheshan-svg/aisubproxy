@@ -129,6 +129,7 @@ type Browser struct {
 	cardTouched  bool                 // 已开始往页面键入卡号：此后页面上可能有卡号，禁止整页截图
 	filled       bool                 // 已填入卡片与地址
 	submitted    bool                 // 已开始点击支付（点击之前置位）；之后绝不再次点击
+	kind         PageKind             // 页面类型，Open 时记下
 	submitLocked bool                 // 调用过 LockSubmit；之后绝不点击
 	answered     map[cdp.FrameID]bool // 已填过验证码的 3DS 框，WaitOutcome 不再把它当成新的验证
 	beforeClick  map[string]bool      // 点击支付前页面上已有的提示文字，WaitOutcome 不把它们当成付款结果

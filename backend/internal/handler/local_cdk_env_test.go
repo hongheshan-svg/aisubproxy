@@ -184,7 +184,7 @@ func (b *localFakeBrowser) New(context.Context, string, string) (payengine.Brows
 	return b, nil
 }
 
-func (b *localFakeBrowser) Open(context.Context, string, []paybrowser.Cookie) error {
+func (b *localFakeBrowser) Open(context.Context, string, paybrowser.PageKind, []paybrowser.Cookie) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.filled = false

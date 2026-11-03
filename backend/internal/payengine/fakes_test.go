@@ -348,12 +348,14 @@ func (f *browserFactory) openingNow() (cur, peak int) {
 
 type fakeBrowser struct {
 	callLog
-	f *browserFactory
+	f        *browserFactory
+	openKind paybrowser.PageKind // 最近一次 Open 收到的页面类型
 }
 
-func (b *fakeBrowser) Open(ctx context.Context, url string, cookies []paybrowser.Cookie) error {
+func (b *fakeBrowser) Open(ctx context.Context, url string, kind paybrowser.PageKind, cookies []paybrowser.Cookie) error {
 	b.hit("Open", url, cookies)
 	b.f.mu.Lock()
+	b.openKind = kind
 	b.f.opening++
 	if b.f.opening > b.f.maxOpening {
 		b.f.maxOpening = b.f.opening

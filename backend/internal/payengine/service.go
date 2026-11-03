@@ -49,7 +49,7 @@ type ChatGPT interface {
 
 // FormBrowser 是填表用到的浏览器能力，没有 Submit：只拿到它的代码点不了支付。
 type FormBrowser interface {
-	Open(context.Context, string, []paybrowser.Cookie) error
+	Open(context.Context, string, paybrowser.PageKind, []paybrowser.Cookie) error
 	ReadAmount(context.Context, string) (int64, string, error)
 	// WaitRendered 等支付页真正显示出来再截图，最多等给定时长；等不到返回 false，不报错，只读不点。
 	WaitRendered(context.Context, time.Duration) bool

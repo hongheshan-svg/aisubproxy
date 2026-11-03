@@ -35,7 +35,7 @@ func TestWaitRenderedWaitsForFadeIn(t *testing.T) {
 	u := fadeInPage(t, 600)
 	b := launch(t, paybrowser.LaunchOptions{})
 	ctx := openCtx(t)
-	if err := b.Open(ctx, u, nil); err != nil {
+	if err := b.Open(ctx, u, paybrowser.PageHosted, nil); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	if ok, err := paybrowser.AmountRendered(ctx, b); err != nil || ok {
@@ -57,7 +57,7 @@ func TestWaitRenderedGivesUpWithoutError(t *testing.T) {
 	u := fadeInPage(t, -1)
 	b := launch(t, paybrowser.LaunchOptions{})
 	ctx := openCtx(t)
-	if err := b.Open(ctx, u, nil); err != nil {
+	if err := b.Open(ctx, u, paybrowser.PageHosted, nil); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	start := time.Now()

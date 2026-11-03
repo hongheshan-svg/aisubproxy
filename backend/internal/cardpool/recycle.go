@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 )
@@ -109,17 +110,64 @@ func (s *Service) advanceReleasing(ctx context.Context, c *Card) error {
 		}
 		return nil
 	}
+	if fresh.FrozenCents == 0 {
+		if err := s.clearFrozenSince(ctx, c.CardID); err != nil {
+			return err
+		}
+	}
 	if fresh.AvailableCents > 0 {
 		return s.recycleWithdraw(ctx, fresh)
 	}
 	if fresh.FrozenCents > 0 {
-		at := s.now().Unix() + recycleRetrySeconds
-		return s.setNextAction(ctx, c.CardID, PoolReleasing, &at)
+		return s.waitFrozenBalance(ctx, fresh)
 	}
 	if _, err := s.moveCard(ctx, c.CardID, PoolReleasing, PoolAvailable, ""); err != nil {
 		return err
 	}
 	return nil
+}
+
+// 只剩冻结余额的卡（MO-05）：一笔授权长期不结算也不撤销时，卡上的钱冻着，回收每 10 分钟查一次。
+// 超过 frozenAlertAfter 每天告警一次，超过 frozenDisableAfter 转 disabled 并告警，让人工到平台核查。
+var (
+	frozenAlertAfter   = 24 * time.Hour
+	frozenDisableAfter = 7 * 24 * time.Hour
+)
+
+// waitFrozenBalance 处理 releasing 卡「可用余额为 0、冻结余额大于 0」：记下开始时间、按时长告警或停用，其余照旧 10 分钟后再查。
+func (s *Service) waitFrozenBalance(ctx context.Context, c *Card) error {
+	now := s.now().Unix()
+	// 只在第一次写入：之后每轮刷新都不改它，所以它是真实的「开始只剩冻结余额」时间
+	if _, err := db.DB.ExecContext(ctx, `UPDATE mw_cards SET frozen_since = ? WHERE card_id = ? AND frozen_since IS NULL`, now, c.CardID); err != nil {
+		return err
+	}
+	var since int64
+	if err := db.DB.QueryRowContext(ctx, `SELECT COALESCE(frozen_since, ?) FROM mw_cards WHERE card_id = ?`, now, c.CardID).Scan(&since); err != nil {
+		return err
+	}
+	age := time.Duration(now-since) * time.Second
+	switch {
+	case age > frozenDisableAfter:
+		moved, err := s.moveCard(ctx, c.CardID, PoolReleasing, PoolDisabled, "冻结余额长期未释放")
+		if err != nil {
+			return err
+		}
+		if moved {
+			s.alert("frozen-disabled:"+c.CardID, fmt.Sprintf("卡 %s 只剩冻结余额 %s %s 已超过 %d 天，已从卡池停用（原因：冻结余额长期未释放），请到 MarsWallex 后台核查授权或争议",
+				c.CardID, centsText(c.FrozenCents), c.Currency, int(frozenDisableAfter/(24*time.Hour))))
+		}
+		return nil
+	case age > frozenAlertAfter:
+		s.alert("frozen:"+c.CardID, fmt.Sprintf("卡 %s 只剩冻结余额 %s %s 已超过 %d 小时，回收一直在等待；超过 %d 天会自动停用，请到 MarsWallex 后台核查授权或争议",
+			c.CardID, centsText(c.FrozenCents), c.Currency, int(frozenAlertAfter/time.Hour), int(frozenDisableAfter/(24*time.Hour))))
+	}
+	at := now + recycleRetrySeconds
+	return s.setNextAction(ctx, c.CardID, PoolReleasing, &at)
+}
+
+func (s *Service) clearFrozenSince(ctx context.Context, cardID string) error {
+	_, err := db.DB.ExecContext(ctx, `UPDATE mw_cards SET frozen_since = NULL WHERE card_id = ? AND frozen_since IS NOT NULL`, cardID)
+	return err
 }
 
 // advanceUsed（未冻结）：刷新 → 平台已注销则退役 → 平台已是 REVOKED 就直接记冻结时间（不再尝试转出：
@@ -289,7 +337,7 @@ func (s *Service) setNextAction(ctx context.Context, cardID, state string, at *i
 
 // moveCard 把卡从 from 改为 to 并清空 next_action_at；reason 非空时写入 disabled_reason。返回是否完成了转换。
 func (s *Service) moveCard(ctx context.Context, cardID, from, to, reason string) (bool, error) {
-	q := `UPDATE mw_cards SET pool_state = ?, next_action_at = NULL, updated_at = ?`
+	q := `UPDATE mw_cards SET pool_state = ?, next_action_at = NULL, frozen_since = NULL, updated_at = ?`
 	args := []any{to, s.now().Unix()}
 	if reason != "" {
 		q += `, disabled_reason = ?`

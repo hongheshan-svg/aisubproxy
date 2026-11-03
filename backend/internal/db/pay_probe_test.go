@@ -51,3 +51,26 @@ func TestInsertPayProbeKeepsLatest50(t *testing.T) {
 		t.Errorf("读取失败: %v %v", p, err)
 	}
 }
+
+// 服务重启时（迁移在每次启动都会执行），库里遗留的 running 记录改成 failed，其余状态不动。
+func TestMigratePayProbesFailsInterruptedRuns(t *testing.T) {
+	dbtest.Open(t)
+	ctx := context.Background()
+	running := &db.PayProbe{CreatedAt: 1, Status: db.PayProbeRunning, ChecksJSON: "[]", ResultsJSON: `[{"key":"account"}]`}
+	done := &db.PayProbe{CreatedAt: 2, Status: db.PayProbeDone, ChecksJSON: "[]", ResultsJSON: "[]"}
+	for _, p := range []*db.PayProbe{running, done} {
+		if _, err := db.InsertPayProbe(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.MigratePayProbes(); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := db.GetPayProbe(ctx, running.ID)
+	if got.Status != db.PayProbeFailed || got.Note != "服务重启中断" || got.FinishedAt == 0 || got.ResultsJSON != running.ResultsJSON {
+		t.Errorf("running 应改为 failed 并保留已有结果: %+v", got)
+	}
+	if d, _ := db.GetPayProbe(ctx, done.ID); d.Status != db.PayProbeDone || d.Note != "" {
+		t.Errorf("done 不应被改动: %+v", d)
+	}
+}

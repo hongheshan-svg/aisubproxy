@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -33,12 +34,20 @@ type probeFake struct {
 	hits    []string
 	hasSub  bool
 	planTyp string
+	gate    map[string]chan struct{} // 路径 -> 通道，关闭前该路径的请求一直挂着
+	delay   map[string]time.Duration // 路径 -> 固定延迟
 }
 
 func (f *probeFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.hits = append(f.hits, r.Method+" "+r.URL.Path)
 	f.mu.Unlock()
+	if ch := f.gate[r.URL.Path]; ch != nil {
+		<-ch
+	}
+	if d := f.delay[r.URL.Path]; d > 0 {
+		time.Sleep(d)
+	}
 	body, _ := io.ReadAll(r.Body)
 	var req map[string]any
 	_ = json.Unmarshal(body, &req)
@@ -113,8 +122,11 @@ func probeEnv(t *testing.T, hasSub bool, page paybrowser.ProbePage) (*probeFake,
 	t.Cleanup(srv.Close)
 	br := &fakeProbeBrowser{page: page}
 
-	oldAPI, oldLaunch, oldSettle := probeNewAPI, probeLaunch, probeSettle
-	t.Cleanup(func() { probeNewAPI, probeLaunch, probeSettle = oldAPI, oldLaunch, oldSettle })
+	oldAPI, oldLaunch, oldSettle, oldTimeout := probeNewAPI, probeLaunch, probeSettle, probeTimeout
+	t.Cleanup(func() {
+		waitProbeIdle(t) // 后台协程要先结束，才能关库
+		probeNewAPI, probeLaunch, probeSettle, probeTimeout = oldAPI, oldLaunch, oldSettle, oldTimeout
+	})
 	probeSettle = 0
 	probeNewAPI = func(string) (probeAPI, error) {
 		c, err := chatgpt.New("")
@@ -129,19 +141,52 @@ func probeEnv(t *testing.T, hasSub bool, page paybrowser.ProbePage) (*probeFake,
 	return fake, br
 }
 
-func probePost(t *testing.T, checks []string, region string) (*httptest.ResponseRecorder, map[string]probeResult) {
+// waitProbeIdle 等后台探测协程结束（占用标志释放）。
+func waitProbeIdle(t *testing.T) {
+	t.Helper()
+	for i := 0; i < 500; i++ {
+		if !probeBusy.Load() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("后台探测迟迟没有结束")
+}
+
+func probeStart(t *testing.T, checks []string, region string) *httptest.ResponseRecorder {
 	t.Helper()
 	body, _ := json.Marshal(map[string]any{"session": paySession(probeEmail), "checks": checks, "region": region})
-	w := payDo(AdminPayProbe, "POST", "/pay/probe", "/pay/probe", string(body))
+	return payDo(AdminPayProbe, "POST", "/pay/probe", "/pay/probe", string(body))
+}
+
+func probeGet(t *testing.T, id float64) (*httptest.ResponseRecorder, map[string]any) {
+	t.Helper()
+	w := payDo(AdminPayProbeGet, "GET", "/pay/probe/:id", "/pay/probe/"+strconv.Itoa(int(id)), "")
+	var m map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &m)
+	return w, m
+}
+
+// probePost 启动探测并等它跑完，返回最终的 GET 响应与按 key 索引的结果；启动本身不是 200 时直接返回启动响应。
+func probePost(t *testing.T, checks []string, region string) (*httptest.ResponseRecorder, map[string]probeResult) {
+	t.Helper()
 	out := map[string]probeResult{}
+	w := probeStart(t, checks, region)
+	if w.Code != 200 {
+		return w, out
+	}
+	var st map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &st)
+	waitProbeIdle(t)
+	gw, _ := probeGet(t, st["id"].(float64))
 	var resp struct {
 		Results []probeResult `json:"results"`
 	}
-	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	_ = json.Unmarshal(gw.Body.Bytes(), &resp)
 	for _, r := range resp.Results {
 		out[r.Key] = r
 	}
-	return w, out
+	return gw, out
 }
 
 var allProbeChecks = []string{"account", "subscriptions", "checkout_modes", "credit_checkout", "payment_methods", "upgrade_preview", "customer_portal", "chatgpt_browser", "credit_balance"}
@@ -404,4 +449,81 @@ func TestProbeShotRouteRejectsTraversal(t *testing.T) {
 	if w := payCtxDo(AdminPayProbeShot, gin.Params{{Key: "dir", Value: "probe-12345678"}, {Key: "name", Value: "a.png"}}); w.Code != 200 {
 		t.Errorf("应返回截图: %d", w.Code)
 	}
+}
+
+func TestProbePostReturnsImmediatelyAndPollingSeesPartialResults(t *testing.T) {
+	fake, _ := probeEnv(t, true, paybrowser.ProbePage{})
+	gate := make(chan struct{})
+	fake.gate = map[string]chan struct{}{"/backend-api/subscriptions": gate}
+	released := false
+	release := func() {
+		if !released {
+			released = true
+			close(gate)
+		}
+	}
+	defer release()
+
+	w := probeStart(t, []string{"account", "subscriptions", "payment_methods"}, "")
+	var st map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &st)
+	if w.Code != 200 || st["status"] != "running" || st["id"] == nil {
+		t.Fatalf("应立刻返回 running: %d %s", w.Code, w.Body.String())
+	}
+	id := st["id"].(float64)
+
+	// 第一项完成后，轮询能看到部分结果，整体仍是 running
+	var m map[string]any
+	for i := 0; i < 300; i++ {
+		_, m = probeGet(t, id)
+		if rs, _ := m["results"].([]any); len(rs) >= 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	rs, _ := m["results"].([]any)
+	if m["status"] != "running" || len(rs) != 1 || rs[0].(map[string]any)["key"] != "account" {
+		t.Fatalf("应有 1 项部分结果且仍在运行: %v", m)
+	}
+	if _, has := m["finished_at"]; has {
+		t.Error("运行中不应有 finished_at")
+	}
+	// 跑着的时候再提交仍是 409
+	if w2 := probeStart(t, []string{"account"}, ""); w2.Code != http.StatusConflict {
+		t.Errorf("运行中再提交应 409，得到 %d", w2.Code)
+	}
+
+	release()
+	waitProbeIdle(t)
+	_, m = probeGet(t, id)
+	rs, _ = m["results"].([]any)
+	if m["status"] != "done" || len(rs) != 3 || m["finished_at"] == nil {
+		t.Fatalf("最终应 done 且 3 项: %v", m)
+	}
+}
+
+func TestProbeTimeoutMarksRemainingAsFail(t *testing.T) {
+	fake, _ := probeEnv(t, true, paybrowser.ProbePage{})
+	fake.delay = map[string]time.Duration{"/backend-api/subscriptions": 400 * time.Millisecond}
+	probeTimeout = 150 * time.Millisecond
+	_, res := probePost(t, []string{"account", "subscriptions", "payment_methods", "credit_balance"}, "")
+	for _, k := range []string{"payment_methods", "credit_balance"} {
+		if res[k].Status != probeFail || !strings.Contains(res[k].Summary, "超时") {
+			t.Errorf("%s 应记为 fail 并写明超时: %+v", k, res[k])
+		}
+	}
+	var p struct{ Status, Note string }
+	var id int64
+	_ = db.DB.QueryRow(`SELECT id, status, note FROM pay_probes`).Scan(&id, &p.Status, &p.Note)
+	if p.Status != "failed" || p.Note != "超时" {
+		t.Errorf("超时后整体应 failed/超时: %+v", p)
+	}
+}
+
+func TestProbeSessionNeverStoredInDB(t *testing.T) {
+	probeEnv(t, true, paybrowser.ProbePage{})
+	probePost(t, []string{"account"}, "")
+	var all string
+	_ = db.DB.QueryRow(`SELECT admin || region || checks || results || shot_dir || status || note FROM pay_probes`).Scan(&all)
+	assertNoLeak(t, "pay_probes 表", all)
 }

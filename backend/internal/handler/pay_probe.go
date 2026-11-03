@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -52,8 +53,6 @@ const (
 	probeOK      = "ok"
 	probeFail    = "fail"
 	probeSkipped = "skipped"
-
-	probeTimeout = 4 * time.Minute
 )
 
 // probeResult 是一个探测项的结果。Details 只放脱敏后的字段。
@@ -98,6 +97,8 @@ var (
 	}
 	// probeSettle 是页面 load 之后再等的时间，让 Cloudflare 挑战或前端渲染跑完。
 	probeSettle = 6 * time.Second
+	// probeTimeout 是一次探测的总时限。
+	probeTimeout = 6 * time.Minute
 
 	// probeBusy 保证同一时刻只运行一个探测（含浏览器）。
 	probeBusy atomic.Bool
@@ -982,49 +983,115 @@ func AdminPayProbe(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": "已有探测正在运行，请等它结束再试"})
 		return
 	}
-	defer probeBusy.Store(false)
-
 	api, err := probeNewAPI(proxy)
 	if err != nil {
+		probeBusy.Store(false)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "创建 ChatGPT 客户端失败，请检查该地区的代理配置"})
 		return
 	}
-	ctx, cancel := context.WithTimeout(c.Request.Context(), probeTimeout)
-	defer cancel()
-	run := &probeRun{ctx: ctx, api: api, sess: sess, region: region, proxy: proxy, shotRoot: probeShotRoot(), sc: newScrubber(sess, session)}
-
 	var keys []string
-	results := []probeResult{}
 	for _, k := range probeKeys {
-		if !want[k] {
-			continue
+		if want[k] {
+			keys = append(keys, k)
 		}
-		keys = append(keys, k)
-		results = append(results, run.sc.result(run.runOne(k)))
 	}
-	// 只留日志里的次数，不记任何内容
-	log.Printf("pay probe: 完成 %d 项（%s）", len(results), adminName(c))
-
 	checksJSON, _ := json.Marshal(keys)
-	resultsJSON, _ := json.Marshal(results)
-	rec := &db.PayProbe{CreatedAt: time.Now().Unix(), Admin: adminName(c), Region: region, ChecksJSON: string(checksJSON), ResultsJSON: string(resultsJSON), ShotDir: run.shotDir}
-	resp := gin.H{"created_at": rec.CreatedAt, "region": region, "results": results}
+	rec := &db.PayProbe{CreatedAt: time.Now().Unix(), Admin: adminName(c), Region: region, ChecksJSON: string(checksJSON), ResultsJSON: "[]", Status: db.PayProbeRunning}
 	pruned, err := db.InsertPayProbe(c.Request.Context(), rec)
 	if err != nil {
-		log.Printf("pay probe: 保存记录失败: %v", err)
-		resp["id"] = 0
-		resp["save_error"] = "结果没能保存到历史记录"
-	} else {
-		resp["id"] = rec.ID
-		root := probeShotRoot()
-		for _, d := range pruned {
-			if probeShotDirRe.MatchString(d) && isPlainDir(filepath.Join(root, d)) {
-				_ = os.RemoveAll(filepath.Join(root, d))
-			}
+		probeBusy.Store(false)
+		log.Printf("pay probe: 创建记录失败: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "无法创建探测记录"})
+		return
+	}
+	root := probeShotRoot()
+	for _, d := range pruned {
+		if probeShotDirRe.MatchString(d) && isPlainDir(filepath.Join(root, d)) {
+			_ = os.RemoveAll(filepath.Join(root, d))
 		}
 	}
 	auditAdmin(c, "pay_probe", fmt.Sprintf("checks=%s region=%s", strings.Join(keys, ","), region))
-	c.JSON(http.StatusOK, resp)
+	// 会话只在内存里交给后台协程，用完即丢；不进库、不进日志。占用标志由协程结束时释放。
+	go runProbe(api, sess, session, region, proxy, root, keys, rec)
+	c.JSON(http.StatusOK, gin.H{"id": rec.ID, "status": db.PayProbeRunning})
+}
+
+// runProbe 在后台依次跑各探测项，每完成一项就把结果写进库；总时限到了，剩下的项记为 fail（超时）。
+func runProbe(api probeAPI, sess chatgpt.Session, raw, region, proxy, shotRoot string, keys []string, rec *db.PayProbe) {
+	defer probeBusy.Store(false)
+	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	defer cancel()
+	run := &probeRun{ctx: ctx, api: api, sess: sess, region: region, proxy: proxy, shotRoot: shotRoot, sc: newScrubber(sess, raw)}
+	results := []probeResult{}
+	save := func(status, note string) {
+		b, _ := json.Marshal(results)
+		rec.ResultsJSON, rec.ShotDir, rec.Status, rec.Note = string(b), run.shotDir, status, note
+		if status != db.PayProbeRunning {
+			rec.FinishedAt = time.Now().Unix()
+		}
+		if err := db.UpdatePayProbe(context.Background(), rec); err != nil {
+			log.Printf("pay probe: 保存进度失败: %v", err)
+		}
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("pay probe: 协程异常（已记为失败）")
+			save(db.PayProbeFailed, "探测内部错误")
+		}
+	}()
+	timedOut := false
+	for i, k := range keys {
+		if ctx.Err() != nil {
+			timedOut = true
+			for _, rest := range keys[i:] {
+				results = append(results, run.sc.result(run.fail(rest, "超时：探测总时限 %d 分钟已到，这一项没有执行", int(probeTimeout.Minutes()))))
+			}
+			break
+		}
+		results = append(results, run.sc.result(run.runOne(k)))
+		save(db.PayProbeRunning, "")
+	}
+	log.Printf("pay probe: 结束，共 %d 项", len(results))
+	if timedOut {
+		save(db.PayProbeFailed, "超时")
+		return
+	}
+	save(db.PayProbeDone, "")
+}
+
+// AdminPayProbeGet 返回一次探测的状态与已完成的结果，供页面轮询。
+func AdminPayProbeGet(c *gin.Context) {
+	id, err := strconv.ParseInt(c.Param("id"), 10, 64)
+	if err != nil || id <= 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "探测编号无效"})
+		return
+	}
+	p, err := db.GetPayProbe(c.Request.Context(), id)
+	if err != nil {
+		log.Printf("pay probe get: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取探测记录失败"})
+		return
+	}
+	if p == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "探测记录不存在"})
+		return
+	}
+	c.JSON(http.StatusOK, probeView(p))
+}
+
+func probeView(p *db.PayProbe) gin.H {
+	var checks []string
+	results := []probeResult{}
+	_ = json.Unmarshal([]byte(p.ChecksJSON), &checks)
+	_ = json.Unmarshal([]byte(p.ResultsJSON), &results)
+	v := gin.H{"id": p.ID, "status": p.Status, "created_at": p.CreatedAt, "admin": p.Admin, "region": p.Region, "checks": checks, "results": results}
+	if p.FinishedAt > 0 {
+		v["finished_at"] = p.FinishedAt
+	}
+	if p.Note != "" {
+		v["error"] = p.Note
+	}
+	return v
 }
 
 // AdminPayProbeList 返回最近的探测记录（最多 50 条，新的在前）。
@@ -1036,12 +1103,8 @@ func AdminPayProbeList(c *gin.Context) {
 		return
 	}
 	out := make([]gin.H, 0, len(list))
-	for _, p := range list {
-		var checks []string
-		var results []probeResult
-		_ = json.Unmarshal([]byte(p.ChecksJSON), &checks)
-		_ = json.Unmarshal([]byte(p.ResultsJSON), &results)
-		out = append(out, gin.H{"id": p.ID, "created_at": p.CreatedAt, "admin": p.Admin, "region": p.Region, "checks": checks, "results": results})
+	for i := range list {
+		out = append(out, probeView(&list[i]))
 	}
 	c.JSON(http.StatusOK, gin.H{"probes": out})
 }
@@ -1070,6 +1133,7 @@ func AdminPayProbeShot(c *gin.Context) {
 // RegisterPayProbeRoutes 挂载免付款探测的后台接口（g 是已带管理员鉴权的分组）。
 func RegisterPayProbeRoutes(g *gin.RouterGroup) {
 	g.POST("/pay/probe", AdminPayProbe)
+	g.GET("/pay/probe/:id", AdminPayProbeGet)
 	g.GET("/pay/probes", AdminPayProbeList)
 	g.GET("/pay/probe-shots/:dir/:name", AdminPayProbeShot)
 }

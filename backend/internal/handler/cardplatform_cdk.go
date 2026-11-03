@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"net/http"
 	"sort"
 	"strconv"
@@ -1153,9 +1154,10 @@ func PublicCDKResultByCode(c *gin.Context) {
 	// 含义是「能凭卡密查账单」：会话清空后邮箱还在，账单照样能查
 	payload["has_session_binding"] = bind.HasSession || bind.AccountEmail != ""
 
-	// 卡健康观察（webhook 未配时靠轮询学）
+	// 卡健康观察（webhook 未配时靠轮询学）。传副本：下面还要往 payload 写 invoice_url，
+	// 同一个 map 并发读写会让进程直接崩溃（fatal error: concurrent map read and map write）
 	if st >= 200 && st < 300 {
-		go observeFromPublicResult(context.Background(), payload, bind.CDKCode)
+		go observeFromPublicResult(context.Background(), maps.Clone(payload), bind.CDKCode)
 	}
 
 	orderStatus := publicResultStatus(payload)

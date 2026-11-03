@@ -59,8 +59,35 @@ func opsAlertDaily(key, text string, now time.Time) {
 	opsAlert(text)
 }
 
+// agentExchangeStaleAfter 换码占位卡在 pending 多久算没收尾。必须明显大于发码请求的超时（3 分钟）。
+const agentExchangeStaleAfter = 10 * time.Minute
+
 // runOpsMaintenance 跑一轮 CDK 链路维护。每一项失败只记日志，不影响其它项。
 func runOpsMaintenance(now time.Time) {
+	sweepCDKSessionsOnce(now)
+	escalateAgentExchanges(now)
+}
+
+// escalateAgentExchanges 把没收尾的换码占位转人工，并按天提醒还有多少笔等待核对。
+func escalateAgentExchanges(now time.Time) {
+	stale, err := db.EscalateStaleAgentExchanges(now, agentExchangeStaleAfter)
+	if err != nil {
+		log.Printf("[agent-exchange] 升级超时占位失败: %v", err)
+	}
+	for _, e := range stale {
+		opsAlert(fmt.Sprintf("代理换码占位超时没有收尾（进程可能在发码途中重启），已转人工：记录 %d，旧码 ID %d。请先到卡台核对是否已发码，再到后台定论。", e.ID, e.OldUpstreamID))
+	}
+	n, err := db.CountAgentExchanges(db.AgentExchangeUnknown)
+	if err != nil {
+		log.Printf("[agent-exchange] 统计待核对记录失败: %v", err)
+		return
+	}
+	if n > 0 {
+		opsAlertDaily("agent-swap-unknown", fmt.Sprintf("还有 %d 笔代理换码结果不明，等待人工核对。", n), now)
+	}
+}
+
+func sweepCDKSessionsOnce(now time.Time) {
 	res, err := db.SweepCDKSessions(now)
 	if err != nil {
 		log.Printf("[cdk-session] 清理会话失败: %v", err)

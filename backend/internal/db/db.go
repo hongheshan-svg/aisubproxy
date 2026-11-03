@@ -294,6 +294,9 @@ func createTables() error {
 	if err := MigratePay(); err != nil {
 		return fmt.Errorf("migrate pay: %w", err)
 	}
+	if err := MigrateAgentExchanges(); err != nil {
+		return err
+	}
 	if err := MigrateCDKSessions(); err != nil {
 		return fmt.Errorf("migrate cdk sessions: %w", err)
 	}
@@ -1182,27 +1185,6 @@ func LookupStoredCDKByCode(code string) (upstreamID int64, plan, prefix, status 
 		return 0, "", "", "", false
 	}
 	return upstreamID, plan, prefix, status, true
-}
-
-func AgentCDKAlreadyExchanged(codeHash string) bool {
-	if DB == nil || codeHash == "" {
-		return false
-	}
-	var n int
-	_ = DB.QueryRow(`SELECT COUNT(*) FROM agent_cdk_exchanges WHERE old_code_hash = ?`, codeHash).Scan(&n)
-	return n > 0
-}
-
-func RecordAgentCDKExchange(oldHash string, oldID, newID int64, oldPrefix, newPrefix, plan string, orderID int64, orderStatus, ip string) error {
-	if DB == nil {
-		return fmt.Errorf("db not init")
-	}
-	_, err := DB.Exec(`
-		INSERT INTO agent_cdk_exchanges
-		(old_code_hash, old_upstream_id, new_upstream_id, old_code_prefix, new_code_prefix, plan, order_id, order_status, ip, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-	`, oldHash, oldID, newID, oldPrefix, newPrefix, plan, orderID, orderStatus, ip)
-	return err
 }
 
 // ---- 自动选卡权重配置 ----

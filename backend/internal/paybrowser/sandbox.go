@@ -27,8 +27,9 @@ func chromeIdentity(uid int, lookup func(name string) (*user.User, error)) (cred
 	if err != nil {
 		return nil, false, fmt.Errorf("服务以 root 运行，需要系统用户 %s 来启动 Chrome（保留沙箱），但找不到该用户，处理方法：%s", chromeUser, installHint())
 	}
-	id, err1 := strconv.ParseUint(u.Uid, 10, 32)
-	gid, err2 := strconv.ParseUint(u.Gid, 10, 32)
+	// 限定 31 位：之后 os.Chown 要转成 int，任何平台上都不会溢出（系统用户的 uid、gid 远小于这个上限）
+	id, err1 := strconv.ParseUint(u.Uid, 10, 31)
+	gid, err2 := strconv.ParseUint(u.Gid, 10, 31)
 	if err1 != nil || err2 != nil {
 		return nil, false, fmt.Errorf("系统用户 %s 的 uid 或 gid 无效，处理方法：%s", chromeUser, installHint())
 	}

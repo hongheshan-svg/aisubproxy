@@ -149,6 +149,8 @@ func TestLocalCDKPublicResponsesWhitelisted(t *testing.T) {
 		{"按钮没点到", "failed", "not_submitted", "submit_not_clicked", false, "failed_precharge", "本次未能开通"},
 		{"试运行拒绝", "failed", "not_submitted", "dry_run_refused", false, "failed_precharge", "本次未能开通"},
 		{"注资超时", "failed", "not_submitted", "fund_timeout", false, "failed_precharge", "本次未能开通"},
+		{"填表后金额变了", "failed", "not_submitted", "amount_changed", false, "failed_precharge", "本次未能开通"},
+		{"被 Cloudflare 拦截", "failed", "not_submitted", "cf_challenge", false, "failed_precharge", "本次未能开通"},
 		{"服务重启", "failed", "not_submitted", "service_restart", false, "failed_precharge", "本次未能开通"},
 		{"在途", "funding", "", "", false, "running", "正在处理"},
 		{"异常", "failed", "", "weird", false, "failed", "处理异常"},
@@ -531,20 +533,30 @@ func TestLocalCDKPrechargeFailuresDoNotCount(t *testing.T) {
 		e.waitOrdersFailed(id, i)
 		assertRetryable(fmt.Sprintf("第 %d 次", i), "登录已失效")
 	}
+	// 被 Cloudflare 拦截也发生在注资之前：不计次数，原因不给用户看
+	e.gpt.setRefreshErr(fmt.Errorf("%w: 403", chatgpt.ErrBlocked))
+	if w := e.do("POST", "/public/cdk/redeem", body); w.Code != http.StatusOK {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	e.waitOrdersFailed(id, 6)
+	assertRetryable("Cloudflare", "本次未能开通")
+	if s := e.result(token).Body.String(); strings.Contains(s, "cf_challenge") || strings.Contains(s, "Cloudflare") {
+		t.Fatalf("拦截原因不能给用户: %s", s)
+	}
 	// 已有订阅也一样
 	e.gpt.setRefreshErr(nil)
 	e.gpt.setSubscribedFrom(1)
 	if w := e.do("POST", "/public/cdk/redeem", body); w.Code != http.StatusOK {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}
-	e.waitOrdersFailed(id, 6)
+	e.waitOrdersFailed(id, 7)
 	assertRetryable("已有订阅", "已有订阅")
 
 	row, err := db.GetLocalCDK(context.Background(), id)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v, _ := db.LocalCDKViewOf(context.Background(), row); v.Status != db.LocalCDKUnused || v.PrechargeFailures != 6 || v.FundedFailures != 0 {
+	if v, _ := db.LocalCDKViewOf(context.Background(), row); v.Status != db.LocalCDKUnused || v.PrechargeFailures != 7 || v.FundedFailures != 0 {
 		t.Fatalf("%+v", v)
 	}
 	if w := e.do("POST", "/public/cdk/preview", localBody(t, map[string]any{"code": code})); w.Code != http.StatusOK {
@@ -574,7 +586,7 @@ func TestLocalCDKPrechargeFailuresDoNotCount(t *testing.T) {
 	}
 }
 
-// 3 次走到注资后失败，再兑换被拒并转人工。用真实引擎跑：填表失败和按钮没点到都发生在注资之后，都要计次数。
+// 3 次走到注资后失败，再兑换被拒并转人工。用真实引擎跑：填表失败、按钮没点到、填表后金额变了都发生在注资之后，都要计次数。
 func TestLocalCDKFundedFailuresLimit(t *testing.T) {
 	e := newLocalEnv(t)
 	e.seedRealPayment()
@@ -588,10 +600,14 @@ func TestLocalCDKFundedFailuresLimit(t *testing.T) {
 	body := localBody(t, map[string]any{"redemption_token": token, "credential": map[string]any{"mode": "session", "session": localSession("buyer@example.com")}})
 	for i := 1; i <= db.MaxLocalCDKFundedFailures; i++ {
 		// 第 2 次是按钮没点到：它记过提交时间又清掉，紧接着的第 3 次不能被一码一单的索引挡住
-		if i == 2 {
-			e.br.setErrs(nil, errors.New("按钮没有点到"))
-		} else {
+		switch i {
+		case 1:
 			e.br.setErrs(errors.New("填表失败"), nil)
+		case 2:
+			e.br.setErrs(nil, errors.New("按钮没有点到"))
+		case 3:
+			e.br.setErrs(nil, nil)
+			e.br.setAmountChanges(true)
 		}
 		if w := e.do("POST", "/public/cdk/redeem", body); w.Code != http.StatusOK {
 			t.Fatalf("第 %d 次: %d %s", i, w.Code, w.Body.String())
@@ -606,7 +622,7 @@ func TestLocalCDKFundedFailuresLimit(t *testing.T) {
 			if o["can_retry"] != true || o["attempts_left"].(float64) != float64(db.MaxLocalCDKFundedFailures-i) {
 				t.Fatalf("第 %d 次: %v", i, m)
 			}
-			if body := localBody(t, m); strings.Contains(body, "fill_failed") || strings.Contains(body, "submit_not_clicked") {
+			if body := localBody(t, m); strings.Contains(body, "fill_failed") || strings.Contains(body, "submit_not_clicked") || strings.Contains(body, "amount_changed") {
 				t.Fatalf("错误码不能给用户: %v", m)
 			}
 		}
@@ -629,7 +645,7 @@ func TestLocalCDKFundedFailuresLimit(t *testing.T) {
 		codes = append(codes, errCode)
 	}
 	rows.Close()
-	if got := strings.Join(codes, ","); got != "fill_failed,submit_not_clicked,fill_failed" {
+	if got := strings.Join(codes, ","); got != "fill_failed,submit_not_clicked,amount_changed" {
 		t.Fatalf("错误码 %s", got)
 	}
 	if _, _, submits := e.br.counts(); submits != 0 {
@@ -637,7 +653,7 @@ func TestLocalCDKFundedFailuresLimit(t *testing.T) {
 	}
 
 	m := e.waitResult(token, "failed")
-	if strings.Contains(localBody(t, m), "submit_not_clicked") || !strings.Contains(m["message"].(string), "人工") {
+	if strings.Contains(localBody(t, m), "amount_changed") || !strings.Contains(m["message"].(string), "人工") {
 		t.Fatalf("%v", m)
 	}
 	for i := 0; i < 2; i++ {

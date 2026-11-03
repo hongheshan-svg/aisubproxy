@@ -9,7 +9,6 @@ import (
 
 	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
 	"github.com/tuzi/cdk-recharge-system/internal/cardpool"
-	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/payengine"
 	"github.com/tuzi/cdk-recharge-system/internal/provider"
 	"github.com/tuzi/cdk-recharge-system/internal/secretbox"
@@ -71,8 +70,8 @@ func resetWalletSyncThrottle() {
 	walletSyncMu.Unlock()
 }
 
-// checkMarsWallex 是 MarsWallex 的就绪检查。plan、region 都给时检查这一个组合；否则至少要有一个可用组合。
-// 发码和兑换共用：只有检查项全部通过才能发码、才能兑换。查询出错一律按未就绪。
+// checkMarsWallex 是 MarsWallex 自己的就绪检查（适配器见 marsWallexAdapter），外面统一加上发码硬门槛（见 checkCardSupply）。
+// plan、region 都给时检查这一个组合；否则至少要有一个可用组合。发码和兑换共用：只有检查项全部通过才能发码、才能兑换。查询出错一律按未就绪。
 func checkMarsWallex(ctx context.Context, plan, region string, syncWallet walletSyncFunc) (provider.Readiness, []planCombo) {
 	r := provider.NewReadiness(provider.MarsWallex)
 	combos := []planCombo{}
@@ -109,16 +108,7 @@ func checkMarsWallex(ctx context.Context, plan, region string, syncWallet wallet
 	} else {
 		r.Pass("card_pool", "卡池", "卡池已启动")
 	}
-	// 硬门槛：系统没有自动确认过一笔真实付款，就不能对外承诺这条路能走通。试运行单和人工定论的单都不算。
-	switch ok, err := db.HasRealSucceededPayOrder(ctx, string(provider.MarsWallex)); {
-	case err != nil:
-		log.Printf("[provider] 查询真实付款记录失败: %v", err)
-		r.Fail("first_real_payment", "首笔真实付款", "查询真实付款记录失败，按未通过处理")
-	case !ok:
-		r.Fail("first_real_payment", "首笔真实付款", "需要一笔系统自动确认成功的真实付款（试运行单和人工定论的单都不算），请先在后台测试兑换跑通一笔")
-	default:
-		r.Pass("first_real_payment", "首笔真实付款", "已有系统自动确认成功的真实付款")
-	}
+	// 发码硬门槛（首笔真实付款）由 checkCardSupply 按服务商统一检查
 	if engine == nil || pool == nil {
 		return r, combos
 	}

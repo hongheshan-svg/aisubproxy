@@ -107,8 +107,9 @@ func TestDefaultProviderOnlyAffectsNewIssues(t *testing.T) {
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "ZC-FAKE-ISSUED-CODE-0001") {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}
-	if m := localJSON(t, w); m["server_stored"] != true || m["provider"] != nil {
-		t.Fatalf("ZovoCard 响应字段不能变: %v", m)
+	// 原有字段不变，按设计 §3.4 加上服务商
+	if m := localJSON(t, w); m["server_stored"] != true || m["provider"] != "zovocard" || m["provider_display_name"] != "ZovoCard" {
+		t.Fatalf("ZovoCard 响应字段: %v", m)
 	}
 	if e.zovo.hits("/openapi/v1/gpt-direct/cdks") != 1 {
 		t.Fatalf("%v", e.zovo.paths)
@@ -604,7 +605,7 @@ func TestAdminDisableEnableLocalCDK(t *testing.T) {
 		t.Fatalf("%s", a)
 	}
 	// 禁用后不能预览、预检、兑换
-	token := provider.TokenForCode(code)
+	token := mwToken(code)
 	sessBody := localBody(t, map[string]any{"redemption_token": token, "credential": map[string]any{"mode": "session", "session": localSession("a@example.com")}})
 	if w := e.do("POST", "/public/cdk/preview", localBody(t, map[string]any{"code": code})); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "禁用") {
 		t.Fatalf("%d %s", w.Code, w.Body.String())

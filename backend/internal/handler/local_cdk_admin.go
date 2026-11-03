@@ -27,7 +27,7 @@ func AdminGetDefaultProvider(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取默认服务商失败"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"provider": def, "options": provider.All})
+	c.JSON(http.StatusOK, gin.H{"provider": def, "options": provider.Names()})
 }
 
 // AdminPutDefaultProvider PUT /api/v1/admin/providers/default  body: { provider }
@@ -42,7 +42,7 @@ func AdminPutDefaultProvider(c *gin.Context) {
 	}
 	next, err := provider.Parse(req.Provider)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "服务商只能是 zovocard 或 marswallex"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "未知的卡服务商：" + strings.TrimSpace(req.Provider)})
 		return
 	}
 	prev, err := provider.LoadDefault()
@@ -57,12 +57,8 @@ func AdminPutDefaultProvider(c *gin.Context) {
 		return
 	}
 	auditAdmin(c, "provider_default_update", fmt.Sprintf("from=%s to=%s", prev, next))
-	var ready provider.Readiness
-	if next == provider.MarsWallex {
-		ready, _ = checkMarsWallex(c.Request.Context(), "", "", syncWalletNow)
-	} else {
-		ready, _ = checkZovoCard(c.Request.Context())
-	}
+	p, _ := provider.Get(next)
+	ready := checkProvider(c.Request.Context(), p, "", "").Readiness
 	c.JSON(http.StatusOK, gin.H{"provider": next, "previous": prev, "readiness": ready})
 }
 
@@ -78,8 +74,11 @@ func AdminProviderReadiness(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取默认服务商失败"})
 		return
 	}
-	mw, combos := checkMarsWallex(ctx, plan, region, syncWalletNow)
+	mwp, _ := provider.Get(provider.MarsWallex)
+	mw := checkProvider(ctx, mwp, plan, region)
+	zcp, _ := provider.Get(provider.ZovoCard)
 	zc, bal := checkZovoCard(ctx)
+	_ = zcp
 	zcDetail := gin.H{}
 	if bal != nil {
 		zcDetail["balance"] = bal.Balance
@@ -87,14 +86,14 @@ func AdminProviderReadiness(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"default":      def,
-		"providers":    gin.H{string(provider.ZovoCard): zc, string(provider.MarsWallex): mw},
-		"combos":       combos,
+		"providers":    gin.H{string(provider.ZovoCard): zc, string(provider.MarsWallex): mw.Readiness},
+		"combos":       mw.Combos,
 		"zovocard":     zcDetail,
 		"capabilities": provider.Capabilities(),
 	})
 }
 
-// cdkIssueRequest 是发码请求。Provider 留空时用默认发码服务商。
+// cdkIssueRequest 是发码请求。Provider 留空时按产品配置和全局默认决定（见 provider.ResolveIssue）。
 type cdkIssueRequest struct {
 	Provider string `json:"provider"`
 	Plan     string `json:"plan"`
@@ -113,7 +112,11 @@ type cdkIssueRequest struct {
 }
 
 // CardPlatformIssueCDKs POST /api/v1/admin/cardplatform/cdks、POST /api/v1/admin/cdks/issue
-// 按服务商发码。两条路由同一个处理：老前端不传 provider，走默认服务商。
+// 按服务商发码。两条路由同一个处理。
+//   - 请求带了 provider：必须已注册并支持这个档位，否则 400，绝不换成别家。
+//   - 没带（老前端）：先看这个产品的配置，再看全局默认；选出来的那家不支持这个档位也是 400，绝不换成别家。
+//
+// 供卡型走通用的本地发码，上游型交给它的适配器。
 func CardPlatformIssueCDKs(c *gin.Context) {
 	var req cdkIssueRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -123,24 +126,49 @@ func CardPlatformIssueCDKs(c *gin.Context) {
 	if req.PaymentCountry == "" {
 		req.PaymentCountry = req.Region
 	}
-	var name provider.Name
-	var err error
-	if strings.TrimSpace(req.Provider) != "" {
-		if name, err = provider.Parse(req.Provider); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "服务商只能是 zovocard 或 marswallex"})
+	plan := strings.TrimSpace(req.Plan)
+	if plan == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "plan is required"})
+		return
+	}
+	product := issueProduct(req.Product, plan)
+	var p provider.Provider
+	if v := strings.TrimSpace(req.Provider); v != "" {
+		var ok bool
+		if p, ok = provider.Get(provider.Name(v)); !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "未知的卡服务商：" + v})
 			return
 		}
-	} else if name, err = provider.LoadDefault(); err != nil {
-		// 读不出来时不能当成 ZovoCard 发码：发出去就是真金白银的承诺
-		log.Printf("[provider] 读取默认服务商失败: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取默认服务商失败"})
+		if err := provider.CheckSupports(p, product, plan); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "provider": p.Name(), "product": product, "plan": plan})
+			return
+		}
+	} else {
+		var err error
+		p, err = provider.ResolveIssue(product, plan)
+		var unsupported *provider.UnsupportedError
+		switch {
+		case errors.As(err, &unsupported):
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "provider": unsupported.Provider.Name(), "product": product, "plan": plan})
+			return
+		case err != nil:
+			// 读不出来时不能当成 ZovoCard 发码：发出去就是真金白银的承诺
+			log.Printf("[provider] 读取发码服务商配置失败: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "读取发码服务商配置失败"})
+			return
+		}
+	}
+	if cs, ok := provider.AsCardSupply(p); ok {
+		localCDKIssue(c, cs, req)
 		return
 	}
-	if name == provider.MarsWallex {
-		localCDKIssue(c, req)
+	a, ok := upstreamAdapterFor(p.Name())
+	if !ok {
+		log.Printf("[provider] 上游 %s 没有适配器", p.Name())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "这家服务商没有接入发码"})
 		return
 	}
-	zovoCardIssueCDKs(c, req)
+	a.Issue(c, req)
 }
 
 // issueIdempotencyKey 取发码的幂等键，缺了或过长时已写好 400。键必须由客户端在点击时生成并在重试时沿用：
@@ -155,11 +183,11 @@ func issueIdempotencyKey(c *gin.Context) (string, bool) {
 }
 
 // localCDKIssueReplay 这个幂等键已经发过码。完整码只存哈希，拿不回来，所以这里不返回码，只说明发过哪一批，让操作者决定怎么处理。
-func localCDKIssueReplay(c *gin.Context, b db.LocalCDKIssueBatch) {
+func localCDKIssueReplay(c *gin.Context, cs provider.CardSupply, b db.LocalCDKIssueBatch) {
 	c.JSON(http.StatusConflict, gin.H{
 		"error": fmt.Sprintf("这次发码已经完成（ID %d-%d，共 %d 张），不会重复发。完整卡密只显示一次，本站无法再次取出；没有保存到的话，请在码列表禁用这批后重新发码",
 			b.FirstID, b.LastID, b.Count),
-		"provider":       provider.MarsWallex,
+		"provider":       cs.Name(),
 		"already_issued": true,
 		"first_id":       b.FirstID,
 		"last_id":        b.LastID,
@@ -167,32 +195,20 @@ func localCDKIssueReplay(c *gin.Context, b db.LocalCDKIssueBatch) {
 	})
 }
 
-// localCDKIssue 发 MarsWallex 码。完整码只在这个响应里出现一次，不进日志和审计。
+// localCDKIssue 发供卡型服务商的码：用这家的前缀生成，写入 local_cdks.provider。完整码只在这个响应里出现一次，不进日志和审计。
+// 能不能发这个档位已由 CardPlatformIssueCDKs 确认；就绪检查和发码硬门槛按这家服务商计算。
 // 和 ZovoCard 一样要求幂等键，防止重复点击多发码：同一个键只发一批，重试返回 409（见 localCDKIssueReplay）。
-func localCDKIssue(c *gin.Context, req cdkIssueRequest) {
+func localCDKIssue(c *gin.Context, cs provider.CardSupply, req cdkIssueRequest) {
 	plan := strings.TrimSpace(req.Plan)
-	if plan == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "plan is required"})
-		return
-	}
 	product := issueProduct(req.Product, plan)
-	// 不支持就明说，绝不静默回落到 ZovoCard：操作者以为换了服务商，实际没换
-	if !provider.Supports(provider.MarsWallex, product, plan) {
-		c.JSON(http.StatusBadRequest, gin.H{
-			"error":    "MarsWallex 不支持该档位，请改用 ZovoCard 或切换默认服务商",
-			"provider": provider.MarsWallex,
-			"product":  product,
-			"plan":     plan,
-		})
-		return
-	}
+	name := cs.Name()
 	if !req.FundingConfirmed {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "funding_confirmed must be true（确认承担兑换时开卡/充值/订阅实付）"})
 		return
 	}
 	region := strings.ToUpper(strings.TrimSpace(req.PaymentCountry))
 	if region == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "MarsWallex 发码必须指定地区"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": cs.DisplayName() + " 发码必须指定地区"})
 		return
 	}
 	if req.Count < 1 {
@@ -219,12 +235,11 @@ func localCDKIssue(c *gin.Context, req cdkIssueRequest) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询失败，没有发出任何码"})
 		return
 	case found:
-		localCDKIssueReplay(c, b)
+		localCDKIssueReplay(c, cs, b)
 		return
 	}
-	ready, _ := checkMarsWallex(ctx, plan, region, syncWalletNow)
-	if !ready.OK {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "MarsWallex 未就绪，不能发码", "provider": provider.MarsWallex, "problems": ready.Problems})
+	if st := checkCardSupply(ctx, cs, plan, region, false); !st.Readiness.OK {
+		c.JSON(http.StatusBadRequest, gin.H{"error": cs.DisplayName() + " 未就绪，不能发码", "provider": name, "problems": st.Readiness.Problems})
 		return
 	}
 
@@ -232,7 +247,7 @@ func localCDKIssue(c *gin.Context, req cdkIssueRequest) {
 	rows := make([]db.NewLocalCDK, 0, req.Count)
 	by := adminName(c)
 	for i := 0; i < req.Count; i++ {
-		lc, err := provider.GenerateLocalCode()
+		lc, err := provider.GenerateCode(cs)
 		if err != nil {
 			log.Printf("[local-cdk] 生成本地码失败: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "生成卡密失败"})
@@ -240,7 +255,7 @@ func localCDKIssue(c *gin.Context, req cdkIssueRequest) {
 		}
 		codes = append(codes, lc)
 		rows = append(rows, db.NewLocalCDK{
-			Provider: string(provider.MarsWallex), CodeHash: lc.CodeHash, TokenHash: lc.TokenHash, CodePrefix: lc.Prefix,
+			Provider: string(name), CodeHash: lc.CodeHash, TokenHash: lc.TokenHash, CodePrefix: lc.Prefix,
 			Product: product, PlanKey: plan, Region: region, IssuedBy: by, Note: note,
 		})
 	}
@@ -249,10 +264,10 @@ func localCDKIssue(c *gin.Context, req cdkIssueRequest) {
 		b, found, gerr := db.GetLocalCDKIssueBatch(ctx, key)
 		if gerr != nil || !found {
 			log.Printf("[local-cdk] 读取发码批次失败: %v", gerr)
-			c.JSON(http.StatusConflict, gin.H{"error": "这次发码已经完成，不会重复发", "provider": provider.MarsWallex, "already_issued": true})
+			c.JSON(http.StatusConflict, gin.H{"error": "这次发码已经完成，不会重复发", "provider": name, "already_issued": true})
 			return
 		}
-		localCDKIssueReplay(c, b)
+		localCDKIssueReplay(c, cs, b)
 		return
 	}
 	if err != nil {
@@ -261,9 +276,9 @@ func localCDKIssue(c *gin.Context, req cdkIssueRequest) {
 		return
 	}
 	auditAdmin(c, "local_cdk_issue", fmt.Sprintf("provider=%s plan=%s region=%s count=%d ids=%d-%d",
-		provider.MarsWallex, plan, region, len(ids), ids[0], ids[len(ids)-1]))
+		name, plan, region, len(ids), ids[0], ids[len(ids)-1]))
 
-	planNote := provider.PlanNote(provider.MarsWallex, plan)
+	planNote := cs.PlanNote(plan)
 	fundCents := int64(0)
 	if _, rc, err := payengine.ResolvePlan(plan, region, false); err == nil {
 		fundCents = rc.FundCents
@@ -272,7 +287,7 @@ func localCDKIssue(c *gin.Context, req cdkIssueRequest) {
 	for i, lc := range codes {
 		it := gin.H{
 			"id": ids[i], "code": lc.Code, "full_code": lc.Code, "code_length": len(lc.Code), "code_prefix": lc.Prefix,
-			"provider": provider.MarsWallex, "product": product, "plan": plan,
+			"provider": name, "product": product, "plan": plan,
 			"region": region, "payment_country": region, "fund_cents": fundCents, "fee_amount_minor": 0,
 			"stored": false, "has_full_code": true,
 		}
@@ -283,14 +298,15 @@ func localCDKIssue(c *gin.Context, req cdkIssueRequest) {
 	}
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, gin.H{
-		"provider":      provider.MarsWallex,
-		"requested":     req.Count,
-		"issued":        issued,
-		"count":         len(issued),
-		"stored_count":  0,
-		"store_failed":  0,
-		"server_stored": false,
-		"msg":           "完整卡密只显示这一次，本站只保存哈希，丢失后无法找回",
+		"provider":              name,
+		"provider_display_name": cs.DisplayName(),
+		"requested":             req.Count,
+		"issued":                issued,
+		"count":                 len(issued),
+		"stored_count":          0,
+		"store_failed":          0,
+		"server_stored":         false,
+		"msg":                   "完整卡密只显示这一次，本站只保存哈希，丢失后无法找回",
 	})
 }
 

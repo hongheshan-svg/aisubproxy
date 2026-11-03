@@ -62,6 +62,10 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
+	// 每家注册了的服务商都要接上 handler 层的适配器，否则它的码会被分派过来却没人接
+	if err := handler.CheckProviderAdapters(); err != nil {
+		return nil, err
+	}
 	pay := payengine.New(payengine.Options{Pools: pools, Alert: alertSender("payengine", notify.SendText)})
 	handler.SetPayEngine(pay)
 

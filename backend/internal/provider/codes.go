@@ -106,36 +106,3 @@ func (r *Readiness) FailRaw(key, title, detail, raw string) {
 	r.Problems = append(r.Problems, detail)
 	r.Checks = append(r.Checks, Check{Key: key, Title: title, Detail: detail, Raw: raw})
 }
-
-// ---- 过渡：只认 MarsWallex 的旧函数，handler 改完分派后删除 ----
-
-// ResolveCode 旧的按码分流：MW- 开头是 MarsWallex，其余是 ZovoCard。
-func ResolveCode(code string) Name {
-	if cs, ok := CardSupplyForCode(code); ok && cs.Name() == MarsWallex {
-		return MarsWallex
-	}
-	return ZovoCard
-}
-
-// ResolveToken 旧的按令牌分流。
-func ResolveToken(token string) Name {
-	if cs, ok := CardSupplyForToken(token); ok && cs.Name() == MarsWallex {
-		return MarsWallex
-	}
-	return ZovoCard
-}
-
-func mustMarsWallex() CardSupply {
-	p, _ := Get(MarsWallex)
-	cs, _ := AsCardSupply(p)
-	return cs
-}
-
-// GenerateLocalCode 旧的生成 MarsWallex 码。
-func GenerateLocalCode() (LocalCode, error) { return GenerateCode(mustMarsWallex()) }
-
-// TokenForCode 旧的算 MarsWallex 令牌。
-func TokenForCode(code string) string { return TokenFor(mustMarsWallex(), code) }
-
-// All 旧的服务商列表。
-var All = []Name{ZovoCard, MarsWallex}

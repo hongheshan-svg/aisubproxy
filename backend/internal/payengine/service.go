@@ -116,6 +116,8 @@ type Service struct {
 	// 只在内存里，重启后多写一条可以接受；单据定论时删除。
 	verifyErrs map[string]map[string]string
 
+	breakerAlerted string // 熔断告警的去重键，见 breakerAlert；受 mu 保护
+
 	recoveryFailed bool            // 重启恢复失败过（已告警）；只在 Start 和其后的工作协程里读写，二者不并发
 	graceRestored  map[string]bool // 本次启动已补过宽限期的被拒单，恢复重试时不再补；读写范围同上
 	recovered      atomic.Bool     // 重启恢复已完成：此前不派发，确认协程不接管、不定论被拒单

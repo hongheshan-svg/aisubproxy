@@ -72,6 +72,9 @@ func (s *Service) loop(ctx context.Context) {
 
 // dispatch 按 id 顺序为排队单据分配名额，每张单据一个协程。
 func (s *Service) dispatch(ctx context.Context) {
+	if s.breakerPaused(ctx) {
+		return // 熔断：不派发新单；在途单由确认协程照常走完
+	}
 	limit := LoadConcurrency()
 	s.mu.Lock()
 	full := len(s.running) >= limit

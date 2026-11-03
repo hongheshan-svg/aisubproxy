@@ -24,6 +24,8 @@ func MigratePay() error {
 	created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, finished_at INTEGER
 )`,
 		`CREATE INDEX IF NOT EXISTS idx_pay_orders_state ON pay_orders(state)`,
+		// 付款熔断每轮派发都按结束时间扫真实付款单
+		`CREATE INDEX IF NOT EXISTS idx_pay_orders_finished ON pay_orders(finished_at) WHERE dry_run = 0`,
 		// 同一邮箱同一时刻最多一张未终态单据
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_pay_orders_inflight ON pay_orders(account_email)
 	WHERE state NOT IN ('succeeded','failed','needs_review','previewed')`,

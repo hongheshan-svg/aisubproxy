@@ -119,6 +119,7 @@ func TestPayRoutesRequireAdminAuth(t *testing.T) {
 		{"POST", "/orders"}, {"GET", "/orders"}, {"GET", "/orders/" + no},
 		{"POST", "/orders/" + no + "/resolve"}, {"GET", "/orders/" + no + "/shots/01-form.png"},
 		{"GET", "/config"}, {"PUT", "/config"}, {"GET", "/proxies"}, {"PUT", "/proxies"}, {"POST", "/browser-check"},
+		{"GET", "/breaker"}, {"POST", "/breaker/resume"},
 	} {
 		req := httptest.NewRequest(c.method, "/api/v1/admin/pay"+c.path, nil)
 		w := httptest.NewRecorder()

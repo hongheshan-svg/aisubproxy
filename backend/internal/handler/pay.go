@@ -15,10 +15,12 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tuzi/cdk-recharge-system/internal/cardpool"
+	"github.com/tuzi/cdk-recharge-system/internal/chatgpt"
 	"github.com/tuzi/cdk-recharge-system/internal/paybrowser"
 	"github.com/tuzi/cdk-recharge-system/internal/payengine"
 	"github.com/tuzi/cdk-recharge-system/internal/provider"
@@ -374,6 +376,75 @@ func payConfigAudit(plans []payengine.PlanConf, concurrency int) string {
 		}
 	}
 	return fmt.Sprintf("enabled=[%s] concurrency=%d", strings.Join(on, ","), concurrency)
+}
+
+// traceClientFactory 与 traceTimeout 供测试注入假服务器与短超时。
+var (
+	traceClientFactory = chatgpt.New
+	traceTimeout       = 20 * time.Second
+	proxyTestBusy      atomic.Bool
+)
+
+// AdminPayTestProxy 用某地区已配置的代理（没配则直连）访问 /cdn-cgi/trace，确认可用与出口国家。
+// 失败也回 200（ok:false，error 为不含代理地址的中文说明）；地区非法 400；已有测试在跑 409。
+func AdminPayTestProxy(c *gin.Context) {
+	payRoute(func(c *gin.Context, s *payengine.Service) {
+		var req struct {
+			Region string `json:"region"`
+		}
+		if !bindPayJSON(c, &req) {
+			return
+		}
+		region := strings.ToUpper(strings.TrimSpace(req.Region))
+		valid := false
+		for _, r := range payengine.Regions {
+			valid = valid || r == region
+		}
+		if !valid {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "地区无效"})
+			return
+		}
+		if !proxyTestBusy.CompareAndSwap(false, true) {
+			c.JSON(http.StatusConflict, gin.H{"error": "已有代理测试正在进行，请稍后再试"})
+			return
+		}
+		defer proxyTestBusy.Store(false)
+
+		px, err := payengine.LoadProxies()
+		if err != nil {
+			payFail(c, err)
+			return
+		}
+		proxy := px[region]
+		res := gin.H{"region": region, "proxy_configured": proxy != "", "ok": false, "ip": "", "loc": "", "colo": "", "latency_ms": 0, "matches_region": false}
+		var failMsg string
+		cl, err := traceClientFactory(proxy)
+		if err != nil {
+			failMsg = "代理地址格式无效，请重新填写"
+		} else {
+			ctx, cancel := context.WithTimeout(c.Request.Context(), traceTimeout)
+			start := time.Now()
+			info, terr := cl.Trace(ctx)
+			cancel()
+			res["latency_ms"] = time.Since(start).Milliseconds()
+			if terr != nil {
+				failMsg = terr.Error()
+			} else {
+				res["ok"], res["ip"], res["loc"], res["colo"] = true, info.IP, info.Loc, info.Colo
+				res["matches_region"] = info.Loc == region
+			}
+		}
+		switch {
+		case failMsg != "":
+			res["error"] = failMsg
+			auditAdmin(c, "pay_proxy_test", region+":失败 "+failMsg)
+		case res["matches_region"] == true:
+			auditAdmin(c, "pay_proxy_test", region+":成功，出口地区一致")
+		default:
+			auditAdmin(c, "pay_proxy_test", fmt.Sprintf("%s:成功，出口地区不一致（%v）", region, res["loc"]))
+		}
+		c.JSON(http.StatusOK, res)
+	})(c)
 }
 
 func AdminPayGetProxies(c *gin.Context) {

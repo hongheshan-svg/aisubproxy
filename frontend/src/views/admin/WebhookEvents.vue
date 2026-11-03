@@ -1,6 +1,6 @@
 <template>
   <div class="space-y-4">
-    <AdminPageHeader title="卡台 Webhook" description="接收卡台主动推送的兑换结果与卡交易事件" class="!mb-0" />
+    <AdminPageHeader title="ZovoCard Webhook" description="接收 ZovoCard 卡台主动推送的兑换结果与卡交易事件" class="!mb-0" />
     <el-card shadow="never">
       <p class="text-sm text-muted mb-3">
         兑换结果仍可用轮询 <code>/public/cdk/result</code>；配置 Webhook 后卡台会主动推送

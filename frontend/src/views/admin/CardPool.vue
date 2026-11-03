@@ -1,6 +1,6 @@
 <template>
   <div class="space-y-4">
-    <AdminPageHeader title="卡池" description="MarsWallex 卡池：库存、卡、持卡人、单据、交易与策略" class="!mb-0" />
+    <AdminPageHeader title="MarsWallex 卡池" description="库存、卡、持卡人、单据、交易，以及开卡与补卡策略" class="!mb-0" />
 
     <div class="card">
       <el-tabs v-model="tab">

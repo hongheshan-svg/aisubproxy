@@ -1,6 +1,6 @@
 <template>
   <div class="space-y-4">
-    <AdminPageHeader class="!mb-0" title="卡台 ZovoCard" description="Base 用站点根；Open API / CDK 路径自动拼接。发码、拉价格、查余额都从本机出口 IP 出网。">
+    <AdminPageHeader class="!mb-0" title="ZovoCard 接入配置" description="Base 用站点根；Open API / CDK 路径自动拼接。发码、拉价格、查余额都从本机出口 IP 出网。">
       <template #actions>
         <span class="egress-badge" title="填到卡台 API Key 白名单（不是浏览器 IP）">
           出口 IP <b class="mono">{{ egressIp || '…' }}</b>

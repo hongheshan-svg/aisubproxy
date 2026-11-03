@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  canDisableLocal, canEnableLocal, canResolveSwap, centsToUsd, classifyIssueFailure, localCdkStatusText, localCdkTagType,
+  selectionPage, canDisableLocal, canEnableLocal, canResolveSwap, centsToUsd, classifyIssueFailure, localCdkStatusText, localCdkTagType,
   needsFirstRealPayment, planNote, swapFailure, usdToCents,
 } from '../provider'
 
@@ -81,5 +81,13 @@ describe('swapFailure', () => {
     expect(swapFailure(400, { error: '次数用完' })).toEqual({ locked: false, message: '次数用完' })
     expect(swapFailure(429, { error: '今日已达上限' }).locked).toBe(false)
     expect(swapFailure(502, { error: '卡台不可用' }).locked).toBe(false)
+  })
+})
+
+describe('selectionPage', () => {
+  it('两家内置服务商各有选卡规则页，其他服务商没有', () => {
+    expect(selectionPage('zovocard')).toBe('/ops/card-selection')
+    expect(selectionPage('marswallex')).toBe('/ops/marswallex-selection')
+    expect(selectionPage('testup')).toBeUndefined()
   })
 })

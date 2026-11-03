@@ -42,17 +42,24 @@ type ChatGPT interface {
 	CreateCheckout(context.Context, chatgpt.Session, string, string, string) (chatgpt.Checkout, error)
 }
 
-// Browser 是引擎用到的支付页浏览器，*paybrowser.Browser 直接满足。
-type Browser interface {
+// FormBrowser 是填表用到的浏览器能力，没有 Submit：只拿到它的代码点不了支付。
+type FormBrowser interface {
 	Open(context.Context, string, []paybrowser.Cookie) error
 	ReadAmount(context.Context, string) (int64, string, error)
 	Fill(context.Context, paybrowser.Card, paybrowser.Billing) error
+	FillReport() paybrowser.FillReport // 最近一次 Fill 的字段命中与核对结果，不含值
+	Diagnose(context.Context) []string // 定位页面问题的几行文字，已脱敏
+	Shot(context.Context, string, paybrowser.ShotScope) (string, error)
+	Close()
+}
+
+// Browser 是引擎用到的支付页浏览器，*paybrowser.Browser 直接满足。
+type Browser interface {
+	FormBrowser
 	Submit(context.Context) error
 	WaitOutcome(context.Context, time.Duration) (paybrowser.Outcome, string, error)
 	Notices() []string // 取走等结果期间记下的未识别提示（已脱敏、去重）
 	EnterOTP(context.Context, string) error
-	Shot(context.Context, string, paybrowser.ShotScope) (string, error)
-	Close()
 }
 
 // Timeouts 是各步骤的超时；测试可缩短。VerifyTick 是确认协程扫描到期单据的间隔；

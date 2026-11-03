@@ -224,6 +224,9 @@ type browserFactory struct {
 	waitOutcome func(c context.Context, n int) (paybrowser.Outcome, string, error)
 	enterOTP    func(string) error
 	notices     func() []string // 未设置时没有提示
+	openErr     error           // 非 nil 时 Open 返回它
+	report      paybrowser.FillReport
+	diagnose    func(context.Context) []string // 未设置时返回一行固定文字
 
 	mu         sync.Mutex
 	proxies    []string
@@ -299,7 +302,20 @@ func (b *fakeBrowser) Open(ctx context.Context, url string, cookies []paybrowser
 			return ctx.Err()
 		}
 	}
-	return nil
+	return b.f.openErr
+}
+
+func (b *fakeBrowser) FillReport() paybrowser.FillReport {
+	b.hit("FillReport")
+	return b.f.report
+}
+
+func (b *fakeBrowser) Diagnose(c context.Context) []string {
+	b.hit("Diagnose")
+	if b.f.diagnose != nil {
+		return b.f.diagnose(c)
+	}
+	return []string{"地址：example.test/pay"}
 }
 
 func (b *fakeBrowser) ReadAmount(_ context.Context, currency string) (int64, string, error) {

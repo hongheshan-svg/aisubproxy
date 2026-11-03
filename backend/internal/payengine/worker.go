@@ -174,13 +174,16 @@ func (j *job) noteCardSecrets(cardNo, cvv string) {
 	j.secrets = append(j.secrets, cvv)
 }
 
-// scrub 去掉文字中可能夹带的完整卡号、CVV、验证码、代理地址、代理账号密码（含各种转义形式）与会话 token；长串先替换。
+// scrub 去掉文字中可能夹带的完整卡号、CVV、验证码、代理地址、代理账号密码（含各种转义形式）、会话 token 与账号邮箱；长串先替换。
 // 卡号最先处理：CVV 可能恰好是卡号的一段，先替换 CVV 会让卡号匹配不上。
 func (j *job) scrub(s string) string {
 	if j.cardNo != nil {
 		s = j.cardNo.ReplaceAllString(s, "***")
 	}
 	secrets := append([]string{j.proxy, j.sess.SessionToken, j.sess.AccessToken}, j.secrets...)
+	if j.o != nil { // 恢复阶段脱敏用的 job 没有单据
+		secrets = append(secrets, j.o.AccountEmail) // 页面文字可能带账号邮箱，邮箱也可能被填进页面
+	}
 	if u, err := url.Parse(j.proxy); err == nil && u.User != nil {
 		secrets = append(secrets, u.User.String())
 		if pw, ok := u.User.Password(); ok {
@@ -436,6 +439,10 @@ func (s *Service) openPage(ctx context.Context, j *job) error {
 	pctx, cancel := context.WithTimeout(ctx, s.t.PageLoad)
 	defer cancel()
 	if err := b.Open(pctx, j.o.CheckoutURL, sessionCookies(j.sess)); err != nil {
+		s.notePageDiag(ctx, j, b, "打开支付页失败")
+		sctx, cancelShot := context.WithTimeout(ctx, diagTimeout)
+		defer cancelShot()
+		s.shot(sctx, j, "open-failed", paybrowser.ShotPage) // 还没填卡，允许截整页；pctx 可能已经超时
 		return abort("page_failed", "打开支付页失败：%v", err)
 	}
 	s.shot(pctx, j, "opening", paybrowser.ShotPage)

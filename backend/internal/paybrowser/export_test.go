@@ -62,6 +62,9 @@ func SetEmailSettle(d time.Duration) { emailSettle = d }
 // MaskPageText 抹掉页面文字里的邮箱和长数字串。
 var MaskPageText = maskPageText
 
+// SafeLocation 只留地址的主机和路径。
+var SafeLocation = safeLocation
+
 // InstallHintFor 返回当前部署方式下的安装提示。
 var InstallHintFor = installHint
 

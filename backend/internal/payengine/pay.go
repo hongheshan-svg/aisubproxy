@@ -12,8 +12,12 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/paybrowser"
 )
 
-// fundCurrency 是注资金额 fund_cents 的币种。Fund 按卡币种下单，所以只能选这个币种的卡。
-const fundCurrency = "USD"
+const (
+	// fundCurrency 是注资金额 fund_cents 的币种。Fund 按卡币种下单，所以只能选这个币种的卡。
+	fundCurrency = "USD"
+	// diagTimeout 是读页面定位信息的时限：页面可能已经卡死，不能耽误后面的收尾。
+	diagTimeout = 10 * time.Second
+)
 
 // pay 是读完金额之后的步骤 5–8：选卡注资、填表、记下提交时间后点支付、等页面结果（含 3DS），最后转确认阶段（步骤 9）。
 //
@@ -131,12 +135,33 @@ func (s *Service) fillCard(ctx context.Context, j *job) error {
 	}
 	bill := TaxFreeAddress(rand.New(rand.NewPCG(rand.Uint64(), rand.Uint64())))
 	bill.Name = j.holderName
+	bill.Email = j.o.AccountEmail // 只有页面上邮箱框必填且为空时才会填，见 Browser.Fill
 	j.note("billing_state", bill.State)
 	card := paybrowser.Card{Number: sv.CardNo, ExpMonth: mm, ExpYear: yy, CVC: sv.CVV2}
-	if err := j.browser.Fill(fctx, card, bill); err != nil {
+	err = j.browser.Fill(fctx, card, bill)
+	s.noteFillReport(ctx, j, j.browser, "填表")
+	if err != nil {
+		s.notePageDiag(ctx, j, j.browser, "填表失败")
 		return abort("fill_failed", "填写支付表单失败：%v", err)
 	}
 	return nil
+}
+
+// noteFillReport 把各字段的命中与核对结果写进时间线。报告本身不含值，这里再过一遍 scrub。
+func (s *Service) noteFillReport(ctx context.Context, j *job, b FormBrowser, prefix string) {
+	for _, line := range b.FillReport().Lines() {
+		s.event(ctx, j, "info", prefix+" "+j.scrub(line), "")
+	}
+}
+
+// notePageDiag 把页面定位信息写进时间线。开始填卡后 Diagnose 不再读正文，也不截图。
+// 这里的 ctx 必须是单据的 ctx，不能用已经超时的步骤 ctx，否则最需要定位信息的时候反而读不到。
+func (s *Service) notePageDiag(ctx context.Context, j *job, b FormBrowser, what string) {
+	dctx, cancel := context.WithTimeout(ctx, diagTimeout)
+	defer cancel()
+	for _, line := range b.Diagnose(dctx) {
+		s.event(ctx, j, "warn", what+" "+j.scrub(line), "")
+	}
 }
 
 // submitAndWait 是步骤 7–8：点支付（全程唯一一次）、等页面结果；出现 3DS 框时取验证码填入一次再等结果。

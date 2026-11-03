@@ -60,7 +60,8 @@
             </div>
             <div class="text-sm">
               <template v-if="regionConf && regionConf.cap_minor > 0">
-                <template v-if="isCreditPlan(planConf) && (regionConf.expect_minor || 0) > 0">预期金额：<b>{{ formatMinor(regionConf.expect_minor || 0, regionConf.currency) }}</b>；</template>
+                <template v-if="(regionConf.expect_minor || 0) > 0">预期金额：<b>{{ formatMinor(regionConf.expect_minor || 0, regionConf.currency) }}</b>；</template>
+                <template v-if="(regionConf.floor_minor || 0) > 0">最低金额：<b>{{ formatMinor(regionConf.floor_minor || 0, regionConf.currency) }}</b>；</template>
                 应付金额上限：<b>{{ formatMinor(regionConf.cap_minor, regionConf.currency) }}</b>；
                 注资：<b>{{ usd(regionConf.fund_cents) }} 美元</b>
               </template>
@@ -129,34 +130,7 @@
         <el-tab-pane label="付款配置" name="config">
           <el-alert v-if="config?.lease_warning" type="warning" :closable="false" show-icon class="mb-3" :title="leaseWarningText" />
           <div class="space-y-4" v-loading="configLoading">
-            <div v-for="p in subscriptionForm" :key="p.key" class="space-y-2">
-              <div class="font-semibold">
-                {{ p.label || p.key }}
-                <el-tag size="small" class="ml-2" :type="p.rows.some((r: any) => r.enabled) ? 'success' : 'info'">已启用 {{ p.rows.filter((r: any) => r.enabled).length }}/{{ p.rows.length }}</el-tag>
-              </div>
-              <el-table :data="visibleRows(p)" size="small" border>
-                <el-table-column label="地区" width="70" prop="region" />
-                <el-table-column label="启用" width="70">
-                  <template #default="{ row }"><el-switch v-model="row.enabled" /></template>
-                </el-table-column>
-                <el-table-column label="币种" width="110">
-                  <template #default="{ row }"><el-input v-model="row.currency" size="small" maxlength="3" autocomplete="off" /></template>
-                </el-table-column>
-                <el-table-column label="应付金额上限" min-width="170">
-                  <template #default="{ row }">
-                    <el-input-number v-model="row.cap" size="small" :min="0" :precision="currencyDigits(row.currency)" :controls="false" style="width: 130px" />
-                  </template>
-                </el-table-column>
-                <el-table-column label="注资（美元）" min-width="150">
-                  <template #default="{ row }">
-                    <el-input-number v-model="row.fund" size="small" :min="0" :precision="2" :controls="false" style="width: 110px" />
-                  </template>
-                </el-table-column>
-              </el-table>
-              <el-button v-if="showAllRegions[p.key] || hiddenCount(p) > 0" size="small" link type="primary" @click="showAllRegions[p.key] = !showAllRegions[p.key]">
-                {{ showAllRegions[p.key] ? '收起未启用的地区' : `展开未启用的地区（${hiddenCount(p)} 个）` }}
-              </el-button>
-            </div>
+            <PaySubscriptionPlans v-model="plansForm" />
             <PayCreditPlans v-model="plansForm" />
             <div class="flex flex-wrap items-center gap-3">
               <span class="text-sm">并发数</span>
@@ -332,6 +306,7 @@
 import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import PayProbePanel from './components/PayProbePanel.vue'
 import PayCreditPlans from './components/PayCreditPlans.vue'
+import PaySubscriptionPlans from './components/PaySubscriptionPlans.vue'
 import PayRenewalPanel from './components/PayRenewalPanel.vue'
 import { useRouteTab } from '../../lib/useRouteTab'
 import {
@@ -345,7 +320,7 @@ import { authFetch } from '../../lib/api'
 import { dialog } from '../../lib/dialog'
 import { errText, fmtTs } from '../../lib/cardpool'
 import {
-  STATES, currencyDigits, failureText, formToPlan, formatMinor, isCreditPlan, isTerminal, pageOutcomeLabel, payApi, planToForm, proxyTestText, stateLabel,
+  STATES, failureText, formToPlan, formatMinor, isCreditPlan, isTerminal, pageOutcomeLabel, payApi, planToForm, proxyTestText, stateLabel,
   payBlockReason, type FormPlan, type PlanConf, type ProxyTestResult,
 } from '../../lib/pay'
 import { loadRegistry, providerLabel, registry } from '../../lib/provider'
@@ -390,9 +365,6 @@ function applyConfig(c: PayConfig, syncForm = true) {
   formSnapshot = formState()
 }
 
-// 订阅套餐用下面的表格；Codex 点数档另有组件（多一列预期金额），两者编辑同一份 plansForm、一并保存
-const subscriptionForm = computed(() => plansForm.value.filter((p) => !isCreditPlan(p)))
-
 async function loadConfig({ syncForm = true } = {}): Promise<boolean> {
   configLoading.value = true
   const r = await payApi<PayConfig>('/config')
@@ -403,15 +375,6 @@ async function loadConfig({ syncForm = true } = {}): Promise<boolean> {
 }
 
 function discardEdits() { loadConfig() }
-
-// 未启用的地区默认折叠：套餐 × 5 个地区太长，运营日常只看已启用的。展开后再启用，启用过的行不会因为临时关掉开关而消失。
-const showAllRegions = reactive<Record<string, boolean>>({})
-function visibleRows(p: FormPlan) {
-  return p.rows.filter((r) => showAllRegions[p.key] || r.enabled || r.initEnabled)
-}
-function hiddenCount(p: FormPlan) {
-  return p.rows.length - visibleRows(p).length
-}
 
 async function saveConfig() {
   const plans = plansForm.value.map(formToPlan)
@@ -555,7 +518,7 @@ async function submit() {
       if (!rc) return
       const ok = await dialog.confirm(
         `服务商：${providerLabel(prov || 'marswallex')}\n套餐：${pc?.label || plan}\n地区：${reg}\n卡：付款时从卡池选卡（提交时尚未确定卡尾号）\n` +
-          `将取一张卡注资 ${usd(rc.fund_cents)} 美元并真实付款，应付金额上限 ${formatMinor(rc.cap_minor, rc.currency)}。\n确认真实付款？`,
+          `将取一张卡注资 ${usd(rc.fund_cents)} 美元并真实付款，最低金额 ${formatMinor(rc.floor_minor || 0, rc.currency)}，应付金额上限 ${formatMinor(rc.cap_minor, rc.currency)}。\n确认真实付款？`,
         { title: '确认付款', okText: '确认付款', danger: true },
       )
       if (!ok) return

@@ -97,15 +97,16 @@ export function isCreditPlan(p: { kind?: string } | null | undefined): boolean {
 const CREDIT_PHP_PER_250_MINOR = 56500
 const CREDIT_CAP_PERCENT = 112
 
-export function creditDefaultPH(quantity: number): { currency: string; expect_minor: number; cap_minor: number } {
+export function creditDefaultPH(quantity: number): { currency: string; expect_minor: number; floor_minor: number; cap_minor: number } {
   const q = Math.max(0, Math.floor(quantity || 0))
   const expect = Math.floor((CREDIT_PHP_PER_250_MINOR * q) / 250)
-  return { currency: 'PHP', expect_minor: expect, cap_minor: Math.floor((expect * CREDIT_CAP_PERCENT) / 100) }
+  // 最低金额出厂等于预期金额，与后端一致
+  return { currency: 'PHP', expect_minor: expect, floor_minor: expect, cap_minor: Math.floor((expect * CREDIT_CAP_PERCENT) / 100) }
 }
 
 // ---------- 付款配置：套餐表与编辑表单互转 ----------
 
-export interface RegionConf { enabled: boolean; currency: string; expect_minor?: number; cap_minor: number; fund_cents: number }
+export interface RegionConf { enabled: boolean; currency: string; expect_minor?: number; floor_minor?: number; cap_minor: number; fund_cents: number }
 export interface PlanConf {
   key: string; label: string; chatgpt_plan_name: string; expect_plan_type: string
   kind?: string; credit_quantity?: number
@@ -114,7 +115,7 @@ export interface PlanConf {
 /** 表单里的金额是主单位（PHP 565.00 填 565），保存时再换回最小单位。 */
 export interface FormRow {
   region: string; enabled: boolean; initEnabled: boolean; currency: string
-  expect: number | null; cap: number | null; fund: number | null
+  expect: number | null; floor: number | null; cap: number | null; fund: number | null
 }
 export interface FormPlan {
   key: string; label: string; chatgpt_plan_name: string; expect_plan_type: string
@@ -126,10 +127,10 @@ export function planToForm(p: PlanConf, regions: readonly string[]): FormPlan {
     key: p.key, label: p.label, chatgpt_plan_name: p.chatgpt_plan_name, expect_plan_type: p.expect_plan_type,
     kind: p.kind || '', credit_quantity: p.credit_quantity || 0,
     rows: regions.map((r) => {
-      const rc = p.regions?.[r] || { enabled: false, currency: '', expect_minor: 0, cap_minor: 0, fund_cents: 0 }
+      const rc = p.regions?.[r] || { enabled: false, currency: '', expect_minor: 0, floor_minor: 0, cap_minor: 0, fund_cents: 0 }
       return {
         region: r, enabled: rc.enabled, initEnabled: rc.enabled, currency: rc.currency,
-        expect: fromMinor(rc.expect_minor || 0, rc.currency), cap: fromMinor(rc.cap_minor, rc.currency), fund: rc.fund_cents / 100,
+        expect: fromMinor(rc.expect_minor || 0, rc.currency), floor: fromMinor(rc.floor_minor || 0, rc.currency), cap: fromMinor(rc.cap_minor, rc.currency), fund: rc.fund_cents / 100,
       }
     }),
   }
@@ -144,19 +145,20 @@ export function formToPlan(p: FormPlan): PlanConf {
       const cur = row.currency.trim().toUpperCase()
       return [row.region, {
         enabled: row.enabled, currency: cur,
-        expect_minor: toMinor(row.expect || 0, cur), cap_minor: toMinor(row.cap || 0, cur), fund_cents: Math.round((row.fund || 0) * 100),
+        expect_minor: toMinor(row.expect || 0, cur), floor_minor: toMinor(row.floor || 0, cur), cap_minor: toMinor(row.cap || 0, cur), fund_cents: Math.round((row.fund || 0) * 100),
       }]
     })),
   }
 }
 
-/** 把点数档的 PH 行恢复成默认币种、预期金额和上限；不动启用开关和注资金额（注资没有默认值，要按汇率填）。 */
+/** 把点数档的 PH 行恢复成默认币种、预期金额、最低金额和上限；不动启用开关和注资金额（注资没有默认值，要按汇率填）。 */
 export function applyCreditDefaultPH(p: FormPlan): boolean {
   const row = p.rows.find((r) => r.region === 'PH')
   if (!row || !isCreditPlan(p) || !(p.credit_quantity > 0)) return false
   const d = creditDefaultPH(p.credit_quantity)
   row.currency = d.currency
   row.expect = fromMinor(d.expect_minor, d.currency)
+  row.floor = fromMinor(d.floor_minor, d.currency)
   row.cap = fromMinor(d.cap_minor, d.currency)
   return true
 }
@@ -166,10 +168,18 @@ export function capBelowExpect(capMinor: number, expectMinor: number): boolean {
   return capMinor > 0 && expectMinor > 0 && capMinor < expectMinor
 }
 
+/** 最低金额的保存问题：高于上限或高于预期金额时后端会拒绝（被比较的一方大于 0 才比），没问题返回空串。 */
+export function floorProblem(floorMinor: number, expectMinor: number, capMinor: number): string {
+  if (!(floorMinor > 0)) return ''
+  if (capMinor > 0 && floorMinor > capMinor) return '最低金额高于上限，保存会被拒绝'
+  if (expectMinor > 0 && floorMinor > expectMinor) return '最低金额高于预期金额，保存会被拒绝'
+  return ''
+}
+
 // payBlockReason 返回这个套餐与地区不能提交的原因，可以提交时返回空串。
 // 试运行只要求有 ChatGPT 套餐名（点数档不需要）；真实付款还要求地区已启用且金额都已配置。与后端 ResolvePlan 的规则一致。
 export function payBlockReason(
-  plan: { chatgpt_plan_name: string; kind?: string; regions?: Record<string, { enabled: boolean; cap_minor: number; fund_cents: number }> } | undefined,
+  plan: { chatgpt_plan_name: string; kind?: string; regions?: Record<string, { enabled: boolean; cap_minor: number; fund_cents: number; floor_minor?: number }> } | undefined,
   region: string,
   dryRun: boolean,
 ): string {
@@ -179,6 +189,7 @@ export function payBlockReason(
   const rc = plan.regions?.[region]
   if (!rc || !rc.enabled) return '该套餐在此地区未启用，不能真实付款（可先试运行）'
   if (!(rc.cap_minor > 0) || !(rc.fund_cents > 0)) return '该套餐在此地区的金额未配置，不能真实付款（可先试运行）'
+  if (!((rc.floor_minor || 0) > 0)) return '该套餐在此地区未配置最低金额，不能真实付款（可先试运行）'
   return ''
 }
 

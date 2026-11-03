@@ -46,19 +46,19 @@ describe('点数档的付款配置', () => {
   const creditPlan: PlanConf = {
     key: 'credit250', label: 'Codex 点数 250', chatgpt_plan_name: '', expect_plan_type: '', kind: 'credit', credit_quantity: 250,
     regions: {
-      PH: { enabled: true, currency: 'PHP', expect_minor: 56500, cap_minor: 63280, fund_cents: 1500 },
-      US: { enabled: false, currency: 'USD', expect_minor: 0, cap_minor: 0, fund_cents: 0 },
-      JP: { enabled: false, currency: 'JPY', expect_minor: 0, cap_minor: 0, fund_cents: 0 },
-      CL: { enabled: false, currency: 'CLP', expect_minor: 0, cap_minor: 0, fund_cents: 0 },
-      EG: { enabled: false, currency: 'EGP', expect_minor: 0, cap_minor: 0, fund_cents: 0 },
+      PH: { enabled: true, currency: 'PHP', expect_minor: 56500, floor_minor: 56500, cap_minor: 63280, fund_cents: 1500 },
+      US: { enabled: false, currency: 'USD', expect_minor: 0, floor_minor: 0, cap_minor: 0, fund_cents: 0 },
+      JP: { enabled: false, currency: 'JPY', expect_minor: 0, floor_minor: 0, cap_minor: 0, fund_cents: 0 },
+      CL: { enabled: false, currency: 'CLP', expect_minor: 0, floor_minor: 0, cap_minor: 0, fund_cents: 0 },
+      EG: { enabled: false, currency: 'EGP', expect_minor: 0, floor_minor: 0, cap_minor: 0, fund_cents: 0 },
     },
   }
 
   it('PH 默认金额与后端 creditDefaultPH 一致：每 250 点 565.00 PHP，上限 112%', () => {
-    expect(creditDefaultPH(250)).toEqual({ currency: 'PHP', expect_minor: 56500, cap_minor: 63280 })
-    expect(creditDefaultPH(500)).toEqual({ currency: 'PHP', expect_minor: 113000, cap_minor: 126560 })
-    expect(creditDefaultPH(25000)).toEqual({ currency: 'PHP', expect_minor: 5650000, cap_minor: 6328000 })
-    expect(creditDefaultPH(0)).toEqual({ currency: 'PHP', expect_minor: 0, cap_minor: 0 })
+    expect(creditDefaultPH(250)).toEqual({ currency: 'PHP', expect_minor: 56500, floor_minor: 56500, cap_minor: 63280 })
+    expect(creditDefaultPH(500)).toEqual({ currency: 'PHP', expect_minor: 113000, floor_minor: 113000, cap_minor: 126560 })
+    expect(creditDefaultPH(25000)).toEqual({ currency: 'PHP', expect_minor: 5650000, floor_minor: 5650000, cap_minor: 6328000 })
+    expect(creditDefaultPH(0)).toEqual({ currency: 'PHP', expect_minor: 0, floor_minor: 0, cap_minor: 0 })
   })
 
   it('点数档没有 ChatGPT 套餐名也能提交；真实付款仍要求启用且金额已配', () => {
@@ -88,19 +88,19 @@ describe('点数档的付款配置', () => {
       regions: { PH: { enabled: true, currency: 'PHP', cap_minor: 120000, fund_cents: 3000 } },
     }
     const back = formToPlan(planToForm(sub, REGIONS))
-    expect(back.regions.PH).toEqual({ enabled: true, currency: 'PHP', expect_minor: 0, cap_minor: 120000, fund_cents: 3000 })
-    expect(back.regions.US).toEqual({ enabled: false, currency: '', expect_minor: 0, cap_minor: 0, fund_cents: 0 })
+    expect(back.regions.PH).toEqual({ enabled: true, currency: 'PHP', expect_minor: 0, floor_minor: 0, cap_minor: 120000, fund_cents: 3000 })
+    expect(back.regions.US).toEqual({ enabled: false, currency: '', expect_minor: 0, floor_minor: 0, cap_minor: 0, fund_cents: 0 })
     expect(back.kind).toBe('')
   })
 
   it('PH 恢复默认金额：只改 PH 的币种、预期和上限，不动启用和注资', () => {
     const form = planToForm({
       ...creditPlan, key: 'credit1000', credit_quantity: 1000,
-      regions: { ...creditPlan.regions, PH: { enabled: false, currency: 'USD', expect_minor: 1, cap_minor: 2, fund_cents: 4500 } },
+      regions: { ...creditPlan.regions, PH: { enabled: false, currency: 'USD', expect_minor: 1, floor_minor: 1, cap_minor: 2, fund_cents: 4500 } },
     }, REGIONS)
     expect(applyCreditDefaultPH(form)).toBe(true)
     const ph = formToPlan(form).regions.PH
-    expect(ph).toEqual({ enabled: false, currency: 'PHP', expect_minor: 226000, cap_minor: 253120, fund_cents: 4500 })
+    expect(ph).toEqual({ enabled: false, currency: 'PHP', expect_minor: 226000, floor_minor: 226000, cap_minor: 253120, fund_cents: 4500 })
     // 订阅套餐不适用
     const sub = planToForm({ ...creditPlan, kind: 'subscription' }, REGIONS)
     expect(applyCreditDefaultPH(sub)).toBe(false)

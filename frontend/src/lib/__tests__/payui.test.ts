@@ -30,6 +30,8 @@ describe('展示映射', () => {
   })
   it('新错误码有翻译，未知码返回空串', () => {
     for (const c of ['cf_challenge', 'amount_changed', 'submit_not_clicked', 'dry_run_fill_failed']) expect(payErrorText(c)).not.toBe('')
+    expect(payErrorText('amount_below_floor')).toContain('最低金额')
+    expect(payErrorText('amount_below_floor')).toContain('没有注资')
     expect(payErrorText('something_new')).toBe('')
   })
   it('熔断原因优先用后端文案', () => {

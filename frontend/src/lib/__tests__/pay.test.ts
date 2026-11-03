@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { failureLabel, failureText, formatMinor, fromMinor, isTerminal, pageOutcomeLabel, payBlockReason, proxyTestText, stateLabel, toMinor } from '../pay'
+import {
+  applyCreditDefaultPH, failureLabel, failureText, floorProblem, formatMinor, formToPlan, fromMinor, isTerminal, pageOutcomeLabel, payBlockReason, planToForm,
+  proxyTestText, stateLabel, toMinor, type PlanConf,
+} from '../pay'
 
 describe('proxyTestText', () => {
   it('一致', () => {
@@ -73,7 +76,7 @@ describe('pay lib', () => {
 })
 
 describe('payBlockReason', () => {
-  const region = { enabled: true, cap_minor: 120000, fund_cents: 3000 }
+  const region = { enabled: true, cap_minor: 120000, fund_cents: 3000, floor_minor: 100000 }
   const plan = { chatgpt_plan_name: 'chatgptplusplan', regions: { PH: region } }
 
   it('配置齐全时真实付款和试运行都放行', () => {
@@ -92,5 +95,47 @@ describe('payBlockReason', () => {
     expect(payBlockReason({ ...plan, regions: { PH: { ...region, enabled: false } } }, 'PH', false)).not.toBe('')
     expect(payBlockReason({ ...plan, regions: { PH: { ...region, cap_minor: 0 } } }, 'PH', false)).not.toBe('')
     expect(payBlockReason({ ...plan, regions: { PH: { ...region, fund_cents: 0 } } }, 'PH', false)).not.toBe('')
+  })
+  it('真实付款要求最低金额大于 0，试运行不要求', () => {
+    const noFloor = { ...plan, regions: { PH: { ...region, floor_minor: 0 } } }
+    expect(payBlockReason(noFloor, 'PH', false)).toContain('最低金额')
+    expect(payBlockReason({ ...plan, regions: { PH: { enabled: true, cap_minor: 120000, fund_cents: 3000 } } }, 'PH', false)).toContain('最低金额')
+    expect(payBlockReason(noFloor, 'PH', true)).toBe('')
+  })
+})
+
+describe('最低金额', () => {
+  const REGIONS = ['PH', 'US', 'JP']
+  const plan: PlanConf = {
+    key: 'plus', label: 'Plus', chatgpt_plan_name: 'chatgptplusplan', expect_plan_type: 'plus', kind: 'subscription',
+    regions: {
+      PH: { enabled: true, currency: 'USD', expect_minor: 2000, floor_minor: 1850, cap_minor: 2400, fund_cents: 3000 },
+      JP: { enabled: true, currency: 'JPY', expect_minor: 3000, floor_minor: 2800, cap_minor: 3600, fund_cents: 3000 },
+    },
+  }
+
+  it('planToForm 再 formToPlan 往返后 floor_minor 不变（USD 与 JPY）', () => {
+    const back = formToPlan(planToForm(plan, REGIONS))
+    expect(back.regions.PH.floor_minor).toBe(1850)
+    expect(back.regions.JP.floor_minor).toBe(2800)
+    expect(back.regions.US.floor_minor).toBe(0)
+  })
+
+  it('applyCreditDefaultPH 后 PH 行的最低金额等于预期金额', () => {
+    const credit: PlanConf = { ...plan, key: 'credit250', kind: 'credit', credit_quantity: 250, regions: {} }
+    const f = planToForm(credit, REGIONS)
+    expect(applyCreditDefaultPH(f)).toBe(true)
+    const ph = f.rows.find((r) => r.region === 'PH')!
+    expect(ph.floor).toBe(ph.expect)
+    expect(ph.floor).toBe(565)
+    expect(formToPlan(f).regions.PH.floor_minor).toBe(56500)
+  })
+
+  it('floorProblem 与后端保存校验一致', () => {
+    expect(floorProblem(12001, 0, 12000)).toContain('上限')
+    expect(floorProblem(10001, 10000, 12000)).toContain('预期')
+    expect(floorProblem(10000, 10000, 12000)).toBe('')
+    expect(floorProblem(0, 10000, 12000)).toBe('')
+    expect(floorProblem(5000, 0, 0)).toBe('')
   })
 })

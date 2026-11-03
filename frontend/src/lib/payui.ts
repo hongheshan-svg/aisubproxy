@@ -64,6 +64,7 @@ export function sourceLabel(source: string, ref: string): string {
 const PAY_ERROR_LABEL: Record<string, string> = {
   cf_challenge: '被 Cloudflare 拦截，请检查该地区代理的出口 IP',
   amount_changed: '填表后应付金额变了，已放弃提交',
+  amount_below_floor: '支付页金额低于该套餐在该地区的最低金额（可能选错了档位或带了优惠），已放弃（没有注资）',
   amount_over_cap: '应付金额超过上限，已放弃',
   amount_unreadable: '读不出应付金额，已放弃',
   submit_not_clicked: '支付按钮没有被点击，未扣款',

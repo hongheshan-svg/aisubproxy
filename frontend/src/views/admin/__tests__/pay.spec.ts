@@ -33,20 +33,29 @@ import { registry, setRegistry } from '../../../lib/provider'
 import MarsWallexPay from '../MarsWallexPay.vue'
 import LocalCdkPanel from '../components/LocalCdkPanel.vue'
 import PayCreditPlans from '../components/PayCreditPlans.vue'
+import PaySubscriptionPlans from '../components/PaySubscriptionPlans.vue'
 import PayRenewalPanel from '../components/PayRenewalPanel.vue'
 import ProviderCard from '../components/ProviderCard.vue'
 
-async function render(comp: any, props: Record<string, unknown> = {}, url = '/') {
+async function render(comp: any, props: Record<string, unknown> = {}, url = '/', stubTable = false) {
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:p(.*)*', component: { template: '<div />' } }] })
   router.push(url)
   await router.isReady()
   const app = createSSRApp(defineComponent({ render: () => h(comp, props) }))
   app.use(router)
   installElement(app)
+  // SSR 下 el-table 不渲染表头；要看列标题时，把表格换成直接输出各列 label 的替身
+  if (stubTable) {
+    app.component('ElTable', { render() { return h('div', (this as any).$slots.default?.()) } })
+    app.component('ElTableColumn', { props: ['label'], render() { return h('span', { class: 'col' }, (this as any).label) } })
+  }
   app.provide(ID_INJECTION_KEY, { prefix: 1024, current: 0 })
   app.provide(ZINDEX_INJECTION_KEY, { current: 0 })
   return renderToString(app)
 }
+
+// 取出替身表格输出的列标题
+const colLabels = (html: string) => [...html.matchAll(/class="col"[^>]*>([^<]*)</g)].map((m) => m[1])
 
 beforeEach(() => {
   registry.value = null
@@ -122,6 +131,17 @@ describe('付款配置：Codex 点数档', () => {
     expect(html).not.toContain('data-plan="plus"')
     expect(html).toContain('data-testid="ph-default-credit250"')
     expect(html).toContain('PH 默认每 250 点 565.00 PHP')
+  })
+
+  it('点数表格有最低金额列', async () => {
+    const html = await render(PayCreditPlans, { modelValue: [planToForm(credit('credit250', 250), REGIONS)] }, '/', true)
+    expect(colLabels(html)).toEqual(expect.arrayContaining(['预期金额', '最低金额', '应付金额上限']))
+  })
+
+  it('订阅套餐表格有预期金额和最低金额列', async () => {
+    const html = await render(PaySubscriptionPlans, { modelValue: [planToForm(plus, REGIONS), planToForm(credit('credit250', 250), REGIONS)] }, '/', true)
+    expect(colLabels(html)).toEqual(expect.arrayContaining(['预期金额', '最低金额', '应付金额上限']))
+    expect(html).not.toContain('credit250')
   })
 
   it('没有点数档时不渲染', async () => {

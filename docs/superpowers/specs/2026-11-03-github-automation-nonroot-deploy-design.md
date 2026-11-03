@@ -117,13 +117,42 @@
 - 只有安装 Docker 这一步要 root。之后，`docker` 组里的用户就能升级。
 - 旧数据卷里的文件属于 root 时，执行一次 `docker run --rm -u 0 --entrypoint chown <镜像> -R 10001:10001 /app/data`。
 
-**容器里的「版本更新」页**：提示改为 `CDK_VERSION=vX.Y.Z docker compose pull && docker compose up -d`。
+### 2.3 Docker 版在线升级（参考 sub2api）
+
+现在容器里的在线升级是禁用的，原因是容器一重建，就会退回镜像里的版本。
+
+**sub2api 的做法（`Wei-Shaw/sub2api`）**
+- 镜像里的程序文件归运行用户所有。
+- 在线升级时，下载发布包，校验 checksum，用原子改名替换容器里的程序，然后进程退出，由 Docker 的 `restart: unless-stopped` 重启容器。
+- 缺点：替换只发生在容器的可写层。容器一重建（拉新镜像、改 compose、`down/up`），就悄悄退回镜像版本，而数据库可能已经被新版本迁移过。
+
+**我们的做法：沿用原生版现有的升级流程，只改写入位置，并在启动时接管**
+
+1. **下载和校验**：与原生版完全一样，校验 sha256 和 ed25519 签名，替换前让新程序做 `--version` 自检，并备份数据库。发布包也是同一个 `cdk-bundle-linux-amd64.tgz`。
+2. **写入位置**：容器内不写镜像目录，改写数据卷：
+   - 程序、前端、版本号写到 `/app/data/runtime/`；
+   - 备份和临时文件写到 `/app/data/updates/`，与 runtime 在同一个文件系统上，改名才是原子的。
+   - 这样镜像本身可以保持只读（`read_only: true` 保留）。
+3. **切换到新版本**：替换完成后，直接 `exec` 数据卷里的新程序。进程号不变，仍然是 PID 1，容器不用重启。
+4. **启动时接管**：程序启动时先比较两个版本，一个是镜像里的 `/app/VERSION`，一个是数据卷里的 `/app/data/runtime/VERSION`。
+   - 数据卷的版本更新：`exec` 数据卷里的程序，并把 `WEB_DIR` 指向 `/app/data/runtime/web`。环境变量里带上一个标记，防止反复接管。
+   - 镜像的版本相同或更新（说明拉了新镜像）：用镜像里的程序，删掉数据卷里过期的 runtime，`updates/` 里的备份保留。
+   - `exec` 失败（例如数据目录挂成了 `noexec`）：记日志，继续用镜像版本，不让容器起不来。
+5. **启动保护**：
+   - 每次接管前，把 `/app/data/runtime/boot.json` 里的启动次数加 1。新版本完成启动（数据库打开、HTTP 开始监听）后清零。
+   - 连续 3 次没能完成启动，就不再接管：退回镜像版本运行，并告警「在线升级的 vX 连续 3 次启动失败，已退回镜像版本 vY」。
+   - 数据库兼容性：沿用原生版回滚的前提，新版本的数据库旧版本可以直接用。
+6. **命令行回滚**：执行 `docker exec cdk-recharge /app/cdk-recharge rollback` 后再 `docker restart cdk-recharge`。回滚在容器内作用于 `/app/data/runtime`。
+7. **「版本更新」页**：容器里也能一键升级。页面同时说明：换镜像版本也可以，用 `CDK_VERSION=vX.Y.Z docker compose pull && docker compose up -d`。
+8. **开关**：沿用 `UPDATE_ENABLED`，设为 0 就关闭在线升级。
+
+**取舍**：数据卷里的程序可以被运行用户改写，这一点和原生版相同。下载时已经验过签名；能改数据卷的人本来也能改数据库，所以启动时不再重复验签。
 
 ## 3. 发版（`release.yml`）
 
 推送 `v*` 标签时依次执行：
 
-1. **checks**：调用 `ci.yml` 和 `security.yml`（两者都加 `workflow_call`），跑全部检查。
+1. **checks**：调用 `ci.yml`（加 `workflow_call`），跑全部测试和构建。**漏洞扫描不在发版必过项里**：外部一公布新漏洞就会全部变红，与代码改动无关，不能让它卡住付款问题的紧急修复版。漏洞扫描结果靠 PR 上的显示和每周定时任务提醒。
 2. **guard**：标签对应的提交必须在 origin/master 上；`CHANGELOG.md` 必须有同名小节（沿用 `scripts/release-notes.sh`）。
 3. **native**：沿用现有的静态构建、打包和 ed25519 签名，工具链换成 Go 1.27.x 和 Node 24。
 4. **image**：
@@ -150,6 +179,14 @@
 | `release-build` | 跑 `scripts/build-linux-backend.sh`，确认静态链接的发布构建能过 |
 | `docker` | 构建镜像但不推送，用 GHA 缓存。然后冒烟测试：<br>1. 启动容器，`/health` 返回正常；<br>2. 容器内 `id -u` 不是 0；<br>3. 以 10001 带沙箱执行 `chromium --headless=new --dump-dom about:blank`，能拿到 HTML。 |
 | `lint-meta` | 用 shellcheck 检查 `deploy/*.sh` 和 `scripts/*.sh`，用 actionlint 检查工作流文件 |
+| `gitleaks` | 用固定版本的 gitleaks 扫描密钥。PR 只扫这次新增的提交，推送到 master 时扫全部历史。 |
+
+Docker 版在线升级的启动接管（§2.3 第 4、5 步）写成独立的 Go 函数，用单元测试覆盖下面几种情况：
+- 数据卷版本更新 → 接管；
+- 镜像版本相同或更新 → 不接管，并清理过期的 runtime；
+- 连续 3 次启动失败 → 不接管，并告警；
+- `exec` 失败 → 退回镜像版本；
+- 带了防重复接管的标记 → 不再接管。
 
 golangci-lint 配置（`backend/.golangci.yml`，v2 格式）：
 - 只启用 `govet`、`staticcheck`、`unused`、`ineffassign`，并先把现有的 12 条修掉。
@@ -161,13 +198,14 @@ Go 版本：工作流用 `1.27.x`。依赖升级如果要求提高 go.mod 里的
 
 ### 5.1 `security.yml`
 
-触发：开 PR、推送到 master、每周一定时运行，以及被 `release.yml` 调用。
+触发：开 PR、推送到 master、每周一定时运行。
+
+**定位是提醒，不拦人。** 不加入分支保护的必过项，发版时也不调用。PR 上出现红叉时，提醒顺手升级依赖；每周的定时任务失败了，GitHub 会发邮件给仓库管理员。`gitleaks` 例外：它只看本仓库自己的提交，不受外部漏洞库更新影响，所以作为必过项（见 §6）。为此把 `gitleaks` 放进 `ci.yml`，而不是 `security.yml`。
 
 | job | 内容 |
 |---|---|
 | `govulncheck` | 检查后端。先把 `x/net`、`x/text` 升到修复版。 |
 | `npm-audit` | `npm audit --omit=dev --audit-level=high --registry=https://registry.npmjs.org` |
-| `gitleaks` | 用固定版本的 gitleaks 扫描密钥。PR 只扫新增提交，定时任务扫全部历史。 |
 
 ### 5.2 CodeQL（`codeql.yml`）
 
@@ -206,9 +244,9 @@ Go 版本：工作流用 `1.27.x`。依赖升级如果要求提高 go.mod 里的
   - 是否影响部署或升级。
 - **master 分支保护**：本分支合并、检查名称确定之后再开。
   - 必须通过的检查：
-    - CI：`backend`、`backend-browser`、`frontend`、`release-build`、`docker`、`lint-meta`；
-    - 安全：`govulncheck`、`npm-audit`、`gitleaks`；
-    - CodeQL：Go 和 JS 两项分析。
+    - CI：`backend`、`backend-browser`、`frontend`、`release-build`、`docker`、`lint-meta`、`gitleaks`；
+    - CodeQL：Go 和 JS 两项分析。CodeQL 只对本 PR 新引入的问题报错，不受外部规则更新的连带影响。
+  - **不是**必过项：`govulncheck`、`npm-audit`。原因见 §5.1。
   - 合并必须走 PR。只有一位维护者，所以要求 0 个批准。
   - 对管理员同样生效，禁止强推，禁止删除分支。
   - 不要求 PR 分支先更新到最新 master（`strict=false`）。合并后推送到 master 时会再跑一遍 CI，能兜住问题。
@@ -238,4 +276,5 @@ Go 版本：工作流用 `1.27.x`。依赖升级如果要求提高 go.mod 里的
 
 - 原生版升级后服务改以 `cdk` 用户运行，安装目录的所有者跟着改。重启服务要用 `sudo systemctl restart cdk-recharge`。
 - Docker 版改为拉取发布好的镜像，不再在服务器上构建；容器内不是 root。旧数据卷由部署脚本自动改所有者。
+- Docker 版支持后台一键升级。升级后的程序放在数据卷里，容器重建后仍然保留。之后如果拉了更新的镜像，就以镜像为准。
 - 发布包改用 Go 1.27 编译，前端改用 Node 24 构建。

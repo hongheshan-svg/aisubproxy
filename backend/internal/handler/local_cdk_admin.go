@@ -251,7 +251,7 @@ func localCDKRowJSON(r db.LocalCDKRow) gin.H {
 		"id": r.ID, "provider": r.Provider, "code_prefix": r.CodePrefix, "product": r.Product, "plan": r.PlanKey,
 		"region": r.Region, "payment_country": r.Region,
 		"status": r.View.Status, "status_reason": r.View.Reason, "manual_status": r.Manual,
-		"needs_review": r.View.NeedsReview, "clean_failures": r.View.CleanFailures, "attempts_left": r.View.AttemptsLeft,
+		"needs_review": r.View.NeedsReview, "funded_failures": r.View.FundedFailures, "precharge_failures": r.View.PrechargeFailures, "attempts_left": r.View.AttemptsLeft,
 		"attempts_carried": r.AttemptsCarried, "exchanged_from": r.ExchangedFrom, "replaced_by": r.ReplacedBy,
 		"issued_by": r.IssuedBy, "note": r.Note, "created_at": r.CreatedAt, "updated_at": r.UpdatedAt,
 		"plan_note": provider.PlanNote(provider.Name(r.Provider), r.PlanKey),

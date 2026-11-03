@@ -21,7 +21,7 @@ const (
 	LocalCDKManualActive   = "active"
 	LocalCDKManualDisabled = "disabled"
 
-	LocalCDKUnused   = "unused"   // 可兑换（没有单，或全部是干净失败且没超过次数）
+	LocalCDKUnused   = "unused"   // 可兑换（没有单，或全部是干净失败且注资后的失败没到上限）
 	LocalCDKReserved = "reserved" // 有在途单或待人工单
 	LocalCDKConsumed = "consumed" // 已付款成功
 	LocalCDKFailed   = "failed"   // 不能再兑换，等人工
@@ -30,13 +30,14 @@ const (
 	LocalReasonNeedsReview       = "needs_review"       // 单据待人工
 	LocalReasonDeclined          = "declined"           // 支付被拒或人工定论失败，可能有迟到授权，不能重兑
 	LocalReasonDirtyOrder        = "dirty_order"        // 提交过支付或状态不明的失败单，不能重兑
-	LocalReasonAttemptsExhausted = "attempts_exhausted" // 干净失败次数用完，转人工
+	LocalReasonAttemptsExhausted = "attempts_exhausted" // 走到注资阶段的失败到了上限，转人工
 	LocalReasonExchanged         = "exchanged"          // 已换发新码
 	LocalReasonManual            = "manual"             // 管理员禁用
 
-	// MaxLocalCDKReRedeems 同一张码（含换码继承的次数）因 not_submitted 重兑的上限。
-	// 首次兑换不算重兑，所以一张码最多建 1 + 3 = 4 张单；第 4 张也是干净失败就转人工。
-	MaxLocalCDKReRedeems = 3
+	// MaxLocalCDKFundedFailures 同一张码（含换码继承的次数）走到注资阶段后失败的上限，到了就转人工。
+	// 只计这一种：每次都动了卡和钱，一直重试就一直注资、转回。注资之前的失败（会话失效、已有订阅、套餐不可用）
+	// 不花钱，不计次数，靠公开接口的限流防滥用。
+	MaxLocalCDKFundedFailures = 3
 
 	// localCDKSource 是 pay_orders.source 的取值。
 	localCDKSource = "cdk"
@@ -62,7 +63,7 @@ type LocalCDK struct {
 	Manual          string // 人工态 active / disabled
 	ExchangedFrom   *int64 // 由哪张码换来
 	ReplacedBy      *int64 // 换成了哪张码
-	AttemptsCarried int    // 换码继承的干净失败次数：不让换码绕过重兑上限
+	AttemptsCarried int    // 换码继承的注资后失败次数：不让换码绕过上限
 	IssuedBy        string
 	Note            string
 	CreatedAt       int64
@@ -78,6 +79,7 @@ type LocalCDKOrder struct {
 	ErrorCode    string
 	AccountEmail string
 	FundCents    int64
+	CardID       string
 	SubmittedAt  *int64
 	CreatedAt    int64
 	FinishedAt   *int64
@@ -88,14 +90,21 @@ func (o LocalCDKOrder) CleanFailure() bool {
 	return o.State == "failed" && o.Failure == "not_submitted" && o.SubmittedAt == nil
 }
 
+// ReachedFunding 这张单走到了注资阶段。判断依据是 card_id：
+//   - 引擎选到卡就记下，注资之前一定已经落库（见 payengine.fundCard），之后不会清空，所以不会漏掉真的注资过的单。
+//   - 不用 fund_order_no：注资接口报错或超时时它没有写入，钱却可能已经到账。
+//   - 不用错误码：新增错误码时容易漏，service_restart、internal_error 也分不出发生在注资前后。
+func (o LocalCDKOrder) ReachedFunding() bool { return o.CardID != "" }
+
 // LocalCDKView 是一张码的派生结果。
 type LocalCDKView struct {
-	Status        string
-	Reason        string
-	CleanFailures int            // 干净失败次数，含换码继承的
-	AttemptsLeft  int            // 还能兑换几次，只对 unused 有意义
-	Latest        *LocalCDKOrder // 最新一张单；没有单时为 nil
-	NeedsReview   bool
+	Status            string
+	Reason            string
+	FundedFailures    int            // 走到注资阶段的干净失败次数，含换码继承的，只有它占次数
+	PrechargeFailures int            // 注资之前的干净失败次数，不占次数
+	AttemptsLeft      int            // 还能走到注资几次，只对 unused 有意义
+	Latest            *LocalCDKOrder // 最新一张单；没有单时为 nil
+	NeedsReview       bool
 }
 
 // Redeemable 现在能不能发起兑换。
@@ -106,7 +115,7 @@ func (v LocalCDKView) Redeemable() bool { return v.Status == LocalCDKUnused }
 // 优先级从钱的角度排：成功 > 在途 > 待人工 > 不干净的失败 > 次数用完 > 人工禁用 > 可用。
 // 人工禁用不能盖住前面的状态：单已经在跑，禁用拦不住它，界面要照实显示。
 func DeriveLocalCDK(c LocalCDK, orders []LocalCDKOrder) LocalCDKView {
-	v := LocalCDKView{CleanFailures: c.AttemptsCarried}
+	v := LocalCDKView{FundedFailures: c.AttemptsCarried}
 	var succeeded, inflight, review bool
 	dirty := ""
 	for i := range orders {
@@ -118,7 +127,11 @@ func DeriveLocalCDK(c LocalCDK, orders []LocalCDKOrder) LocalCDKView {
 		case o.State == "needs_review":
 			review = true
 		case o.CleanFailure():
-			v.CleanFailures++
+			if o.ReachedFunding() {
+				v.FundedFailures++
+			} else {
+				v.PrechargeFailures++
+			}
 		case o.State == "failed":
 			if o.Failure == "declined" {
 				dirty = LocalReasonDeclined
@@ -135,7 +148,7 @@ func DeriveLocalCDK(c LocalCDK, orders []LocalCDKOrder) LocalCDKView {
 		}
 	}
 	v.NeedsReview = review
-	if left := 1 + MaxLocalCDKReRedeems - v.CleanFailures; left > 0 {
+	if left := MaxLocalCDKFundedFailures - v.FundedFailures; left > 0 {
 		v.AttemptsLeft = left
 	}
 	switch {
@@ -307,7 +320,7 @@ func GetLocalCDKByTokenHash(ctx context.Context, tokenHash string) (LocalCDK, er
 	return getLocalCDKWhere(ctx, `l.token_hash = ?`, tokenHash)
 }
 
-const localCDKOrderColumns = `order_no, source_ref, state, failure, error_code, account_email, fund_cents, submitted_at, created_at, finished_at`
+const localCDKOrderColumns = `order_no, source_ref, state, failure, error_code, account_email, fund_cents, card_id, submitted_at, created_at, finished_at`
 
 func collectLocalCDKOrders(rows *sql.Rows) ([]LocalCDKOrder, error) {
 	defer rows.Close()
@@ -315,7 +328,7 @@ func collectLocalCDKOrders(rows *sql.Rows) ([]LocalCDKOrder, error) {
 	for rows.Next() {
 		var o LocalCDKOrder
 		var sub, fin sql.NullInt64
-		if err := rows.Scan(&o.OrderNo, &o.SourceRef, &o.State, &o.Failure, &o.ErrorCode, &o.AccountEmail, &o.FundCents, &sub, &o.CreatedAt, &fin); err != nil {
+		if err := rows.Scan(&o.OrderNo, &o.SourceRef, &o.State, &o.Failure, &o.ErrorCode, &o.AccountEmail, &o.FundCents, &o.CardID, &sub, &o.CreatedAt, &fin); err != nil {
 			return nil, err
 		}
 		if sub.Valid {
@@ -483,11 +496,11 @@ func IsLocalCDKOrderConflict(err error) bool {
 	return strings.Contains(se.Error(), "pay_orders.source_ref")
 }
 
-// HasRealSucceededPayOrder 是否已有一笔真实付款成功的单：发 MarsWallex 码的硬门槛。
-// dry_run 非 0 的都是试运行（1 到读金额、2 到填表），不算。
+// HasRealSucceededPayOrder 是否已有一笔系统自动确认成功的真实付款单：发 MarsWallex 码的硬门槛。
+// dry_run 非 0 的都是试运行（1 到读金额、2 到填表），不算。resolved_by 非空是人工定论的单，不能证明系统能自己走通，也不算。
 func HasRealSucceededPayOrder(ctx context.Context) (bool, error) {
 	var n int
-	err := DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM (SELECT 1 FROM pay_orders WHERE dry_run = 0 AND state = 'succeeded' LIMIT 1)`).Scan(&n)
+	err := DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM (SELECT 1 FROM pay_orders WHERE dry_run = 0 AND state = 'succeeded' AND resolved_by = '' LIMIT 1)`).Scan(&n)
 	return n > 0, err
 }
 

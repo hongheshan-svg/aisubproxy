@@ -183,7 +183,7 @@ func alertLocalCDKExhausted(row db.LocalCDK, v db.LocalCDKView) {
 		return
 	}
 	opsAlertDaily("local-cdk-exhausted-"+strconv.FormatInt(row.ID, 10),
-		fmt.Sprintf("MarsWallex 码 %d（%s，%s/%s）未提交支付已失败 %d 次，不再自动重试，请人工处理。", row.ID, row.CodePrefix, row.PlanKey, row.Region, v.CleanFailures), time.Now())
+		fmt.Sprintf("MarsWallex 码 %d（%s，%s/%s）已 %d 次走到注资后失败，不再自动重试，请人工处理。", row.ID, row.CodePrefix, row.PlanKey, row.Region, v.FundedFailures), time.Now())
 }
 
 // localCDKPreview 预览：只读，不写任何东西，令牌由码算出。
@@ -700,7 +700,7 @@ func localCDKLookup(ctx context.Context, code string) cdkLookupResult {
 }
 
 // localCDKExchange 是代理换码的本地分支，调用前已通过限流和密码校验。
-// 只有确认没点过支付的失败才能换；被拒、待人工、在途、从未兑换一律拒绝。新码继承失败次数，换码不能绕过重兑上限。
+// 只有确认没点过支付的失败才能换；被拒、待人工、在途、从未兑换一律拒绝。新码继承注资后失败的次数，换码不能绕过上限。
 func localCDKExchange(c *gin.Context, code, ip string) {
 	ctx := c.Request.Context()
 	norm := provider.NormalizeCode(code)
@@ -783,7 +783,7 @@ func localCDKExchange(c *gin.Context, code, ip string) {
 	newID, err := db.ExchangeLocalCDK(context.WithoutCancel(ctx), row.ID, db.NewLocalCDK{
 		Provider: row.Provider, CodeHash: fresh.CodeHash, TokenHash: fresh.TokenHash, CodePrefix: fresh.Prefix,
 		Product: row.Product, PlanKey: row.PlanKey, Region: row.Region, IssuedBy: "agent-swap", Note: row.Note,
-		ExchangedFrom: &row.ID, AttemptsCarried: v.CleanFailures,
+		ExchangedFrom: &row.ID, AttemptsCarried: v.FundedFailures,
 	}, time.Now())
 	if err != nil {
 		// 事务回滚，什么都没发生：本地发码不存在结果不明，放掉占位就好
@@ -803,7 +803,7 @@ func localCDKExchange(c *gin.Context, code, ip string) {
 		opsAlert(fmt.Sprintf("MarsWallex 换码已发出新码但写库失败：记录 %d，旧码 %d，新码 %d。占位已保留，请到后台定论。", exID, row.ID, newID))
 	}
 	db.WriteAudit("agent-swap", "local_cdk_exchange",
-		fmt.Sprintf("old=%d new=%d plan=%s region=%s carried=%d", row.ID, newID, row.PlanKey, row.Region, v.CleanFailures), ip)
+		fmt.Sprintf("old=%d new=%d plan=%s region=%s carried=%d", row.ID, newID, row.PlanKey, row.Region, v.FundedFailures), ip)
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, gin.H{
 		"ok":              true,

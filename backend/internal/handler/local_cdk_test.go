@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -145,6 +146,10 @@ func TestLocalCDKPublicResponsesWhitelisted(t *testing.T) {
 		{"会话失效", "failed", "not_submitted", "session_invalid", false, "failed_precharge", "登录已失效"},
 		{"已有订阅", "failed", "not_submitted", "already_subscribed", false, "failed_precharge", "已有订阅"},
 		{"其他错误码", "failed", "not_submitted", "proxy_unavailable", false, "failed_precharge", "本次未能开通"},
+		{"按钮没点到", "failed", "not_submitted", "submit_not_clicked", false, "failed_precharge", "本次未能开通"},
+		{"试运行拒绝", "failed", "not_submitted", "dry_run_refused", false, "failed_precharge", "本次未能开通"},
+		{"注资超时", "failed", "not_submitted", "fund_timeout", false, "failed_precharge", "本次未能开通"},
+		{"服务重启", "failed", "not_submitted", "service_restart", false, "failed_precharge", "本次未能开通"},
 		{"在途", "funding", "", "", false, "running", "正在处理"},
 		{"异常", "failed", "", "weird", false, "failed", "处理异常"},
 	}
@@ -502,63 +507,188 @@ func TestLocalCDKRedeemByDerivedState(t *testing.T) {
 	}
 }
 
-// 干净失败最多重兑 3 次：首次 + 3 次重兑 = 4 张单，第 5 次被拒并转人工。
-func TestLocalCDKReRedeemLimit(t *testing.T) {
+// 注资之前的失败不花钱，不计次数，也不转人工：连续 5 次失效会话后这张码仍可兑换，补上有效会话就能成功。
+func TestLocalCDKPrechargeFailuresDoNotCount(t *testing.T) {
 	e := newLocalEnv(t)
 	e.seedRealPayment()
-	e.gpt.refreshErr = chatgpt.ErrUnauthorized
+	e.gpt.setRefreshErr(chatgpt.ErrUnauthorized)
 	e.start()
 	code, id := e.issueCode("plus", "PH")
 	token := provider.TokenForCode(code)
-	sess := localSession("buyer@example.com")
-	body := localBody(t, map[string]any{"redemption_token": token, "credential": map[string]any{"mode": "session", "session": sess}})
-	for i := 1; i <= 4; i++ {
-		w := e.do("POST", "/public/cdk/redeem", body)
-		if w.Code != http.StatusOK {
+	body := localBody(t, map[string]any{"redemption_token": token, "credential": map[string]any{"mode": "session", "session": localSession("buyer@example.com")}})
+	assertRetryable := func(what, text string) {
+		t.Helper()
+		m := e.waitResult(token, "failed_precharge")
+		o := m["order"].(map[string]any)
+		if o["can_retry"] != true || o["attempts_left"].(float64) != db.MaxLocalCDKFundedFailures || !strings.Contains(m["message"].(string), text) {
+			t.Fatalf("%s: %v", what, m)
+		}
+	}
+	for i := 1; i <= 5; i++ {
+		if w := e.do("POST", "/public/cdk/redeem", body); w.Code != http.StatusOK {
 			t.Fatalf("第 %d 次: %d %s", i, w.Code, w.Body.String())
 		}
-		want := "failed_precharge"
-		if i == 4 {
-			want = "failed"
-		}
-		deadline := time.Now().Add(5 * time.Second)
-		for {
-			var done int
-			db.DB.QueryRow(`SELECT COUNT(*) FROM pay_orders WHERE source = 'cdk' AND source_ref = ? AND state = 'failed'`, db.LocalCDKSourceRef(id)).Scan(&done)
-			if done == i {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Fatalf("第 %d 单没结束", i)
-			}
-			time.Sleep(5 * time.Millisecond)
-		}
-		m := e.waitResult(token, want)
-		if i < 4 {
-			if o := m["order"].(map[string]any); o["can_retry"] != true || o["attempts_left"].(float64) != float64(4-i) {
-				t.Fatalf("第 %d 次: %v", i, o)
-			}
-		}
+		e.waitOrdersFailed(id, i)
+		assertRetryable(fmt.Sprintf("第 %d 次", i), "登录已失效")
 	}
-	w := e.do("POST", "/public/cdk/redeem", body)
-	if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "人工") {
-		t.Fatalf("第 5 次应拒绝: %d %s", w.Code, w.Body.String())
+	// 已有订阅也一样
+	e.gpt.setRefreshErr(nil)
+	e.gpt.setSubscribedFrom(1)
+	if w := e.do("POST", "/public/cdk/redeem", body); w.Code != http.StatusOK {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}
-	if n := cdkOrderCount(t, id); n != 4 {
-		t.Fatalf("单数 %d", n)
+	e.waitOrdersFailed(id, 6)
+	assertRetryable("已有订阅", "已有订阅")
+
+	row, err := db.GetLocalCDK(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(e.alertTexts(), "请人工处理") {
-		t.Fatalf("应告警转人工: %s", e.alertTexts())
+	if v, _ := db.LocalCDKViewOf(context.Background(), row); v.Status != db.LocalCDKUnused || v.PrechargeFailures != 6 || v.FundedFailures != 0 {
+		t.Fatalf("%+v", v)
 	}
-	if strings.Contains(e.alertTexts(), code) {
-		t.Fatal("告警不能带完整码")
+	if w := e.do("POST", "/public/cdk/preview", localBody(t, map[string]any{"code": code})); w.Code != http.StatusOK {
+		t.Fatalf("预览还要能过: %d %s", w.Code, w.Body.String())
 	}
 	if n := len(e.mw.Requests("POST", mwPathRecharge)); n != 0 {
 		t.Fatalf("没有一单走到注资: %d", n)
 	}
+	if made, _, _ := e.br.counts(); made != 0 {
+		t.Fatalf("没有一单走到浏览器: %d", made)
+	}
+	if a := e.alertTexts(); strings.Contains(a, "人工") {
+		t.Fatalf("不该转人工: %s", a)
+	}
+
+	// 同一张码换有效会话，正常走完
+	e.gpt.setSubscribedFrom(2)
+	if w := e.do("POST", "/public/cdk/redeem", body); w.Code != http.StatusOK {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	e.waitResult(token, "completed")
+	if n := len(e.mw.Requests("POST", mwPathRecharge)); n != 1 {
+		t.Fatalf("注资 %d 次", n)
+	}
+	if _, _, submits := e.br.counts(); submits != 1 {
+		t.Fatalf("点支付 %d 次", submits)
+	}
+}
+
+// 3 次走到注资后失败，再兑换被拒并转人工。用真实引擎跑：填表失败和按钮没点到都发生在注资之后，都要计次数。
+func TestLocalCDKFundedFailuresLimit(t *testing.T) {
+	e := newLocalEnv(t)
+	e.seedRealPayment()
+	e.addCard("c2")
+	e.addCard("c3")
+	e.addCard("c4")
+	e.br.setErrs(errors.New("填表失败"), nil)
+	e.start()
+	code, id := e.issueCode("plus", "PH")
+	token := provider.TokenForCode(code)
+	body := localBody(t, map[string]any{"redemption_token": token, "credential": map[string]any{"mode": "session", "session": localSession("buyer@example.com")}})
+	for i := 1; i <= db.MaxLocalCDKFundedFailures; i++ {
+		// 第 2 次是按钮没点到：它记过提交时间又清掉，紧接着的第 3 次不能被一码一单的索引挡住
+		if i == 2 {
+			e.br.setErrs(nil, errors.New("按钮没有点到"))
+		} else {
+			e.br.setErrs(errors.New("填表失败"), nil)
+		}
+		if w := e.do("POST", "/public/cdk/redeem", body); w.Code != http.StatusOK {
+			t.Fatalf("第 %d 次: %d %s", i, w.Code, w.Body.String())
+		}
+		e.waitOrdersFailed(id, i)
+		if n := len(e.mw.Requests("POST", mwPathRecharge)); n != i {
+			t.Fatalf("第 %d 次后注资 %d 次", i, n)
+		}
+		if i < db.MaxLocalCDKFundedFailures {
+			m := e.waitResult(token, "failed_precharge")
+			o := m["order"].(map[string]any)
+			if o["can_retry"] != true || o["attempts_left"].(float64) != float64(db.MaxLocalCDKFundedFailures-i) {
+				t.Fatalf("第 %d 次: %v", i, m)
+			}
+			if body := localBody(t, m); strings.Contains(body, "fill_failed") || strings.Contains(body, "submit_not_clicked") {
+				t.Fatalf("错误码不能给用户: %v", m)
+			}
+		}
+	}
+	// 三张单都选过卡、没有提交时间，错误码照实记着
+	rows, err := db.DB.Query(`SELECT error_code, card_id, submitted_at FROM pay_orders WHERE source = 'cdk' AND source_ref = ? ORDER BY id`, db.LocalCDKSourceRef(id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var codes []string
+	for rows.Next() {
+		var errCode, card string
+		var submitted sql.NullInt64
+		if err := rows.Scan(&errCode, &card, &submitted); err != nil {
+			t.Fatal(err)
+		}
+		if card == "" || submitted.Valid {
+			t.Fatalf("%s: 卡 %q，提交时间 %v", errCode, card, submitted)
+		}
+		codes = append(codes, errCode)
+	}
+	rows.Close()
+	if got := strings.Join(codes, ","); got != "fill_failed,submit_not_clicked,fill_failed" {
+		t.Fatalf("错误码 %s", got)
+	}
+	if _, _, submits := e.br.counts(); submits != 0 {
+		t.Fatalf("没有一次真的点到: %d", submits)
+	}
+
+	m := e.waitResult(token, "failed")
+	if strings.Contains(localBody(t, m), "submit_not_clicked") || !strings.Contains(m["message"].(string), "人工") {
+		t.Fatalf("%v", m)
+	}
+	for i := 0; i < 2; i++ {
+		w := e.do("POST", "/public/cdk/redeem", body)
+		if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), "人工") {
+			t.Fatalf("再兑换应拒绝: %d %s", w.Code, w.Body.String())
+		}
+	}
+	if n := cdkOrderCount(t, id); n != db.MaxLocalCDKFundedFailures {
+		t.Fatalf("单数 %d", n)
+	}
+	if n := len(e.mw.Requests("POST", mwPathRecharge)); n != db.MaxLocalCDKFundedFailures {
+		t.Fatalf("注资 %d 次", n)
+	}
+	// 告警一天一条，不带完整码
+	a := e.alertTexts()
+	if strings.Count(a, "走到注资后失败") != 1 || !strings.Contains(a, "请人工处理") || strings.Contains(a, code) {
+		t.Fatalf("%s", a)
+	}
 	// 失败再多次也绝不换服务商重试
 	if e.zovo.count() != 0 {
 		t.Fatalf("不能转去 ZovoCard: %v", e.zovo.paths)
+	}
+}
+
+// 注资之前的失败不计次数，全靠限流防滥用：兑换入口用完额度后，能兑的请求也被挡住、不建单，别的 IP 不受影响。
+func TestLocalCDKRedeemRateLimited(t *testing.T) {
+	e := newLocalEnv(t)
+	e.seedRealPayment()
+	code, id := e.issueCode("plus", "PH")
+	token := provider.TokenForCode(code)
+	bad := localBody(t, map[string]any{"redemption_token": token, "credential": map[string]any{"mode": "session", "session": "not-json"}})
+	for i := 0; i < localRateLimits[localRateMutate]; i++ {
+		if w := e.do("POST", "/public/cdk/redeem", bad); w.Code != http.StatusBadRequest {
+			t.Fatalf("第 %d 次: %d %s", i, w.Code, w.Body.String())
+		}
+	}
+	good := localBody(t, map[string]any{"redemption_token": token, "credential": map[string]any{"mode": "session", "session": localSession("buyer@example.com")}})
+	if w := e.do("POST", "/public/cdk/redeem", good); w.Code != http.StatusTooManyRequests {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	if n := cdkOrderCount(t, id); n != 0 {
+		t.Fatalf("被限流不应建单: %d", n)
+	}
+	req := httptest.NewRequest("POST", "/public/cdk/redeem", strings.NewReader(good))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = "203.0.113.9:1234"
+	w := httptest.NewRecorder()
+	e.router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("别的 IP: %d %s", w.Code, w.Body.String())
 	}
 }
 
@@ -621,14 +751,14 @@ func TestLocalCDKUnavailableRefusesWithoutOrder(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if v, _ := db.LocalCDKViewOf(context.Background(), row); v.Status != db.LocalCDKUnused || v.AttemptsLeft != 4 {
+			if v, _ := db.LocalCDKViewOf(context.Background(), row); v.Status != db.LocalCDKUnused || v.AttemptsLeft != db.MaxLocalCDKFundedFailures {
 				t.Fatalf("码不该被占用: %+v", v)
 			}
 		})
 	}
 }
 
-// 硬门槛：只有非试运行、成功的付款单才算。没过门槛时兑换也拒绝。
+// 硬门槛：只有系统自动确认成功的真实付款单才算，试运行单和人工定论的单都不算。没过门槛时兑换也拒绝。
 func TestLocalCDKHardGateAlsoGuardsRedeem(t *testing.T) {
 	e := newLocalEnv(t)
 	e.seedRealPayment()
@@ -639,6 +769,10 @@ func TestLocalCDKHardGateAlsoGuardsRedeem(t *testing.T) {
 	}
 	e.insertOrder("admin_test", "admin", 1, "dry1@example.com", "succeeded", "", false)
 	e.insertOrder("admin_test", "admin", 2, "dry2@example.com", "succeeded", "", false)
+	manual := e.insertOrder("admin_test", "admin", 0, "manual@example.com", "succeeded", "", true)
+	if _, err := db.DB.Exec(`UPDATE pay_orders SET resolved_by = 'alice' WHERE order_no = ?`, manual); err != nil {
+		t.Fatal(err)
+	}
 	w := e.do("POST", "/public/cdk/redeem", localBody(t, map[string]any{"code": code, "credential": map[string]any{"mode": "session", "session": localSession("a@example.com")}}))
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
@@ -768,7 +902,7 @@ func TestLocalCDKPreviewFields(t *testing.T) {
 	for k, want := range map[string]any{
 		"provider": "marswallex", "plan": "pro_20x", "plan_type": "pro_20x", "product": "gpt", "plan_flow": "direct",
 		"region": "US", "payment_country": "US", "currency": "USD", "status": "unused", "plan_note": "仅限无订阅账号",
-		"requires_no_subscription": true, "attempts_left": float64(4),
+		"requires_no_subscription": true, "attempts_left": float64(db.MaxLocalCDKFundedFailures),
 	} {
 		if m[k] != want {
 			t.Errorf("%s: %v，期望 %v", k, m[k], want)

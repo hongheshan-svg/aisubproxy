@@ -24,11 +24,10 @@ import (
 )
 
 const (
-	mwPathRecharge  = "/v1/card/recharge-transaction"
-	mwPathWithdraw  = "/v1/card/withdraw-transaction"
-	mwPathQuery     = "/v1/card/transfer-order"
-	mwPathSensitive = "/v1/card/sensitive/c1"
-	mwPathAccounts  = "/v1/accounts/page"
+	mwPathRecharge = "/v1/card/recharge-transaction"
+	mwPathWithdraw = "/v1/card/withdraw-transaction"
+	mwPathQuery    = "/v1/card/transfer-order"
+	mwPathAccounts = "/v1/accounts/page"
 
 	localTestCardNo = "4242424242424242"
 	localTestCVV    = "987"
@@ -71,6 +70,19 @@ func (g *localFakeGPT) CreateCheckout(context.Context, chatgpt.Session, string, 
 	return chatgpt.Checkout{SessionID: "cs_live_abc", URL: "https://pay.example/c/cs_live_abc"}, nil
 }
 
+func (g *localFakeGPT) setRefreshErr(err error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.refreshErr = err
+}
+
+// setSubscribedFrom 从现在起第 n 次 Account 变成已开通。
+func (g *localFakeGPT) setSubscribedFrom(n int) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.subscribedFrom, g.accountCalls = n, 0
+}
+
 func (g *localFakeGPT) checkoutCount() int {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -84,6 +96,15 @@ type localFakeBrowser struct {
 	fills   int
 	submits int
 	outcome paybrowser.Outcome
+
+	fillErr   error
+	submitErr error // Submit 返回它时按钮没被点到
+}
+
+func (b *localFakeBrowser) setErrs(fill, submit error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.fillErr, b.submitErr = fill, submit
 }
 
 func (b *localFakeBrowser) New(context.Context, string, string) (payengine.Browser, error) {
@@ -103,12 +124,15 @@ func (b *localFakeBrowser) Fill(context.Context, paybrowser.Card, paybrowser.Bil
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.fills++
-	return nil
+	return b.fillErr
 }
 
 func (b *localFakeBrowser) Submit(context.Context) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.submitErr != nil {
+		return b.submitErr
+	}
 	b.submits++
 	return nil
 }
@@ -310,7 +334,6 @@ func setupLocalEnv(t *testing.T) *localEnv {
 	e.mw.On("POST", mwPathRecharge, mwtest.OK(`{"out_order_no":"x","transaction_id":"T1","card_id":"c1","status":"SUCCESS"}`))
 	e.mw.On("GET", mwPathQuery, mwtest.OK(`{"out_order_no":"x","transaction_id":"T1","card_id":"c1","status":"SUCCESS"}`))
 	e.mw.On("POST", mwPathWithdraw, mwtest.OK(`{"out_order_no":"x","transaction_id":"T2","card_id":"c1","status":"SUCCESS"}`))
-	e.mw.On("GET", mwPathSensitive, mwtest.OK(`{"card_id":"c1","card_no":"`+localTestCardNo+`","cvv2":"`+localTestCVV+`","expiry_date":"1230"}`))
 
 	now := time.Now().Unix()
 	if _, err := db.DB.Exec(`INSERT INTO mw_cardholders (card_holder_id, first_name, last_name, status, created_at)
@@ -413,6 +436,7 @@ func (e *localEnv) addCard(id string) {
 		id, localTestLast4, cardpool.PoolAvailable, now, now); err != nil {
 		e.t.Fatal(err)
 	}
+	e.mw.On("GET", "/v1/card/sensitive/"+id, mwtest.OK(`{"card_id":"`+id+`","card_no":"`+localTestCardNo+`","cvv2":"`+localTestCVV+`","expiry_date":"1230"}`))
 }
 
 // start 启动引擎工作协程，测试结束时停掉。
@@ -448,7 +472,35 @@ func (e *localEnv) insertOrder(source, ref string, dry int, email, state, failur
 	return no
 }
 
-// seedRealPayment 写一笔真实付款成功的单：过发码硬门槛。
+// insertFundedFailure 写一张走到注资后失败的单：没点过支付，但已经选过卡，占重兑次数。
+func (e *localEnv) insertFundedFailure(id int64, email string) {
+	e.t.Helper()
+	no := e.insertOrder("cdk", db.LocalCDKSourceRef(id), 0, email, "failed", "not_submitted", false)
+	if _, err := db.DB.Exec(`UPDATE pay_orders SET card_id = 'c1', error_code = 'fill_failed' WHERE order_no = ?`, no); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
+// waitOrdersFailed 等这张码有 n 张单结束为 failed，最多 5 秒。
+func (e *localEnv) waitOrdersFailed(id int64, n int) {
+	e.t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var done int
+		if err := db.DB.QueryRow(`SELECT COUNT(*) FROM pay_orders WHERE source = 'cdk' AND source_ref = ? AND state = 'failed'`, db.LocalCDKSourceRef(id)).Scan(&done); err != nil {
+			e.t.Fatal(err)
+		}
+		if done >= n {
+			return
+		}
+		if time.Now().After(deadline) {
+			e.t.Fatalf("第 %d 单没结束，现在 %d 张", n, done)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// seedRealPayment 写一笔系统自动确认成功的真实付款单：过发码硬门槛。
 func (e *localEnv) seedRealPayment() {
 	e.t.Helper()
 	e.insertOrder("admin_test", "admin", 0, "seed@example.com", "succeeded", "", true)

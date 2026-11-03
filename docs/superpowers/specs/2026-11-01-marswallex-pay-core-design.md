@@ -71,9 +71,9 @@ CDK 到充值的后端已经接通：可以在后台选择默认发码服务商�
 | 本地码表 | `db/local_cdk.go` 的 `local_cdks` | 只存哈希和前缀。完整码只在发码响应里出现一次。旧表 `cd_keys` 不复用 |
 | 码状态派生 | `db.DeriveLocalCDK` | 不写码状态，从 `pay_orders` 派生，人工启停是唯一存在码表里的状态 |
 | 一码一单 | 唯一部分索引 `uq_pay_orders_cdk_one` | 同一张码除「确认没点过支付的失败」外只能有一张真实单。进程内的码锁在它前面挡一层 |
-| 重兑上限 | `db.MaxLocalCDKReRedeems = 3` | 只有 `failed` + `not_submitted` + 没有提交时间的单能重兑，最多 3 次，之后转人工。换码继承次数 |
+| 重兑上限 | `db.MaxLocalCDKFundedFailures = 3` | 只有 `failed` + `not_submitted` + 没有提交时间的单能重兑。走到注资阶段（单据有 `card_id`）的失败满 3 次就转人工，换码继承次数。注资之前的失败（会话失效、已有订阅、套餐不可用等）不花钱，不计次数，靠公开接口限流防滥用 |
 | 就绪检查 | `handler/provider_readiness.go` | 配置、主密钥、引擎、熔断、卡池、主钱包、可用卡、当日额度、硬门槛。发码、预检、兑换共用，不通过时不建单、不占用码 |
-| 发码硬门槛 | `db.HasRealSucceededPayOrder` | 必须已有一笔 `dry_run = 0` 且 `succeeded` 的单才能发 MarsWallex 码。试运行单不算 |
+| 发码硬门槛 | `db.HasRealSucceededPayOrder` | 必须已有一笔系统自动确认成功的真实付款（`dry_run = 0`、`succeeded`、`resolved_by` 为空）才能发 MarsWallex 码。试运行单和人工定论的单都不算 |
 | 跨服务商互斥 | `handler/provider_guard.go` | 同账号不能同时走两家，两个方向都查，再加进程内账号锁 |
 | 自动补卡的闸 | `cardpool/readiness.go` | 未选用 MarsWallex 时暂停补卡并每日告警，策略 `replenish_when_unselected` 可放开。对账、回收、Webhook、补拉不受影响 |
 | 预检令牌 | `handler/local_cdk.go` | 会话封进 secretbox 密文交回前端，不落库，30 分钟过期，绑定这张码 |
@@ -85,7 +85,7 @@ CDK 到充值的后端已经接通：可以在后台选择默认发码服务商�
 **还差：**
 
 - 前端后台页：默认服务商切换、就绪检查展示、MarsWallex 发码界面（`pro_20x` 要标注「仅限无订阅账号」）、码列表。用户兑换页的协议没变，字段和状态值都对照 `RechargeView.vue` 核对过，但还没有在页面上实际走过；MarsWallex 码的预览里多了 `plan_note`、`attempts_left`，页面可以按需展示。
-- 第一笔真实付款。没有它就过不了发码硬门槛，要先在后台用测试兑换跑通一笔（§12 的待核实项也要一起确认）。
+- 第一笔真实付款。没有它就过不了发码硬门槛，要先在后台用测试兑换跑通一笔，并且由系统自动确认成功，人工定论的不算（§12 的待核实项也要一起确认）。
 - 子项目 C：MarsWallex 码的宽限期恢复目前直接返回 400，升级、点数、续费绑卡都没有做。
 - `pro_20x` 现在只能开给无订阅账号，有订阅的账号会在 `check` 阶段被拒（不花钱）。
 - 码列表整表读入后在 Go 里派生和分页，码多了要优化。

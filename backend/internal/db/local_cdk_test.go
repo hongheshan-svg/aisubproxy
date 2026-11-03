@@ -57,6 +57,16 @@ func addOrder(t *testing.T, source, ref string, dry int, email, state, failure s
 	return no
 }
 
+// addFundedFailure 写一张走到注资后失败的单：没点过支付，但已经选过卡。
+func addFundedFailure(t *testing.T, ref string) string {
+	t.Helper()
+	no := addOrder(t, "cdk", ref, 0, "", "failed", "not_submitted", false)
+	if _, err := db.DB.Exec(`UPDATE pay_orders SET card_id = 'c1', error_code = 'fill_failed' WHERE order_no = ?`, no); err != nil {
+		t.Fatal(err)
+	}
+	return no
+}
+
 func viewOf(t *testing.T, c db.LocalCDK) db.LocalCDKView {
 	t.Helper()
 	c2, err := db.GetLocalCDK(localCtx, c.ID)
@@ -101,7 +111,7 @@ func TestLocalCDKStatusDerivedFromPayOrder(t *testing.T) {
 		}
 	}
 	// 没有单
-	if v := viewOf(t, insertLocalCDK(t, 100)); v.Status != db.LocalCDKUnused || v.AttemptsLeft != 4 || v.Latest != nil {
+	if v := viewOf(t, insertLocalCDK(t, 100)); v.Status != db.LocalCDKUnused || v.AttemptsLeft != db.MaxLocalCDKFundedFailures || v.Latest != nil {
 		t.Fatalf("无单: %+v", v)
 	}
 	// 人工定论失败（引擎写成 failed/declined）后是 failed，不是 unused
@@ -126,30 +136,59 @@ func TestLocalCDKStatusDerivedFromPayOrder(t *testing.T) {
 	}
 }
 
-// 重兑上限：首次 1 单 + 重兑 3 次，第 4 张还是干净失败就转人工；换码继承的次数算在内。
+// 上限只计走到注资阶段的失败。注资之前的失败不管多少次都不占次数，也不转人工。
 func TestLocalCDKAttemptsExhausted(t *testing.T) {
 	dbtest.Open(t)
 	c := insertLocalCDK(t, 1)
 	ref := db.LocalCDKSourceRef(c.ID)
-	for i, left := range []int{3, 2, 1} {
+	for i := 1; i <= 5; i++ {
 		addOrder(t, "cdk", ref, 0, "", "failed", "not_submitted", false)
-		if v := viewOf(t, c); v.Status != db.LocalCDKUnused || v.AttemptsLeft != left {
-			t.Fatalf("第 %d 次干净失败: %+v", i+1, v)
+		v := viewOf(t, c)
+		if v.Status != db.LocalCDKUnused || v.AttemptsLeft != db.MaxLocalCDKFundedFailures || v.PrechargeFailures != i || v.FundedFailures != 0 {
+			t.Fatalf("第 %d 次注资前失败: %+v", i, v)
 		}
 	}
-	addOrder(t, "cdk", ref, 0, "", "failed", "not_submitted", false)
-	if v := viewOf(t, c); v.Status != db.LocalCDKFailed || v.Reason != db.LocalReasonAttemptsExhausted || v.AttemptsLeft != 0 {
+	for i, left := range []int{2, 1} {
+		addFundedFailure(t, ref)
+		if v := viewOf(t, c); v.Status != db.LocalCDKUnused || v.AttemptsLeft != left || v.FundedFailures != i+1 {
+			t.Fatalf("第 %d 次注资后失败: %+v", i+1, v)
+		}
+	}
+	addFundedFailure(t, ref)
+	if v := viewOf(t, c); v.Status != db.LocalCDKFailed || v.Reason != db.LocalReasonAttemptsExhausted || v.AttemptsLeft != 0 || v.FundedFailures != 3 {
 		t.Fatalf("次数用完: %+v", v)
 	}
 
 	carried := insertLocalCDK(t, 2)
-	carried.AttemptsCarried = 3
+	carried.AttemptsCarried = 2
 	if v := db.DeriveLocalCDK(carried, nil); v.AttemptsLeft != 1 || v.Status != db.LocalCDKUnused {
+		t.Fatalf("继承 2 次: %+v", v)
+	}
+	carried.AttemptsCarried = 3
+	if v := db.DeriveLocalCDK(carried, nil); v.Status != db.LocalCDKFailed || v.Reason != db.LocalReasonAttemptsExhausted {
 		t.Fatalf("继承 3 次: %+v", v)
 	}
-	carried.AttemptsCarried = 4
-	if v := db.DeriveLocalCDK(carried, nil); v.Status != db.LocalCDKFailed {
-		t.Fatalf("继承 4 次: %+v", v)
+}
+
+// 判断只看单据有没有选过卡，不看错误码：新错误码不用改这里，也不会漏算。
+func TestLocalCDKFailureCountedByCardNotErrorCode(t *testing.T) {
+	failed := func(code, card string) db.LocalCDKOrder {
+		return db.LocalCDKOrder{State: "failed", Failure: "not_submitted", ErrorCode: code, CardID: card}
+	}
+	for _, code := range []string{"session_invalid", "session_unreadable", "already_subscribed", "plan_unavailable", "proxy_unavailable",
+		"chatgpt_failed", "checkout_failed", "browser_failed", "page_failed", "amount_over_cap", "amount_unreadable", "currency_mismatch",
+		"no_card", "acquire_failed", "internal_error", "service_restart"} {
+		v := db.DeriveLocalCDK(db.LocalCDK{Manual: db.LocalCDKManualActive}, []db.LocalCDKOrder{failed(code, "")})
+		if v.Status != db.LocalCDKUnused || v.FundedFailures != 0 || v.PrechargeFailures != 1 {
+			t.Errorf("%s 没有卡，不该计次数: %+v", code, v)
+		}
+	}
+	for _, code := range []string{"card_info_failed", "card_currency_unsupported", "fund_failed", "fund_timeout", "card_sensitive_failed",
+		"card_expiry_invalid", "fill_failed", "submit_not_clicked", "internal_error", "service_restart"} {
+		v := db.DeriveLocalCDK(db.LocalCDK{Manual: db.LocalCDKManualActive}, []db.LocalCDKOrder{failed(code, "c1")})
+		if v.Status != db.LocalCDKUnused || v.FundedFailures != 1 || v.PrechargeFailures != 0 {
+			t.Errorf("%s 选过卡，要计次数: %+v", code, v)
+		}
 	}
 }
 
@@ -206,6 +245,12 @@ func TestHasRealSucceededPayOrderGate(t *testing.T) {
 	addOrder(t, "admin_test", "admin", 1, "", "previewed", "", false)
 	addOrder(t, "admin_test", "admin", 0, "", "failed", "declined", true)
 	addOrder(t, "admin_test", "admin", 0, "", "needs_review", "", true)
+	check(false)
+	// 人工定论成功的单不能证明系统能自己走通，不算
+	manual := addOrder(t, "admin_test", "admin", 0, "", "succeeded", "", true)
+	if _, err := db.DB.Exec(`UPDATE pay_orders SET resolved_by = 'alice', resolve_note = '核对已开通' WHERE order_no = ?`, manual); err != nil {
+		t.Fatal(err)
+	}
 	check(false)
 	addOrder(t, "admin_test", "admin", 0, "", "succeeded", "", true)
 	check(true)

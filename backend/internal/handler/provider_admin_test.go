@@ -219,7 +219,18 @@ func TestReadinessBlocksLocalIssue(t *testing.T) {
 			e.insertOrder("admin_test", "admin", 2, "b@example.com", "succeeded", "", false)
 			e.insertOrder("admin_test", "admin", 1, "c@example.com", "previewed", "", false)
 			e.insertOrder("admin_test", "admin", 0, "d@example.com", "needs_review", "", true)
-		}, "真实付款"},
+		}, "系统自动确认成功的真实付款"},
+		{"只有人工定论成功的单", func(e *localEnv) {
+			db.DB.Exec(`DELETE FROM pay_orders`)
+			no := e.insertOrder("admin_test", "admin", 0, "manual@example.com", "needs_review", "", true)
+			if err := e.engine.Resolve(context.Background(), no, payengine.StateSucceeded, "核对已开通", "alice"); err != nil {
+				t.Fatal(err)
+			}
+			var state, by string
+			if err := db.DB.QueryRow(`SELECT state, resolved_by FROM pay_orders WHERE order_no = ?`, no).Scan(&state, &by); err != nil || state != payengine.StateSucceeded || by != "alice" {
+				t.Fatalf("%s %s %v", state, by, err)
+			}
+		}, "系统自动确认成功的真实付款"},
 		{"没有可用的 USD 卡", func(e *localEnv) { db.DB.Exec(`UPDATE mw_cards SET currency = 'PHP'`) }, "没有可用的 USD 卡"},
 		{"卡全停用", func(e *localEnv) {
 			db.DB.Exec(`INSERT INTO mw_product_health (product_id, plan_key, suspended_at) VALUES ('p1', 'plus', 100)`)
@@ -377,6 +388,7 @@ func TestAdminListLocalCDKs(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.insertOrder("cdk", db.LocalCDKSourceRef(b), 0, "x@example.com", "failed", "not_submitted", false)
+	e.insertFundedFailure(b, "x@example.com")
 
 	m := localJSON(t, e.do("GET", "/admin/cdks", ""))
 	if m["total"].(float64) != 3 || m["page"].(float64) != 1 {
@@ -397,7 +409,7 @@ func TestAdminListLocalCDKs(t *testing.T) {
 	if r := byID[a]; r["status"] != "consumed" || r["fund_cents"].(float64) != 3000 || r["order_state"] != "succeeded" || r["account_email"] != "bu***@example.com" || r["order_no"] == "" {
 		t.Fatalf("%v", r)
 	}
-	if r := byID[b]; r["status"] != "unused" || r["clean_failures"].(float64) != 1 || r["attempts_left"].(float64) != 3 {
+	if r := byID[b]; r["status"] != "unused" || r["precharge_failures"].(float64) != 1 || r["funded_failures"].(float64) != 1 || r["attempts_left"].(float64) != 2 {
 		t.Fatalf("%v", r)
 	}
 	if r := byID[c]; r["status"] != "unused" || r["plan_note"] != "仅限无订阅账号" || r["order_no"] != "" || r["fund_cents"].(float64) != 0 {
@@ -509,7 +521,7 @@ func TestAdminProviderReadiness(t *testing.T) {
 	}
 	providers := m["providers"].(map[string]any)
 	mw := providers["marswallex"].(map[string]any)
-	if mw["ok"] != false || !strings.Contains(localBody(t, mw["problems"]), "真实付款") {
+	if mw["ok"] != false || !strings.Contains(localBody(t, mw["problems"]), "需要一笔系统自动确认成功的真实付款") {
 		t.Fatalf("硬门槛要列为原因: %v", mw)
 	}
 	checks := map[string]bool{}
@@ -612,7 +624,7 @@ func TestAgentExchangeLocalCDK(t *testing.T) {
 		e := setup(t)
 		code, id := e.issueCode("plus", "PH")
 		for i := 0; i < 2; i++ {
-			e.insertOrder("cdk", db.LocalCDKSourceRef(id), 0, fmt.Sprintf("a%d@example.com", i), "failed", "not_submitted", false)
+			e.insertFundedFailure(id, fmt.Sprintf("a%d@example.com", i))
 		}
 		st, m := exchange(e, strings.ToLower(code))
 		if st != http.StatusOK {
@@ -637,7 +649,7 @@ func TestAgentExchangeLocalCDK(t *testing.T) {
 		}
 		// 新码继承失败次数：不能靠换码绕过重兑上限
 		w := e.do("POST", "/public/cdk/preview", localBody(t, map[string]any{"code": newCode}))
-		if w.Code != http.StatusOK || localJSON(t, w)["attempts_left"].(float64) != 2 {
+		if w.Code != http.StatusOK || localJSON(t, w)["attempts_left"].(float64) != 1 {
 			t.Fatalf("%d %s", w.Code, w.Body.String())
 		}
 		// 同一张旧码不能换第二次
@@ -665,8 +677,8 @@ func TestAgentExchangeLocalCDK(t *testing.T) {
 	t.Run("换码绕不过重兑上限", func(t *testing.T) {
 		e := setup(t)
 		code, id := e.issueCode("plus", "PH")
-		for i := 0; i < 3; i++ {
-			e.insertOrder("cdk", db.LocalCDKSourceRef(id), 0, fmt.Sprintf("a%d@example.com", i), "failed", "not_submitted", false)
+		for i := 0; i < 2; i++ {
+			e.insertFundedFailure(id, fmt.Sprintf("a%d@example.com", i))
 		}
 		st, m := exchange(e, code)
 		if st != http.StatusOK {
@@ -677,8 +689,8 @@ func TestAgentExchangeLocalCDK(t *testing.T) {
 		if localJSON(t, w)["attempts_left"].(float64) != 1 {
 			t.Fatalf("%s", w.Body.String())
 		}
-		// 第 4 次干净失败后，新码转人工，也不能再换
-		e.insertOrder("cdk", db.LocalCDKSourceRef(int64(m["new_cdk_id"].(float64))), 0, "z@example.com", "failed", "not_submitted", false)
+		// 第 3 次注资后失败，新码转人工，也不能再换
+		e.insertFundedFailure(int64(m["new_cdk_id"].(float64)), "z@example.com")
 		if st, m := exchange(e, next); st != http.StatusBadRequest {
 			t.Fatalf("%d %v", st, m)
 		}
@@ -713,6 +725,31 @@ func TestAgentExchangeLocalCDK(t *testing.T) {
 		})
 	}
 
+	t.Run("注资之前的失败可以换，新码不带次数", func(t *testing.T) {
+		e := setup(t)
+		code, id := e.issueCode("plus", "PH")
+		for i := 0; i < 5; i++ {
+			e.insertOrder("cdk", db.LocalCDKSourceRef(id), 0, fmt.Sprintf("a%d@example.com", i), "failed", "not_submitted", false)
+		}
+		st, m := exchange(e, code)
+		if st != http.StatusOK {
+			t.Fatalf("%d %v", st, m)
+		}
+		w := e.do("POST", "/public/cdk/preview", localBody(t, map[string]any{"code": m["new_code"].(string)}))
+		if localJSON(t, w)["attempts_left"].(float64) != db.MaxLocalCDKFundedFailures {
+			t.Fatalf("%s", w.Body.String())
+		}
+	})
+	t.Run("次数用完的不能换", func(t *testing.T) {
+		e := setup(t)
+		code, id := e.issueCode("plus", "PH")
+		for i := 0; i < db.MaxLocalCDKFundedFailures; i++ {
+			e.insertFundedFailure(id, fmt.Sprintf("a%d@example.com", i))
+		}
+		if st, m := exchange(e, code); st != http.StatusBadRequest {
+			t.Fatalf("%d %v", st, m)
+		}
+	})
 	t.Run("从未兑换的不能换", func(t *testing.T) {
 		e := setup(t)
 		code, _ := e.issueCode("plus", "PH")

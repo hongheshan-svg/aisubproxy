@@ -21,7 +21,7 @@
           </template>
           <div class="space-y-2">
             <div class="text-sm font-medium text-ink">代理换码页</div>
-            <p class="text-xs text-muted">失败且未扣款的卡密可换新码，需在卡台接入里设置代理密码。</p>
+            <p class="text-xs text-muted">失败且未扣款的卡密可换新码，代理密码和每日上限在「代理换码」标签里设置。</p>
             <div class="mono text-xs break-all">{{ agentSwapUrl }}</div>
             <div class="flex gap-2">
               <el-button type="primary" size="small" @click="copyText(agentSwapUrl)">复制链接</el-button>
@@ -36,7 +36,7 @@
 
     <el-tabs v-model="tab" class="cdk-tabs">
       <el-tab-pane label="卡密" name="codes" />
-      <el-tab-pane label="代理换码核对" name="swaps" />
+      <el-tab-pane label="代理换码" name="swaps" />
     </el-tabs>
 
     <IssueProviderBar v-if="tab === 'codes'" v-model:provider="provider" v-model:product="directProduct" :reg="registry"
@@ -332,7 +332,10 @@
     <section v-else-if="tab === 'codes' && provider" class="card text-sm text-muted" data-testid="no-code-list">
       这家服务商的码请在它自己的后台管理。
     </section>
-    <AgentExchangePanel v-else-if="tab === 'swaps'" />
+    <div v-else-if="tab === 'swaps'" class="space-y-4">
+      <AgentSwapSettings />
+      <AgentExchangePanel />
+    </div>
   </div>
 </template>
 
@@ -340,6 +343,7 @@
 import ApiErrorNotice from '../../components/ApiErrorNotice.vue'
 import LocalCdkPanel from './components/LocalCdkPanel.vue'
 import AgentExchangePanel from './components/AgentExchangePanel.vue'
+import AgentSwapSettings from './components/AgentSwapSettings.vue'
 import { useIssueProvider } from '../../lib/useIssueProvider'
 import IssueProviderBar from './components/IssueProviderBar.vue'
 import { useRouteTab } from '../../lib/useRouteTab'

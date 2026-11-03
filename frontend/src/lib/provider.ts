@@ -243,7 +243,7 @@ export function classifyIssueFailure(status: number, d: any): IssueFailure {
     }
   }
   if (status === 400 && Array.isArray(d?.problems) && d.problems.length) {
-    return { kind: 'not_ready', message: err || 'MarsWallex 未就绪，不能发码', problems: d.problems.map(String) }
+    return { kind: 'not_ready', message: err || '该服务商未就绪，不能发码', problems: d.problems.map(String) }
   }
   if (status === 400 && d?.plan && d?.provider) {
     return { kind: 'unsupported', message: err || '该服务商不支持这个产品或档位' }

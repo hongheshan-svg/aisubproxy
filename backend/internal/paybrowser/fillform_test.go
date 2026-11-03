@@ -73,10 +73,10 @@ func TestStripeFillBothPrefixes(t *testing.T) {
 // 真实数据证实不了字段要不要点按钮才出现（发现报告与原始数据不符），两种情况都要能走通。
 func TestManualAddressVariants(t *testing.T) {
 	cases := map[string]string{
-		"字段过一会儿自己出现":  "autoreveal=1",
-		"入口等街道填好才出现":  "latemanual=1",
+		"字段过一会儿自己出现":    "autoreveal=1",
+		"入口等街道填好才出现":    "latemanual=1",
 		"点入口后字段过一会儿才出现": "reveallag=3000",
-		"入口第一次点击没反应":  "revealclicks=2",
+		"入口第一次点击没反应":    "revealclicks=2",
 	}
 	for name, query := range cases {
 		t.Run(name, func(t *testing.T) {

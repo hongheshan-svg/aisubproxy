@@ -47,7 +47,9 @@ func TestFillFailureWritesDiagnosisWithoutShot(t *testing.T) {
 		Fields:        []paybrowser.FieldCheck{{Label: "卡号", Selector: "#cardNumber", Status: "已填写"}},
 		ManualAddress: "已点击 2 次",
 	}
-	h.br.diagnose = func(context.Context) []string { return []string{"选择器可见命中（主页面|子 frame）：城市 0/0|0/0"} }
+	h.br.diagnose = func(context.Context) []string {
+		return []string{"选择器可见命中（主页面|子 frame）：城市 0/0|0/0"}
+	}
 	h.start(t)
 	o := h.submit(t, false)
 	g := waitDone(t, o.OrderNo)

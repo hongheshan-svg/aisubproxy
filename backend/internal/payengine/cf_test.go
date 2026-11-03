@@ -80,3 +80,18 @@ func TestCloudflareBlockedInVerifyNeverConcludesDeclined(t *testing.T) {
 		t.Fatalf("同样的拦截只告警 1 次（不刷屏）: %v", h.alerts.Texts())
 	}
 }
+
+// ChatGPT 的错误说明会带进单据的错误信息，但会话令牌、账号邮箱要打码。
+func TestChatGPTErrorDetailReachesOrderScrubbed(t *testing.T) {
+	h := newHarness(t)
+	h.gpt.checkoutErr = fmt.Errorf("ChatGPT 返回 HTTP 400：Invalid plan_name for %s token %s", "buyer@example.com", testSessionToken)
+	h.start(t)
+	g := waitDone(t, h.submit(t, false).OrderNo)
+	assertNotSubmitted(t, g, "checkout_failed")
+	if !strings.Contains(g.ErrorMessage, "创建支付会话失败") || !strings.Contains(g.ErrorMessage, "Invalid plan_name") {
+		t.Fatalf("错误信息应带上 ChatGPT 的说明: %q", g.ErrorMessage)
+	}
+	if strings.Contains(g.ErrorMessage, testSessionToken) || strings.Contains(strings.ToLower(g.ErrorMessage), "buyer@example.com") {
+		t.Fatalf("会话令牌或邮箱没有打码: %q", g.ErrorMessage)
+	}
+}

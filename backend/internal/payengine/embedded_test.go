@@ -265,8 +265,11 @@ func TestEmbeddedSubmitNotUniqueAbandons(t *testing.T) {
 	}
 	assertReleases(t, h, cardpool.ResultAborted)
 	assertSubmitCount(t, h, 1)
-	if b := theBrowser(t, h); b.count("WaitOutcome") != 0 {
-		t.Fatalf("没点击不应等结果: %d", b.count("WaitOutcome"))
+	if a := h.alerts.Texts(); len(a) != 0 {
+		t.Fatalf("不应告警: %v", a)
+	}
+	if b := theBrowser(t, h); b.count("LockSubmit") != 1 || b.count("WaitOutcome") != 0 || b.count("Close") != 1 {
+		t.Fatalf("应锁定 1 次、不等结果、关闭浏览器: %d %d %d", b.count("LockSubmit"), b.count("WaitOutcome"), b.count("Close"))
 	}
 }
 
@@ -292,4 +295,50 @@ func TestCreditOpenPageRefusesEmbeddedURL(t *testing.T) {
 		}
 	}
 	j.closeBrowser()
+}
+
+// 点数单拿到首尾带空白的 chatgpt.com 链接：去掉空白后同样是内嵌页，在注资前以 checkout_url_untrusted 放弃。
+func TestCreditWhitespaceEmbeddedURLAborts(t *testing.T) {
+	for _, prefix := range []string{" ", "\n", "\t"} {
+		t.Run(fmt.Sprintf("%q", prefix), func(t *testing.T) {
+			h := newCreditHarness(t)
+			h.gpt.creditCheckout = &chatgpt.CreditCheckoutResult{Tag: chatgpt.CheckoutTagHosted, SessionID: "cs_x", URL: prefix + "https://chatgpt.com/checkout/openai_llc/cs_x"}
+			h.start(t)
+			o := waitDone(t, h.submitCredit(t, false, false).OrderNo)
+			assertNotSubmitted(t, o, "checkout_url_untrusted")
+			if n := h.pool.total(); n != 0 {
+				t.Fatalf("不能碰卡池: %d", n)
+			}
+			if n := len(h.br.browsers()); n != 0 {
+				t.Fatalf("不应启动浏览器: %d", n)
+			}
+		})
+	}
+}
+
+// 订阅单拿到首部带空白的内嵌页链接：落库的是去掉空白的链接，按内嵌页打开，并确认「保存付款信息」。
+func TestSubscriptionWhitespaceEmbeddedURLNormalized(t *testing.T) {
+	for _, prefix := range []string{" ", "\n"} {
+		t.Run(fmt.Sprintf("%q", prefix), func(t *testing.T) {
+			h := newPayHarness(t, nil)
+			h.gpt.checkout = chatgpt.Checkout{SessionID: "cs_live_abc", URL: prefix + testEmbeddedURL}
+			h.gpt.accountFn = planFrom(2)
+			h.br.waitOutcome = outcomes(outcomeStep{out: paybrowser.OutcomeSuccess})
+			h.start(t)
+			o := waitDone(t, h.submit(t, false).OrderNo)
+			if o.State != StateSucceeded || o.CheckoutURL != testEmbeddedURL {
+				t.Fatalf("应开通成功，落库的链接不带空白: %q %+v", o.CheckoutURL, o)
+			}
+			b := theBrowser(t, h)
+			if k := openedKind(b); k != paybrowser.PageEmbedded {
+				t.Fatalf("应按内嵌页打开: %v", k)
+			}
+			if u := b.lastArgs("Open")[0]; u != testEmbeddedURL {
+				t.Fatalf("打开的链接应去掉空白: %q", u)
+			}
+			if n := b.count("EnsureNoSavePayment"); n != 1 {
+				t.Fatalf("EnsureNoSavePayment 应调用 1 次: %d", n)
+			}
+		})
+	}
 }

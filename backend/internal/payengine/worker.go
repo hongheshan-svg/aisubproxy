@@ -503,10 +503,12 @@ func (s *Service) createLink(ctx context.Context, j *job) error {
 	return s.acceptCheckoutURL(ctx, j, co.SessionID, link)
 }
 
-// acceptCheckoutURL 校验支付链接并推进到 link_created。链接为空记 checkout_failed；
+// acceptCheckoutURL 先去掉链接首尾空白，再校验并推进到 link_created。链接为空记 checkout_failed；
 // 不在支付域名白名单里（含点数单拿到内嵌结账页链接）记 checkout_url_untrusted，链接不落库、不打开。两种情况都还没取卡、没注资。
+// 落库的是去掉空白后的链接：之后打开页面、判页面类型、确认「保存付款信息」看到的都是同一个链接。
 func (s *Service) acceptCheckoutURL(ctx context.Context, j *job, sessionID, link string) error {
-	if strings.TrimSpace(link) == "" {
+	link = strings.TrimSpace(link)
+	if link == "" {
 		return abort("checkout_failed", "创建支付会话未返回支付链接")
 	}
 	if err := s.checkOrderURL(j, link); err != nil {
@@ -565,14 +567,19 @@ var trustedCheckoutHosts = map[string]bool{
 	embeddedCheckoutHost:  true,
 }
 
-// checkCheckoutURL 校验支付链接：必须是 https、没有账号密码、没有端口，主机名正好在 trustedCheckoutHosts 里；
-// 主机名是 chatgpt.com 时另外要求是标准的内嵌结账页链接（embeddedCheckoutLink）。
+// checkCheckoutURL 校验支付链接（先去首尾空白）：必须是 https、没有账号密码、没有端口，主机名只含 ASCII 字符、正好在 trustedCheckoutHosts 里；
+// 主机名是 chatgpt.com 时另外要求连空端口（「chatgpt.com:」）也没有，并且是标准的内嵌结账页链接（embeddedCheckoutLink）。
 // 不通过时返回 checkout_url_untrusted 的放弃原因，说明里只写域名，绝不写完整链接（链接里带会话号）。
 func checkCheckoutURL(raw string) error {
 	raw = strings.TrimSpace(raw)
 	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
 		return abort("checkout_url_untrusted", "支付链接无法解析出域名，已放弃，未注资")
+	}
+	// 转小写之前先拒绝非 ASCII 主机名：strings.ToLower 会把 İ（U+0130）折成 i、开尔文符号（U+212A）折成 k，
+	// 「pay.openaİ.com」转小写后和白名单一样，浏览器做国际化域名转换后去的却是别的域名。百分号编码的主机名解码后同样在这里拦下
+	if !isASCII(u.Hostname()) {
+		return abort("checkout_url_untrusted", "支付链接的域名 %+q 含非 ASCII 字符，已放弃，未注资", u.Hostname())
 	}
 	host := strings.ToLower(u.Hostname())
 	switch {
@@ -584,10 +591,22 @@ func checkCheckoutURL(raw string) error {
 		return abort("checkout_url_untrusted", "支付链接带端口（域名 %s），已放弃，未注资", host)
 	case !trustedCheckoutHosts[host]:
 		return abort("checkout_url_untrusted", "支付链接的域名 %s 不在支付域名白名单里，已放弃，未注资", host)
+	case host == embeddedCheckoutHost && u.Host != u.Hostname():
+		return abort("checkout_url_untrusted", "支付链接带端口（域名 %s），已放弃，未注资", host)
 	case host == embeddedCheckoutHost && !embeddedCheckoutLink(u, raw):
 		return abort("checkout_url_untrusted", "支付链接不是标准的内嵌结账页链接：路径不对，或带了查询串、片段（域名 %s），已放弃，未注资", host)
 	}
 	return nil
+}
+
+// isASCII 判断字符串是否只含 ASCII 字符。
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
 }
 
 // embeddedCheckoutLink 判断 chatgpt.com 的链接是不是标准的内嵌结账页：没有查询串和片段（raw 里出现「?」「#」就不算，空的也一样），
@@ -682,8 +701,9 @@ func formatMinor(v int64, currency string) string {
 }
 
 // checkoutPageKind 按链接域名决定页面类型：主机名是 chatgpt.com 为内嵌页，其余（含解析失败）按托管页。
+// 和 checkCheckoutURL 一样先去首尾空白，否则过得了白名单的「 https://chatgpt.com/…」会被误判成托管页。
 func checkoutPageKind(raw string) paybrowser.PageKind {
-	u, err := url.Parse(raw)
+	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || strings.ToLower(u.Hostname()) != embeddedCheckoutHost {
 		return paybrowser.PageHosted
 	}

@@ -40,6 +40,12 @@ var untrustedCheckoutURLs = []string{
 	"https://chatgpt.com:443/checkout/openai_llc/cs_live_abc",
 	"https://chatgpt.com/checkout/OpenAI/cs_live_abc",
 	"https://chatgpt.com/checkout/openai_llc/cs%2Flive",
+	"https://chatgpt.com:/checkout/openai_llc/cs_live_abc",
+	// 主机名含非 ASCII 字符：转小写会把 İ（U+0130）折成 i、开尔文符号（U+212A）折成 k，浏览器做国际化域名转换后去的是别的域名
+	"https://pay.openaİ.com/c/pay/cs_live_abc",
+	"https://checkout.strİpe.com/c/pay/cs_live_abc",
+	"https://chec\u212aout.stripe.com/c/pay/cs_live_abc",
+	"https://pay.opena%C4%B0.com/c/pay/cs_live_abc",
 }
 
 func TestCheckCheckoutURL(t *testing.T) {
@@ -125,6 +131,8 @@ func TestCheckoutPageKind(t *testing.T) {
 	}{
 		{"https://chatgpt.com/checkout/openai_llc/cs_live_abc", paybrowser.PageEmbedded},
 		{"HTTPS://CHATGPT.COM/checkout/a/b", paybrowser.PageEmbedded},
+		{" https://chatgpt.com/checkout/openai_llc/cs_live_abc", paybrowser.PageEmbedded},
+		{"\nhttps://chatgpt.com/checkout/openai_llc/cs_live_abc", paybrowser.PageEmbedded},
 		{"https://pay.openai.com/c/pay/x", paybrowser.PageHosted},
 		{"https://checkout.stripe.com/c/pay/x", paybrowser.PageHosted},
 		{"", paybrowser.PageHosted},

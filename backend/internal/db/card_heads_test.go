@@ -34,7 +34,7 @@ func TestSyncCardHeadsKeepsNotes(t *testing.T) {
 		{ProductID: "A", Name: "美卡-512998", CardHeads: []string{"512998"}, Network: "MASTER", Country: "US", Currency: "USD"},
 		{ProductID: "B", Name: "美卡-428820", CardHeads: []string{"428820"}, Network: "VISA", Country: "US", Currency: "USD"},
 	}
-	if err := db.SyncCardHeads("p1", first, 100); err != nil {
+	if err := db.SyncCardHeads("p1", first, 100, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.UpdateCardHeadNotes("p1", "A", "yes", "", "x", "admin", 110); err != nil {
@@ -43,7 +43,7 @@ func TestSyncCardHeadsKeepsNotes(t *testing.T) {
 	second := []db.CardHeadProduct{
 		{ProductID: "A", Name: "美卡-512998-新名", CardHeads: []string{"512998"}, Network: "MASTER", Country: "US", Currency: "USD"},
 	}
-	if err := db.SyncCardHeads("p1", second, 200); err != nil {
+	if err := db.SyncCardHeads("p1", second, 200, false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -75,7 +75,7 @@ func TestSyncCardHeadsAdoptsManual(t *testing.T) {
 	if err := db.SaveManualCardHead(manual, "admin", 50); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.SyncCardHeads("p1", []db.CardHeadProduct{{ProductID: "C", Name: "接口卡", CardHeads: []string{"411112"}}}, 60); err != nil {
+	if err := db.SyncCardHeads("p1", []db.CardHeadProduct{{ProductID: "C", Name: "接口卡", CardHeads: []string{"411112"}}}, 60, false); err != nil {
 		t.Fatal(err)
 	}
 	c := headByID(t, "p1", "C")
@@ -87,10 +87,10 @@ func TestSyncCardHeadsAdoptsManual(t *testing.T) {
 // 同步一家服务商，不影响另一家的记录。
 func TestSyncCardHeadsOtherProvider(t *testing.T) {
 	dbtest.Open(t)
-	if err := db.SyncCardHeads("p2", []db.CardHeadProduct{{ProductID: "X", Name: "p2 卡"}}, 10); err != nil {
+	if err := db.SyncCardHeads("p2", []db.CardHeadProduct{{ProductID: "X", Name: "p2 卡"}}, 10, false); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.SyncCardHeads("p1", []db.CardHeadProduct{{ProductID: "Y", Name: "p1 卡"}}, 20); err != nil {
+	if err := db.SyncCardHeads("p1", []db.CardHeadProduct{{ProductID: "Y", Name: "p1 卡"}}, 20, false); err != nil {
 		t.Fatal(err)
 	}
 	x := headByID(t, "p2", "X")
@@ -104,7 +104,7 @@ func TestSyncCardHeadsOtherProvider(t *testing.T) {
 
 func TestManualCardHeadRules(t *testing.T) {
 	dbtest.Open(t)
-	if err := db.SyncCardHeads("p1", []db.CardHeadProduct{{ProductID: "A", Name: "接口卡"}}, 10); err != nil {
+	if err := db.SyncCardHeads("p1", []db.CardHeadProduct{{ProductID: "A", Name: "接口卡"}}, 10, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.SaveManualCardHead(db.CardHead{Provider: "p1", ProductID: "A", Name: "改名"}, "admin", 20); !errors.Is(err, db.ErrCardHeadNotManual) {
@@ -140,5 +140,23 @@ func TestManualCardHeadRules(t *testing.T) {
 	}
 	if _, err := db.GetCardHead("p1", "M"); !errors.Is(err, db.ErrCardHeadNotFound) {
 		t.Fatalf("删除后应不存在，得到 %v", err)
+	}
+}
+
+// pruneMissing 为真时，接口不再返回的 api 行直接删除；手动行不受影响。
+func TestSyncCardHeadsPruneMissing(t *testing.T) {
+	dbtest.Open(t)
+	if err := db.SyncCardHeads("p1", []db.CardHeadProduct{{ProductID: "A"}, {ProductID: "B"}}, 10, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveManualCardHead(db.CardHead{Provider: "p1", ProductID: "M", Name: "手动"}, "admin", 11); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SyncCardHeads("p1", []db.CardHeadProduct{{ProductID: "A"}}, 20, true); err != nil {
+		t.Fatal(err)
+	}
+	list, err := db.ListCardHeads("p1")
+	if err != nil || len(list) != 2 || list[0].ProductID != "A" || list[1].ProductID != "M" {
+		t.Fatalf("list = %+v err=%v", list, err)
 	}
 }

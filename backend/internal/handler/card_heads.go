@@ -84,16 +84,39 @@ func setCardHeadSyncState(n provider.Name, err error) {
 	cardHeadSyncMu.Unlock()
 }
 
+// cardHeadPruneMissing 是可选能力：接口不再返回的卡头直接删除，不保留。
+// ZovoCard 用它：卡台下架的卡段 BIN 只能由卡台管理员看到，本站不保留（见 db.PruneCardProductsExcept）。
+type cardHeadPruneMissing interface {
+	PruneMissingCardHeads() bool
+}
+
 var errNoCardHeads = errors.New("服务商没有返回任何卡头")
 
-// syncCardHeads 从数据源读取卡头并写入表里。出错或返回空列表时不改表，只记下错误。
+// syncCardHeads 从数据源读取卡头并写入表里。产品 ID 不合法的条目跳过；
+// 出错或没有合法条目时不改表，只记下错误。
 func syncCardHeads(ctx context.Context, n provider.Name, src cardHeadSource) error {
 	items, err := src.CardHeads(ctx)
-	if err == nil && len(items) == 0 {
-		err = errNoCardHeads
+	if err == nil {
+		valid := make([]db.CardHeadProduct, 0, len(items))
+		for _, it := range items {
+			if cardHeadProductIDRe.MatchString(it.ProductID) {
+				valid = append(valid, it)
+			}
+		}
+		if skipped := len(items) - len(valid); skipped > 0 {
+			log.Printf("同步 %s 卡头：跳过 %d 条产品 ID 不合法的记录", n, skipped)
+		}
+		items = valid
+		if len(items) == 0 {
+			err = errNoCardHeads
+		}
 	}
 	if err == nil {
-		err = db.SyncCardHeads(string(n), items, time.Now().Unix())
+		prune := false
+		if p, ok := src.(cardHeadPruneMissing); ok {
+			prune = p.PruneMissingCardHeads()
+		}
+		err = db.SyncCardHeads(string(n), items, time.Now().Unix(), prune)
 	}
 	setCardHeadSyncState(n, err)
 	return err
@@ -153,21 +176,16 @@ const (
 	cardHeadMaxAttrLen = 16
 )
 
-// validateCardHead 校验产品 ID、产品信息和标注。
+// validateCardHead 校验手动录入的整条卡头：产品 ID、产品信息和标注。
 func validateCardHead(h db.CardHead) error {
 	if !cardHeadProductIDRe.MatchString(h.ProductID) {
 		return errors.New("产品 ID 须为 1 到 64 位字母、数字、下划线、横线或点")
 	}
+	if err := validateCardHeadNotes(h); err != nil {
+		return err
+	}
 	if utf8.RuneCountInString(h.Name) > cardHeadMaxName {
 		return fmt.Errorf("名称最多 %d 字", cardHeadMaxName)
-	}
-	if utf8.RuneCountInString(h.Note) > cardHeadMaxNote {
-		return fmt.Errorf("备注最多 %d 字", cardHeadMaxNote)
-	}
-	for label, v := range map[string]string{"3DS": h.ThreeDS, "Apple Pay": h.ApplePay} {
-		if v != "" && v != "yes" && v != "no" {
-			return fmt.Errorf("%s 只能是未标注、支持或不支持", label)
-		}
 	}
 	if len(h.CardHeads) > cardHeadMaxHeads {
 		return fmt.Errorf("卡头最多 %d 个", cardHeadMaxHeads)
@@ -180,6 +198,20 @@ func validateCardHead(h db.CardHead) error {
 	for label, v := range map[string]string{"卡组织": h.Network, "国家": h.Country, "币种": h.Currency} {
 		if utf8.RuneCountInString(v) > cardHeadMaxAttrLen {
 			return fmt.Errorf("%s最多 %d 字", label, cardHeadMaxAttrLen)
+		}
+	}
+	return nil
+}
+
+// validateCardHeadNotes 只校验标注（3DS、Apple Pay、备注）。接口来源的行只校验这部分：
+// 它的产品信息来自上游，不受手动录入的上限约束，否则超限的行就永远标不了。
+func validateCardHeadNotes(h db.CardHead) error {
+	if utf8.RuneCountInString(h.Note) > cardHeadMaxNote {
+		return fmt.Errorf("备注最多 %d 字", cardHeadMaxNote)
+	}
+	for label, v := range map[string]string{"3DS": h.ThreeDS, "Apple Pay": h.ApplePay} {
+		if v != "" && v != "yes" && v != "no" {
+			return fmt.Errorf("%s 只能是未标注、支持或不支持", label)
 		}
 	}
 	return nil
@@ -346,7 +378,11 @@ func AdminUpdateCardHead(c *gin.Context) {
 			fields = append(fields, "card_heads")
 		}
 	}
-	if err := validateCardHead(h); err != nil {
+	validate := validateCardHeadNotes
+	if manual {
+		validate = validateCardHead
+	}
+	if err := validate(h); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}

@@ -123,9 +123,10 @@ func GetCardHead(provider, productID string) (CardHead, error) {
 	return h, err
 }
 
-// SyncCardHeads 把接口返回的产品写入表里：只改产品信息，不改标注；同 ID 的手动记录转成 api 来源；
-// 这家服务商 api 来源但本次没返回的标 listed=0，不删除。全部在一个事务里完成。
-func SyncCardHeads(provider string, items []CardHeadProduct, now int64) error {
+// SyncCardHeads 把接口返回的产品写入表里：只改产品信息，不改标注；同 ID 的手动记录转成 api 来源。
+// 这家服务商 api 来源但本次没返回的：pruneMissing 为假时标 listed=0，不删除；为真时直接删除。
+// 全部在一个事务里完成。
+func SyncCardHeads(provider string, items []CardHeadProduct, now int64, pruneMissing bool) error {
 	tx, err := DB.Begin()
 	if err != nil {
 		return err
@@ -144,6 +145,9 @@ ON CONFLICT(provider, product_id) DO UPDATE SET source = 'api', name = excluded.
 		ids = append(ids, it.ProductID)
 	}
 	q := `UPDATE provider_card_heads SET listed = 0 WHERE provider = ? AND source = 'api'`
+	if pruneMissing {
+		q = `DELETE FROM provider_card_heads WHERE provider = ? AND source = 'api'`
+	}
 	if len(items) > 0 {
 		q += ` AND product_id NOT IN (?` + strings.Repeat(`, ?`, len(items)-1) + `)`
 	}

@@ -98,6 +98,8 @@ type cardHeadSource interface {
 
 - 接口返回的产品：插入或更新名称、卡头、卡组织、国家、币种，`listed=1`。**不改** `three_ds`、`apple_pay`、`note`。原来是手动添加的同 ID 记录，改为 `source=api`，标注保留。
 - 这家服务商 `source=api` 的记录里，接口没再返回的：`listed=0`，不删除。
+  - 例外：ZovoCard 下架的卡段直接删除。卡台下架的卡段 BIN 只能由卡台管理员看到，本站不保留（沿用 2026-10-04 提交 f69bec6 的决定，与产品缓存 `card_product_cache` 的规则一致）。这类服务商在适配器上实现可选能力 `PruneMissingCardHeads`。
+- 接口返回的产品 ID 不合法（为空或不符合下面的校验）的条目跳过；跳过后一条不剩时按读取出错处理。
 - 读取出错时，表里什么都不改，记下错误，在页面上显示。
 
 **同步时机**：
@@ -113,7 +115,7 @@ type cardHeadSource interface {
 |---|---|
 | `GET /api/v1/admin/providers/:name/card-heads` | 返回 `{provider, auto, last_sync_at, last_sync_error, items}` |
 | `POST /api/v1/admin/providers/:name/card-heads/sync` | 立即同步。不能自动读取的服务商返回 400 |
-| `PUT /api/v1/admin/providers/:name/card-heads/:product_id` | 修改标注（`three_ds`、`apple_pay`、`note`）；`manual` 来源的还能改产品信息 |
+| `PUT /api/v1/admin/providers/:name/card-heads/:product_id` | 修改标注（`three_ds`、`apple_pay`、`note`）；`manual` 来源的还能改产品信息。`api` 来源的只校验标注，产品信息来自上游，不受下面的长度上限约束 |
 | `POST /api/v1/admin/providers/:name/card-heads` | 手动添加。能自动读取的服务商返回 400 |
 | `DELETE /api/v1/admin/providers/:name/card-heads/:product_id` | 只能删 `manual` 来源的 |
 

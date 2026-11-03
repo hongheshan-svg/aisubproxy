@@ -51,7 +51,7 @@ func TestSyncCardHeadsEmptyIsError(t *testing.T) {
 	dbtest.Open(t)
 	const p provider.Name = "heads-empty"
 	ctx := context.Background()
-	if err := db.SyncCardHeads(string(p), []db.CardHeadProduct{{ProductID: "A", Name: "卡 A"}}, 10); err != nil {
+	if err := db.SyncCardHeads(string(p), []db.CardHeadProduct{{ProductID: "A", Name: "卡 A"}}, 10, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.UpdateCardHeadNotes(string(p), "A", "yes", "no", "备注", "admin", 11); err != nil {
@@ -352,5 +352,79 @@ func TestCardHeadsValidation(t *testing.T) {
 	}
 	if got, _ := db.GetCardHead(string(providertest.TestUp), "P1"); got.ThreeDS != "" {
 		t.Fatalf("校验不通过不应写库: %+v", got)
+	}
+}
+
+// 上游字段超出手动录入的上限时，接口来源的行仍能改标注。
+func TestCardHeadsAPIRowAnnotatableDespiteUpstreamFields(t *testing.T) {
+	dbtest.Open(t)
+	providertest.Register(t, providertest.NewTestCard())
+	src := fakeCardSupplyWithHeads{fakeHeads{items: []db.CardHeadProduct{{
+		ProductID: "A", Name: strings.Repeat("名", 120), CardHeads: []string{"5378xx"}, Country: "United Arab Emirates"}}}}
+	withCardSupplyAdapter(t, providertest.TestCard, src)
+	base := "/providers/" + string(providertest.TestCard) + "/card-heads"
+	decodeHeadList(t, headsRoute(AdminSyncCardHeads, "POST", headsSyncRoute, base+"/sync", ``))
+	w := headsRoute(AdminUpdateCardHead, "PUT", headsItemRoute, base+"/A", `{"three_ds":"yes","note":"可标注"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("接口来源的行应能改标注: %d %s", w.Code, w.Body.String())
+	}
+	if got, _ := db.GetCardHead(string(providertest.TestCard), "A"); got.ThreeDS != "yes" || got.Note != "可标注" {
+		t.Fatalf("A = %+v", got)
+	}
+	if w := headsRoute(AdminUpdateCardHead, "PUT", headsItemRoute, base+"/A", `{"three_ds":"maybe"}`); w.Code != http.StatusBadRequest {
+		t.Fatalf("标注本身仍要校验，得到 %d", w.Code)
+	}
+}
+
+// 上游返回的产品 ID 为空或不合法时跳过；一条都不剩按出错处理，不改表。
+func TestSyncCardHeadsSkipsInvalidProductIDs(t *testing.T) {
+	dbtest.Open(t)
+	const p provider.Name = "heads-badid"
+	ctx := context.Background()
+	if err := db.SyncCardHeads(string(p), []db.CardHeadProduct{{ProductID: "A"}, {ProductID: "B"}}, 10, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncCardHeads(ctx, p, fakeHeads{items: []db.CardHeadProduct{{ProductID: ""}, {ProductID: "a b"}}}); err == nil {
+		t.Fatal("全是不合法的产品 ID 时应报错")
+	}
+	list, _ := db.ListCardHeads(string(p))
+	if len(list) != 2 || !list[0].Listed || !list[1].Listed {
+		t.Fatalf("不应改表: %+v", list)
+	}
+	if err := syncCardHeads(ctx, p, fakeHeads{items: []db.CardHeadProduct{{ProductID: ""}, {ProductID: "A"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.GetCardHead(string(p), ""); !errors.Is(err, db.ErrCardHeadNotFound) {
+		t.Fatalf("不应写入空 ID 的行: %v", err)
+	}
+	if a, _ := db.GetCardHead(string(p), "A"); !a.Listed {
+		t.Fatalf("A = %+v", a)
+	}
+}
+
+// ZovoCard 下架的卡段（产品缓存里已删除）不保留卡头：BIN 只能由卡台管理员看到。
+func TestZovoCardCardHeadsPruneDelisted(t *testing.T) {
+	dbtest.Open(t)
+	ctx := context.Background()
+	for _, code := range []string{"P1", "P2"} {
+		if err := db.UpsertCardProduct(db.CardProductCache{ProductCode: code, BIN: "411111", Enabled: true}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := syncCardHeads(ctx, provider.ZovoCard, zovoCardAdapter{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.UpdateCardHeadNotes(string(provider.ZovoCard), "P2", "yes", "", "", "admin", 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.PruneCardProductsExcept(map[string]bool{"P1": true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := syncCardHeads(ctx, provider.ZovoCard, zovoCardAdapter{}); err != nil {
+		t.Fatal(err)
+	}
+	list, _ := db.ListCardHeads(string(provider.ZovoCard))
+	if len(list) != 1 || list[0].ProductID != "P1" {
+		t.Fatalf("下架的 P2 应删除: %+v", list)
 	}
 }

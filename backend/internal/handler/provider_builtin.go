@@ -94,6 +94,9 @@ func (zovoCardAdapter) CardHeads(context.Context) ([]db.CardHeadProduct, error) 
 	return out, nil
 }
 
+// PruneMissingCardHeads：卡台下架的卡段直接删除，不保留它的 BIN（与产品缓存的规则一致）。
+func (zovoCardAdapter) PruneMissingCardHeads() bool { return true }
+
 // CardHeads 调用 MarsWallex 卡产品接口。接口没有卡头字段，卡头从产品名里识别。
 func (marsWallexAdapter) CardHeads(ctx context.Context) ([]db.CardHeadProduct, error) {
 	s := cardPool

@@ -324,6 +324,8 @@ func setupRoutes(r *gin.Engine) {
 			admin.GET("/cardpool/transactions", handler.AdminCardPoolTransactions)
 			admin.GET("/cardpool/policy", handler.AdminCardPoolGetPolicy)
 			admin.PUT("/cardpool/policy", handler.AdminCardPoolPutPolicy)
+			admin.GET("/cardpool/selection", handler.AdminCardPoolGetSelection)
+			admin.PUT("/cardpool/selection", handler.AdminCardPoolPutSelection)
 			admin.GET("/cardpool/health", handler.AdminCardPoolHealth)
 			admin.POST("/cardpool/health/resume", handler.AdminCardPoolResume)
 			// MarsWallex 钱包：账户、收款地址、流水、兑换、钱包转账

@@ -20,6 +20,8 @@ func TestCardPoolWalletRoutesRegistered(t *testing.T) {
 	}
 	const p = "/api/v1/admin/cardpool"
 	for _, want := range []string{
+		"GET " + p + "/selection",
+		"PUT " + p + "/selection",
 		"GET " + p + "/wallet/accounts",
 		"POST " + p + "/wallet/accounts",
 		"POST " + p + "/wallet/accounts/:no/status",

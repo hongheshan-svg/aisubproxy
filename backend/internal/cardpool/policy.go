@@ -190,3 +190,58 @@ func SavePolicy(p Policy) error {
 	}
 	return db.SetSetting(PolicySettingKey, string(b))
 }
+
+// Selection 是策略里的选卡字段，由「MarsWallex → 选卡规则」页单独读写；卡池页不再提交它们。
+type Selection struct {
+	PlanProducts         map[string][]string `json:"plan_products"`
+	MaxUsesPerCard       int                 `json:"max_uses_per_card"`
+	HealthWindowHours    int                 `json:"health_window_hours"`
+	ProductFailThreshold int                 `json:"product_fail_threshold"`
+	CardFailThreshold    int                 `json:"card_fail_threshold"`
+	AutoSuspend          bool                `json:"auto_suspend"`
+}
+
+// SelectionKeys 是选卡字段的 JSON 键名。
+var SelectionKeys = []string{"plan_products", "max_uses_per_card", "health_window_hours", "product_fail_threshold", "card_fail_threshold", "auto_suspend"}
+
+// Selection 取出选卡字段。
+func (p Policy) Selection() Selection {
+	return Selection{
+		PlanProducts:         p.PlanProducts,
+		MaxUsesPerCard:       p.MaxUsesPerCard,
+		HealthWindowHours:    p.HealthWindowHours,
+		ProductFailThreshold: p.ProductFailThreshold,
+		CardFailThreshold:    p.CardFailThreshold,
+		AutoSuspend:          p.AutoSuspend,
+	}
+}
+
+// ApplySelection 用 s 覆盖全部选卡字段。
+func (p *Policy) ApplySelection(s Selection) {
+	p.PlanProducts = s.PlanProducts
+	p.MaxUsesPerCard = s.MaxUsesPerCard
+	p.HealthWindowHours = s.HealthWindowHours
+	p.ProductFailThreshold = s.ProductFailThreshold
+	p.CardFailThreshold = s.CardFailThreshold
+	p.AutoSuspend = s.AutoSuspend
+}
+
+// CopySelection 把 src 里 keys 列出的选卡字段复制过来（键名见 SelectionKeys），其余字段不动。
+func (p *Policy) CopySelection(src Policy, keys ...string) {
+	for _, k := range keys {
+		switch k {
+		case "plan_products":
+			p.PlanProducts = src.PlanProducts
+		case "max_uses_per_card":
+			p.MaxUsesPerCard = src.MaxUsesPerCard
+		case "health_window_hours":
+			p.HealthWindowHours = src.HealthWindowHours
+		case "product_fail_threshold":
+			p.ProductFailThreshold = src.ProductFailThreshold
+		case "card_fail_threshold":
+			p.CardFailThreshold = src.CardFailThreshold
+		case "auto_suspend":
+			p.AutoSuspend = src.AutoSuspend
+		}
+	}
+}

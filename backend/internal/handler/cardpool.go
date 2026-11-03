@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gin-gonic/gin/binding"
 	"github.com/tuzi/cdk-recharge-system/internal/cardpool"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/marswallex"
@@ -460,9 +461,21 @@ func AdminCardPoolPutPolicy(c *gin.Context) {
 		cur, _ := cardpool.LoadPolicy()
 		p.MaxFundCents, p.MaxWalletOpCents, p.DailyFundCapCents = cur.MaxFundCents, cur.MaxWalletOpCents, cur.DailyFundCapCents
 		p.ReplenishWhenUnselected = cur.ReplenishWhenUnselected
-		if !bindPoolJSON(c, &p) {
+		// 选卡字段由「MarsWallex → 选卡规则」页单独保存（PUT /cardpool/selection），新的卡池页不再提交。
+		// 请求体里没出现的选卡字段沿用当前值；出现了照常使用（升级前还开着的旧卡池页会整份提交）。
+		// 按「键有没有出现」判断，不按零值判断。
+		var raw map[string]json.RawMessage
+		if c.ShouldBindBodyWith(&raw, binding.JSON) != nil || c.ShouldBindBodyWith(&p, binding.JSON) != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "请求体无效"})
 			return
 		}
+		var absent []string
+		for _, k := range cardpool.SelectionKeys {
+			if _, ok := raw[k]; !ok {
+				absent = append(absent, k)
+			}
+		}
+		p.CopySelection(cur, absent...)
 		if p.PlanProducts == nil {
 			p.PlanProducts = map[string][]string{}
 		}
@@ -525,5 +538,51 @@ func AdminReprocessMarsWallexWebhookEvent(c *gin.Context) {
 		}
 		poolAudit(c, "reprocess_event", "event_id="+strconv.FormatInt(id, 10))
 		c.JSON(http.StatusOK, gin.H{"ok": true})
+	})(c)
+}
+
+// AdminCardPoolGetSelection GET /api/v1/admin/cardpool/selection：只读选卡字段。
+func AdminCardPoolGetSelection(c *gin.Context) {
+	poolRoute(func(c *gin.Context, s *cardpool.Service) {
+		p, err := cardpool.LoadPolicy()
+		if err != nil {
+			poolFail(c, err)
+			return
+		}
+		c.JSON(http.StatusOK, p.Selection())
+	})(c)
+}
+
+// AdminCardPoolPutSelection PUT /api/v1/admin/cardpool/selection：只改选卡字段，其余策略字段保持当前值。
+// 请求体里没带的选卡字段也保持当前值。
+func AdminCardPoolPutSelection(c *gin.Context) {
+	poolRoute(func(c *gin.Context, s *cardpool.Service) {
+		// 读不出当前策略时拒绝保存：否则其余字段会被默认值覆盖
+		cur, err := cardpool.LoadPolicy()
+		if err != nil {
+			poolFail(c, err)
+			return
+		}
+		sel := cur.Selection()
+		// plan_products 不能绑定到已有的 map 上（会和原来的合并，删掉的套餐删不掉）
+		sel.PlanProducts = nil
+		if !bindPoolJSON(c, &sel) {
+			return
+		}
+		if sel.PlanProducts == nil {
+			sel.PlanProducts = cur.PlanProducts
+		}
+		cur.ApplySelection(sel)
+		if err := cardpool.SavePolicy(cur); err != nil {
+			poolFail(c, err)
+			return
+		}
+		// 审计记保存后的选卡字段（只有产品 ID 与数值参数，没有密钥）
+		detail, err := json.Marshal(sel)
+		if err != nil {
+			detail = []byte("updated")
+		}
+		poolAudit(c, "selection", string(detail))
+		c.JSON(http.StatusOK, sel)
 	})(c)
 }

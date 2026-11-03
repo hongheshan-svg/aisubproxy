@@ -85,6 +85,7 @@ const routes: RouteRecordRaw[] = [
       { path: 'card-selection', name: 'CardSelectionConfig', component: () => import('../views/admin/CardSelectionConfig.vue'), meta: { title: '卡台选卡规则', group: '服务商接入', icon: 'Operation' } },
       { path: 'webhooks', name: 'Webhooks', component: () => import('../views/admin/WebhookEvents.vue'), meta: { title: '卡台 Webhook', group: '服务商接入', icon: 'Bell' } },
       { path: 'marswallex', name: 'MarsWallexIntegration', component: () => import('../views/admin/MarsWallexIntegration.vue'), meta: { title: 'MarsWallex 对接', group: '服务商接入', icon: 'Platform' } },
+      { path: 'marswallex-selection', name: 'MarsWallexSelection', component: () => import('../views/admin/MarsWallexSelection.vue'), meta: { title: '选卡规则', fullTitle: 'MarsWallex 选卡规则', group: 'MarsWallex', icon: 'Operation' } },
       { path: 'appearance', name: 'SiteAppearance', component: () => import('../views/admin/SiteAppearance.vue'), meta: { title: '外观与品牌', group: '系统', icon: 'Brush' } },
       { path: 'telegram', name: 'TelegramAlerts', component: () => import('../views/admin/TelegramAlerts.vue'), meta: { title: 'Telegram 告警', group: '系统', icon: 'ChatDotRound' } },
       { path: 'audit', name: 'AuditLogs', component: () => import('../views/admin/AuditLogs.vue'), meta: { title: '审计日志', group: '系统', icon: 'List' } },

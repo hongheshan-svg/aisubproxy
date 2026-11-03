@@ -51,6 +51,18 @@
 - **原生版**（`deploy/install.sh`）：运行方式不变，systemd 单元仍是 `User=root`，安装时创建 `cdk-chrome` 用户，沙箱自检以 `cdk-chrome` 身份执行。只修 shellcheck 报的问题。
 - **Docker 版**：容器内仍以 root 运行，镜像里照旧创建 `cdk-chrome`，安全选项保持现状（只有 `seccomp=./deploy/chrome-seccomp.json`）。
 
+### 2.1.1 Chrome 只拿白名单里的环境变量（用户已批准）
+
+**问题**：chromedp 启动 Chrome 时，会把程序的全部环境变量（`os.Environ()`）传给 Chrome，其中包括 `APP_MASTER_KEY`、`JWT_SECRET`、`CARD_API_KEY`。虽然 Chrome 换成了 `cdk-chrome` 用户、读不到 `app.env`，进程里却直接带着主密钥，这层隔离就漏了。
+
+**做法**
+- 所有启动 Chrome 的地方（付款、浏览器自检、免付款探测），都通过 `env -i` 中转，只传白名单里的变量：`PATH`、`HOME`、`TMPDIR`、`DISPLAY`、`TZ`、`LANG`、`LANGUAGE`、`LC_*`、`XDG_*`、`FONTCONFIG_*`。
+- `HOME` 和 `TMPDIR` 指向本次 Chrome 的临时目录。
+- 代理通过 `--proxy-server` 参数传入，不经过环境变量。
+- 沙箱和降权到 `cdk-chrome` 都保持不变。
+
+**验证**：单元测试断言改写后的命令只剩白名单变量；在本机实测 Chrome 子进程拿不到 `APP_MASTER_KEY`；再跑一遍「浏览器自检」和「试运行到填表」。
+
 ### 2.2 Docker 版：改为发布镜像
 
 **镜像（Dockerfile）**

@@ -47,6 +47,11 @@
   - 删掉「容器内禁用在线更新」的提示。原生版的提示文案保持原样。
 - 测试覆盖 spec §4 列出的各种接管情况，以及容器内升级、回滚时的路径选择。
 - `paybrowser/sandbox.go` 的 HOME 改动：不再必需。已经做完的可以保留，root 那条路径的行为不能变。
+- **Chrome 启动时不带密钥**（spec §2.1.1，用户已批准）：
+  - 所有启动 Chrome 的入口都经过 `env -i` 中转，只传白名单里的环境变量；入口包括付款、浏览器自检、免付款探测。
+  - 绝不能让 `APP_MASTER_KEY`、`JWT_SECRET`、`CARD_API_KEY` 等进入 Chrome 进程。
+  - 沙箱和降权到 `cdk-chrome` 都保持不变。
+  - 单元测试要断言改写后的命令里只剩白名单变量；在本机实测 Chrome 子进程里拿不到 `APP_MASTER_KEY`。
 
 ### 任务 2：部署——Dockerfile、compose、docker-deploy.sh、冒烟脚本
 - `deploy/install.sh`：运行方式不变，只修 shellcheck 报的问题。

@@ -142,7 +142,7 @@ func (s *Service) renewOnce(ctx context.Context, no string, manual bool) (string
 	if o.State != StateSucceeded || !wantsRenewalCancel(o) {
 		return o.RenewalState, nil
 	}
-	if o.RenewalState != RenewalPending && !(manual && o.RenewalState == RenewalFailed) {
+	if o.RenewalState != RenewalPending && (!manual || o.RenewalState != RenewalFailed) {
 		return o.RenewalState, nil
 	}
 	if o.SessionSealed == "" {

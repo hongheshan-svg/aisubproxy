@@ -372,6 +372,7 @@ func (b *Browser) checkLinkModal(ctx context.Context) error {
 		return fmt.Errorf("检查 Link 验证框失败: %w", err)
 	}
 	if b.find(ctx, frames, Sel.LinkLoginFrame, false) != nil {
+		//nolint:staticcheck // ST1005：Stripe Link 是产品名（专有名词），错误文本保持不变
 		return errors.New("Stripe Link 弹出了验证框，已放弃")
 	}
 	return nil

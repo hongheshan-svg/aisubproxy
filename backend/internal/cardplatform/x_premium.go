@@ -15,6 +15,7 @@ func XPaymentCountry(country string) (string, error) {
 	case "US", "JP", "PH", "NG", "TR", "EG":
 		return country, nil
 	}
+	//nolint:staticcheck // ST1005：X 是产品名（专有名词），错误文本保持不变（不改变行为）
 	return "", errors.New("X supports US, JP, PH, NG, TR and EG only")
 }
 

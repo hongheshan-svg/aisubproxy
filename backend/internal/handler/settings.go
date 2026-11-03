@@ -9,14 +9,6 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 )
 
-// 允许写入 site_settings 的公开安全键（无密钥）
-var publicSettingKeys = map[string]bool{
-	"brand_name": true,
-	"brand_sub":  true,
-	"skin":       true,
-	"theme_mode": true,
-}
-
 // 密钥类键：只接受写入，读出脱敏
 var secretSettingKeys = map[string]bool{
 	"card_api_base":    false,

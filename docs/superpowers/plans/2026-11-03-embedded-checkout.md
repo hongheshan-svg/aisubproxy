@@ -15,7 +15,7 @@
   - 地址字段可有可无；
   - 主页面的提交按钮必须唯一；
   - 页面离开 `/checkout/` 就转确认。
-- 金额下限用套餐配置里的 `expect_minor`。
+- 金额下限用套餐配置里新增的「最低金额」`floor_minor`（用户 2026-11-03 定：单独填一个数，不按预期金额的百分比算）。
 
 **Tech Stack：** Go（chromedp、gin、SQLite），Vue 3 + Element Plus + vitest。
 
@@ -24,11 +24,11 @@
 ## Global Constraints
 
 - 代码注释、错误说明、时间线文字、提交信息都用简体中文。提交信息末尾加 `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`。
-- 托管页（`pay.openai.com`、`checkout.stripe.com`）的行为一律不变，现有测试全部保持通过，不准为了让新代码通过而改旧断言。只有 §Task 2 的 `Open` 签名变化和 §Task 7 的预期金额要求，可以机械地改旧测试的调用和配置。
+- 托管页（`pay.openai.com`、`checkout.stripe.com`）的行为一律不变，现有测试全部保持通过，不准为了让新代码通过而改旧断言。只有 §Task 2 的 `Open` 签名变化和 §Task 7 的最低金额要求，可以机械地改旧测试的调用和配置。
 - 错误说明、事件、日志里不得出现会话号、完整支付链接、卡号、CVC、会话 token、账号邮箱。白名单拒绝时只写域名。
 - 内嵌页的全部放弃条件都在注资之前判定：
   - 打不开、Cloudflare 挑战、读不出金额；
-  - 币种不符、超上限、低于预期；
+  - 币种不符、超上限、低于最低金额；
   - 支付按钮不唯一。
 - 只点一次的机制不变：先写 `submitted_at` 再点、`LockSubmit`、`ErrAlreadySubmitted`。
 - 不做任何绕过 Cloudflare 或页面风控的事。
@@ -36,14 +36,14 @@
 - 不碰 18080 端口和仓库的 `data/` 目录。不用 `git add -A`，`.claude/` 不要提交。不用不带参数的 `git stash`。
 - 门禁：`cd backend && go build ./... && go vet ./... && go test ./...`；`cd frontend && npx vitest run && npm run build`。
 - 规范化金额原文的格式是「金额里最后一段数字 + 空格 + 大写币种代码」，比如 `100.00 USD`、`1,120.00 PHP`。
-- 下限公式：`金额 × 100 < ExpectMinor × 95` 时放弃，错误码 `amount_below_expected`。
+- 下限规则：`金额 < FloorMinor` 时放弃，错误码 `amount_below_floor`。最低金额和预期金额、上限一样按「套餐 × 地区」用该地区币种填，不做汇率换算。
 
 ## Review Focus
 
 1. **填表后页面重绘**，主页面冒出第二个提交按钮，或按钮被换掉：`Submit` 在点击那一刻重新数按钮，不是 1 个就不点，返回错误，`submitted` 不置位。测试在 Task 5。
 2. **账号语言是中文**，主页面拒付提示是中文（「你的银行卡被拒绝」）：不能判成 `declined`，等到超时返回 `OutcomeUnknown`，交给查账号定论。测试在 Task 5。
 3. **Stripe 改了读屏文字**，没有 `Currency:`：`Open` 照样成功，`ReadAmount` 报错，引擎沿用现有路径以 `amount_unreadable` 在注资前放弃（`service_test.go` 已覆盖），不能误读成别的币种。测试在 Task 3。
-4. **预期金额配高了**（OpenAI 降价后管理员没改）：单据以 `amount_below_expected` 放弃，说明里同时写出页面金额和预期金额，管理员看得懂要改什么。测试在 Task 7。
+4. **最低金额配高了**（OpenAI 降价或汇率变动后管理员没改）：单据以 `amount_below_floor` 放弃，说明里同时写出页面金额和最低金额，管理员看得懂要改什么。测试在 Task 7。
 5. **会话号或 processor_entity 带路径字符**（`/`、`..`、`?`、`#`、大写）：在拼链接时放弃，不取卡，不启动浏览器，说明里没有会话号。测试在 Task 6。
 
 ---
@@ -418,86 +418,113 @@
 
 ---
 
-### Task 7：金额下限与必填预期金额
+### Task 7：最低金额与金额下限
 
 **Files：**
-- Modify：`backend/internal/payengine/config.go`（`ResolvePlan`、`RegionConf` 注释）
-- Modify：`backend/internal/payengine/worker.go`（`job` 加 `expectMinor int64`；`createLink` 记下；`openPage` 判下限）
-- Modify（机械补 `ExpectMinor`，值不大于该测试读到的页面金额）：
+- Modify：`backend/internal/payengine/config.go`
+  - `RegionConf` 加 `FloorMinor int64`，JSON `floor_minor`，注释写明「最低金额：支付页金额低于它就在注资前放弃，单位与币种同 CapMinor」；
+  - `ExpectMinor` 的注释保持「只用于展示和校验配置」；
+  - `SavePlanTable` 校验；
+  - `ResolvePlan`；
+  - 点数套餐 PH 出厂值（`defaultPlan` 里给 PH 的 `RegionConf` 加 `FloorMinor: expect`）。
+- Modify：`backend/internal/payengine/worker.go`（`job` 加 `floorMinor int64`；`createLink` 记下；`openPage` 判下限）
+- Modify（机械补 `FloorMinor`，值不大于该测试读到的页面金额，也不大于该配置的 `CapMinor` 和非零的 `ExpectMinor`）：
   - `backend/internal/payengine/service_test.go`、`fund_limit_test.go`、`config_test.go`、`settle_test.go`、`pay_test.go`
   - `backend/internal/handler/pay_test.go`、`local_cdk_env_test.go`、`cardpool_selection_test.go`、`provider_admin_test.go`、`fund_limits_test.go`
-  - 以及运行后报「未配置预期金额」的其它测试
-- Test：新建 `backend/internal/payengine/amount_floor_test.go`
+  - 以及运行后报「未配置最低金额」的其它测试
+- Test：新建 `backend/internal/payengine/amount_floor_test.go`；`config_test.go` 加测试
 
 **Interfaces：**
 - Consumes：无。
 - Produces：
-  - 错误码 `amount_below_expected`；
-  - `ResolvePlan` 在非试运行时，`rc.ExpectMinor <= 0` 返回 `unavailable("套餐 %s 在地区 %s 未配置预期金额", plan.Label, region)`；
-  - 常量 `expectFloorPct = 95`。
+  - `RegionConf.FloorMinor int64`，JSON `floor_minor`（Task 8 前端读写它）；
+  - 错误码 `amount_below_floor`（Task 8 前端加说明）；
+  - `ResolvePlan` 在非试运行时，`rc.FloorMinor <= 0` 返回 `unavailable("套餐 %s 在地区 %s 未配置最低金额", plan.Label, region)`。
 
-- [ ] **Step 1：写失败的测试**（`amount_floor_test.go`；harness 的套餐配 `ExpectMinor: 10000, CapMinor: 12000`，页面金额由假浏览器给出，币种 USD）
+- [ ] **Step 1：写失败的测试**（`amount_floor_test.go`；harness 的套餐配 `FloorMinor: 10000, CapMinor: 12000`，页面金额由假浏览器给出，币种 USD）
   ```go
-  // TestAmountBelowExpectedAbortsBeforeFunding：页面 9499 → 真实单以 amount_below_expected 结束，h.pool.total()==0，
-  //   ErrorMessage 含 "94.99" 和 "100.00" 和 "档位"
-  // TestAmountAtFloorProceeds：页面 9500 与 10000 → 真实单走到注资（h.pool 有 Acquire 调用）
-  // TestDryRunBelowExpectedOnlyWarns：试运行，页面 5000 → previewed，时间线有一条 warn 含 "低于预期"
-  // TestDryRunWithoutExpectSkipsFloor：试运行、ExpectMinor 0 → previewed，时间线有 "未配置预期金额，跳过下限检查"
-  // TestResolvePlanRequiresExpect（config_test.go）：Enabled、Cap、Fund 齐全但 ExpectMinor 0
-  //   → ResolvePlan(.., false) 返回 ErrPlanUnavailable，消息含 "未配置预期金额"；ResolvePlan(.., true) 不报错
+  // TestAmountBelowFloorAbortsBeforeFunding：页面 9999 → 真实单以 amount_below_floor 结束，h.pool.total()==0，
+  //   ErrorMessage 含 "99.99" 和 "100.00" 和 "档位"
+  // TestAmountAtFloorProceeds：页面 10000 → 真实单走到注资（h.pool 有 Acquire 调用）
+  // TestDryRunBelowFloorOnlyWarns：试运行，页面 5000 → previewed，时间线有一条 warn 含 "低于最低金额"
+  // TestDryRunWithoutFloorSkipsCheck：试运行、FloorMinor 0 → previewed，时间线有 "未配置最低金额，跳过下限检查"
+  ```
+  `config_test.go`：
+  ```go
+  // TestResolvePlanRequiresFloor：Enabled、Cap、Fund 齐全但 FloorMinor 0
+  //   → ResolvePlan(.., false) 返回 ErrPlanUnavailable，消息含 "未配置最低金额"；ResolvePlan(.., true) 不报错
+  // TestSavePlanTableValidatesFloor：以出厂表为底，改一个套餐一个地区：
+  //   FloorMinor -1 → ErrBadRequest；
+  //   CapMinor 12000、FloorMinor 12001 → ErrBadRequest，消息含 "最低金额"；
+  //   ExpectMinor 10000、CapMinor 12000、FloorMinor 10001 → ErrBadRequest，消息含 "最低金额"；
+  //   ExpectMinor 10000、CapMinor 12000、FloorMinor 10000 → nil
+  // TestDefaultFloor：出厂表里点数套餐 PH 的 FloorMinor == ExpectMinor 且 > 0；订阅套餐各地区 FloorMinor == 0
   ```
 
 - [ ] **Step 2：运行确认失败**
-  Run：`cd backend && go test ./internal/payengine/ -run 'TestAmountBelow|TestAmountAtFloor|TestDryRun.*Expect|TestResolvePlanRequiresExpect' -v`
-  Expected：FAIL（9499 照常注资；ResolvePlan 不报错）。
+  Run：`cd backend && go test ./internal/payengine/ -run 'TestAmountBelowFloor|TestAmountAtFloor|TestDryRun.*Floor|TestResolvePlanRequiresFloor|TestSavePlanTableValidatesFloor|TestDefaultFloor' -v`
+  Expected：编译失败（没有 `FloorMinor`）或 FAIL。
 
 - [ ] **Step 3：实现**
-  - **`ResolvePlan`**：在非试运行分支加入上面的检查，放在 `CapMinor` 检查之前。
-  - **`createLink`**：把 `ResolvePlan` 返回的 `rc.ExpectMinor` 存进 `j.expectMinor`。订阅、点数两个分支都要存。
+  - **`SavePlanTable`**：负数检查加上 `FloorMinor`；再加两条，消息分别为 `"%w: %s/%s 最低金额不能高于金额上限"`、`"%w: %s/%s 最低金额不能高于预期金额"`（各自只在被比较的一方大于 0 时检查）。
+  - **`ResolvePlan`**：在非试运行分支加入上面的检查，放在 `CapMinor` 检查之前。`ExpectMinor` 仍不要求。
+  - **`createLink`**：把 `ResolvePlan` 返回的 `rc.FloorMinor` 存进 `j.floorMinor`。订阅、点数两个分支都要存。
   - **`openPage`**：在超上限检查之后加入下限检查：
-    - **真实单**：`j.expectMinor > 0 && minor*100 < j.expectMinor*expectFloorPct` 时，返回
-      `abort("amount_below_expected", "支付页金额 %s 低于预期 %s %s 的 95%%（可能选错了档位或带了优惠），已放弃，未注资", text, formatMinor(j.expectMinor, cur), cur)`。
-    - **试运行**：偏低时只记一条 warn 事件；`j.expectMinor == 0` 时记一条 info「未配置预期金额，跳过下限检查」。
-  - 更新 `RegionConf` 注释：预期金额现在也用作付款下限。
-  - 运行全量后端测试，按报错给各测试的套餐配置补 `ExpectMinor`。
+    - **真实单**：`j.floorMinor > 0 && minor < j.floorMinor` 时，返回
+      `abort("amount_below_floor", "支付页金额 %s 低于该套餐在该地区的最低金额 %s %s（可能选错了档位或带了优惠），已放弃，未注资", text, formatMinor(j.floorMinor, cur), cur)`。
+    - **试运行**：偏低时只记一条 warn 事件，文字含「低于最低金额」；`j.floorMinor == 0` 时记一条 info「未配置最低金额，跳过下限检查」。
+  - 运行全量后端测试，按报错给各测试的套餐配置补 `FloorMinor`。
 
 - [ ] **Step 4：运行确认通过**
   Run：`cd backend && go build ./... && go vet ./... && go test ./... 2>&1 | grep -v '^ok' | head`
   Expected：没有输出，即全部 `ok`。
 
-- [ ] **Step 5：提交** `feat(payengine): 付款金额低于预期 95% 时在注资前放弃，预期金额改为必填`
+- [ ] **Step 5：提交** `feat(payengine): 新增最低金额，支付页金额低于它时在注资前放弃`
 
 ---
 
-### Task 8：后台界面：订阅预期金额列与新错误码说明
+### Task 8：后台界面：最低金额列与新错误码说明
 
 **Files：**
+- Modify：`frontend/src/lib/pay.ts`
+  - `RegionConf` 加 `floor_minor?: number`；`FormRow` 加 `floor: number | null`；
+  - `planToForm` / `formToPlan` 照 `expect` 的写法读写 `floor_minor`；
+  - `creditDefaultPH` 多返回 `floor_minor`，值等于 `expect_minor`；`applyCreditDefaultPH` 同时写 `row.floor`；
+  - 新增 `floorProblem(floorMinor: number, expectMinor: number, capMinor: number): string`：最低金额高于上限返回「最低金额高于上限，保存会被拒绝」，高于预期金额返回「最低金额高于预期金额，保存会被拒绝」，否则返回空串；比较规则与后端 `SavePlanTable` 一致（被比较的一方大于 0 才比）；
+  - `payBlockReason`：参数类型的地区配置加 `floor_minor?: number`；真实付款时 `!(floor_minor > 0)` 返回「该套餐在此地区未配置最低金额，不能真实付款（可先试运行）」。与后端 `ResolvePlan` 一致。
 - Modify：`frontend/src/views/admin/MarsWallexPay.vue`
-  - 订阅套餐表格在「币种」与「应付金额上限」之间加「预期金额」列，写法照 `PayCreditPlans.vue` 第 25–29 行；
-  - 第 63 行「预期金额」的显示去掉 `isCreditPlan(planConf) &&` 这个条件；
-  - 真实付款确认框第 558 行的文案加上预期金额。
-- Modify：`frontend/src/views/admin/components/PayCreditPlans.vue` 第 6–7 行说明：「只用来核对配置」改为「付款时低于它的 95% 会在注资前放弃」。
-- Modify：`frontend/src/lib/payui.ts`：加 `amount_below_expected: '支付页金额低于该套餐预期金额的 95%（可能选错了档位或带了优惠），已放弃（没有注资）'`。
-- Test：`frontend/src/lib/__tests__/payui.test.ts`、`frontend/src/views/admin/__tests__/pay.spec.ts`
+  - 订阅套餐表格在「币种」与「应付金额上限」之间加「预期金额」「最低金额」两列，写法照 `PayCreditPlans.vue` 第 25–29 行；最低金额列下方用 `floorProblem` 显示提示；
+  - 第 63 行「预期金额」的显示去掉 `isCreditPlan(planConf) &&` 这个条件，并在它后面同样显示「最低金额」；
+  - 真实付款确认框（约第 558 行）的文案在上限前加上「最低金额 …」。
+- Modify：`frontend/src/views/admin/components/PayCreditPlans.vue`
+  - 在「预期金额」与「应付金额上限」之间加「最低金额」列，带 `floorProblem` 提示；
+  - 第 6–8 行说明改为：预期金额只用来核对配置；付款时支付页金额低于最低金额、或超过上限，都会在注资前放弃；PH 默认最低金额等于预期金额。
+- Modify：`frontend/src/lib/payui.ts`：加 `amount_below_floor: '支付页金额低于该套餐在该地区的最低金额（可能选错了档位或带了优惠），已放弃（没有注资）'`。
+- Test：`frontend/src/lib/__tests__/pay.test.ts`、`frontend/src/lib/__tests__/payui.test.ts`、`frontend/src/views/admin/__tests__/pay.spec.ts`
 
 **Interfaces：**
-- Consumes：`frontend/src/lib/pay.ts` 已有的 `FormRow.expect`（订阅行和点数行都有）。
+- Consumes：Task 7 的 `floor_minor` 字段与 `amount_below_floor` 错误码。
 
 - [ ] **Step 1：写失败的测试**
-  - `payui.test.ts`：`payErrorText('amount_below_expected')` 含「95%」和「没有注资」。
-  - `pay.spec.ts`：渲染付款配置页后，订阅套餐表格的表头文字含「预期金额」，参照该文件现有的渲染方式。
+  - `pay.test.ts`：
+    - `planToForm` 再 `formToPlan` 往返后 `floor_minor` 不变（USD 与 JPY 各一例）；
+    - `applyCreditDefaultPH` 后 PH 行 `floor === expect`；
+    - `floorProblem(12001, 0, 12000)` 含「上限」；`floorProblem(10001, 10000, 12000)` 含「预期」；`floorProblem(10000, 10000, 12000)` 为空串；`floorProblem(0, 10000, 12000)` 为空串；
+    - `payBlockReason`：区域启用、上限与注资都有但 `floor_minor` 为 0 → 真实付款含「最低金额」，试运行为空串；现有用例的配置补上 `floor_minor` 后仍通过。
+  - `payui.test.ts`：`payErrorText('amount_below_floor')` 含「最低金额」和「没有注资」。
+  - `pay.spec.ts`：渲染付款配置页后，订阅套餐表格和点数表格的表头文字都含「最低金额」，订阅表格还含「预期金额」；参照该文件现有的渲染方式。
 
 - [ ] **Step 2：运行确认失败**
-  Run：`cd frontend && npx vitest run src/lib/__tests__/payui.test.ts src/views/admin/__tests__/pay.spec.ts`
+  Run：`cd frontend && npx vitest run src/lib/__tests__/pay.test.ts src/lib/__tests__/payui.test.ts src/views/admin/__tests__/pay.spec.ts`
   Expected：FAIL。
 
-- [ ] **Step 3：实现上面的模板与文案改动**
+- [ ] **Step 3：实现上面的改动**
 
 - [ ] **Step 4：运行确认通过**
   Run：`cd frontend && npx vitest run && npm run build`
   Expected：全部 PASS，构建成功。
 
-- [ ] **Step 5：提交** `feat(admin): 订阅套餐可配预期金额，新增金额偏低的错误说明`
+- [ ] **Step 5：提交** `feat(admin): 套餐可配最低金额，新增金额偏低的错误说明`
 
 ---
 
@@ -505,9 +532,15 @@
 
 **Files：**
 - Modify：`CHANGELOG.md`「## 未发布」
-  - 「新增」：订阅开通支持 chatgpt.com 内嵌结账页。
-  - 「变更」：金额低于预期 95% 时在注资前放弃。
-  - 「升级注意」：订阅套餐必须在后台填「预期金额」，没填的套餐不能下单、不能发码。
+  - 「新增」：
+    - 订阅开通支持 chatgpt.com 内嵌结账页；
+    - 套餐地区配置新增「最低金额」。
+  - 「变更」：支付页金额低于最低金额时在注资前放弃。
+  - 「升级注意」：
+    - 所有套餐（订阅和点数）必须在后台按地区填「最低金额」，没填的不能真实下单，不能发码；
+    - 最低金额、预期金额、上限都按该地区币种填（PH 填比索），系统不做汇率换算；
+    - 价格随汇率浮动的地区，最低金额填低位价，上限填高位价；
+    - 注资金额是美元，付非美元金额要按高位汇率加手续费留余量。
 - Modify：`docs/superpowers/specs/2026-11-03-embedded-checkout-design.md`：状态改为「已定稿，实施中」。
 
 - [ ] **Step 1：写更新日志与文档改动**
@@ -517,7 +550,7 @@
 - [ ] **Step 3：提交前查敏感信息**
   Run：`git diff origin/master --stat && git diff origin/master | grep -nE 'cs_live_[A-Za-z0-9]{6,}|eyJ[A-Za-z0-9_-]{20,}|sk_live|pk_live'`
   Expected：第二条命令没有输出。
-- [ ] **Step 4：提交** `docs: 记录内嵌结账页与金额下限`
+- [ ] **Step 4：提交** `docs: 记录内嵌结账页与最低金额`
 
 ---
 
@@ -532,6 +565,7 @@
 - [ ] **Step 2：在后台 API 给 pro_5x 的 US 地区配置参数**
   - 启用；
   - `expect_minor` 10000；
+  - `floor_minor` 10000；
   - `cap_minor` 11000；
   - `fund_cents` 按 MarsWallex 汇率填一个占位值（试运行不注资）。
 - [ ] **Step 3：试运行**

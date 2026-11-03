@@ -305,6 +305,9 @@ func createTables() error {
 	if err := MigratePay(); err != nil {
 		return fmt.Errorf("migrate pay: %w", err)
 	}
+	if err := MigratePayProbes(); err != nil {
+		return fmt.Errorf("migrate pay probes: %w", err)
+	}
 	if err := MigrateAgentExchanges(); err != nil {
 		return err
 	}

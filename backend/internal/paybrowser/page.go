@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/chromedp/cdproto/cdp"
@@ -314,6 +315,20 @@ func (c Card) validate() error {
 	return nil
 }
 
+// validate 在碰页面之前检查账单地址：任何字段含控制字符都拒绝。逐字键入会把 \n、\r 当回车发出去，
+// 回车在 Stripe 输入框里可能触发提交。错误消息只含中文字段名，不含值。
+func (bl Billing) validate() error {
+	for _, f := range []struct{ label, value string }{
+		{"姓名", bl.Name}, {"街道地址", bl.Line1}, {"城市", bl.City}, {"州/省", bl.State},
+		{"邮编", bl.Zip}, {"国家", bl.Country}, {"邮箱", bl.Email},
+	} {
+		if strings.IndexFunc(f.value, unicode.IsControl) >= 0 {
+			return fmt.Errorf("账单地址含控制字符（%s）", f.label)
+		}
+	}
+	return nil
+}
+
 func isDigits(s string, lo, hi int) bool {
 	if len(s) < lo || len(s) > hi {
 		return false
@@ -338,9 +353,11 @@ func (b *Browser) fillField(ctx context.Context, e *elem, f field) error {
 		}
 		f.kind = kindText
 	}
-	if err := b.focusField(ctx, e); err != nil {
+	direct, err := b.focusField(ctx, e)
+	if err != nil {
 		return fmt.Errorf("无法选中「%s」输入框: %w", f.label, err)
 	}
+	b.noteDirectFocus(f.label, direct)
 	if f.kind == kindCard {
 		return typeCard(ctx, e, f)
 	}

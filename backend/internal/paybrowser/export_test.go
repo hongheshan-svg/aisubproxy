@@ -52,12 +52,12 @@ func ScanBeforeClick(ctx context.Context, b *Browser) (map[string]bool, error) {
 	return got, err
 }
 
-// ShortenFillWaits 把地址字段和地址联想的等待时限都缩短到 address，返回恢复函数。
-// 用来测「一直等不到」的情形，免得每个用例等满 15 秒、8 秒。
+// ShortenFillWaits 把地址字段、地址联想、重打街道前的等待时限都缩短到 address（重打前的等待不变长），返回恢复函数。
+// 用来测「一直等不到」的情形，免得每个用例等满 15 秒、8 秒、3 秒。
 func ShortenFillWaits(address time.Duration) (restore func()) {
-	oldAddress, oldSuggest := addressWait, suggestWait
-	addressWait, suggestWait = address, address
-	return func() { addressWait, suggestWait = oldAddress, oldSuggest }
+	oldAddress, oldSuggest, oldRetype := addressWait, suggestWait, suggestRetypeWait
+	addressWait, suggestWait, suggestRetypeWait = address, address, min(address, suggestRetypeWait)
+	return func() { addressWait, suggestWait, suggestRetypeWait = oldAddress, oldSuggest, oldRetype }
 }
 
 // SetDeclineSettle 设置判到被拒后再看的时长，返回恢复函数。多数用例不关心它，TestMain 统一缩短。
@@ -92,6 +92,11 @@ func FailClick(b *Browser, afterMouse bool, err error) {
 // RunBeforeRecheck 让内嵌页 Submit 找到唯一的支付按钮之后、点击前复查之前，在主页面执行一段脚本，模拟这期间页面变化。
 func RunBeforeRecheck(b *Browser, js string) {
 	b.beforeRecheck = func(ctx context.Context) error { return chromedp.Evaluate(js, nil).Do(ctx) }
+}
+
+// EvalMain 在主页面执行一段脚本，用来模拟页面在打开之后、填表之前的变化。
+func EvalMain(ctx context.Context, b *Browser, js string) error {
+	return b.do(ctx, func(ctx context.Context) error { return chromedp.Evaluate(js, nil).Do(ctx) })
 }
 
 // ReloadBeforeRecheck 让内嵌页 Submit 找到唯一的支付按钮之后、点击前复查之前重新加载页面并等它加载完：

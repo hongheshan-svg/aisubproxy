@@ -22,6 +22,11 @@
     nocurrency=1     去掉 Currency 那一段（模拟 Stripe 改了读屏文字）
     noamount=1       没有读屏金额容器
     savepay=1        「保存付款信息」勾选框一开始就勾上
+    linksave=1       加一个默认勾着的 Link 保存勾选框（#enableStripePass）
+    terms=1          加一个默认不勾的「同意条款」勾选框（#termsOfServiceConsentCheckbox）
+    linkverify=1     仿 Stripe Link 内嵌验证：收到结账页发来的 linkverify 消息时，卡号、有效期、CVC 藏起来，
+                     显示 .LinkVerificationContent，并回 linkverify-shown 消息；可信地点其中的「Pay without Link」后验证框消失、卡字段显示。
+                     （内嵌页打开时要等到可见的卡号框，所以验证框只能在打开之后由测试叫出来）
     addr=1           卡号框输入满 16 位后才出现国家（选项 US、PH）和邮编
     addr=stripe      仿真实页面（2026-11-04 实测）：卡号框输入满 16 位后出现国家（US、PH）、姓名、街道地址；
                      城市、州（含 OR）、邮编在 DOM 里但 display:none，点「Enter address manually」后才可见
@@ -35,10 +40,15 @@
     addr=suggest-stuck  同 addr=suggest，地址联想会出现，但点了也不展开
     addr=suggest-decoy  同 addr=suggest，但本 iframe 里的联想点了不展开（同 suggest-stuck）；联想出现时，下面还有一个
                      子 iframe（下拉框，srcdoc）也列出联想，点它里面的选项才展开（同 addr=suggest 点第一条）
+    addr=suggest-lazy   同 addr=suggest，但联想库要懒加载（2026-11-04 实测第一次键入不出联想、清空重打才出）：
+                     街道第一次收到可信 input 时开始加载，加载期间每来一次可信 input 都把加载完成推到 500ms 后（第一轮键入期间加载不完）；
+                     加载完成之后的可信 input 才按 addr=suggest 显示联想
     addr=late        卡号框输入满 16 位后出现国家（US、PH）和街道地址；街道收到 input 后才插入姓名框（测「先没有、后出现」）
     clip=1           本页文档不能被脚本滚动（body overflow: clip），超出 iframe 高度的部分看不到也滚不过来：
                      addr=1 时整个地址区（国家、邮编）、addr=suggest 时折叠的城市、州、邮编，都放在 iframe 可视区下沿以下。
                      getContentQuads 不按 iframe 裁剪，按坐标点这些字段会点到主页面上紧贴 iframe 下沿的支付按钮
+    low=1            配 clip=1：「保存付款信息」、Link 保存、「同意条款」三个勾选框，addr=stripe 的「Enter address manually」，
+                     linkverify=1 的「Pay without Link」，都放进 iframe 可视区下沿以下的 #low（同样被裁掉、滚不过来）
     nocvc=1          没有 CVC 框（测必填字段缺失时报错）
   结账页发来 collect 消息时回传各字段的值和卡号框收到的真实按键次数（与 card.html 相同的协议）。
 -->
@@ -77,8 +87,54 @@
     if (q.get('addr') === '1') document.getElementById('address').classList.add('below')
   }
 
+  var low = null
+  if (clip && q.get('low') === '1') {
+    low = document.createElement('div')
+    low.id = 'low'
+    low.className = 'below'
+    document.body.appendChild(low)
+    low.appendChild(document.getElementById('payment-savePaymentInput').closest('label'))
+  }
+  // addBox 加一个勾选框，low=1 时放进 #low
+  function addBox(html) {
+    var label = document.createElement('label')
+    label.innerHTML = html
+    ;(low || document.body).appendChild(label)
+  }
+  if (q.get('linksave') === '1') {
+    addBox('<input type="checkbox" id="enableStripePass" name="enableStripePass" checked> Save my information for faster checkout with Link')
+  }
+  if (q.get('terms') === '1') {
+    addBox('<input type="checkbox" id="termsOfServiceConsentCheckbox" name="termsOfServiceConsentCheckbox"> I agree to the Terms of Service')
+  }
   if (q.get('savepay') === '1') document.getElementById('payment-savePaymentInput').checked = true
   if (q.get('nocvc') === '1') document.getElementById('payment-cvcInput').closest('label').remove()
+
+  if (q.get('linkverify') === '1') {
+    var verify = null
+    window.addEventListener('message', function (e) {
+      if (e.source !== parent || !e.data || e.data.type !== 'linkverify' || verify) return
+      var cardLabels = ['payment-numberInput', 'payment-expiryInput', 'payment-cvcInput'].map(function (id) {
+        return document.getElementById(id)
+      }).filter(Boolean).map(function (el) { return el.closest('label') })
+      cardLabels.forEach(function (l) { l.style.display = 'none' })
+      verify = document.createElement('div')
+      verify.className = 'LinkVerificationContent'
+      verify.innerHTML = '<p>Confirm it’s you</p>'
+      document.body.insertBefore(verify, cardLabels[0])
+      var skip = document.createElement('button')
+      skip.type = 'button'
+      skip.textContent = 'Pay without Link'
+      ;(low || verify).appendChild(skip)
+      skip.addEventListener('click', function (e) {
+        if (!e.isTrusted) return
+        verify.remove()
+        skip.remove()
+        cardLabels.forEach(function (l) { l.style.display = '' })
+      })
+      parent.postMessage({ type: 'linkverify-shown' }, '*')
+    })
+  }
 
   var number = document.getElementById('payment-numberInput')
   var numberKeys = 0
@@ -122,6 +178,7 @@
         (addr === 'stripe' ? '<button type="button" id="manual">Enter address manually</button>' : '') +
         foldedHTML
       var manual = document.getElementById('manual')
+      if (manual && low) low.appendChild(manual)
       if (manual) manual.addEventListener('click', function () {
         document.getElementById('folded').style.display = 'block'
         manual.remove()
@@ -129,7 +186,7 @@
     })
   }
 
-  if (addr === 'suggest' || addr === 'suggest-none' || addr === 'suggest-stuck' || addr === 'suggest-decoy') {
+  if (addr === 'suggest' || addr === 'suggest-none' || addr === 'suggest-stuck' || addr === 'suggest-decoy' || addr === 'suggest-lazy') {
     onFullNumber(function (box) {
       box.innerHTML = countryHTML + nameHTML +
         '<label>Address line 1 <input id="billingAddress-addressLine1Input" name="addressLine1" autocomplete="billing address-line1"' +
@@ -156,8 +213,16 @@
         document.getElementById('folded').style.display = 'block'
         showList(false)
       }
+      var loaded = addr !== 'suggest-lazy'
+      var loading = null
       line1.addEventListener('input', function (e) {
-        if (e.isTrusted && addr !== 'suggest-none') showList(line1.value.length >= 3)
+        if (!e.isTrusted || addr === 'suggest-none') return
+        if (!loaded) {
+          clearTimeout(loading)
+          loading = setTimeout(function () { loaded = true }, 500)
+          return
+        }
+        showList(line1.value.length >= 3)
       })
       line1.addEventListener('keydown', function (e) {
         if (e.key === 'Escape') showList(false)

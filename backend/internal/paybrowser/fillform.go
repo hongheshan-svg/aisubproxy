@@ -20,9 +20,10 @@ const (
 )
 
 var (
-	addressWait = 15 * time.Second // 地址字段的等待时限：含点手动地址入口后字段出现、字段自己出现、选地址联想后字段展开
-	suggestWait = 8 * time.Second  // 在街道里键入后等地址联想出现的时限（2026-11-04 实测 4 秒内出现）
-	emailSettle = time.Second      // 键入邮箱后留给页面反应的时间：可能重绘、重新勾上 Link 或弹 Link 验证
+	addressWait       = 15 * time.Second // 地址字段的等待时限：含点手动地址入口后字段出现、字段自己出现、选地址联想后字段展开
+	suggestWait       = 8 * time.Second  // 在街道里键入后等地址联想出现的时限（2026-11-04 实测 4 秒内出现）
+	suggestRetypeWait = 3 * time.Second  // 第一次键入街道后等这么久还没有联想，就清空重打一次（2026-11-04 实测联想库第一次键入时才加载）
+	emailSettle       = time.Second      // 键入邮箱后留给页面反应的时间：可能重绘、重新勾上 Link 或弹 Link 验证
 )
 
 const (
@@ -72,6 +73,9 @@ type fillState struct {
 // 见 fillEmbeddedAddress。
 func (b *Browser) Fill(ctx context.Context, c Card, bl Billing) error {
 	if err := c.validate(); err != nil {
+		return err
+	}
+	if err := bl.validate(); err != nil {
 		return err
 	}
 	b.mu.Lock() // 正在整页截图时等它截完，再往页面里键入卡号
@@ -266,12 +270,15 @@ func (b *Browser) foldedWithoutEntry(ctx context.Context, st *fillState, hideabl
 
 // expandBySuggestion 用地址联想展开折叠的城市、州、邮编（设计 §5.7）。2026-11-04 实测：内嵌页上没有手动地址入口，
 // 按 Tab、点别的输入框都不展开；在街道里逐字键入（可信键盘事件）后几秒内出现 Google 地址联想，点一条才展开。
-//   - 街道值有控制字符就不键入：逐字键入会把 \n、\r 当回车发出去。
+//   - 街道值有控制字符就不键入：逐字键入会把 \n、\r 当回车发出去。Fill 入口已经校验过（Billing.validate），这里再挡一次。
 //   - 选中街道框（focusField，内嵌页上先看落点）、清空后逐字键入。不按 Esc（会关掉联想），也绝不按回车（Stripe 输入框里回车可能触发提交）。
-//   - 最多等 suggestWait，按 frame 顺序（跳过主页面）每个 frame 取第一个可见选项，用 clickOption 点，点不成就试下一个、下一轮再试。
+//   - 按 frame 顺序（跳过主页面）每个 frame 取第一个可见选项，用 clickOption 点，点不成就试下一个、下一轮再试。
+//     先等 suggestRetypeWait：一个可见选项都没看到，就重新找街道框、清空、再逐字键入一遍（只重打 1 次；
+//     2026-11-04 实测联想库在第一次键入时才开始加载，这一次不出联想，重打才出），再等 suggestWait；
+//     看到过选项只是没点成，就不重打，接着等满 suggestWait。
 //   - 点中后等 folded 全部展开：每个都可见，而且落点检查（landsInOwnFrame）通过，之后点它们才不会落到主页面上。
 //     suggestRetryWait 内没展开，换一个没点过的 frame 里的联想再点一次（最多 suggestMaxClicks 次）；等满 addressWait 仍没展开就报错。
-//   - 填表报告记下点的是第几个 iframe 里的选项（按 frame 顺序数，主页面不算）。
+//   - 填表报告记下点的是第几个 iframe 里的选项（按 frame 顺序数，主页面不算），重打过街道也记下；街道框是直接设焦点的，记下原因。
 //
 // 联想会改写街道、城市、州、邮编，由调用方之后用自己的值覆盖。
 func (b *Browser) expandBySuggestion(ctx context.Context, line1 string, folded []field) error {
@@ -281,21 +288,30 @@ func (b *Browser) expandBySuggestion(ctx context.Context, line1 string, folded [
 	case strings.IndexFunc(line1, unicode.IsControl) >= 0:
 		return errors.New("账单街道含控制字符，无法用地址联想展开城市、州、邮编")
 	}
-	street, err := b.waitFind(ctx, fieldWait, func(frames []frameRef) *elem { return b.find(ctx, frames, Sel.Line1, false) })
-	if err != nil {
+	// typeStreet 每次都重新找街道框：poll 没成功的那一轮会释放全部对象句柄，之前找到的已经失效
+	typeStreet := func() error {
+		street, err := b.waitFind(ctx, fieldWait, func(frames []frameRef) *elem { return b.find(ctx, frames, Sel.Line1, false) })
+		if err != nil {
+			return err
+		}
+		if street == nil {
+			return errors.New("找不到「街道地址」输入框，无法展开城市、州、邮编")
+		}
+		direct, err := b.focusField(ctx, street)
+		if err != nil {
+			return fmt.Errorf("无法选中「街道地址」输入框: %w", err)
+		}
+		b.noteDirectFocus("街道地址", direct)
+		if err := clearInput(ctx, street); err != nil {
+			return fmt.Errorf("清空「街道地址」失败: %w", err)
+		}
+		if err := typeKeys(ctx, line1, slowKeyDelay); err != nil {
+			return fmt.Errorf("键入「街道地址」失败: %w", err)
+		}
+		return nil
+	}
+	if err := typeStreet(); err != nil {
 		return err
-	}
-	if street == nil {
-		return errors.New("找不到「街道地址」输入框，无法展开城市、州、邮编")
-	}
-	if err := b.focusField(ctx, street); err != nil {
-		return fmt.Errorf("无法选中「街道地址」输入框: %w", err)
-	}
-	if err := clearInput(ctx, street); err != nil {
-		return fmt.Errorf("清空「街道地址」失败: %w", err)
-	}
-	if err := typeKeys(ctx, line1, slowKeyDelay); err != nil {
-		return fmt.Errorf("键入「街道地址」失败: %w", err)
 	}
 
 	var (
@@ -337,14 +353,38 @@ func (b *Browser) expandBySuggestion(ctx context.Context, line1 string, folded [
 		})
 	}
 
-	ok, err := pick(suggestWait)
+	firstWait := min(suggestRetypeWait, suggestWait)
+	ok, err := pick(firstWait)
 	if err != nil {
 		return err
 	}
+	retypeNote := ""
+	if !ok {
+		if refused == nil {
+			// 一个可见选项都没看到：联想库可能刚开始加载，清空重打一次（只重打这一次）
+			retypeNote = "已重打 1 次街道"
+			if err := typeStreet(); err != nil {
+				return err
+			}
+			ok, err = pick(suggestWait)
+		} else {
+			// 看到过选项只是没点成：不重打，接着等满 suggestWait
+			ok, err = pick(suggestWait - firstWait)
+		}
+		if err != nil {
+			return err
+		}
+	}
 	if !ok {
 		const msg = "地址联想没有出现，无法展开城市、州、邮编"
-		if refused != nil {
+		b.updateReport(func(r *FillReport) { r.ManualAddress = joinNote("地址联想没有出现", retypeNote) })
+		switch {
+		case refused != nil && retypeNote != "":
+			return fmt.Errorf("%s（%s；看到过选项但没点成：%w）", msg, retypeNote, refused)
+		case refused != nil:
 			return fmt.Errorf("%s（看到过选项但没点成：%w）", msg, refused)
+		case retypeNote != "":
+			return fmt.Errorf("%s（%s）", msg, retypeNote)
 		}
 		return errors.New(msg)
 	}
@@ -364,11 +404,21 @@ func (b *Browser) expandBySuggestion(ctx context.Context, line1 string, folded [
 	}
 	where := "第 " + strings.Join(nos, "、") + " 个 iframe 的选项"
 	if !shown {
-		b.updateReport(func(r *FillReport) { r.ManualAddress = "已点地址联想（未展开）：" + where })
+		b.updateReport(func(r *FillReport) {
+			r.ManualAddress = joinNote("已点地址联想（未展开）："+where, retypeNote)
+		})
 		return errors.New("选了地址联想后城市、州、邮编仍未展开")
 	}
-	b.updateReport(func(r *FillReport) { r.ManualAddress = "已选地址联想：" + where })
+	b.updateReport(func(r *FillReport) { r.ManualAddress = joinNote("已选地址联想："+where, retypeNote) })
 	return nil
+}
+
+// joinNote 把附注（可为空）用分号接在 s 后面。
+func joinNote(s, note string) string {
+	if note == "" {
+		return s
+	}
+	return s + "；" + note
 }
 
 // checkAbsent 把填表时 DOM 里没有的地址字段再查一遍：页面可能在键入别的字段后才插入它们，这时报错放弃，不静默漏填。
@@ -390,7 +440,7 @@ func (b *Browser) checkAbsent(ctx context.Context, absent []field) error {
 
 // revealCardForm 等卡号框出现。账号已存卡时页面先显示已存卡，点一次「新卡」入口把卡号框调出来。
 // 账号邮箱注册过 Stripe Link 时页面先显示「Confirm it’s you」验证码框并藏起卡号框，点一次「Pay without Link」跳过；
-// 同框的「Text a code」会给账号主人发验证码，绝不点。
+// 同框的「Text a code」会给账号主人发验证码，绝不点。入口都用 clickEntry 点：内嵌页上落点不对就不点，算没点成，照原逻辑接着等或报错。
 func (b *Browser) revealCardForm(ctx context.Context) error {
 	newCard, skippedLink, found := false, false, false
 	var linkSeen time.Time
@@ -403,7 +453,7 @@ func (b *Browser) revealCardForm(ctx context.Context) error {
 			if linkSeen.IsZero() {
 				linkSeen = time.Now()
 			}
-			if opt := b.findText(ctx, frames, Sel.PayWithoutLinkOption); opt != nil && clickReveal(ctx, opt) == nil {
+			if opt := b.findText(ctx, frames, Sel.PayWithoutLinkOption); opt != nil && b.clickEntry(ctx, frames, opt) == nil {
 				skippedLink = true
 				b.noteLinkVerify("已点「Pay without Link」")
 				return false
@@ -411,7 +461,7 @@ func (b *Browser) revealCardForm(ctx context.Context) error {
 			return time.Since(linkSeen) >= linkSkipWait // 验证框挡着，卡号框不会自己出现，不必等满
 		}
 		if !newCard {
-			if opt := b.findText(ctx, frames, Sel.NewCardOption); opt != nil && clickReveal(ctx, opt) == nil {
+			if opt := b.findText(ctx, frames, Sel.NewCardOption); opt != nil && b.clickEntry(ctx, frames, opt) == nil {
 				newCard = true
 			}
 		}
@@ -483,13 +533,13 @@ func (b *Browser) revealAddress(ctx context.Context, st *fillState, hideable []f
 	return nil
 }
 
-// tryReveal 点手动地址入口：没有入口、点过太多次、离上次太近都不点。入口是提交控件时绝不点。
+// tryReveal 点手动地址入口：没有入口、点过太多次、离上次太近都不点。入口是提交控件时绝不点；内嵌页上落点不对也不点（clickEntry）。
 func (b *Browser) tryReveal(ctx context.Context, frames []frameRef, st *fillState) {
 	if st.revealClick >= revealMaxClicks || (st.revealClick > 0 && time.Since(st.revealLast) < revealGap) {
 		return
 	}
 	opt := b.findText(ctx, frames, Sel.ManualAddressOption)
-	if opt == nil || clickReveal(ctx, opt) != nil {
+	if opt == nil || b.clickEntry(ctx, frames, opt) != nil {
 		return
 	}
 	st.revealClick++
@@ -515,15 +565,16 @@ func readCheck(ctx context.Context, e *elem) (checkState, error) {
 	return st, err
 }
 
-// setCheck 把勾选框点到 want：先用鼠标点，不生效再用脚本点，返回最后读到的状态。调用方先确认它当前不是 want。
-func setCheck(ctx context.Context, e *elem, want bool) (checkState, error) {
+// setCheck 把勾选框点到 want：先用鼠标点（clickBox：内嵌页上落点不对就不点），不生效再用脚本点，返回最后读到的状态。
+// 调用方先确认它当前不是 want，再按返回的状态核对。
+func (b *Browser) setCheck(ctx context.Context, e *elem, want bool) (checkState, error) {
 	read := func() (checkState, error) {
 		if err := sleep(ctx, settleDelay); err != nil {
 			return checkState{}, err
 		}
 		return readCheck(ctx, e)
 	}
-	_ = click(ctx, e) // 点不到也没关系，下面看结果，再用脚本点
+	_ = b.clickBox(ctx, e) // 点不到（内嵌页上落点不对时不点）也没关系，下面看结果，再用脚本点
 	st, err := read()
 	if err != nil || st.Checked == want {
 		return st, err
@@ -535,7 +586,7 @@ func setCheck(ctx context.Context, e *elem, want bool) (checkState, error) {
 }
 
 // disableLinkSave 取消「Save my information with Link」：勾着就要求手机，还可能弹 Link 验证。
-// 先用鼠标点，不生效再用脚本点，还是勾着就报错放弃。页面没有这个勾选框不算错。
+// 先用鼠标点（内嵌页上落点不对就不点），不生效再用脚本点，还是勾着就报错放弃。页面没有这个勾选框不算错。
 func (b *Browser) disableLinkSave(ctx context.Context) error {
 	frames, err := b.frames(ctx)
 	if err != nil {
@@ -558,7 +609,7 @@ func (b *Browser) disableLinkSave(ctx context.Context) error {
 		b.noteLink("未勾选，无需取消")
 		return nil
 	}
-	if st, err = setCheck(ctx, e, false); err != nil {
+	if st, err = b.setCheck(ctx, e, false); err != nil {
 		return fmt.Errorf("取消 Link 保存失败: %w", err)
 	}
 	if st.Checked {
@@ -684,7 +735,7 @@ func (b *Browser) acceptTerms(ctx context.Context) error {
 		note("页面已勾选")
 		return nil
 	}
-	if st, err = setCheck(ctx, e, true); err != nil {
+	if st, err = b.setCheck(ctx, e, true); err != nil {
 		return fmt.Errorf("勾选「同意条款」失败: %w", err)
 	}
 	if !st.Checked {

@@ -987,6 +987,31 @@ func TestFillRejectsBadCard(t *testing.T) {
 	}
 }
 
+// 账单地址任何字段含控制字符都在碰页面之前拒绝：逐字键入会把 \n、\r 当回车发出去，回车可能触发提交。错误只带字段名，不带值。
+func TestFillRejectsBillingControlChars(t *testing.T) {
+	b := &paybrowser.Browser{} // 校验在碰浏览器之前完成
+	for label, set := range map[string]func(*paybrowser.Billing){
+		"姓名":   func(bl *paybrowser.Billing) { bl.Name = "Secret\nName" },
+		"街道地址": func(bl *paybrowser.Billing) { bl.Line1 = "1 Secret St\r" },
+		"城市":   func(bl *paybrowser.Billing) { bl.City = "Secret\tCity" },
+		"州/省":  func(bl *paybrowser.Billing) { bl.State = "Secret\x00" },
+		"邮编":   func(bl *paybrowser.Billing) { bl.Zip = "Secret\u0085" },
+		"国家":   func(bl *paybrowser.Billing) { bl.Country = "Secret\x1b" },
+		"邮箱":   func(bl *paybrowser.Billing) { bl.Email = "secret@example.com\n" },
+	} {
+		bl := testBilling
+		set(&bl)
+		err := b.Fill(context.Background(), testCard, bl)
+		if err == nil || !strings.Contains(err.Error(), "账单地址含控制字符（"+label+"）") {
+			t.Errorf("%s 含控制字符：Fill = %v，期望报账单地址含控制字符（%s）", label, err, label)
+			continue
+		}
+		if strings.Contains(strings.ToLower(err.Error()), "secret") {
+			t.Errorf("错误消息泄露了字段值: %v", err)
+		}
+	}
+}
+
 func TestTruncateMessage(t *testing.T) {
 	long := strings.Repeat("拒", 600)
 	if got := paybrowser.Truncate(long); utf8.RuneCountInString(got) != 500 {

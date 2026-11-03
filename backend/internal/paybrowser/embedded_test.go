@@ -471,8 +471,12 @@ func TestEmbeddedFillPicksSuggestion(t *testing.T) {
 	if got := fieldLabels(t, r); !slices.Equal(got, want) {
 		t.Fatalf("填过的字段 = %v，期望 %v", got, want)
 	}
-	if lines := strings.Join(r.Lines(), "\n"); !strings.Contains(lines, "手动地址：已选地址联想：第 1 个 iframe 的选项") {
+	lines := strings.Join(r.Lines(), "\n")
+	if !strings.Contains(lines, "手动地址：已选地址联想：第 1 个 iframe 的选项") {
 		t.Errorf("报告缺少「手动地址：已选地址联想：第 1 个 iframe 的选项」：\n%s", lines)
+	}
+	if strings.Contains(lines, "重打") {
+		t.Errorf("第一次键入就出了联想，不该重打街道：\n%s", lines)
 	}
 	for sel, want := range map[string]string{
 		"#billingAddress-addressLine1Input":       "1 Main St",
@@ -499,8 +503,8 @@ func TestEmbeddedFillSuggestionMissing(t *testing.T) {
 	b, ctx := openEmbedded(t, f, "addr=suggest-none")
 
 	err := b.Fill(ctx, testCard, embeddedBilling)
-	if err == nil || !strings.Contains(err.Error(), "地址联想没有出现") {
-		t.Fatalf("Fill = %v，期望报地址联想没有出现", err)
+	if err == nil || !strings.Contains(err.Error(), "地址联想没有出现") || !strings.Contains(err.Error(), "已重打 1 次街道") {
+		t.Fatalf("Fill = %v，期望报地址联想没有出现、已重打 1 次街道", err)
 	}
 	if n := len(f.payments()); n != 0 {
 		t.Fatalf("Fill 失败时仿造页收到 %d 次提交", n)
@@ -553,6 +557,34 @@ func TestEmbeddedFillSuggestionSecondFrame(t *testing.T) {
 	}
 }
 
+// 联想库懒加载（2026-11-04 实测）：第一次键入只是开始加载，不出联想；清空重打一次街道才出。报告记下重打过。
+func TestEmbeddedFillSuggestionLazy(t *testing.T) {
+	needChrome(t)
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "addr=suggest-lazy")
+
+	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+		t.Fatalf("Fill: %v", err)
+	}
+	lines := strings.Join(b.FillReport().Lines(), "\n")
+	for _, want := range []string{"手动地址：已选地址联想：第 1 个 iframe 的选项", "已重打 1 次街道"} {
+		if !strings.Contains(lines, want) {
+			t.Errorf("报告缺少「%s」：\n%s", want, lines)
+		}
+	}
+	for sel, want := range map[string]string{
+		"#billingAddress-addressLine1Input": "1 Main St",
+		"#billingAddress-postalCodeInput":   "97201",
+	} {
+		if got, err := paybrowser.FieldValue(ctx, b, sel); err != nil || got != want {
+			t.Fatalf("页面上 %s = %q, %v，期望 %q", sel, got, err, want)
+		}
+	}
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("只填表不提交：仿造页收到 %d 次提交", n)
+	}
+}
+
 // payClicks 返回 clip=1 时主页面支付按钮收到的可信点击次数。
 func payClicks(t *testing.T, ctx context.Context, b *paybrowser.Browser) string {
 	t.Helper()
@@ -579,6 +611,10 @@ func TestEmbeddedFillFocusOutsideFrame(t *testing.T) {
 	}
 	if got, err := paybrowser.FieldValue(ctx, b, "#payment-postalCodeInput"); err != nil || got != "97201" {
 		t.Fatalf("页面上邮编 = %q, %v，期望 97201", got, err)
+	}
+	const want = "直接设焦点：邮编（点击落点是主页面上的 button，不是 iframe）"
+	if lines := strings.Join(b.FillReport().Lines(), "\n"); !strings.Contains(lines, want) {
+		t.Errorf("报告缺少「%s」：\n%s", want, lines)
 	}
 	if n := payClicks(t, ctx, b); n != "0" {
 		t.Fatalf("填表时支付按钮收到 %s 次点击，期望 0", n)
@@ -607,7 +643,37 @@ func TestEmbeddedFillSuggestionExpandsOutsideFrame(t *testing.T) {
 	}
 }
 
-// 街道值里有控制字符时不键入：逐字键入会把 \n、\r 当回车发出去，回车在 Stripe 输入框里可能触发提交。
+// 卡片 iframe 在主页面首屏下方，iframe 里元素的「滚进可视区」又没带动主页面（2026-11-04 实测：落点检查报「点击落点不在页面上」；
+// 仿造页用 fold=1 模拟，见 checkout-embedded.html）：坐标超出主页面视口，落点检查一律不过。
+// 落点检查要先用脚本把主页面滚到让元素居中：字段照常用鼠标点，联想能点中并展开，支付按钮 0 次点击。
+func TestEmbeddedFillBelowFold(t *testing.T) {
+	needChrome(t)
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "addr=suggest&fold=1")
+
+	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+		t.Fatalf("Fill: %v", err)
+	}
+	lines := strings.Join(b.FillReport().Lines(), "\n")
+	if !strings.Contains(lines, "手动地址：已选地址联想：第 1 个 iframe 的选项") {
+		t.Errorf("报告缺少「手动地址：已选地址联想：第 1 个 iframe 的选项」：\n%s", lines)
+	}
+	if strings.Contains(lines, "直接设焦点") {
+		t.Errorf("首屏下方的字段滚进可视区后应能用鼠标点，不该直接设焦点：\n%s", lines)
+	}
+	if got, err := paybrowser.FieldValue(ctx, b, "#billingAddress-postalCodeInput"); err != nil || got != "97201" {
+		t.Fatalf("页面上邮编 = %q, %v，期望 97201", got, err)
+	}
+	if n := payClicks(t, ctx, b); n != "0" {
+		t.Fatalf("填表时支付按钮收到 %s 次点击，期望 0", n)
+	}
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("只填表不提交：仿造页收到 %d 次提交", n)
+	}
+}
+
+// 街道值里有控制字符时什么都不键入：逐字键入会把 \n、\r 当回车发出去，回车在 Stripe 输入框里可能触发提交。
+// Fill 入口就拒绝（Billing.validate），卡号也不键入，所以地址区根本不会出现。
 func TestEmbeddedFillStreetControlChars(t *testing.T) {
 	needChrome(t)
 	f := newFakeEmbedded(t)
@@ -616,11 +682,11 @@ func TestEmbeddedFillStreetControlChars(t *testing.T) {
 	bl := embeddedBilling
 	bl.Line1 = "1 Main St\n"
 	err := b.Fill(ctx, testCard, bl)
-	if err == nil || !strings.Contains(err.Error(), "账单街道含控制字符") {
-		t.Fatalf("Fill = %v，期望报账单街道含控制字符", err)
+	if err == nil || !strings.Contains(err.Error(), "账单地址含控制字符（街道地址）") {
+		t.Fatalf("Fill = %v，期望报账单地址含控制字符（街道地址）", err)
 	}
-	if got, err := paybrowser.FieldValue(ctx, b, "#billingAddress-addressLine1Input"); err != nil || got != "" {
-		t.Fatalf("街道框 = %q, %v，期望什么都没键入", got, err)
+	if got, err := paybrowser.FieldValue(ctx, b, "#payment-numberInput"); err != nil || got != "" {
+		t.Fatalf("卡号框 = %q, %v，期望什么都没键入", got, err)
 	}
 	if n := len(f.payments()); n != 0 {
 		t.Fatalf("Fill 失败时仿造页收到 %d 次提交", n)
@@ -738,6 +804,121 @@ func TestEmbeddedSavePaymentUnchecked(t *testing.T) {
 	}
 	if n := len(f.payments()); n != 0 {
 		t.Fatalf("只处理勾选框，不能提交：仿造页收到 %d 次提交", n)
+	}
+}
+
+// 三个勾选框都在被裁掉的 iframe 可视区下沿以下，按坐标点会点到主页面上紧贴 iframe 下沿的支付按钮：
+// 内嵌页上点勾选框前先看落点，不过就不发鼠标事件、改用脚本点并核对。勾选状态都对，支付按钮 0 次点击。
+func TestEmbeddedCheckboxesOutsideFrame(t *testing.T) {
+	needChrome(t)
+	t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "clip=1&low=1&savepay=1&linksave=1&terms=1")
+
+	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+		t.Fatalf("Fill: %v", err)
+	}
+	r := b.FillReport()
+	if r.LinkSave != "已取消" || r.Terms != "已勾选" {
+		t.Fatalf("Link 保存 = %q，同意条款 = %q，期望已取消、已勾选", r.LinkSave, r.Terms)
+	}
+	note, err := b.EnsureNoSavePayment(ctx)
+	if err != nil || note != "已取消" {
+		t.Fatalf("EnsureNoSavePayment = %q, %v，期望已取消", note, err)
+	}
+	for sel, want := range map[string]bool{
+		"#enableStripePass":              false,
+		"#termsOfServiceConsentCheckbox": true,
+		"#payment-savePaymentInput":      false,
+	} {
+		if on, err := paybrowser.FieldChecked(ctx, b, sel); err != nil || on != want {
+			t.Fatalf("%s 勾选 = %v, %v，期望 %v", sel, on, err, want)
+		}
+	}
+	if n := payClicks(t, ctx, b); n != "0" {
+		t.Fatalf("处理勾选框时支付按钮收到 %s 次点击，期望 0", n)
+	}
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("只处理勾选框，不能提交：仿造页收到 %d 次提交", n)
+	}
+}
+
+// 手动地址入口在被裁掉的 iframe 可视区下沿以下：落点不过就不点，城市、州、邮编展不开，报错放弃；支付按钮 0 次点击。
+func TestEmbeddedManualEntryOutsideFrame(t *testing.T) {
+	needChrome(t)
+	t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "addr=stripe&clip=1&low=1")
+
+	if err := b.Fill(ctx, testCard, embeddedBilling); err == nil {
+		t.Fatal("手动地址入口点不到时 Fill 应报错")
+	}
+	if got := b.FillReport().ManualAddress; got != "未点击" {
+		t.Errorf("手动地址 = %q，期望未点击", got)
+	}
+	if n := payClicks(t, ctx, b); n != "0" {
+		t.Fatalf("填表时支付按钮收到 %s 次点击，期望 0", n)
+	}
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("Fill 失败时仿造页收到 %d 次提交", n)
+	}
+}
+
+// showLinkVerify 让卡片 iframe 弹出 Link 内嵌验证框（linkverify=1），等它显示出来。
+func showLinkVerify(t *testing.T, ctx context.Context, b *paybrowser.Browser) {
+	t.Helper()
+	const js = `document.getElementById('card-frame').contentWindow.postMessage({ type: 'linkverify' }, '*')`
+	if err := paybrowser.EvalMain(ctx, b, js); err != nil {
+		t.Fatalf("叫出 Link 验证框: %v", err)
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(50 * time.Millisecond) {
+		if v, err := paybrowser.FieldValue(ctx, b, "#link-state"); err == nil && v == "shown" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Link 验证框 5 秒内没有出现")
+		}
+	}
+}
+
+// 账号邮箱注册过 Link：内嵌页上点「Pay without Link」跳过验证，照常填卡（入口点击过落点检查）。
+func TestEmbeddedPayWithoutLink(t *testing.T) {
+	needChrome(t)
+	t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "linkverify=1")
+	showLinkVerify(t, ctx, b)
+
+	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+		t.Fatalf("Fill: %v", err)
+	}
+	if got := b.FillReport().LinkVerify; got != "已点「Pay without Link」" {
+		t.Fatalf("Link 验证 = %q，期望已点「Pay without Link」", got)
+	}
+	if got, err := paybrowser.FieldValue(ctx, b, "#payment-cvcInput"); err != nil || got != testCard.CVC {
+		t.Fatalf("CVC 框核对失败: %v", err)
+	}
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("只填表不提交：仿造页收到 %d 次提交", n)
+	}
+}
+
+// 「Pay without Link」在被裁掉的 iframe 可视区下沿以下：落点不过就不点，按原逻辑等满后放弃；支付按钮 0 次点击。
+func TestEmbeddedPayWithoutLinkOutsideFrame(t *testing.T) {
+	needChrome(t)
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "linkverify=1&clip=1&low=1")
+	showLinkVerify(t, ctx, b)
+
+	err := b.Fill(ctx, testCard, embeddedBilling)
+	if err == nil || !strings.Contains(err.Error(), "要求验证身份") {
+		t.Fatalf("Fill = %v，期望报 Link 要求验证身份", err)
+	}
+	if n := payClicks(t, ctx, b); n != "0" {
+		t.Fatalf("填表时支付按钮收到 %s 次点击，期望 0", n)
+	}
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("Fill 失败时仿造页收到 %d 次提交", n)
 	}
 }
 

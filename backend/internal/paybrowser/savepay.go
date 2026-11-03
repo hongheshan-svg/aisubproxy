@@ -49,7 +49,7 @@ const savePaymentJS = `((wantChecked) => {
 	return wantChecked ? first : out
 })`
 
-// savePaymentRounds 是取消勾选最多试几轮：第一轮用鼠标点，之后用脚本点。
+// savePaymentRounds 是取消勾选最多试几轮：第一轮用鼠标点（clickBox：内嵌页上落点不对就不点），之后用脚本点。
 const savePaymentRounds = 3
 
 // EnsureNoSavePayment 确认支付页上没有勾着的「保存付款信息」勾选框，勾着就取消。返回处理结果（页面没有、未勾选、已取消），
@@ -82,7 +82,7 @@ func (b *Browser) EnsureNoSavePayment(ctx context.Context) (string, error) {
 				return errors.New("找到勾着的「保存付款信息」，但拿不到这个勾选框")
 			}
 			if round == 0 {
-				_ = click(ctx, e) // 点不到也没关系，下一轮看结果，再用脚本点
+				_ = b.clickBox(ctx, e) // 点不到（内嵌页上落点不对时不点）也没关系，下一轮看结果，再用脚本点
 			} else if err := callOn(ctx, e.obj, `function () { this.click() }`, nil); err != nil {
 				return fmt.Errorf("取消「保存付款信息」失败: %w", err)
 			}

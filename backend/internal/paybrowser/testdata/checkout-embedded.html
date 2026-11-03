@@ -26,9 +26,17 @@
     challenge=1     点击后插入 iframe[name="stripe-challenge-frame"]，指向卡片服务的 acs.html
     rerender=1      页面加载 3 秒后再插入一个可见的提交按钮（模拟填表后页面重绘）
     pushstate=1     页面加载 3 秒后用 history.pushState 换到 /auth/login（模拟 SPA 换路由离开结账页），按钮仍只有一个
-    clip=1          卡片 iframe 带 scrolling="no"、高 380px，支付按钮占满整行、高 80px，紧贴 iframe 下沿；
-                    支付按钮收到可信点击时 #pay-clicks（hidden）加一。同时传给卡片 iframe（见 card-embedded.html 的 clip=1）
-    其余参数原样传给卡片 iframe（amount、currency、nocurrency、noamount、savepay、addr、clip，见 card-embedded.html）
+    clip=1          卡片 iframe 带 scrolling="no"、高 380px，支付按钮占满整行、高 80px，紧贴 iframe 下沿。
+                    同时传给卡片 iframe（见 card-embedded.html 的 clip=1）
+    fold=1          主页面最上面放一个 1200px 高的占位块，卡片 iframe 和支付按钮都在首屏（900px）下方；
+                    主页面再设 scroll-padding-top: 3000px，让 iframe 里元素的「滚进可视区」（含设焦点带来的滚动）
+                    在主页面上落空，只有主页面脚本 window.scrollBy 能滚。真实结账页上滚入没有带动主页面，
+                    本机 Chrome 的 CDP 滚入默认会一路滚到主页面（未激活、scrolling="no"、平滑滚动、overflow: hidden
+                    都试过，照样滚），所以用这个办法模拟
+    clip=1 或 fold=1 时，支付按钮收到可信点击，#pay-clicks（hidden）加一
+    linkverify=1    卡片 iframe 回 linkverify-shown 消息（它弹出了 Link 验证框）时，#link-state（hidden）设为 shown
+    其余参数原样传给卡片 iframe（amount、currency、nocurrency、noamount、savepay、linksave、terms、linkverify、addr、clip、low，
+    见 card-embedded.html）
   点击提交后用 collect 消息向卡片 iframe 取字段值，POST 到本服务的 /pay，供测试断言。
 -->
 <main>
@@ -61,12 +69,21 @@
     if (own.indexOf(k) < 0) cardQuery.append(k, v)
   })
   var cardFrame = document.getElementById('card-frame')
+  var pay = document.querySelector('#buttons button[type="submit"]')
   if (q.get('clip') === '1') {
     cardFrame.setAttribute('scrolling', 'no')
     cardFrame.style.display = 'block'
     cardFrame.style.height = '380px'
-    var pay = document.querySelector('#buttons button[type="submit"]')
     pay.style.cssText = 'display: block; width: 100%; height: 80px; margin: 0'
+  }
+  if (q.get('fold') === '1') {
+    var spacer = document.createElement('div')
+    spacer.style.height = '1200px'
+    var mainCol = document.querySelector('main')
+    mainCol.insertBefore(spacer, mainCol.firstChild)
+    document.documentElement.style.scrollPaddingTop = '3000px'
+  }
+  if (q.get('clip') === '1' || q.get('fold') === '1') {
     var payClicks = document.createElement('input')
     payClicks.type = 'hidden'
     payClicks.id = 'pay-clicks'
@@ -74,6 +91,15 @@
     document.getElementById('checkout-form').appendChild(payClicks)
     pay.addEventListener('click', function (e) {
       if (e.isTrusted) payClicks.value = String(Number(payClicks.value) + 1)
+    })
+  }
+  if (q.get('linkverify') === '1') {
+    var linkState = document.createElement('input')
+    linkState.type = 'hidden'
+    linkState.id = 'link-state'
+    document.getElementById('checkout-form').appendChild(linkState)
+    window.addEventListener('message', function (e) {
+      if (e.source === cardFrame.contentWindow && e.data && e.data.type === 'linkverify-shown') linkState.value = 'shown'
     })
   }
   cardFrame.src = CARD_ORIGIN + '/card-embedded.html?' + cardQuery

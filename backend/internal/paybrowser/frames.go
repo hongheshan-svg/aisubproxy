@@ -393,15 +393,33 @@ func click(ctx context.Context, e *elem) error {
 const (
 	landSettle    = 50 * time.Millisecond // 落点检查时两次读位置的间隔
 	landTolerance = 1.0                   // 两次读到的中心点相差不超过这么多像素，才算没在移动
+	landEdge      = 10.0                  // 中心点离主页面可视区边缘不足这么多像素，就先用脚本滚主页面
 )
 
+// scrollMainJS 在主页面上把点 (x, y) 挪到可视区中部：点在可视区外、或离边缘不足 edge 像素时，用 window.scrollBy 滚主页面
+// （只是脚本滚动，不发鼠标、键盘事件），返回滚了没有。可视区宽高取 innerWidth/innerHeight 与 documentElement 的
+// clientWidth/clientHeight（不含滚动条）中较小的。
+const scrollMainJS = `((x, y, edge) => {
+	const de = document.documentElement
+	const w = Math.min(innerWidth, de.clientWidth || innerWidth)
+	const h = Math.min(innerHeight, de.clientHeight || innerHeight)
+	const dx = x < edge || x >= w - edge ? x - w / 2 : 0
+	const dy = y < edge || y >= h - edge ? y - h / 2 : 0
+	if (!dx && !dy) return false
+	window.scrollBy({ left: dx, top: dy, behavior: 'instant' })
+	return true
+})`
+
 // landsInOwnFrame 把元素滚进视野，求它中心点在主页面可视区里的坐标，确认鼠标点下去会落在它自己所在的 iframe 上，返回这个坐标。
+//   - 先 ScrollIntoViewIfNeeded。中心点仍在主页面可视区外、或离边缘不足 landEdge 时，再用 scrollMainJS 把主页面滚到让它居中：
+//     2026-11-04 实测卡片 iframe 在首屏下方时，iframe 里元素的滚入没有带动主页面，坐标在主页面视口以外，落点检查一律不过。
+//     滚完仍在视口外，下面的 elementFromPoint 读不到元素，照旧不通过。
 //   - 隔 landSettle 读两次位置，相差超过 landTolerance 说明还在移动，不通过。
 //   - 在主页面上用 elementFromPoint 看那一点：必须是 iframe 元素，而且是元素所在 frame 或它的上层。主页面上的元素一律不通过。
 //
 // 内嵌页的 iframe 可能只露出一部分（2026-11-04 实测地址 iframe 带 scrolling="no"、内文档比 iframe 高），
 // getContentQuads 不按 iframe 裁剪，算出的坐标可能在 iframe 外面、落到主页面别的元素上，而支付按钮就在主页面。
-// frames 是 b.frames 的结果，第一个是主页面。
+// frames 是 b.frames 的结果，第一个是主页面。只在内嵌页（PageEmbedded）的路径上用。
 func (b *Browser) landsInOwnFrame(ctx context.Context, frames []frameRef, e *elem) (x, y float64, err error) {
 	if err := dom.ScrollIntoViewIfNeeded().WithObjectID(e.obj).Do(ctx); err != nil {
 		return 0, 0, err
@@ -414,6 +432,15 @@ func (b *Browser) landsInOwnFrame(ctx context.Context, frames []frameRef, e *ele
 	if err != nil {
 		return 0, 0, err
 	}
+	r, err := b.eval(ctx, frames[0], fmt.Sprintf("%s(%f, %f, %f)", scrollMainJS, x0, y0, landEdge))
+	if err != nil {
+		return 0, 0, err
+	}
+	if string(r.Value) == "true" {
+		if x0, y0, err = center(); err != nil {
+			return 0, 0, err
+		}
+	}
 	if err := sleep(ctx, landSettle); err != nil {
 		return 0, 0, err
 	}
@@ -424,8 +451,7 @@ func (b *Browser) landsInOwnFrame(ctx context.Context, frames []frameRef, e *ele
 		return 0, 0, errors.New("位置还在变，没有点击")
 	}
 
-	r, err := b.eval(ctx, frames[0], fmt.Sprintf("document.elementFromPoint(%f, %f)", x, y))
-	if err != nil {
+	if r, err = b.eval(ctx, frames[0], fmt.Sprintf("document.elementFromPoint(%f, %f)", x, y)); err != nil {
 		return 0, 0, err
 	}
 	if r.ObjectID == "" {
@@ -459,6 +485,11 @@ func (b *Browser) clickOption(ctx context.Context, frames []frameRef, e *elem) e
 	if isSubmit {
 		return errSubmitControl
 	}
+	return b.clickLanded(ctx, frames, e)
+}
+
+// clickLanded 过 landsInOwnFrame 后用鼠标点它算出的坐标；不过就不发任何鼠标事件，返回原因。
+func (b *Browser) clickLanded(ctx context.Context, frames []frameRef, e *elem) error {
 	x, y, err := b.landsInOwnFrame(ctx, frames, e)
 	if err != nil {
 		return err
@@ -466,47 +497,79 @@ func (b *Browser) clickOption(ctx context.Context, frames []frameRef, e *elem) e
 	return chromedp.MouseClickXY(x, y).Do(ctx)
 }
 
+// clickBox 用鼠标点勾选框。托管页同 click；内嵌页上先过 landsInOwnFrame，不通过就不点、返回原因，由调用方改用脚本点并核对。
+func (b *Browser) clickBox(ctx context.Context, e *elem) error {
+	if b.pageKind() != PageEmbedded {
+		return click(ctx, e)
+	}
+	frames, err := b.frames(ctx)
+	if err != nil {
+		return err
+	}
+	return b.clickLanded(ctx, frames, e)
+}
+
+// clickEntry 点按文字找到的入口（新卡、Pay without Link、手动地址）。托管页同 clickReveal；
+// 内嵌页同 clickOption：不是提交控件、落点检查也通过才点，不通过就不点、返回原因。
+func (b *Browser) clickEntry(ctx context.Context, frames []frameRef, e *elem) error {
+	if b.pageKind() != PageEmbedded {
+		return clickReveal(ctx, e)
+	}
+	return b.clickOption(ctx, frames, e)
+}
+
 // focus 点击输入框；点完焦点仍不在它上面时直接设焦点。
 func focus(ctx context.Context, e *elem) error {
 	if err := click(ctx, e); err != nil {
 		return err
 	}
-	return ensureFocus(ctx, e)
+	_, err := ensureFocus(ctx, e)
+	return err
 }
 
 // focusField 选中要填写的输入框。托管页同 focus。内嵌页上先过 landsInOwnFrame，通过才用鼠标点；
 // 不通过（落点不在它自己的 iframe 上、还在移动、读不出位置）就不发任何鼠标事件，直接用 DOM.focus 设焦点。
-func (b *Browser) focusField(ctx context.Context, e *elem) error {
+// 内嵌页上用了直接设焦点时，direct 是原因（落点检查的错误文字，去掉「，没有点击」，不含任何值），由调用方写进填表报告；托管页总是空。
+func (b *Browser) focusField(ctx context.Context, e *elem) (direct string, err error) {
 	if b.pageKind() != PageEmbedded {
-		return focus(ctx, e)
+		return "", focus(ctx, e)
 	}
-	if frames, err := b.frames(ctx); err == nil {
-		if x, y, err := b.landsInOwnFrame(ctx, frames, e); err == nil {
+	frames, lerr := b.frames(ctx)
+	if lerr == nil {
+		var x, y float64
+		if x, y, lerr = b.landsInOwnFrame(ctx, frames, e); lerr == nil {
 			if err := chromedp.MouseClickXY(x, y).Do(ctx); err != nil {
-				return err
+				return "", err
 			}
 		}
 	}
-	return ensureFocus(ctx, e)
+	set, err := ensureFocus(ctx, e)
+	switch {
+	case lerr != nil:
+		direct = strings.TrimSuffix(lerr.Error(), "，没有点击")
+	case set:
+		direct = "鼠标点了，焦点没过去"
+	}
+	return direct, err
 }
 
-// ensureFocus 确认焦点在输入框上，不在就用 DOM.focus 直接设（不发鼠标事件）。
-func ensureFocus(ctx context.Context, e *elem) error {
+// ensureFocus 确认焦点在输入框上，不在就用 DOM.focus 直接设（不发鼠标事件）。set 表示用了 DOM.focus。
+func ensureFocus(ctx context.Context, e *elem) (set bool, err error) {
 	const focused = `function () { return this.ownerDocument.hasFocus() && this.ownerDocument.activeElement === this }`
 	var ok bool
 	if err := callOn(ctx, e.obj, focused, &ok); err != nil || ok {
-		return err
+		return false, err
 	}
 	if err := dom.Focus().WithObjectID(e.obj).Do(ctx); err != nil {
-		return err
+		return true, err
 	}
 	if err := callOn(ctx, e.obj, focused, &ok); err != nil {
-		return err
+		return true, err
 	}
 	if !ok {
-		return errors.New("焦点不在输入框上")
+		return true, errors.New("焦点不在输入框上")
 	}
-	return nil
+	return true, nil
 }
 
 // clearInput 选中输入框全部内容后按退格清空（真实按键，受控组件能感知）。

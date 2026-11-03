@@ -36,10 +36,10 @@ type exchangeUpstream struct {
 	// 禁用旧码的失败开关与尝试次数（MO-08）：disableFail 为真时禁用接口返回 500
 	disableFail  atomic.Bool
 	disableTries atomic.Int32
-	mu       sync.Mutex
-	keys     []string
-	onIssue  func(n int32, w http.ResponseWriter, r *http.Request)
-	onOrders func()
+	mu           sync.Mutex
+	keys         []string
+	onIssue      func(n int32, w http.ResponseWriter, r *http.Request)
+	onOrders     func()
 }
 
 func issueOK(n int32, w http.ResponseWriter, _ *http.Request) {

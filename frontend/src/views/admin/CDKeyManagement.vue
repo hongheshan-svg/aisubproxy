@@ -370,6 +370,8 @@ async function loadProviderRegistry() {
   applyPreselect()
 }
 async function onProductChange() {
+  // 先按已有数据立刻重算预选，免得等卡台套餐接口时界面显示不做该产品的服务商；档位列表变了再算一次
+  applyPreselect()
   await loadMeta()
   applyPreselect()
 }

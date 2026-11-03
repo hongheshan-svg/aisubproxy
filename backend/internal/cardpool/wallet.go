@@ -3,6 +3,7 @@ package cardpool
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"strings"
 	"unicode"
@@ -52,6 +53,18 @@ func (s *Service) SyncAccounts(ctx context.Context) error {
 	if len(all) == 0 {
 		log.Printf("[cardpool] 同步账户：平台未返回任何账户，本次不写入")
 		return ErrNoAccounts
+	}
+	// 分页接口没带 balance_list（字段缺失，不是空数组）的账户，用详情接口兜底取余额。
+	// 兜底也失败就整体报错、本地不变：不能把「没拿到余额」当成余额 0 写进去，否则余额校验会基于假数据放行或拒绝。
+	for i := range all {
+		if all[i].BalanceList != nil {
+			continue
+		}
+		d, err := c.GetAccount(ctx, all[i].AccountNo)
+		if err != nil {
+			return fmt.Errorf("账户 %s 的分页结果没有余额，用详情接口取余额也失败: %w", all[i].AccountNo, err)
+		}
+		all[i].BalanceList = d.BalanceList // 详情接口也没带余额时保持 nil，写成空列表（平台明确答复没有余额）
 	}
 
 	now := s.now().Unix()

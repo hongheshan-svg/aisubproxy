@@ -72,6 +72,8 @@
     promo=1                   支付按钮前多一个可见的优惠码 submit 按钮 Apply（点击会被计数）
     formcomplete=1            支付按钮一直带 SubmitButton--complete
     otpflaky=1                3DS 验证页第一次输满验证码时提交按钮短暂消失
+    captcha=1                 点支付后出现一个可见的 hCaptcha 式 iframe（src 含 challenge，不是 3DS）
+    challengeby=src           3DS 框没有 name，只靠 src 里的 three-ds 识别
     nopay=1                   没有支付按钮
     paydisabled=1             支付按钮一直 disabled
   每次提交把收到的全部字段 POST 到本服务的 /pay，供测试断言；点到支付按钮就 POST /submit-attempt（前端校验拦下时也算）。
@@ -336,6 +338,13 @@
   }
 
   function showResult() {
+    if (q.get('captcha') === '1') {
+      var cap = document.createElement('iframe')
+      cap.title = 'hCaptcha challenge'
+      cap.src = CARD_ORIGIN + '/card.html?hcaptcha=1&frame=challenge'
+      cap.style.cssText = 'width:300px;height:200px;display:block'
+      document.body.appendChild(cap)
+    }
     if (mode === 'decline') {
       setTimeout(function () { showAlert('Your card was declined.') }, Number(q.get('delay')) || 0)
     } else if (mode === 'none') {
@@ -344,8 +353,9 @@
       var modal = document.createElement('div')
       modal.id = 'challenge-modal'
       var frame = document.createElement('iframe')
-      frame.name = 'stripe-challenge-frame'
-      frame.src = CARD_ORIGIN + '/acs.html?wrap=1' + (q.get('otpflaky') === '1' ? '&flaky=1' : '')
+      if (q.get('challengeby') === 'src') frame.title = 'three-ds'
+      else frame.name = 'stripe-challenge-frame'
+      frame.src = CARD_ORIGIN + '/acs.html?wrap=1' + (q.get('otpflaky') === '1' ? '&flaky=1' : '') + (q.get('challengeby') === 'src' ? '&via=three-ds' : '')
       modal.appendChild(frame)
       document.body.appendChild(modal)
     } else {

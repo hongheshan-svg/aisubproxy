@@ -216,7 +216,8 @@ type browserFactory struct {
 	amount     int64
 	amountText string
 	amountErr  error
-	openGate   chan struct{} // 非 nil 时 Open 阻塞到它被关闭
+	readAmount func(n int) (int64, string, error) // 非 nil 时按第 n 次（从 1 起）调用取值，覆盖上面三项
+	openGate   chan struct{}                      // 非 nil 时 Open 阻塞到它被关闭
 
 	// 付款步骤的替身；未设置时方法返回 errFakeUnset。n 为该浏览器第几次调用 WaitOutcome（从 1 起）。
 	fill        func(paybrowser.Card, paybrowser.Billing) error
@@ -326,6 +327,9 @@ func (b *fakeBrowser) Diagnose(c context.Context) []string {
 
 func (b *fakeBrowser) ReadAmount(_ context.Context, currency string) (int64, string, error) {
 	b.hit("ReadAmount", currency)
+	if b.f.readAmount != nil {
+		return b.f.readAmount(b.count("ReadAmount"))
+	}
 	return b.f.amount, b.f.amountText, b.f.amountErr
 }
 

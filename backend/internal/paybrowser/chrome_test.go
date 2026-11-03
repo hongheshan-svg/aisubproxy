@@ -2,7 +2,10 @@ package paybrowser_test
 
 import (
 	"context"
+	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -82,6 +85,57 @@ func TestCheckReportsVersion(t *testing.T) {
 	}
 	if r.ElapsedMs <= 0 || r.Error != "" || r.InstallHint != "" {
 		t.Errorf("成功时的结果不符: %+v", r)
+	}
+}
+
+// PF-4：自检打开 chatgpt.com，标题是 Cloudflare 挑战页就报 cf_blocked。这里用本机仿造页，不访问真实站点。
+func TestCheckReportsCloudflareBlock(t *testing.T) {
+	needChrome(t)
+	cases := []struct {
+		name, title string
+		blocked     bool
+	}{
+		{"挑战页", "Just a moment...", true},
+		{"拦截页", "Attention Required! | Cloudflare", true},
+		{"正常页", "ChatGPT", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/html")
+				fmt.Fprintf(w, "<html><head><title>%s</title></head><body>x</body></html>", c.title)
+			}))
+			defer srv.Close()
+			defer paybrowser.SetCFProbeURL(srv.URL)()
+			r := paybrowser.Check(context.Background())
+			if !r.OK || !r.CFChecked || r.CFBlocked != c.blocked {
+				t.Fatalf("Check() = %+v，期望 ok、cf_checked，cf_blocked=%v", r, c.blocked)
+			}
+		})
+	}
+}
+
+// 探测连不上时自检本身仍然成功，只是 cf_checked=false，不能把 false 当成「没被拦」。
+func TestCheckCloudflareProbeFailureKeepsCheckOK(t *testing.T) {
+	needChrome(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	url := srv.URL
+	srv.Close() // 地址已无人监听
+	defer paybrowser.SetCFProbeURL(url)()
+	r := paybrowser.Check(context.Background())
+	if !r.OK || r.CFChecked || r.CFBlocked || r.CFNote == "" {
+		t.Fatalf("Check() = %+v，期望自检成功、cf_checked=false 且有说明", r)
+	}
+}
+
+func TestIsCFChallengeTitle(t *testing.T) {
+	for title, want := range map[string]bool{
+		"Just a moment...": true, " just A MOMENT ": true, "Attention Required! | Cloudflare": true, "请稍候…": true,
+		"ChatGPT": false, "": false,
+	} {
+		if got := paybrowser.IsCFChallengeTitle(title); got != want {
+			t.Errorf("%q: got %v want %v", title, got, want)
+		}
 	}
 }
 

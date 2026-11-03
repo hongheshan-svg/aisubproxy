@@ -33,10 +33,13 @@ type exchangeUpstream struct {
 	srv      *httptest.Server
 	issued   atomic.Int32
 	disabled atomic.Int32
-	mu       sync.Mutex
-	keys     []string
-	onIssue  func(n int32, w http.ResponseWriter, r *http.Request)
-	onOrders func()
+	// 禁用旧码的失败开关与尝试次数（MO-08）：disableFail 为真时禁用接口返回 500
+	disableFail  atomic.Bool
+	disableTries atomic.Int32
+	mu           sync.Mutex
+	keys         []string
+	onIssue      func(n int32, w http.ResponseWriter, r *http.Request)
+	onOrders     func()
 }
 
 func issueOK(n int32, w http.ResponseWriter, _ *http.Request) {
@@ -63,6 +66,12 @@ func newExchangeUpstream(t *testing.T) *exchangeUpstream {
 			u.mu.Unlock()
 			u.onIssue(n, w, r)
 		case r.Method == "POST" && strings.HasSuffix(r.URL.Path, "/disable"):
+			u.disableTries.Add(1)
+			if u.disableFail.Load() {
+				w.WriteHeader(500)
+				w.Write([]byte(`{"code":500,"msg":"boom"}`))
+				return
+			}
 			u.disabled.Add(1)
 			w.Write([]byte(`{"code":0,"data":{}}`))
 		default:

@@ -57,8 +57,25 @@ func (s *Service) previewFill(ctx context.Context, j *job) error {
 		s.notePageDiag(ctx, j, j.browser, "试运行填表失败")
 		return abort("dry_run_fill_failed", "试运行填表失败：%v", err)
 	}
+	s.noteRecheck(ctx, j)
 	return s.end(ctx, j, StatePreviewed, "info",
 		fmt.Sprintf("试运行到填表完成，应付 %s；支付按钮：%s，未点击", j.o.AmountText, payButton), nil)
+}
+
+// noteRecheck 试运行到填表时也在填表后再读一次金额并写入时间线（MO-04）。不点支付，所以读到什么都只是记录，
+// 方便在真实页面上看出填地址之后金额会不会变。
+func (s *Service) noteRecheck(ctx context.Context, j *job) {
+	rctx, cancel := context.WithTimeout(ctx, s.t.PageLoad)
+	defer cancel()
+	minor, text, err := j.browser.ReadAmount(rctx, j.o.Currency)
+	switch {
+	case err != nil:
+		s.event(ctx, j, "warn", "试运行填表后再次读取应付金额失败："+j.scrub(err.Error()), "")
+	case minor != j.o.AmountMinor:
+		s.event(ctx, j, "warn", fmt.Sprintf("试运行填表后应付金额 %s 与打开页面时的 %s 不一致", text, j.o.AmountText), "")
+	default:
+		s.event(ctx, j, "info", "试运行填表后复核金额一致："+text, "")
+	}
 }
 
 // fillOnly 填表并读支付按钮的状态。参数故意只有 FormBrowser：这里点不了支付，也碰不到卡池。

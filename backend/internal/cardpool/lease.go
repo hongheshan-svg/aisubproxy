@@ -339,7 +339,7 @@ func (s *Service) releaseCard(ctx context.Context, cardID, token string) error {
 		use_count = use_count + lease_sensitive,
 		pool_state = CASE WHEN retire_reason <> '' OR use_count + lease_sensitive >= ? THEN ? ELSE ? END,
 		lease_token = '', lease_owner = '', lease_expires_at = NULL, lease_sensitive = 0,
-		next_action_at = ?, updated_at = ?
+		next_action_at = ?, frozen_since = NULL, updated_at = ?
 		WHERE card_id = ? AND pool_state = ? AND lease_token = ?`,
 		pol.MaxUsesPerCard, PoolUsed, PoolReleasing, now, now, cardID, PoolLeased, token)
 	if err != nil {

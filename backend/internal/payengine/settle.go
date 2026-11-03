@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/tuzi/cdk-recharge-system/internal/cardpool"
+	"github.com/tuzi/cdk-recharge-system/internal/chatgpt"
 	"github.com/tuzi/cdk-recharge-system/internal/paybrowser"
 )
 
@@ -302,6 +303,10 @@ func (s *Service) noteVerifyErr(ctx context.Context, j *job, source, prefix stri
 	s.mu.Unlock()
 	if !same {
 		s.event(ctx, j, "warn", text, "")
+		// Cloudflare 拦截只记事件和告警，不是账号状态的证据：确认继续等，到期转人工，绝不据此定论
+		if errors.Is(err, chatgpt.ErrBlocked) {
+			s.opts.Alert(fmt.Sprintf("付款单 %s 确认阶段被 Cloudflare 拦截，无法查询账号，请检查地区 %s 代理的出口 IP；单据继续等待，到期会转人工。", j.o.OrderNo, j.o.Region))
+		}
 	}
 }
 

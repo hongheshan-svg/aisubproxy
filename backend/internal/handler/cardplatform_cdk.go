@@ -2,8 +2,6 @@ package handler
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -189,12 +187,13 @@ func CardPlatformIssueCDKs(c *gin.Context) {
 	}
 
 	cli := cardplatform.NewFromSettings()
-	idem := c.GetHeader("Idempotency-Key")
-	if idem == "" {
-		b := make([]byte, 16)
-		_, _ = rand.Read(b)
-		idem = "cdk-issue-" + hex.EncodeToString(b)
+	// 幂等键必须由客户端在点击时生成并在重试时沿用：服务端随机生成的键对重试没有任何保护
+	idem := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+	if idem == "" || len(idem) > 128 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Idempotency-Key 请求头必填（1-128 字符），同一次发码的重试要沿用同一个值"})
+		return
 	}
+	issueStartedAt := time.Now()
 	// 本站选卡配置 → 发码偏好（跳过未启动卡头；ch1 等历史写法会归一成 one）
 	var issuePrefs []cardplatform.IssueCardPref
 	pref, hasSitePref := issuePrefFromSite()
@@ -237,7 +236,7 @@ func CardPlatformIssueCDKs(c *gin.Context) {
 	}
 	if err != nil {
 		// 超时/断线时卡台可能已经出码。立刻从卡台列表把完整码捞回本站。
-		if recovered, recErr := cli.SyncUpstreamFullCodes(c.Request.Context(), "unused", plan, 10); recErr == nil && recovered != nil && recovered.Imported > 0 {
+		if recovered, recErr := cli.SyncUpstreamFullCodesSince(c.Request.Context(), "unused", plan, 10, issueStartedAt); recErr == nil && recovered != nil && recovered.Imported > 0 {
 			c.JSON(http.StatusOK, gin.H{
 				"requested":     req.Count,
 				"issued":        recovered.Codes,

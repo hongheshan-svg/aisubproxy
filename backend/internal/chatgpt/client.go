@@ -26,6 +26,10 @@ const (
 // ErrUnauthorized 表示 ChatGPT 返回 401/403，会话或 token 已失效。
 var ErrUnauthorized = errors.New("ChatGPT 会话未授权或已失效")
 
+// ErrBlocked 表示请求被 Cloudflare 挑战或拦截（cf-mitigated 头，或 HTML 挑战页），不是会话的问题：
+// 出口 IP 被拦，换会话没有用，要检查该地区代理的出口 IP。它不能当作账号状态的任何证据。
+var ErrBlocked = errors.New("请求被 Cloudflare 拦截，请检查该地区代理的出口 IP")
+
 // Client 是带 TLS 指纹的 ChatGPT 客户端，每个实例独立连接（可走独立代理）。
 type Client struct {
 	BaseURL string
@@ -89,6 +93,9 @@ func (c *Client) do(ctx context.Context, method, path string, headers map[string
 	if err != nil {
 		return nil, fmt.Errorf("读取 ChatGPT 响应失败: %w", err)
 	}
+	if isCFBlocked(resp.StatusCode, resp.Header.Get("cf-mitigated"), resp.Header.Get("Content-Type"), resp.Header.Get("Server"), b) {
+		return nil, fmt.Errorf("%w（HTTP %d）", ErrBlocked, resp.StatusCode)
+	}
 	switch {
 	case resp.StatusCode == 401 || resp.StatusCode == 403:
 		return nil, fmt.Errorf("%w（HTTP %d）", ErrUnauthorized, resp.StatusCode)
@@ -96,6 +103,27 @@ func (c *Client) do(ctx context.Context, method, path string, headers map[string
 		return nil, fmt.Errorf("ChatGPT 返回 HTTP %d", resp.StatusCode)
 	}
 	return b, nil
+}
+
+// isCFBlocked 判断响应是不是 Cloudflare 的挑战或拦截。必须在按状态码判 401/403 之前：被挑战时同样是 403，
+// 但那不是会话失效。依据：cf-mitigated 头；或 4xx/5xx 的 HTML 页面且带 Cloudflare 的特征。
+// ChatGPT 自己的 401/403 是 JSON，不会被误判。
+func isCFBlocked(status int, cfMitigated, contentType, server string, body []byte) bool {
+	if strings.TrimSpace(cfMitigated) != "" {
+		return true
+	}
+	if status < 400 || !strings.Contains(strings.ToLower(contentType), "text/html") {
+		return false
+	}
+	if strings.Contains(strings.ToLower(server), "cloudflare") {
+		return true
+	}
+	head := body
+	if len(head) > 8192 {
+		head = head[:8192]
+	}
+	l := strings.ToLower(string(head))
+	return strings.Contains(l, "just a moment") || strings.Contains(l, "challenge-platform") || strings.Contains(l, "cf-chl")
 }
 
 func bearer(s Session) map[string]string {

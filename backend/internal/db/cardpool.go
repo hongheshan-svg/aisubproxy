@@ -103,6 +103,8 @@ func MigrateCardPool() error {
 		{"mw_card_orders", "payee_account_no", "TEXT NOT NULL DEFAULT ''"},
 		{"mw_card_orders", "detail", "TEXT NOT NULL DEFAULT ''"},
 		{"mw_cardholders", "out_card_holder_id", "TEXT NOT NULL DEFAULT ''"},
+		// 卡进入「只剩冻结余额」状态的时间（MO-05）；余额清零或卡离开 releasing 时清空
+		{"mw_cards", "frozen_since", "INTEGER"},
 	}
 	for _, c := range cols {
 		var n int

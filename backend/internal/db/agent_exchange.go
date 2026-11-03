@@ -13,7 +13,10 @@ import (
 const (
 	AgentExchangePending = "pending" // 已占位，正在发码
 	AgentExchangeUnknown = "unknown" // 发码结果不明，等人工定论；占位不释放
-	AgentExchangeDone    = "done"    // 新码已发出
+	// AgentExchangeDisabling 新码已发出，但旧码还没确认禁用。旧码和新码此刻都能兑换，所以不能算完成：
+	// 由维护循环反复重试禁用，成功后才转 done（MO-08）。
+	AgentExchangeDisabling = "disabling"
+	AgentExchangeDone      = "done" // 新码已发出，旧码已确认禁用
 )
 
 var (
@@ -208,11 +211,26 @@ func ReserveAgentCDKExchange(r AgentExchangeReservation, limit int, now time.Tim
 	return 0, ErrAgentExchangeDailyLimit
 }
 
-// FinishAgentCDKExchange 新码已发出，记下新码。结果不明的占位可能事后被证实成功，所以 unknown 也能转过来。
+// FinishAgentCDKExchange 新码已发出，记下新码，进入 disabling（旧码待禁用）。
+// 结果不明的占位可能事后被证实成功，所以 unknown 也能转过来。旧码确认禁用后再调 CompleteAgentCDKExchangeDisable 转 done。
 func FinishAgentCDKExchange(id, newID int64, newPrefix string) error {
 	res, err := DB.Exec(`UPDATE agent_cdk_exchanges
-		SET state = 'done', new_upstream_id = ?, new_code_prefix = ?, updated_at = CURRENT_TIMESTAMP
+		SET state = 'disabling', new_upstream_id = ?, new_code_prefix = ?, updated_at = CURRENT_TIMESTAMP
 		WHERE id = ? AND state IN ('pending', 'unknown')`, newID, newPrefix, id)
+	return affectedOne(res, err)
+}
+
+// CompleteAgentCDKExchangeDisable 旧码已确认禁用：disabling → done。
+func CompleteAgentCDKExchangeDisable(id int64) error {
+	res, err := DB.Exec(`UPDATE agent_cdk_exchanges SET state = 'done', updated_at = CURRENT_TIMESTAMP
+		WHERE id = ? AND state = 'disabling'`, id)
+	return affectedOne(res, err)
+}
+
+// TouchAgentCDKExchange 记下一次禁用重试失败的原因（只改 note 和 updated_at，不改状态）。
+func TouchAgentCDKExchange(id int64, note string) error {
+	res, err := DB.Exec(`UPDATE agent_cdk_exchanges SET note = ?, updated_at = CURRENT_TIMESTAMP
+		WHERE id = ? AND state = 'disabling'`, note, id)
 	return affectedOne(res, err)
 }
 
@@ -363,10 +381,11 @@ func ResolveAgentExchangeReleased(id int64) error {
 	})
 }
 
-// ResolveAgentExchangeIssued 人工确认卡台已发码：记下新码，占位变成 done。只能处理 unknown，审计由调用方写。
+// ResolveAgentExchangeIssued 人工确认卡台已发码：记下新码，占位变成 disabling（旧码待禁用，禁用成功后才是 done）。
+// 只能处理 unknown，审计由调用方写。
 func ResolveAgentExchangeIssued(id, newID int64, note string) error {
 	return resolveAgentExchange(id, func() (sql.Result, error) {
-		return DB.Exec(`UPDATE agent_cdk_exchanges SET state = 'done', new_upstream_id = ?, note = ?, updated_at = CURRENT_TIMESTAMP
+		return DB.Exec(`UPDATE agent_cdk_exchanges SET state = 'disabling', new_upstream_id = ?, note = ?, updated_at = CURRENT_TIMESTAMP
 			WHERE id = ? AND state = 'unknown'`, newID, note, id)
 	})
 }

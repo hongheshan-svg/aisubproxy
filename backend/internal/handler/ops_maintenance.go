@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 )
 
@@ -66,6 +67,38 @@ const agentExchangeStaleAfter = 10 * time.Minute
 func runOpsMaintenance(now time.Time) {
 	sweepCDKSessionsOnce(now)
 	escalateAgentExchanges(now)
+	retryAgentExchangeDisables(now)
+}
+
+// retryAgentExchangeDisables 重试禁用旧码（MO-08）：新码已发出、旧码还没确认禁用的换码记录（disabling）。
+// 禁用是幂等的。每次失败留在 disabling，同一条记录每天提醒一次；成功后转 done。
+func retryAgentExchangeDisables(now time.Time) {
+	list, err := db.ListAgentExchanges(db.AgentExchangeDisabling, 200)
+	if err != nil {
+		log.Printf("[agent-exchange] 列出待禁用旧码的记录失败: %v", err)
+		return
+	}
+	if len(list) == 0 {
+		return
+	}
+	cli := cardplatform.NewFromSettings()
+	for _, e := range list {
+		if e.OldUpstreamID <= 0 {
+			continue
+		}
+		if err := finishDisableOldCode(context.Background(), cli, e.ID, e.OldUpstreamID); err != nil {
+			reason := err.Error()
+			if len(reason) > 200 {
+				reason = reason[:200]
+			}
+			log.Printf("[agent-exchange] 重试禁用旧码 %d 失败: %v", e.OldUpstreamID, err)
+			_ = db.TouchAgentCDKExchange(e.ID, "禁用旧码失败："+reason)
+			opsAlertDaily(fmt.Sprintf("agent-swap-disable-%d", e.ID), fmt.Sprintf(
+				"代理换码记录 %d 的旧码 ID %d 仍未能禁用（新码 ID %d 已发出），旧码在卡台仍可兑换。原因：%s。请到卡台手动禁用。", e.ID, e.OldUpstreamID, e.NewUpstreamID, reason), now)
+			continue
+		}
+		db.WriteAudit("agent-swap", "agent_cdk_exchange_disable_retried", fmt.Sprintf("id=%d old=%d new=%d", e.ID, e.OldUpstreamID, e.NewUpstreamID), "")
+	}
 }
 
 // escalateAgentExchanges 把没收尾的换码占位转人工，并按天提醒还有多少笔等待核对。

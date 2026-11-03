@@ -227,37 +227,44 @@
         "type": "object",
         "properties": {
           "card_id": {
-            "type": "string"
+            "type": "string",
+            "description": "Card ID"
           },
           "card_no": {
             "type": "string",
             "description": "Card number"
           },
           "card_name": {
-            "type": "string"
+            "type": "string",
+            "description": "Card name"
           },
           "card_type": {
             "type": "string",
             "description": "Card type (virtual card)"
           },
           "card_mode": {
-            "type": "string"
+            "type": "string",
+            "description": "Funding mode: prepaid card or shared card"
           },
           "card_label": {
-            "type": "string"
+            "type": "string",
+            "description": "Card network"
           },
           "card_country": {
-            "type": "string"
+            "type": "string",
+            "description": "Card country or region, see https://en.wikipedia.org/wiki/ISO_3166-2"
           },
           "card_currency": {
-            "type": "string"
+            "type": "string",
+            "description": "Currency, see https://en.wikipedia.org/wiki/ISO_4217"
           },
           "expiry_date": {
             "type": "string",
-            "description": "MMyy"
+            "description": "Expiry date, MMyy"
           },
           "status": {
             "type": "string",
+            "description": "Status: ACTIVE=Normal, REVOKED=Frozen, CANCELED=Cancelled, INCANCELED=Cancelling, FREEZING=Freezing, UNFREEZING=Unfreezing",
             "enum": [
               "ACTIVE",
               "REVOKED",
@@ -268,17 +275,20 @@
             ]
           },
           "available_balance": {
-            "type": "string"
+            "type": "string",
+            "description": "Available balance"
           },
           "freeze_balance": {
-            "type": "string"
+            "type": "string",
+            "description": "Frozen balance"
           },
           "remark": {
             "type": "string",
             "description": "Remark"
           },
           "create_time": {
-            "type": "number"
+            "type": "number",
+            "description": "Creation time, in seconds since the Unix epoch"
           },
           "limit": {
             "type": "object",
@@ -287,6 +297,14 @@
               "single_limit": {
                 "type": "string",
                 "description": "Single transaction limit"
+              },
+              "daily_limit": {
+                "type": "string",
+                "description": "Daily limit"
+              },
+              "monthly_limit": {
+                "type": "string",
+                "description": "Monthly limit"
               }
             }
           }
@@ -295,7 +313,15 @@
           "card_id",
           "card_no",
           "card_name",
-          "status"
+          "card_type",
+          "card_mode",
+          "card_label",
+          "card_country",
+          "card_currency",
+          "status",
+          "available_balance",
+          "freeze_balance",
+          "create_time"
         ]
       },
       "CardSensitive": {
@@ -360,6 +386,10 @@
               "FAIL"
             ]
           },
+          "fail_reason": {
+            "type": "string",
+            "description": "Failure reason"
+          },
           "create_time": {
             "type": "number"
           }
@@ -369,6 +399,66 @@
           "transaction_id",
           "card_id",
           "status"
+        ]
+      },
+      "CardTransferDetail": {
+        "type": "object",
+        "properties": {
+          "out_order_no": {
+            "type": "string",
+            "description": "Merchant order number"
+          },
+          "transaction_id": {
+            "type": "string",
+            "description": "Platform order number"
+          },
+          "card_id": {
+            "type": "string",
+            "description": "Card ID"
+          },
+          "currency": {
+            "type": "string",
+            "description": "Currency. Fiat: ISO 4217 (https://en.wikipedia.org/wiki/ISO_4217); crypto: USDT"
+          },
+          "amount": {
+            "type": "string",
+            "description": "Amount, in major currency units"
+          },
+          "type": {
+            "type": "string",
+            "description": "Type: CHARGE=Top-up, WITHDRAW=Withdrawal",
+            "enum": [
+              "CHARGE",
+              "WITHDRAW"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "description": "Status: APPLY=Processing, SUCCESS=Success, FAIL=Failed",
+            "enum": [
+              "APPLY",
+              "SUCCESS",
+              "FAIL"
+            ]
+          },
+          "fail_reason": {
+            "type": "string",
+            "description": "Failure reason"
+          },
+          "create_time": {
+            "type": "number",
+            "description": "Creation time"
+          }
+        },
+        "required": [
+          "out_order_no",
+          "transaction_id",
+          "card_id",
+          "currency",
+          "amount",
+          "type",
+          "status",
+          "create_time"
         ]
       },
       "AuthTransaction": {
@@ -1165,7 +1255,7 @@
           },
           "country_code": {
             "type": "string",
-            "description": "Country/region, ISO 3166-1 alpha-2 code",
+            "description": "Country/region (nationality), ISO 3166-1 alpha-2 code",
             "minLength": 2,
             "maxLength": 2
           },
@@ -1383,37 +1473,29 @@
               "schema": {
                 "type": "object",
                 "required": [
-                  "data"
+                  "account_name",
+                  "out_account_no"
                 ],
                 "properties": {
-                  "data": {
-                    "type": "object",
-                    "required": [
-                      "account_name",
-                      "out_account_no"
+                  "account_name": {
+                    "type": "string",
+                    "maxLength": 50,
+                    "description": "Account alias, no spaces or line breaks",
+                    "example": "SubAccountA"
+                  },
+                  "out_account_no": {
+                    "type": "string",
+                    "maxLength": 64,
+                    "description": "Merchant-side account number (required on creation, always echoed back), no spaces or line breaks",
+                    "example": "SUB202607200001"
+                  },
+                  "purpose": {
+                    "type": "string",
+                    "enum": [
+                      "SHARED_ACCOUNT"
                     ],
-                    "properties": {
-                      "account_name": {
-                        "type": "string",
-                        "maxLength": 50,
-                        "description": "Account alias, no spaces or line breaks",
-                        "example": "SubAccountA"
-                      },
-                      "out_account_no": {
-                        "type": "string",
-                        "maxLength": 64,
-                        "description": "Merchant-side account number (required on creation, always echoed back), no spaces or line breaks",
-                        "example": "SUB202607200001"
-                      },
-                      "purpose": {
-                        "type": "string",
-                        "enum": [
-                          "SHARED_ACCOUNT"
-                        ],
-                        "description": "Purpose: pass SHARED_ACCOUNT to create a shared account; omit or pass null to create a regular sub-account",
-                        "nullable": true
-                      }
-                    }
+                    "description": "Purpose: pass SHARED_ACCOUNT to create a shared account; omit or pass null to create a regular sub-account",
+                    "nullable": true
                   }
                 }
               }
@@ -2068,7 +2150,8 @@
                     "type": "string",
                     "minLength": 2,
                     "maxLength": 100,
-                    "description": "Reason for change (required), 2-100 characters, emoji not supported"
+                    "description": "Reason for change (required), 2-100 characters, emoji not supported",
+                    "example": "Suspend account"
                   }
                 }
               }
@@ -2433,7 +2516,15 @@
                     "properties": {
                       "single_limit": {
                         "type": "string",
-                        "description": "Single transaction limit"
+                        "description": "Single transaction limit, minimum 0.01. No limit if omitted"
+                      },
+                      "daily_limit": {
+                        "type": "string",
+                        "description": "Daily limit, minimum 0.01. No limit if omitted"
+                      },
+                      "monthly_limit": {
+                        "type": "string",
+                        "description": "Monthly limit, minimum 0.01. No limit if omitted"
                       }
                     }
                   }
@@ -3238,9 +3329,12 @@
               "application/json": {
                 "schema": {
                   "type": "object",
+                  "required": [
+                    "data"
+                  ],
                   "properties": {
                     "data": {
-                      "$ref": "#/components/schemas/CardBalanceTransaction"
+                      "$ref": "#/components/schemas/CardTransferDetail"
                     }
                   }
                 }
@@ -3367,7 +3461,8 @@
             "required": true,
             "schema": {
               "type": "integer"
-            }
+            },
+            "description": "Page number"
           },
           {
             "name": "page_size",
@@ -3375,7 +3470,8 @@
             "required": true,
             "schema": {
               "type": "integer"
-            }
+            },
+            "description": "Page size"
           },
           {
             "name": "card_id",
@@ -3383,7 +3479,8 @@
             "required": true,
             "schema": {
               "type": "string"
-            }
+            },
+            "description": "Card ID"
           },
           {
             "name": "start_time",
@@ -3391,7 +3488,8 @@
             "required": true,
             "schema": {
               "type": "number"
-            }
+            },
+            "description": "Start time"
           },
           {
             "name": "end_time",
@@ -3399,7 +3497,8 @@
             "required": true,
             "schema": {
               "type": "number"
-            }
+            },
+            "description": "End time"
           },
           {
             "name": "out_order_no",
@@ -3407,7 +3506,8 @@
             "required": false,
             "schema": {
               "type": "string"
-            }
+            },
+            "description": "Merchant order number"
           },
           {
             "$ref": "#/components/parameters/FSignature"
@@ -3420,14 +3520,20 @@
               "application/json": {
                 "schema": {
                   "type": "object",
+                  "required": [
+                    "count",
+                    "data"
+                  ],
                   "properties": {
                     "count": {
-                      "type": "string"
+                      "type": "string",
+                      "description": "Total number of results"
                     },
                     "data": {
                       "type": "array",
+                      "description": "Result set",
                       "items": {
-                        "$ref": "#/components/schemas/CardBalanceTransaction"
+                        "$ref": "#/components/schemas/CardTransferDetail"
                       }
                     }
                   }
@@ -3710,9 +3816,363 @@
               "application/json": {
                 "schema": {
                   "type": "object",
+                  "required": [
+                    "data"
+                  ],
                   "properties": {
                     "data": {
                       "$ref": "#/components/schemas/CardDetail"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Resource already created. Do not resubmit. Poll for the transaction result or wait for an async notification.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Request accepted. Please query the result later or wait for an async notification.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Duplicate request. Poll for the transaction result or wait for an async notification.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error. This status code should not be used as the basis for the transaction result. Please query the result later or wait for an async notification.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/card/limit": {
+      "put": {
+        "summary": "Update Card Limits",
+        "tags": [
+          "Card Management"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/FSignature"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "card_id",
+                  "limit"
+                ],
+                "properties": {
+                  "card_id": {
+                    "type": "string",
+                    "description": "Card ID"
+                  },
+                  "limit": {
+                    "type": "object",
+                    "description": "Transaction limits",
+                    "properties": {
+                      "single_limit": {
+                        "type": "string",
+                        "description": "Single transaction limit, minimum 0.01. No limit if omitted"
+                      },
+                      "daily_limit": {
+                        "type": "string",
+                        "description": "Daily limit, minimum 0.01. No limit if omitted"
+                      },
+                      "monthly_limit": {
+                        "type": "string",
+                        "description": "Monthly limit, minimum 0.01. No limit if omitted"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "Resource already created. Do not resubmit. Poll for the transaction result or wait for an async notification.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "202": {
+            "description": "Request accepted. Please query the result later or wait for an async notification.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "code": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "code",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Bad Request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Duplicate request. Poll for the transaction result or wait for an async notification.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error. This status code should not be used as the basis for the transaction result. Please query the result later or wait for an async notification.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/card/limit-usage/{card_id}": {
+      "get": {
+        "summary": "Get Card Remaining Limits",
+        "tags": [
+          "Card Management"
+        ],
+        "parameters": [
+          {
+            "name": "card_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/FSignature"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "required": [
+                        "card_id",
+                        "limit_remaining"
+                      ],
+                      "properties": {
+                        "card_id": {
+                          "type": "string",
+                          "description": "Card ID"
+                        },
+                        "limit": {
+                          "type": "object",
+                          "description": "Transaction limits",
+                          "properties": {
+                            "single_limit": {
+                              "type": "string",
+                              "description": "Single transaction limit"
+                            },
+                            "daily_limit": {
+                              "type": "string",
+                              "description": "Daily limit"
+                            },
+                            "monthly_limit": {
+                              "type": "string",
+                              "description": "Monthly limit"
+                            }
+                          }
+                        },
+                        "limit_remaining": {
+                          "type": "object",
+                          "description": "Remaining limits",
+                          "properties": {
+                            "daily_remaining": {
+                              "type": "string",
+                              "description": "Remaining daily limit"
+                            },
+                            "monthly_remaining": {
+                              "type": "string",
+                              "description": "Remaining monthly limit"
+                            }
+                          }
+                        }
+                      }
                     }
                   }
                 }
@@ -3909,7 +4369,7 @@
                   },
                   "country_code": {
                     "type": "string",
-                    "description": "Country/region, ISO 3166-1 alpha-2 code",
+                    "description": "Country/region (nationality), ISO 3166-1 alpha-2 code",
                     "minLength": 2,
                     "maxLength": 2
                   },
@@ -4244,7 +4704,7 @@
                   },
                   "country_code": {
                     "type": "string",
-                    "description": "Country/region, ISO 3166-1 alpha-2 code",
+                    "description": "Country/region (nationality), ISO 3166-1 alpha-2 code",
                     "minLength": 2,
                     "maxLength": 2
                   },
@@ -5916,7 +6376,7 @@
                     "example": "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
                   },
                   "data": {
-                    "$ref": "#/components/schemas/CardBalanceTransaction",
+                    "$ref": "#/components/schemas/CardTransferDetail",
                     "description": "Card transfer transaction details"
                   }
                 }

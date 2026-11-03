@@ -1,7 +1,7 @@
 <template>
   <div class="u-page">
     <UserPageHeader :eyebrow="t('hero.lookupEyebrow')" :title="t('cdkLookup.title')" :subtitle="t('cdkLookup.subtitle')" />
-    <div class="u-main max-w-5xl">
+    <div class="u-main max-w-3xl">
 
       <RedeemModeTabs />
 

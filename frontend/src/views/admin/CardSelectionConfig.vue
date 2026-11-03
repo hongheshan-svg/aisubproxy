@@ -103,7 +103,7 @@
           </div>
 
           <!-- 启用开关 -->
-          <el-switch v-model="rule.enabled" size="small" />
+          <el-switch v-model="rule.enabled" size="small" class="rule-switch" />
 
           <!-- 上下移 + 删除 -->
           <div class="rule-actions">
@@ -126,8 +126,7 @@
         <div>
           <h2 class="text-xl font-bold text-ink">本站可控策略</h2>
           <p class="text-sm text-muted mt-1">
-            选卡优先级保存后会同步到卡台所有者规则（<code class="mono text-xs">select_priority</code> + <code class="mono text-xs">strict_select</code>）。
-            未启动的卡头自动跳过。兑换有规则即声明 <code class="mono text-xs">strict_card_preference</code>，不再被卡台 537872/星链级联盖过。
+            保存后会把上面这份顺序同步给卡台，兑换时严格按此顺序选卡；未启用的卡头跳过。
           </p>
           <p v-if="resolvedPref.segment_key" class="text-xs text-subtle mt-1">
             当前生效偏好：{{ resolvedPref.issuer || '—' }} / {{ resolvedPref.segment_key }}
@@ -172,7 +171,7 @@
 
       <div class="flex flex-wrap items-center gap-4 mt-4">
         <el-checkbox v-model="autoSwitchUnpaid" :disabled="!policy.enabled">
-          确认未扣款/失败后自动换卡（关闭=发 no_auto_card_switch）
+          确认未扣款或失败后，允许自动换到下一张卡（关闭则不自动换卡）
         </el-checkbox>
         <el-switch
           v-model="policy.auto_open_when_no_card"
@@ -754,7 +753,17 @@ onUnmounted(() => { if (pollTimer) clearInterval(pollTimer) })
 .add-prod-offline   { opacity: .5; cursor: not-allowed; }
 
 @media (max-width: 640px) {
-  .rule-row { flex-wrap: wrap; }
-  .rule-info { width: 100%; }
+  /* 手机宽度：序号与状态在第一行，开关靠右，产品信息独占第二行，操作按钮在底部右对齐，避免产品码被开关盖住 */
+  .rule-row {
+    display: grid;
+    grid-template-columns: 24px minmax(0, 1fr) auto;
+    gap: 8px 10px;
+    align-items: center;
+  }
+  .rule-num     { grid-column: 1; grid-row: 1; }
+  .rule-badge   { grid-column: 2; grid-row: 1; min-width: 0; justify-self: start; }
+  .rule-switch  { grid-column: 3; grid-row: 1; }
+  .rule-info    { grid-column: 1 / -1; grid-row: 2; width: auto; }
+  .rule-actions { grid-column: 1 / -1; grid-row: 3; justify-content: flex-end; }
 }
 </style>

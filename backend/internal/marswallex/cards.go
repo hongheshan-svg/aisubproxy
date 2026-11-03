@@ -80,6 +80,8 @@ type CardBalanceTransaction struct {
 	Type          string    `json:"type,omitempty"`
 	Status        string    `json:"status"`
 	CreateTime    Timestamp `json:"create_time"`
+	// FailReason 为平台给出的失败原因（Status 为 FAIL 时可能有），按平台文字处理，写入前需脱敏、截断。
+	FailReason string `json:"fail_reason,omitempty"`
 }
 
 // UpdateCardStatusRequest 为更新卡状态参数。

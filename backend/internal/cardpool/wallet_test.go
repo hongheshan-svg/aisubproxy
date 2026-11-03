@@ -156,7 +156,7 @@ func TestCreateSubAccount(t *testing.T) {
 		t.Fatalf("请求数 = %d", len(reqs))
 	}
 	body := string(reqs[0].Body)
-	if !strings.HasPrefix(body, `{"data":{"account_name":"Ops","out_account_no":"AC`) || strings.Contains(body, "purpose") {
+	if !strings.HasPrefix(body, `{"account_name":"Ops","out_account_no":"AC`) || strings.Contains(body, "purpose") {
 		t.Fatalf("请求体 = %s", body)
 	}
 

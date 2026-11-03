@@ -6,7 +6,7 @@
 set -euo pipefail
 
 DOMAIN=""
-REPO_URL="https://github.com/zovocard/zovo_card_cdk_auto.git"
+REPO_URL="https://github.com/hongheshan-svg/aisubproxy.git"
 INSTALL_DIR="/opt/cdk-recharge"
 
 usage() {
@@ -62,6 +62,8 @@ echo "  compose: $DC ✓"
 if [[ -d "$INSTALL_DIR/.git" ]]; then
   echo "[2/6] 更新代码..."
   cd "$INSTALL_DIR"
+  # 老安装目录的 origin 可能还指向旧仓库，拉取前先改成当前仓库
+  git remote set-url origin "$REPO_URL"
   git pull --ff-only origin master 2>/dev/null || git pull origin master
 else
   echo "[2/6] 克隆代码..."

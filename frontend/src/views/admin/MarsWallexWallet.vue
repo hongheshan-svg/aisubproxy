@@ -34,7 +34,7 @@
             <el-table-column label="同步时间" min-width="150">
               <template #default="{ row }">{{ fmtTs(row.synced_at) }}</template>
             </el-table-column>
-            <el-table-column label="操作" width="110" fixed="right">
+            <el-table-column label="操作" width="110">
               <template #default="{ row }">
                 <template v-if="row.account_type === 'SUB_ACCOUNT' && !row.gone">
                   <el-button v-if="row.status === 'ACTIVE'" size="small" type="danger" plain @click="changeStatus(row, 'DISABLED')">停用</el-button>
@@ -103,7 +103,7 @@
             <el-table-column label="创建" min-width="150">
               <template #default="{ row }">{{ fmtTs(row.created_at) }}</template>
             </el-table-column>
-            <el-table-column label="操作" width="160" fixed="right">
+            <el-table-column label="操作" width="160">
               <template #default="{ row }">
                 <template v-if="row.state === 'needs_review'">
                   <el-button size="small" plain @click="recheck(row, convOrders)">重查</el-button>
@@ -162,7 +162,7 @@
             <el-table-column label="创建" min-width="150">
               <template #default="{ row }">{{ fmtTs(row.created_at) }}</template>
             </el-table-column>
-            <el-table-column label="操作" width="160" fixed="right">
+            <el-table-column label="操作" width="160">
               <template #default="{ row }">
                 <template v-if="row.state === 'needs_review'">
                   <el-button size="small" plain @click="recheck(row, xferOrders)">重查</el-button>

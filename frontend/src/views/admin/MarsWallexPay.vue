@@ -184,6 +184,10 @@
                 :placeholder="proxies[r] ? '留空不修改，填写则覆盖' : '如 http://user:pass@host:port'"
               />
               <el-button v-if="proxies[r]" size="small" type="danger" plain :loading="proxySaving" @click="clearProxy(r)">清除</el-button>
+              <el-button size="small" :loading="proxyTesting === r" :disabled="!!proxyTesting && proxyTesting !== r" @click="testProxy(r)">
+                {{ proxies[r] ? '测试' : '测试直连' }}
+              </el-button>
+              <div v-if="proxyTestResults[r]" class="basis-full pl-12 text-sm" :class="'text-' + proxyTestResults[r].tone">{{ proxyTestResults[r].text }}</div>
             </div>
             <el-button type="primary" :loading="proxySaving" :disabled="!hasProxyInput" @click="saveProxies">保存代理</el-button>
           </div>
@@ -200,7 +204,7 @@
                 </div>
                 <div v-else-if="checkResult.cf_blocked" class="text-err">被 Cloudflare 拦截{{ checkResult.cf_note ? '：' + checkResult.cf_note : '' }}</div>
                 <div v-else-if="checkResult.cf_checked" class="text-ok">Cloudflare 检测通过{{ checkResult.cf_note ? '（' + checkResult.cf_note + '）' : '' }}</div>
-                <div class="text-xs text-muted">自检走服务器直连出口，没有走地区代理；地区代理的出口 IP 要另外确认。</div>
+                <div class="text-xs text-muted">自检走服务器直连出口，没有走地区代理；要确认地区代理的出口 IP，请在上面「各地区代理」点「测试」。</div>
               </template>
               <template v-else>
                 <div class="text-err">自检失败：{{ checkResult.error }}</div>
@@ -341,8 +345,8 @@ import { authFetch } from '../../lib/api'
 import { dialog } from '../../lib/dialog'
 import { errText, fmtTs } from '../../lib/cardpool'
 import {
-  STATES, currencyDigits, failureText, formToPlan, formatMinor, isCreditPlan, isTerminal, pageOutcomeLabel, payApi, planToForm, stateLabel,
-  payBlockReason, type FormPlan, type PlanConf,
+  STATES, currencyDigits, failureText, formToPlan, formatMinor, isCreditPlan, isTerminal, pageOutcomeLabel, payApi, planToForm, proxyTestText, stateLabel,
+  payBlockReason, type FormPlan, type PlanConf, type ProxyTestResult,
 } from '../../lib/pay'
 import { loadRegistry, providerLabel, registry } from '../../lib/provider'
 
@@ -431,6 +435,20 @@ async function loadProxies() {
   proxiesFailed.value = !r.ok
   if (r.ok) proxies.value = r.data
   else dialog.toast(errText(r, '读取代理状态失败'), 'err')
+}
+
+// 测试代理：同一时刻只测一个（后端也限制）；结果里没有代理地址
+const proxyTesting = ref('')
+const proxyTestResults = reactive<Record<string, { tone: 'ok' | 'warn' | 'err'; text: string }>>({})
+
+async function testProxy(r: string) {
+  proxyTesting.value = r
+  delete proxyTestResults[r]
+  const res = await payApi<ProxyTestResult>('/proxies/test', 'POST', { region: r })
+  proxyTesting.value = ''
+  proxyTestResults[r] = res.ok
+    ? proxyTestText(res.data)
+    : { tone: 'err', text: `测试失败：${errText(res, '请求失败')}` }
 }
 
 async function putProxies(body: Record<string, string>): Promise<boolean> {

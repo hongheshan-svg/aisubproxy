@@ -181,3 +181,29 @@ export function payBlockReason(
   if (!(rc.cap_minor > 0) || !(rc.fund_cents > 0)) return '该套餐在此地区的金额未配置，不能真实付款（可先试运行）'
   return ''
 }
+
+// ---------- 地区代理测试 ----------
+export interface ProxyTestResult {
+  region: string
+  proxy_configured: boolean
+  ok: boolean
+  ip?: string
+  loc?: string
+  colo?: string
+  latency_ms?: number
+  matches_region?: boolean
+  error?: string
+}
+
+const COUNTRY_NAME: Record<string, string> = { PH: '菲律宾', US: '美国', JP: '日本', CL: '智利', EG: '埃及', SG: '新加坡' }
+
+/** 代理测试结果的展示文案；tone 对应界面颜色：ok 绿、warn 警告色、err 红。 */
+export function proxyTestText(r: ProxyTestResult): { tone: 'ok' | 'warn' | 'err'; text: string } {
+  if (!r.ok) return { tone: 'err', text: `测试失败：${r.error || '原因未知'}` }
+  const loc = r.loc || '未知'
+  if (r.matches_region === false) {
+    return { tone: 'warn', text: `出口 IP ${r.ip}，识别为 ${loc}，与 ${r.region} 不一致，可能拿不到该地区价格，也更容易被风控（耗时 ${r.latency_ms ?? 0} ms）` }
+  }
+  const name = COUNTRY_NAME[loc] ? `（${COUNTRY_NAME[loc]}）` : ''
+  return { tone: 'ok', text: `出口 IP ${r.ip}，OpenAI 识别为 ${loc}${name}，耗时 ${r.latency_ms ?? 0} ms` }
+}

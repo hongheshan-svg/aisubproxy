@@ -40,6 +40,15 @@
 - **资金上限**：卡池策略新增单笔注资上限（默认 500 美元）、钱包转账和兑换单笔上限（默认 2000 美元）、单日注资上限（默认 2000 美元）。
 - **卡限额**：卡池里可以手动查询和设置单张卡的日、月限额。
 - **每日待办提醒**：每天 9 点汇总一次待人工处理的单据和长期未回收的卡。
+- **发布 Docker 镜像**：
+  - 每次发版同时发布两种版本：原生发布包（systemd 部署和后台一键升级用），以及 Docker 镜像 `ghcr.io/hongheshan-svg/aisubproxy:X.Y.Z`。
+  - 镜像里的程序与原生发布包是同一份已签名的文件。
+  - `docker-compose.yml` 默认拉取镜像，不再在服务器上编译。要从源码构建，就叠加 `docker-compose.build.yml`。
+- **Docker 部署也能在后台「版本更新」一键升级**：
+  - 新版本保存在数据卷里，删掉容器重建后仍然生效。
+  - 新版本连续 3 次启动失败时，自动退回镜像自带的版本，并发出告警。
+  - 之后换成更新的镜像时，自动改用镜像里的版本。
+  - 手动回滚：`docker exec cdk-recharge /app/cdk-recharge rollback && docker restart cdk-recharge`。
 
 ### 变更/修复
 
@@ -56,7 +65,19 @@
 - **界面**：错误码翻译成中文，原文可以展开查看；修复多处窄屏重叠、弹窗透明、表头错位；皮肤改为只在「外观与品牌」页保存。
 - **SQLite 改用 WAL 模式**：并发读写时不再报 `database is locked`。
 - **MarsWallex**：创建子账户的请求体按官方最新规范调整；账户余额取不到时改查详情接口，仍取不到就报错，不当成 0。
-- **Docker 部署脚本改为拉取 `hongheshan-svg/aisubproxy`**：已部署的目录会先把 `origin` 改过来再拉取。
+- **Docker 部署脚本改为拉取发布好的镜像**：
+  - `deploy/docker-deploy.sh` 不再克隆源码，也不在服务器上构建。
+  - 它按版本下载 `docker-compose.yml` 等部署文件，补齐 `.env` 里缺少的密钥，然后拉取镜像并启动，等容器通过健康检查。
+  - Docker 已经装好时，docker 组的普通用户也可以运行这个脚本。
+- **Chrome 启动时不再带密钥**：只传给 Chrome 运行必需的环境变量（`PATH`、`HOME`、语言、时区、显示相关）。`APP_MASTER_KEY`、`JWT_SECRET`、卡台密钥不会出现在 Chrome 进程里。
+- **工具链与依赖升级**：
+  - Go 1.27、Node 24，Docker 基础镜像换成 Debian trixie。
+  - 前端生产依赖升级，修复已知漏洞；vue-i18n 升到 11。
+  - 导出 Excel 用的 xlsx 改用 SheetJS 官方发布的 0.20.3（npm 上的旧版有漏洞且不再更新）。
+- **发版更严格**：
+  - 推送标签后，先跑完整的测试和检查，并确认标签在 master 上，然后才构建。
+  - 原生发布包仍然带签名。
+  - 原生发布包和 Docker 镜像都成功后，才创建 Release。
 - **支付链接只认官方域名**：自动付款只打开 `pay.openai.com` 和 `checkout.stripe.com` 的支付页，其他链接在注资前就放弃。
 - **没提交过的单被人工判定失败时，记为「未提交」**，不再显示「付款被拒」。
 - **测试兑换可以选供卡型服务商**；「卡服务商」页在手机上不再横向溢出。
@@ -93,7 +114,18 @@
   ```
 
   装完再到后台点「浏览器自检」，应显示通过。
-- **Docker 部署**：`git pull` 后执行 `docker compose up -d --build`。镜像增大约 400MB；`docker-compose.yml` 新增了 `security_opt`（引用 `deploy/chrome-seccomp.json`），自己用 `docker run` 的需要加 `--security-opt seccomp=deploy/chrome-seccomp.json`。
+- **Docker 部署：改为重跑部署脚本，不要再 `git pull` 后自己构建。**
+
+  ```bash
+  curl -fsSL https://raw.githubusercontent.com/hongheshan-svg/aisubproxy/master/deploy/docker-deploy.sh | sudo bash -s -- --domain 你的域名
+  ```
+
+  - 脚本会用这一版的 `docker-compose.yml` 覆盖原文件（旧文件备份成 `docker-compose.yml.bak`）。自己改过 compose 的，升级后对照备份把改动合并回来。
+  - 数据卷不变，容器名仍是 `cdk-recharge`。
+  - 新的 compose 会把 `APP_MASTER_KEY` 传进容器。部署目录里的 `.env` 没有这个值时，脚本会生成一个。**请备份 `.env`**：主密钥丢了，已保存的 MarsWallex 密钥就无法解密。
+  - 手动换版本：`CDK_VERSION=X.Y.Z docker compose pull && docker compose up -d`。镜像版本号不带 `v`。
+  - 镜像约 1.4GB，其中主要是 Chrome 和中文字体。
+  - 自己用 `docker run` 启动的，需要加上 `--security-opt seccomp=deploy/chrome-seccomp.json`。
 - **服务器内存建议 ≥ 2GB**（自动付款并发为 1）。
 - 系统会创建专用用户 `cdk-chrome` 来运行 Chrome，并保留 Chrome 的沙箱，不会关闭沙箱。
 - **已保存过选卡策略的服务器**：卡片租约保留原值 30 分钟，建议在「卡池」页的策略里改成 35 分钟（兑换页也会提示）。

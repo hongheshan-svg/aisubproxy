@@ -244,7 +244,8 @@ func TestReadinessBlocksLocalIssue(t *testing.T) {
 				t.Fatal(err)
 			}
 		}, "未启用"},
-		{"MarsWallex 未配置", func(e *localEnv) { localSet(t, db.SettingMarsWallexDeveloperID, "") }, "developerId"},
+		// 原始错误只进就绪接口的 raw 详情，发码的 problems 只有人话（见 TestReadinessConfigProblemIsPlainText）
+		{"MarsWallex 未配置", func(e *localEnv) { localSet(t, db.SettingMarsWallexDeveloperID, "") }, "凭证未配置完整"},
 		{"主钱包余额不足", func(e *localEnv) { e.setWallet("1.00") }, "主钱包余额不足"},
 		{"今日注资额度用完", func(e *localEnv) {
 			db.DB.Exec(`INSERT INTO mw_card_orders (out_order_no, kind, amount_cents, state, created_at, updated_at) VALUES ('O1', 'recharge', 200000, 'success', strftime('%s','now'), 1)`)

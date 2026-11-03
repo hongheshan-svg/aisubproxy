@@ -2,6 +2,30 @@ export default {
   grok: {"credential": "Grok login", "hint": "Sign in to grok.com, then copy the sso cookie value from DevTools → Application → Cookies → grok.com (or the whole cookie containing sso=). New subscriptions only, fixed USD price.", "placeholder": "sso=… or the sso value", "invalid": "Enter a valid Grok login (the grok.com sso cookie)", "batchHint": "Pair Grok codes with a Grok login in the form sso=… (whole cookie), not a ChatGPT session."},
   xPremium: {"placeholder": "JSON: auth_token, ct0, billing_email", "product": "Product", "credential": "X credentials", "hint": "Paste JSON with auth_token, ct0 and billing_email. New subscriptions use live JPY quotes. Manage automatic renewal in X.", "invalid": "Enter valid X cookie JSON containing auth_token, ct0 and billing_email", "batchHint": "Pair X codes with X cookie JSON (auth_token, ct0, billing_email), not a ChatGPT session."},
 
+  sessionHelp: {
+    before: 'Sign in to the ChatGPT account you want to top up in your browser, then open ',
+    after: ' and copy the full JSON. The Session contains your account credentials: only paste it on a service page you trust, and check the target account as the page asks.',
+    tokenRule: 'The JSON must include sessionToken; an Access Token alone is not accepted.',
+  },
+  claude: {
+    credential: 'Enter your Claude Organization ID',
+    hint: 'Enter the target organization\'s Organization ID as a UUID. Both entries must match, and the target account must currently be on the free plan. This flow uses the Organization ID.',
+    findOrg: 'Sign in to the target Claude account, open account settings, and copy the Organization ID.',
+    orgLabel: 'Organization ID',
+    orgConfirmLabel: 'Confirm Organization ID',
+    orgPlaceholder: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx',
+    freeConfirm: 'I confirm the target account is on the free plan and the organization has no active paid subscription',
+    err: {
+      format: 'Enter a complete UUID, e.g. 3f2a9c4e-1b7d-4e8a-9c0f-5d6e7f8a9b0c',
+      mismatch: 'The two Organization IDs do not match',
+      free: 'Please confirm the target account is on the free plan',
+    },
+    accountTitle: 'Claude organization',
+    freeReminder: 'The target account must be on the free plan; organizations with a paid subscription will fail.',
+    batchHint: 'Claude codes need an Organization ID. Redeem them one at a time under "Redeem Now".',
+    batchSingleOnly: 'Redeem Claude codes one at a time under "Redeem Now" (Organization ID required)',
+  },
+
   grace: {"title": "Previous subscription needs attention", "hint": "The previous subscription is in a grace period or has an overdue renewal. Cancel it and refresh before recharging.", "action": "Cancel previous subscription and recheck", "confirm": "Cancel this account’s grace-period subscription? Grace-period access may end immediately. This only refreshes the account. Click redeem again yourself; no code is consumed and no payment is made automatically.", "pending": "The previous subscription has not been confirmed ended. Recheck the account without repeatedly cancelling or redeeming.", "done": "The previous subscription has ended and the account was refreshed. Review the plan and click redeem again.", "refreshFailed": "The result could not be confirmed. Recheck the account before trying another cancellation.", "processing": "Processing and refreshing…", "recheck": "Recheck account", "dismiss": "Not now", "confirmAction": "Confirm"},
 
   hero: {
@@ -30,19 +54,61 @@ export default {
     brand: 'Recharge Portal',
     brandSub: 'Account Upgrade Service',
     heroTitle: 'Recharge & Account Upgrade Service',
-    heroSub: 'Verify your account and CDK, then confirm — step by step',
-    flowTitle: 'How It Works',
-    services: {
-      recharge: { title: 'Recharge', en: 'Recharge Portal', cta: 'Start Recharge', p1: 'Verify CDK code', p2: 'Submit session', p3: 'Confirm submission' },
-      batch: { title: 'Batch Redeem', en: 'Batch Redeem', cta: 'Start Batch', p1: 'Verify CDK list', p2: 'Import Excel sessions', p3: 'Match and submit in order' },
-      lookup: { title: 'CDK Status', en: 'CDK Status', cta: 'Check CDK', p1: 'Paste one or many CDKs', p2: 'See if used', p3: 'Show recharge email' },
-      billing: { title: 'Billing', en: 'Billing Tool', cta: 'Check Billing', p1: 'Paste session', p2: 'Query billing info', p3: 'View subscription' },
+    heroSub: 'Verify your code → enter account details → confirm. Track progress and results any time',
+    quick: {
+      title: 'Top up in three steps',
+      sub: 'First time? Just follow the prompts on each page.',
+      s1: { title: 'Verify your code', desc: 'Enter the code under "Redeem Now". The page shows the plan it unlocks and anything to note.' },
+      s2: { title: 'Enter account details', desc: 'Fill in what the code\'s service needs, and check the target account before submitting:' },
+      s3: { title: 'Confirm', desc: 'Check the account and plan, then submit. Progress refreshes automatically. Keep the original code; if the result is unclear, look it up instead of submitting again.' },
+      creds: {
+        gpt: 'ChatGPT: full Session JSON',
+        claude: 'Claude: the organization\'s Organization ID',
+        grok: 'Grok: the sso login cookie from grok.com',
+        x: 'X: auth_token',
+      },
+      ctaSingle: 'Redeem Now',
+      ctaBatch: 'Batch Redeem',
     },
-    flows: {
-      submit: { title: 'Submit Flow', s1: 'Verify CDK — match plan and status', s2: 'Submit session — paste the JSON from chatgpt.com/api/auth/session', s3: 'Confirm — agree to terms and submit' },
-      batch: { title: 'Batch Redeem', s1: 'Verify CDKs — batch preview', s2: 'Import sessions — Excel/CSV auto-detect', s3: 'Match & submit — redeem in order and track progress' },
-      lookup: { title: 'CDK Status', s1: 'Enter CDKs — one or a pasted list', s2: 'Check status — used or not', s3: 'See email — which account was recharged' },
-      billing: { title: 'Billing Lookup', s1: 'Session input — paste your token', s2: 'Query billing — click to look up', s3: 'Result — shown after the query' },
+    servicesTitle: 'Choose an entry',
+    services: {
+      recharge: { title: 'Redeem Now', en: 'Redeem', cta: 'Start', p1: 'Verify your code', p2: 'Enter account details', p3: 'Confirm and track progress' },
+      batch: { title: 'Batch Redeem', en: 'Batch Redeem', cta: 'Start Batch', p1: 'Verify many codes at once', p2: 'Import sessions from Excel', p3: 'Match and submit in order' },
+      lookup: { title: 'CDK Status', en: 'CDK Status', cta: 'Check CDK', p1: 'Paste one or many codes', p2: 'See if used', p3: 'Show recharge email' },
+      billing: { title: 'Billing', en: 'Billing Tool', cta: 'Check Billing', p1: 'Look up by code or Session', p2: 'View subscription status', p3: 'Get invoice links' },
+    },
+    query: {
+      title: 'Checking after you redeem',
+      sub: 'All lookups use the original code. No sign-in needed.',
+      progress: { title: 'Redemption progress', desc: 'Enter the original code under "Redeem Now" to get back its order and latest progress.', cta: 'Check progress' },
+      status: { title: 'CDK status', desc: 'Paste one or many codes to see whether they were used and which email was topped up.', cta: 'Check codes' },
+      billing: { title: 'Billing', desc: 'Use the code (with the Session bound at redemption) or paste a Session to see subscription status and invoice links.', cta: 'Check billing' },
+    },
+    faq: {
+      title: 'FAQ',
+      sub: 'Can\'t find an answer? Look up the order with the original code first.',
+      entry: {
+        q: 'Which entry should I use?',
+        a: 'Use "Redeem Now" for a single code. Several ChatGPT, Grok or X codes can go through "Batch Redeem" together. The code decides the service; after verification the page shows the plan, then fill in the matching account details. Claude codes need an Organization ID, so use "Redeem Now".',
+      },
+      pending: {
+        q: 'I submitted but got no clear result. What now?',
+        a: 'Enter the original code under "Redeem Now" to see the order status, or check under "CDK Status" whether it was used. Processing, queued and awaiting confirmation do not mean it failed. Keep the original code and do not submit again until the status is clear.',
+      },
+      session: { q: 'Where do I get the Session?' },
+      claude: { q: 'What account details does Claude need?' },
+      used: {
+        q: 'The code says it was already used. Can I still look it up?',
+        a: 'Yes. Enter the original code under "Redeem Now" to get back the order and progress, or under "CDK Status" to see its status and the email it topped up.',
+      },
+      failed: {
+        q: 'My redemption failed. What should I do?',
+        a: 'The page explains why. If nothing was charged, you can fix the account details as the page suggests and retry with the same code. If you are not sure whether it went through, look it up first instead of submitting again.',
+      },
+      agent: {
+        q: 'Can I use a code from a reseller?',
+        a: 'Yes. This site serves everyone holding one of its codes, including resellers\' customers. Verify and redeem as prompted. For purchase or after-sales questions, contact whoever sold you the code.',
+      },
     },
   },
   redeemTabs: {

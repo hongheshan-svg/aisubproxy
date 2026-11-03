@@ -1,5 +1,6 @@
 import { isXPremiumPlan } from './x-premium'
 import { grokBarePlan, grokPlanLabel, isGrokPlan } from './grok'
+import { claudePlanLabel, isClaudePlan } from './claude'
 // 档位判定：可读名 + 「账号是否已满足该档」（兑换前的重复购买闸）。
 //
 // ★为什么抽成独立模块★
@@ -32,6 +33,8 @@ export function planLabel(value: string): string {
   const n = String(value || 'free').trim().toLowerCase()
   // 本站付款的 Codex 点数档：credit + 点数数量（如 credit250）
   if (/^credit\d+$/.test(n)) return `Codex 点数 ${n.slice(6)}`
+  // Claude 先判：claude_pro 含 pro，落到下面会显示成 GPT 的「Pro 20x」
+  if (isClaudePlan(n)) return claudePlanLabel(n)
   // X 先判：裸 premium_monthly 归 X；Grok 码由调用方按 product 补成 grok_ 前缀（见 RechargeView targetPlan）。
   if (isXPremiumPlan(n)) return 'X ' + n.replace(/^x_/, '').replace('premium', 'Premium').replace('plus', 'Plus').replace('super', 'Super').replace('ultra', 'Ultra').replace('_monthly', ' / month').replace('_yearly', ' / year')
   if (isGrokPlan(n)) return grokPlanLabel(n)
@@ -56,6 +59,8 @@ export function planLabel(value: string): string {
 export function planSatisfied(currentPlan: string, requestedPlan: string, planFlow?: string): boolean {
   const current = String(currentPlan || '').trim().toLowerCase()
   const req = String(requestedPlan || '').trim().toLowerCase()
+  // Claude：本站读不到组织当前套餐，由持码人确认目标账号是免费账号，卡台兑换时再核对
+  if (isClaudePlan(req)) return false
   if (isXPremiumPlan(req)) return current.startsWith('x_') && current !== 'x_free'
   // Grok 四档（Plus / Premium / Super / Ultra）与月/年付是并列商品，不存在「更高档已满足」，只认完全相同。
   if (isGrokPlan(req)) return !!current && grokBarePlan(current) === grokBarePlan(req)

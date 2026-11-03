@@ -39,11 +39,8 @@
 
         <template v-else>
           <div class="rounded-xl bg-soft p-4 text-sm text-muted">
-            打开
-            <a class="app-link underline" href="https://chatgpt.com/api/auth/session" target="_blank" rel="noopener">
-              chatgpt.com/api/auth/session
-            </a>
-            ，复制<strong>完整 JSON</strong>（须含 sessionToken）。已禁用纯 Access Token。
+            <SessionHelp />
+            <span class="block mt-1">{{ t('sessionHelp.tokenRule') }}</span>
           </div>
           <div class="form-group">
             <label>完整 Session JSON</label>
@@ -119,6 +116,7 @@ import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import UserPageHeader from '../../components/UserPageHeader.vue'
 import RedeemModeTabs from '../../components/RedeemModeTabs.vue'
+import SessionHelp from '../../components/SessionHelp.vue'
 const { t } = useI18n({ useScope: 'global' })
 
 

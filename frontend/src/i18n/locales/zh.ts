@@ -2,6 +2,30 @@ export default {
   grok: {"credential": "Grok 登录态", "hint": "登录 grok.com 后，在浏览器开发者工具 → Application → Cookies → grok.com 复制 sso 的值（或整段含 sso= 的 Cookie）。仅新订阅，美元固定价。", "placeholder": "sso=… 或 sso 的值", "invalid": "请填写有效的 Grok 登录态（grok.com 的 sso cookie）", "batchHint": "Grok 卡密请配对 Grok 登录态，格式为 sso=…（整段 Cookie），不要使用 ChatGPT Session。"},
   xPremium: {"placeholder": "JSON：auth_token、ct0、billing_email", "product": "产品", "credential": "X 登录凭据", "hint": "粘贴 JSON：auth_token、ct0、billing_email。仅新订阅，按日元实时报价；自动续费请在 X 管理。", "invalid": "请填写包含 auth_token、ct0、billing_email 的有效 X Cookie JSON", "batchHint": "X 卡密请配对 X Cookie JSON（auth_token、ct0、billing_email），不要使用 ChatGPT Session。"},
 
+  sessionHelp: {
+    before: '先在浏览器中登录需要操作的 ChatGPT 账号，再打开 ',
+    after: '，复制完整 JSON。Session 包含账号凭据，请仅在你确认可信的对应服务页使用，并按页面提示核对目标账号。',
+    tokenRule: 'JSON 里必须有 sessionToken，不能只填 Access Token。',
+  },
+  claude: {
+    credential: '填写 Claude Organization ID',
+    hint: '填写目标组织的 Organization ID，格式为 UUID。两次输入必须一致，并确认目标账号目前为免费账号。该流程使用 Organization ID。',
+    findOrg: '登录目标 Claude 账号，进入账户设置，复制 Organization ID。',
+    orgLabel: 'Organization ID',
+    orgConfirmLabel: '再次输入 Organization ID',
+    orgPlaceholder: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx',
+    freeConfirm: '我确认目标账号目前为免费账号，当前组织没有有效的付费订阅',
+    err: {
+      format: 'Organization ID 需为完整 UUID，例如 3f2a9c4e-1b7d-4e8a-9c0f-5d6e7f8a9b0c',
+      mismatch: '两次填写的 Organization ID 不一致',
+      free: '请先确认目标账号目前为免费账号',
+    },
+    accountTitle: 'Claude 组织',
+    freeReminder: '目标账号需为免费账号；已有付费订阅的组织会兑换失败。',
+    batchHint: 'Claude 卡密需要填写 Organization ID，请到「立即兑换」逐张兑换。',
+    batchSingleOnly: 'Claude 卡密请到「立即兑换」单张兑换（需要填写 Organization ID）',
+  },
+
   grace: {"title": "原订阅续费异常", "hint": "原订阅处于宽限期或欠费续费状态。请先取消原订阅，刷新状态后再充值。", "action": "取消原订阅并重新检测", "confirm": "确认取消这个账号宽限期内的原订阅？可能立即结束宽限期权益。处理后只刷新状态，需要再次点击兑换，不会自动消耗 CDK 或扣款。", "pending": "原订阅尚未确认解除，请重新检测账号。不要连续重复取消或兑换。", "done": "原订阅已解除，状态已刷新。核对套餐后可再次点击兑换。", "refreshFailed": "暂时无法确认处理结果，请重新检测账号，不要重复取消。", "processing": "正在处理并刷新…", "recheck": "重新检测账号", "dismiss": "暂不处理", "confirmAction": "确认取消"},
 
   hero: {
@@ -30,19 +54,61 @@ export default {
     brand: 'Recharge Portal',
     brandSub: 'Account Upgrade Service',
     heroTitle: '充值与账户升级服务',
-    heroSub: '按步骤校验账号、卡密并确认信息',
-    flowTitle: '操作流程',
-    services: {
-      recharge: { title: '充值提交', en: 'Recharge Portal', cta: '开始充值', p1: '验证 CDK 卡密', p2: '提交 Session', p3: '确认提交申请' },
-      batch: { title: '批量兑换', en: 'Batch Redeem', cta: '批量开始', p1: '批量验证 CDK', p2: '导入 Excel Session', p3: '按序配对自动提交' },
-      lookup: { title: '卡密查询', en: 'CDK Status', cta: '查询卡密', p1: '单张或批量粘贴卡密', p2: '查看是否已使用', p3: '显示充值邮箱' },
-      billing: { title: '账单查询', en: 'Billing Tool', cta: '查询账单', p1: '粘贴 Session', p2: '查询账单信息', p3: '查看订阅状态' },
+    heroSub: '验证卡密 → 填写账号信息 → 确认兑换，进度和结果随时可查',
+    quick: {
+      title: '三步完成充值',
+      sub: '第一次兑换也没关系，跟着页面提示一步步来。',
+      s1: { title: '验证卡密', desc: '在「立即兑换」输入卡密，页面会显示可兑换的套餐和注意事项。' },
+      s2: { title: '填写账号信息', desc: '按卡密对应的服务填写，提交前核对目标账号：' },
+      s3: { title: '确认兑换', desc: '核对账号和套餐后提交，页面会自动刷新进度。请保存好原卡密；结果不明确时先查询，不要重复提交。' },
+      creds: {
+        gpt: 'ChatGPT：完整 Session JSON',
+        claude: 'Claude：组织的 Organization ID',
+        grok: 'Grok：grok.com 的 sso 登录态',
+        x: 'X：auth_token',
+      },
+      ctaSingle: '立即兑换',
+      ctaBatch: '批量兑换',
     },
-    flows: {
-      submit: { title: '提交流程', s1: 'CDK 验证 — 匹配套餐和状态', s2: '提交 Session — 粘贴 chatgpt.com/api/auth/session 的 JSON', s3: '确认提交 — 阅读协议后确认' },
-      batch: { title: '批量兑换', s1: '验证 CDK — 批量预览卡密', s2: '导入 Session — Excel/CSV 自动识别', s3: '配对提交 — 按序兑换并看进度' },
-      lookup: { title: '卡密查询', s1: '输入卡密 — 单张或批量粘贴', s2: '查询状态 — 是否已使用', s3: '查看邮箱 — 充值到哪个账号' },
-      billing: { title: '账单查询', s1: 'Session 输入 — 粘贴 Token', s2: '查询账单 — 点击查询后进入', s3: '账单结果 — 查询后展示' },
+    servicesTitle: '选择入口',
+    services: {
+      recharge: { title: '立即兑换', en: 'Redeem', cta: '开始兑换', p1: '验证卡密', p2: '填写账号信息', p3: '确认兑换并看进度' },
+      batch: { title: '批量兑换', en: 'Batch Redeem', cta: '批量开始', p1: '一次验证多张卡密', p2: '导入 Excel 里的 Session', p3: '按顺序配对自动提交' },
+      lookup: { title: '卡密查询', en: 'CDK Status', cta: '查询卡密', p1: '单张或批量粘贴卡密', p2: '查看是否已使用', p3: '显示充值邮箱' },
+      billing: { title: '账单查询', en: 'Billing Tool', cta: '查询账单', p1: '用卡密或 Session 查询', p2: '查看订阅状态', p3: '获取账单链接' },
+    },
+    query: {
+      title: '兑换后怎么查询',
+      sub: '查询都用原卡密，不需要登录。',
+      progress: { title: '兑换进度', desc: '在「立即兑换」输入原卡密，会直接找回这张卡密的兑换订单和最新进度。', cta: '查进度' },
+      status: { title: '卡密查询', desc: '单张或批量粘贴卡密，查看是否已使用、充值到了哪个邮箱。', cta: '查卡密' },
+      billing: { title: '账单查询', desc: '用卡密（兑换时绑定的 Session）或直接粘贴 Session，查看订阅状态和账单链接。', cta: '查账单' },
+    },
+    faq: {
+      title: '常见问题',
+      sub: '找不到答案时，先用原卡密查询订单状态。',
+      entry: {
+        q: '我应该选择哪个兑换入口？',
+        a: '一张卡密用「立即兑换」；多张 ChatGPT、Grok 或 X 卡密可以用「批量兑换」一次处理。卡密对应哪个服务由卡密决定，验证后页面会显示可兑换的套餐，按提示填写对应的账号信息即可。Claude 卡密需要填写 Organization ID，请用「立即兑换」。',
+      },
+      pending: {
+        q: '点击提交后没有收到明确结果，怎么办？',
+        a: '请先在「立即兑换」输入原卡密查看订单状态，或到「卡密查询」查看卡密是否已使用。正在处理、排队和结果待确认，都不代表兑换失败。确认状态前，请保留原卡密，不要重复提交。',
+      },
+      session: { q: 'Session 在哪里获取？' },
+      claude: { q: 'Claude 应该填写什么账号信息？' },
+      used: {
+        q: '卡密提示已经使用，还能查询吗？',
+        a: '可以。在「立即兑换」输入原卡密，可以找回兑换订单和进度；在「卡密查询」输入原卡密，可以看到使用状态和充值邮箱。',
+      },
+      failed: {
+        q: '兑换失败了怎么办？',
+        a: '页面会写明失败原因。没有扣款的失败，可以按页面提示修改账号信息后用同一张卡密重试；不确定有没有成功时，先查询，不要重复提交。',
+      },
+      agent: {
+        q: '代理提供的卡密也能使用吗？',
+        a: '可以。本站面向所有持有本站卡密的用户，包括代理客户，按提示验证并兑换即可。卡密的购买或售后问题，请联系卡密提供方。',
+      },
     },
   },
   redeemTabs: {

@@ -35,23 +35,33 @@
 
       <!-- 2 preflight -->
       <div v-show="step === 2" class="card space-y-4">
-        <h2 class="text-xl font-bold text-ink">{{ isGrok ? t('grok.credential') : isXPremiumPlan(targetPlan) ? t('xPremium.credential') : 'ChatGPT 凭证' }}</h2>
-        <div v-if="!isXPremiumPlan(targetPlan) && !isGrok && !isMW" class="flex gap-2">
+        <h2 class="text-xl font-bold text-ink">{{ isClaude ? t('claude.credential') : isGrok ? t('grok.credential') : isXPremiumPlan(targetPlan) ? t('xPremium.credential') : 'ChatGPT 凭证' }}</h2>
+        <div v-if="!isXPremiumPlan(targetPlan) && !isGrok && !isMW && !isClaude" class="flex gap-2">
           <button type="button" class="btn-secondary !py-1" :class="{ 'ring-2': credMode === 'session' }" @click="credMode = 'session'">Session</button>
           <button type="button" class="btn-secondary !py-1" :class="{ 'ring-2': credMode === 'mailbox' }" @click="credMode = 'mailbox'">邮箱</button>
         </div>
-        <template v-if="credMode === 'session'">
+        <template v-if="isClaude">
+          <p class="text-sm text-muted">{{ t('claude.hint') }}</p>
+          <p class="text-xs text-muted">{{ t('claude.findOrg') }}</p>
+          <label class="block text-sm font-medium text-ink" for="claude-org">{{ t('claude.orgLabel') }}</label>
+          <input id="claude-org" v-model="claudeOrg" class="input mono" autocomplete="off" spellcheck="false" :placeholder="t('claude.orgPlaceholder')" data-testid="claude-org" />
+          <label class="block text-sm font-medium text-ink" for="claude-org-confirm">{{ t('claude.orgConfirmLabel') }}</label>
+          <input id="claude-org-confirm" v-model="claudeOrgConfirm" class="input mono" autocomplete="off" spellcheck="false" :placeholder="t('claude.orgPlaceholder')" data-testid="claude-org-confirm" />
+          <label class="flex items-start gap-2 text-sm text-ink cursor-pointer select-none">
+            <input v-model="claudeFree" type="checkbox" class="mt-0.5" data-testid="claude-free" />
+            <span>{{ t('claude.freeConfirm') }}</span>
+          </label>
+        </template>
+        <template v-else-if="credMode === 'session'">
           <p v-if="isGrok" class="text-sm text-muted">{{ t('grok.hint') }}</p>
           <p v-else-if="isXPremiumPlan(targetPlan)" class="text-sm text-muted">{{ t('xPremium.hint') }}</p>
-          <p v-else-if="isMW" class="text-sm text-muted">打开
-            <a class="app-link" href="https://chatgpt.com/api/auth/session" target="_blank" rel="noopener">chatgpt.com/api/auth/session</a>
-            复制<strong>完整 JSON</strong>（必须含 <code>sessionToken</code>）。此通道只支持 Session，不支持邮箱密码。
+          <p v-else-if="isMW" class="text-sm text-muted"><SessionHelp />
+            <span class="block mt-1">{{ t('sessionHelp.tokenRule') }}此通道只支持 Session，不支持邮箱密码。</span>
             <span v-if="noSubscriptionOnly" class="block mt-1 font-semibold text-warn">此码仅限没有订阅的账号，已有订阅的账号会兑换失败。</span>
             <span v-if="isCreditMW" class="block mt-1 font-semibold text-warn">此码仅限已订阅 Plus 或 Pro 的账号，没有订阅的账号会兑换失败。</span>
           </p>
-          <p v-else class="text-sm text-muted">打开
-            <a class="app-link" href="https://chatgpt.com/api/auth/session" target="_blank" rel="noopener">chatgpt.com/api/auth/session</a>
-            复制<strong>完整 JSON</strong>（必须含 <code>sessionToken</code>）。已禁用纯 Access Token。
+          <p v-else class="text-sm text-muted"><SessionHelp />
+            <span class="block mt-1">{{ t('sessionHelp.tokenRule') }}</span>
           </p>
           <textarea v-model="sessionRaw" class="input h-36 font-mono text-xs" :placeholder="isGrok ? t('grok.placeholder') : isXPremiumPlan(targetPlan) ? t('xPremium.placeholder') : 'Session JSON (sessionToken)'" />
         </template>
@@ -92,6 +102,15 @@
               <span>我已阅读并同意以上须知</span>
             </label>
           </div>
+        </div>
+        <div v-else-if="isClaude" class="rounded-xl border p-4 space-y-2" style="border-color: var(--brd); background: var(--surface-2, var(--soft))" data-testid="claude-account">
+          <div class="flex flex-wrap items-center gap-2">
+            <strong class="text-ink text-base">{{ t('claude.accountTitle') }}</strong>
+            <el-tag size="small" type="info">Claude</el-tag>
+          </div>
+          <div class="text-sm text-muted">Organization ID：<span class="mono text-ink">{{ claudeOrgId }}</span></div>
+          <div class="text-sm text-muted">目标套餐：<b class="text-ink">{{ planLabel(targetPlan) }}</b></div>
+          <div class="text-sm font-semibold text-warn">{{ t('claude.freeReminder') }}</div>
         </div>
         <!-- 与卡台直充预检一致：邮箱 + 订阅事实 -->
         <div v-else-if="account.checked" class="rounded-xl border p-4 space-y-3" style="border-color: var(--brd); background: var(--surface-2, var(--soft))">
@@ -148,11 +167,11 @@
           预检未返回账号摘要，仍可尝试兑换（以卡台校验为准）。
         </div>
 
-        <div v-if="grokBlockingReason" class="alert" style="background: var(--warn-soft, #fef3c7); color: var(--warn, #b45309); border-color: var(--warn, #d97706)">
-          {{ grokBlockingReason }}
+        <div v-if="blockingReason" class="alert" style="background: var(--warn-soft, #fef3c7); color: var(--warn, #b45309); border-color: var(--warn, #d97706)">
+          {{ blockingReason }}
         </div>
 
-        <div v-if="alreadySatisfied && !grokBlockingReason && !needsSubscriptionRecovery && !recoveryPending" class="alert" style="background: var(--warn-soft, #fef3c7); color: var(--warn, #b45309); border-color: var(--warn, #d97706)">
+        <div v-if="alreadySatisfied && !blockingReason && !needsSubscriptionRecovery && !recoveryPending" class="alert" style="background: var(--warn-soft, #fef3c7); color: var(--warn, #b45309); border-color: var(--warn, #d97706)">
           {{ alreadySatisfiedHint }}
         </div>
 
@@ -273,6 +292,8 @@ import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import UserPageHeader from '../../components/UserPageHeader.vue'
 import RedeemModeTabs from '../../components/RedeemModeTabs.vue'
+import SessionHelp from '../../components/SessionHelp.vue'
+import { claudeCredential, claudeOrgCheck, claudeRedeemBody, claudeTargetPlan, isClaudePlan } from '../../lib/claude'
 import { dialog } from '../../lib/dialog'
 import { planLabel, planSatisfied as isSatisfied } from '../../lib/plan'
 import {
@@ -295,7 +316,13 @@ const redemptionToken = ref('')
 const preflightToken = ref('')
 // Grok 码不产预检票：预检通过后兑换直接带这份登录态（卡台按码上的产品分流）。
 const grokSession = ref('')
-const grokBlockingReason = ref('')
+const blockingReason = ref('')
+// Claude 码：两次填写的 Organization ID 与「目标账号是免费账号」的确认。预检通过后记下规范化的 ID：
+// 卡台给了预检票就带票兑换，没给（与 Grok 一样）就兑换时直接带它。都不进进度缓存。
+const claudeOrg = ref('')
+const claudeOrgConfirm = ref('')
+const claudeFree = ref(false)
+const claudeOrgId = ref('')
 const credMode = ref<'session' | 'mailbox'>('session')
 const sessionRaw = ref('')
 const email = ref('')
@@ -462,13 +489,17 @@ const targetPlan = computed(() => {
   const plan = String(previewInfo.value?.plan || previewInfo.value?.plan_type || '').toLowerCase()
   // 新版卡台预览带 product：Grok / X 补上产品前缀再判，裸 premium_monthly 两家都有（2026-10-19 Grok 改名）。
   const product = String(previewInfo.value?.product || '').toLowerCase()
+  const claude = claudeTargetPlan(plan, product)
+  if (claude) return claude
   if (plan && product === 'grok' && !plan.startsWith('grok_')) return 'grok_' + plan
   if (plan && product === 'x' && !plan.startsWith('x_')) return 'x_' + plan
   return plan
 })
 const isGrok = computed(() => isGrokPlan(targetPlan.value) && !isXPremiumPlan(targetPlan.value))
-// GPT / X：必须有预检票；Grok：预检通过且没有阻塞项即可。
-const canRedeem = computed(() => isGrok.value ? !!grokSession.value && !grokBlockingReason.value : !!preflightToken.value)
+const isClaude = computed(() => isClaudePlan(targetPlan.value))
+// GPT / X：必须有预检票；Grok：预检通过且没有阻塞项即可；Claude：有票或已记下 Organization ID，且没有阻塞项。
+const canRedeem = computed(() => isClaude.value ? (!!preflightToken.value || !!claudeOrgId.value) && !blockingReason.value
+  : isGrok.value ? !!grokSession.value && !blockingReason.value : !!preflightToken.value)
 
 const subscriptionStatusText = computed(() => {
   if (account.value.subscriptionHasActive === true) return '有效'
@@ -534,11 +565,12 @@ function invalidatePreflight() {
   preflightSequence++
   preflightToken.value = ''
   grokSession.value = ''
-  grokBlockingReason.value = ''
+  blockingReason.value = ''
+  claudeOrgId.value = ''
   recoveryPending.value = false
   clearAccount()
 }
-watch([code, sessionRaw, email, password, credMode], invalidatePreflight, { flush: 'sync' })
+watch([code, sessionRaw, email, password, credMode, claudeOrg, claudeOrgConfirm, claudeFree], invalidatePreflight, { flush: 'sync' })
 watch(isMW, (v) => { if (v) credMode.value = 'session' })
 
 const alreadySatisfied = computed(() => {
@@ -848,7 +880,7 @@ async function doPreview() {
     // 兼容多种返回结构
     redemptionToken.value = data.redemption_token || data.data?.redemption_token || data.token || ''
     previewInfo.value = data.data || data
-    if (isXPremiumPlan(targetPlan.value) || isGrokPlan(targetPlan.value)) credMode.value = 'session'
+    if (isXPremiumPlan(targetPlan.value) || isGrokPlan(targetPlan.value) || isClaude.value) credMode.value = 'session'
     if (!redemptionToken.value) {
       // 有的实现把 token 放在顶层其它字段
       error.value = '未返回 redemption_token，请检查卡台 Base 配置'
@@ -868,7 +900,14 @@ async function doPreflight() {
   busy.value = true
   try {
     let credential: any
-    if (credMode.value === 'session') {
+    if (isClaude.value) {
+      const bad = claudeOrgCheck(claudeOrg.value, claudeOrgConfirm.value, claudeFree.value)
+      if (bad) {
+        error.value = t('claude.err.' + bad)
+        return
+      }
+      credential = claudeCredential(claudeOrg.value)
+    } else if (credMode.value === 'session') {
       const session = isGrok.value ? grokCredential(sessionRaw.value)
         : isXPremiumPlan(targetPlan.value) ? xPremiumCredential(sessionRaw.value) : extractSession(sessionRaw.value)
       if (!session) {
@@ -899,10 +938,18 @@ async function doPreflight() {
       return
     }
     const body = data?.data && typeof data.data === 'object' ? data.data : data || {}
+    if (isClaude.value) {
+      claudeOrgId.value = credential.session
+      preflightToken.value = body.preflight_token || data?.preflight_token || ''
+      blockingReason.value = String(body.blocking_reason || '')
+      applyAccountFromPreflight(data)
+      step.value = 3
+      return
+    }
     if (isGrok.value) {
       // Grok：预检只查账号，没有 preflight_token。blocking_reason 是卡台的拦截判据（登录态失效 / 已有订阅等）。
       grokSession.value = credential.session
-      grokBlockingReason.value = String(body.blocking_reason || '')
+      blockingReason.value = String(body.blocking_reason || '')
       applyAccountFromPreflight(data)
       step.value = 3
       return
@@ -957,7 +1004,9 @@ async function doRedeem() {
     const client_request_id = 'web-' + deviceId.slice(0, 8) + '-' + Date.now()
     const { r, data } = await api('/api/v1/public/cdk/redeem', {
       method: 'POST',
-      body: JSON.stringify(isGrok.value
+      body: JSON.stringify(isClaude.value
+        ? claudeRedeemBody(redemptionToken.value, preflightToken.value, claudeOrgId.value, client_request_id)
+        : isGrok.value
         ? { redemption_token: redemptionToken.value, credential: { mode: 'session', session: grokSession.value }, client_request_id }
         : isMW.value
           ? withCreditTerms({ redemption_token: redemptionToken.value, preflight_token: preflightToken.value, client_request_id }, previewInfo.value, agreeCreditTerms.value)

@@ -3,12 +3,16 @@ package handler
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -320,6 +324,157 @@ func TestLocalIssueValidation(t *testing.T) {
 	db.DB.QueryRow(`SELECT COUNT(*) FROM local_cdks`).Scan(&n)
 	if n != 0 {
 		t.Fatalf("%d", n)
+	}
+}
+
+// 发码幂等：同一次点击只发一批。完整码只存哈希拿不回来，所以重试不返回码，返回 409 说明发过哪一批。
+func TestLocalIssueIdempotency(t *testing.T) {
+	const body = `{"provider":"marswallex","plan":"plus","region":"PH","count":2,"funding_confirmed":true}`
+	rows := func() int {
+		t.Helper()
+		var n int
+		if err := db.DB.QueryRow(`SELECT COUNT(*) FROM local_cdks`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+
+	t.Run("缺键或键过长被拒，两条路由一样", func(t *testing.T) {
+		e := newLocalEnv(t)
+		e.seedRealPayment()
+		localSet(t, provider.SettingDefault, string(provider.MarsWallex))
+		for _, path := range []string{"/admin/cdks/issue", "/admin/cardplatform/cdks"} {
+			for _, key := range []string{"", "   ", strings.Repeat("k", 129)} {
+				w := e.doIssue("POST", path, body, key)
+				if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "Idempotency-Key") {
+					t.Fatalf("%s %q: %d %s", path, key, w.Code, w.Body.String())
+				}
+			}
+		}
+		if n := rows(); n != 0 {
+			t.Fatalf("%d", n)
+		}
+	})
+
+	t.Run("同一个键只发一批，重试不返回码", func(t *testing.T) {
+		e := newLocalEnv(t)
+		e.seedRealPayment()
+		first := e.doIssue("POST", "/admin/cdks/issue", body, "click-1")
+		if first.Code != http.StatusOK {
+			t.Fatalf("%d %s", first.Code, first.Body.String())
+		}
+		issued := localJSON(t, first)["issued"].([]any)
+		firstID := issued[0].(map[string]any)["id"].(float64)
+		lastID := issued[1].(map[string]any)["id"].(float64)
+		for i := 0; i < 2; i++ {
+			w := e.doIssue("POST", "/admin/cdks/issue", body, "click-1")
+			if w.Code != http.StatusConflict {
+				t.Fatalf("%d %s", w.Code, w.Body.String())
+			}
+			m := localJSON(t, w)
+			if m["already_issued"] != true || m["first_id"] != firstID || m["last_id"] != lastID || m["count"].(float64) != 2 || !strings.Contains(m["error"].(string), "禁用") {
+				t.Fatalf("%v", m)
+			}
+			for _, it := range issued {
+				if strings.Contains(w.Body.String(), it.(map[string]any)["code"].(string)) {
+					t.Fatal("重试不能返回完整码")
+				}
+			}
+		}
+		if n := rows(); n != 2 {
+			t.Fatalf("只能有一批: %d", n)
+		}
+		if a := localAudit(t); strings.Count(a, "local_cdk_issue") != 1 {
+			t.Fatalf("只写一条审计: %s", a)
+		}
+		// 新的一次点击照常发
+		if w := e.doIssue("POST", "/admin/cdks/issue", body, "click-2"); w.Code != http.StatusOK {
+			t.Fatalf("%d %s", w.Code, w.Body.String())
+		}
+		if n := rows(); n != 4 {
+			t.Fatalf("%d", n)
+		}
+		// 键用过了，就算现在未就绪，也如实说发过了，不是报未就绪
+		if _, err := db.DB.Exec(`UPDATE mw_cards SET pool_state = 'retired'`); err != nil {
+			t.Fatal(err)
+		}
+		if w := e.doIssue("POST", "/admin/cdks/issue", body, "click-1"); w.Code != http.StatusConflict {
+			t.Fatalf("%d %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("没发成不占用键，重试能发", func(t *testing.T) {
+		e := newLocalEnv(t)
+		e.seedRealPayment()
+		if _, err := db.DB.Exec(`UPDATE mw_cards SET pool_state = 'retired'`); err != nil {
+			t.Fatal(err)
+		}
+		if w := e.doIssue("POST", "/admin/cdks/issue", body, "click-1"); w.Code != http.StatusBadRequest {
+			t.Fatalf("%d %s", w.Code, w.Body.String())
+		}
+		e.addCard("c2")
+		if w := e.doIssue("POST", "/admin/cdks/issue", body, "click-1"); w.Code != http.StatusOK {
+			t.Fatalf("%d %s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("并发的重复点击也只发一批", func(t *testing.T) {
+		gin.SetMode(gin.TestMode)
+		c, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "issue.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.SetMaxOpenConns(25)
+		old := db.DB
+		db.DB = c
+		t.Cleanup(func() { db.DB = old; c.Close() })
+		if err := db.Migrate(); err != nil {
+			t.Fatal(err)
+		}
+		e := setupLocalEnv(t)
+		e.seedRealPayment()
+		var wg sync.WaitGroup
+		var ok, conflict atomic.Int32
+		start := make(chan struct{})
+		for i := 0; i < 10; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				switch w := e.doIssue("POST", "/admin/cdks/issue", body, "double-click"); w.Code {
+				case http.StatusOK:
+					ok.Add(1)
+				case http.StatusConflict:
+					conflict.Add(1)
+				default:
+					t.Errorf("%d %s", w.Code, w.Body.String())
+				}
+			}()
+		}
+		close(start)
+		wg.Wait()
+		if ok.Load() != 1 || conflict.Load() != 9 {
+			t.Fatalf("成功 %d，冲突 %d", ok.Load(), conflict.Load())
+		}
+		if n := rows(); n != 2 {
+			t.Fatalf("只能有一批: %d", n)
+		}
+	})
+}
+
+// 本地码的旧码和新码在同一个事务里换好，换码记录不能停在 disabling。人工定论 issued 之后也要能走到 done，不能去卡台禁用。
+func TestLocalExchangeRecordNotStuckInDisabling(t *testing.T) {
+	e := newLocalEnv(t)
+	if _, err := db.DB.Exec(`INSERT INTO agent_cdk_exchanges (old_code_hash, old_upstream_id, old_code_prefix, plan, order_status, ip, state, created_at, updated_at)
+		VALUES ('h-local', 0, 'MW-AAAAA', 'plus', 'not_submitted', '', 'disabling', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`); err != nil {
+		t.Fatal(err)
+	}
+	retryAgentExchangeDisables(time.Now())
+	if st := db.AgentCDKExchangeState("h-local"); st != db.AgentExchangeDone {
+		t.Fatalf("%s", st)
+	}
+	if e.zovo.count() != 0 {
+		t.Fatalf("不能去卡台禁用: %v", e.zovo.paths)
 	}
 }
 

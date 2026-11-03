@@ -71,9 +71,11 @@ CDK 到充值的后端已经接通：可以在后台选择默认发码服务商�
 | 本地码表 | `db/local_cdk.go` 的 `local_cdks` | 只存哈希和前缀。完整码只在发码响应里出现一次。旧表 `cd_keys` 不复用 |
 | 码状态派生 | `db.DeriveLocalCDK` | 不写码状态，从 `pay_orders` 派生，人工启停是唯一存在码表里的状态 |
 | 一码一单 | 唯一部分索引 `uq_pay_orders_cdk_one` | 同一张码除「确认没点过支付的失败」外只能有一张真实单。进程内的码锁在它前面挡一层 |
-| 重兑上限 | `db.MaxLocalCDKFundedFailures = 3` | 只有 `failed` + `not_submitted` + 没有提交时间的单能重兑。走到注资阶段（单据有 `card_id`）的失败满 3 次就转人工，换码继承次数。注资之前的失败（会话失效、已有订阅、套餐不可用等）不花钱，不计次数，靠公开接口限流防滥用 |
+| 重兑上限 | `db.MaxLocalCDKFundedFailures = 3` | 只有 `failed` + `not_submitted` + 没有提交时间的单能重兑。走到注资阶段（单据有 `card_id`）的失败满 3 次就转人工，换码继承次数，`fill_failed`、`submit_not_clicked`、`amount_changed` 都算。注资之前的失败（会话失效、已有订阅、套餐不可用、`cf_challenge` 等）不花钱，不计次数，靠公开接口限流防滥用 |
+| 本地换码记录 | `handler/local_cdk.go`、`handler/ops_maintenance.go` | 旧码和新码在同一个事务里换好，没有卡台的码要禁用，记录写完直接转 `done`。卡在 `disabling` 的本地记录（比如人工定论 issued 之后）由维护循环补上，不会去调卡台 |
 | 就绪检查 | `handler/provider_readiness.go` | 配置、主密钥、引擎、熔断、卡池、主钱包、可用卡、当日额度、硬门槛。发码、预检、兑换共用，不通过时不建单、不占用码 |
 | 发码硬门槛 | `db.HasRealSucceededPayOrder` | 必须已有一笔系统自动确认成功的真实付款（`dry_run = 0`、`succeeded`、`resolved_by` 为空）才能发 MarsWallex 码。试运行单和人工定论的单都不算 |
+| 发码幂等 | `db.InsertLocalCDKs`、`local_cdk_issue_keys` | 和 ZovoCard 一样必须带 `Idempotency-Key`。键和码在同一个事务里写，同一个键只发一批，并发的重复点击也一样。完整码只存哈希拿不回来，所以重试不返回码，返回 409 和这批的 ID 范围（`already_issued`），操作者没存到码就禁用这批再重发。没发成（未就绪、写库失败）不占用键 |
 | 跨服务商互斥 | `handler/provider_guard.go` | 同账号不能同时走两家，两个方向都查，再加进程内账号锁 |
 | 自动补卡的闸 | `cardpool/readiness.go` | 未选用 MarsWallex 时暂停补卡并每日告警，策略 `replenish_when_unselected` 可放开。对账、回收、Webhook、补拉不受影响 |
 | 预检令牌 | `handler/local_cdk.go` | 会话封进 secretbox 密文交回前端，不落库，30 分钟过期，绑定这张码 |

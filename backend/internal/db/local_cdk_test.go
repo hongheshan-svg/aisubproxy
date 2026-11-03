@@ -25,7 +25,7 @@ func newLocalCDK(i int) db.NewLocalCDK {
 
 func insertLocalCDK(t *testing.T, i int) db.LocalCDK {
 	t.Helper()
-	ids, err := db.InsertLocalCDKs(localCtx, []db.NewLocalCDK{newLocalCDK(i)}, time.Unix(1000, 0))
+	ids, err := db.InsertLocalCDKs(localCtx, fmt.Sprintf("issue-key-%d", i), []db.NewLocalCDK{newLocalCDK(i)}, time.Unix(1000, 0))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,13 +170,64 @@ func TestLocalCDKAttemptsExhausted(t *testing.T) {
 	}
 }
 
+// 同一个幂等键只能发一批：键用过就整批回滚，一张码都不留。
+func TestInsertLocalCDKsIssueKey(t *testing.T) {
+	dbtest.Open(t)
+	count := func() int {
+		t.Helper()
+		var n int
+		if err := db.DB.QueryRow(`SELECT COUNT(*) FROM local_cdks`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if _, found, err := db.GetLocalCDKIssueBatch(localCtx, "k1"); found || err != nil {
+		t.Fatalf("%v %v", found, err)
+	}
+	ids, err := db.InsertLocalCDKs(localCtx, "k1", []db.NewLocalCDK{newLocalCDK(1), newLocalCDK(2), newLocalCDK(3)}, time.Unix(1000, 0))
+	if err != nil || len(ids) != 3 {
+		t.Fatalf("%v %v", ids, err)
+	}
+	b, found, err := db.GetLocalCDKIssueBatch(localCtx, "k1")
+	if err != nil || !found || b.FirstID != ids[0] || b.LastID != ids[2] || b.Count != 3 || b.CreatedAt != 1000 {
+		t.Fatalf("%+v %v %v", b, found, err)
+	}
+	if ids[2]-ids[0] != 2 {
+		t.Fatalf("同一批的 id 要连续: %v", ids)
+	}
+	if _, err := db.InsertLocalCDKs(localCtx, "k1", []db.NewLocalCDK{newLocalCDK(4)}, time.Unix(1001, 0)); !errors.Is(err, db.ErrLocalCDKIssueKeyUsed) {
+		t.Fatalf("键用过要拒绝: %v", err)
+	}
+	if n := count(); n != 3 {
+		t.Fatalf("重复的键不能留下码: %d", n)
+	}
+	// 码的哈希冲突不能被当成键用过；失败不占用键
+	if _, err := db.InsertLocalCDKs(localCtx, "k2", []db.NewLocalCDK{newLocalCDK(1)}, time.Unix(1001, 0)); err == nil || errors.Is(err, db.ErrLocalCDKIssueKeyUsed) {
+		t.Fatalf("%v", err)
+	}
+	if _, found, _ := db.GetLocalCDKIssueBatch(localCtx, "k2"); found {
+		t.Fatal("失败的批次不能占用键")
+	}
+	if _, err := db.InsertLocalCDKs(localCtx, "k2", []db.NewLocalCDK{newLocalCDK(5)}, time.Unix(1001, 0)); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		key  string
+		list []db.NewLocalCDK
+	}{{"", []db.NewLocalCDK{newLocalCDK(6)}}, {"k3", nil}} {
+		if _, err := db.InsertLocalCDKs(localCtx, tc.key, tc.list, time.Unix(1001, 0)); err == nil {
+			t.Fatalf("缺键或空批次要报错: %q", tc.key)
+		}
+	}
+}
+
 // 判断只看单据有没有选过卡，不看错误码：新错误码不用改这里，也不会漏算。
 func TestLocalCDKFailureCountedByCardNotErrorCode(t *testing.T) {
 	failed := func(code, card string) db.LocalCDKOrder {
 		return db.LocalCDKOrder{State: "failed", Failure: "not_submitted", ErrorCode: code, CardID: card}
 	}
 	for _, code := range []string{"session_invalid", "session_unreadable", "already_subscribed", "plan_unavailable", "proxy_unavailable",
-		"chatgpt_failed", "checkout_failed", "browser_failed", "page_failed", "amount_over_cap", "amount_unreadable", "currency_mismatch",
+		"chatgpt_failed", "checkout_failed", "cf_challenge", "browser_failed", "page_failed", "amount_over_cap", "amount_unreadable", "currency_mismatch",
 		"no_card", "acquire_failed", "internal_error", "service_restart"} {
 		v := db.DeriveLocalCDK(db.LocalCDK{Manual: db.LocalCDKManualActive}, []db.LocalCDKOrder{failed(code, "")})
 		if v.Status != db.LocalCDKUnused || v.FundedFailures != 0 || v.PrechargeFailures != 1 {
@@ -184,7 +235,7 @@ func TestLocalCDKFailureCountedByCardNotErrorCode(t *testing.T) {
 		}
 	}
 	for _, code := range []string{"card_info_failed", "card_currency_unsupported", "fund_failed", "fund_timeout", "card_sensitive_failed",
-		"card_expiry_invalid", "fill_failed", "submit_not_clicked", "internal_error", "service_restart"} {
+		"card_expiry_invalid", "fill_failed", "amount_changed", "submit_not_clicked", "internal_error", "service_restart"} {
 		v := db.DeriveLocalCDK(db.LocalCDK{Manual: db.LocalCDKManualActive}, []db.LocalCDKOrder{failed(code, "c1")})
 		if v.Status != db.LocalCDKUnused || v.FundedFailures != 1 || v.PrechargeFailures != 0 {
 			t.Errorf("%s 选过卡，要计次数: %+v", code, v)

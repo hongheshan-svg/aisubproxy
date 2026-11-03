@@ -50,6 +50,8 @@ var (
 	ErrLocalCDKReplaced = errors.New("该码已换发新码，不能启用")
 	// ErrLocalCDKNotExchangeable 换码的条件更新没有命中：码已禁用，或已有不能重兑的单。
 	ErrLocalCDKNotExchangeable = errors.New("该码当前不能换码")
+	// ErrLocalCDKIssueKeyUsed 这个幂等键已经发过一批码，这次什么都没写。
+	ErrLocalCDKIssueKeyUsed = errors.New("这个幂等键已经发过码")
 )
 
 // LocalCDK 是 local_cdks 的一行。没有完整码，也没有哈希：哈希只用来查询，不出这个包。
@@ -196,6 +198,14 @@ func MigrateLocalCDKs() error {
 	updated_at INTEGER NOT NULL
 )`,
 		`CREATE INDEX IF NOT EXISTS idx_local_cdks_exchanged_from ON local_cdks(exchanged_from) WHERE exchanged_from IS NOT NULL`,
+		// 发码幂等：同一次点击只发一批。和码在同一个事务里写，主键保证重复点击、并发重试都发不出第二批
+		`CREATE TABLE IF NOT EXISTS local_cdk_issue_keys (
+	issue_key TEXT PRIMARY KEY,
+	first_id INTEGER NOT NULL,
+	last_id INTEGER NOT NULL,
+	count INTEGER NOT NULL,
+	created_at INTEGER NOT NULL
+)`,
 		`CREATE INDEX IF NOT EXISTS idx_pay_orders_source ON pay_orders(source, source_ref)`,
 		// 一张码最多一张「不是干净失败」的真实单：在途、待人工、成功、被拒都算。这是库级保证，处理器里的检查和锁都绕不过它
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_pay_orders_cdk_one ON pay_orders(source_ref)
@@ -256,8 +266,30 @@ func insertLocalCDK(ctx context.Context, tx *sql.Tx, n NewLocalCDK, now int64) (
 	return res.LastInsertId()
 }
 
-// InsertLocalCDKs 在一个事务里写入一批码，返回新 id，顺序与入参一致。整批成功或整批回滚。
-func InsertLocalCDKs(ctx context.Context, list []NewLocalCDK, now time.Time) ([]int64, error) {
+// LocalCDKIssueBatch 是一个幂等键发出的那一批码。一个事务里连续写入，id 是连续的。
+type LocalCDKIssueBatch struct {
+	FirstID, LastID int64
+	Count           int
+	CreatedAt       int64
+}
+
+// GetLocalCDKIssueBatch 查这个幂等键发过的批次，第二个返回值表示有没有发过。
+func GetLocalCDKIssueBatch(ctx context.Context, key string) (LocalCDKIssueBatch, bool, error) {
+	var b LocalCDKIssueBatch
+	err := DB.QueryRowContext(ctx, `SELECT first_id, last_id, count, created_at FROM local_cdk_issue_keys WHERE issue_key = ?`, key).
+		Scan(&b.FirstID, &b.LastID, &b.Count, &b.CreatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return b, false, nil
+	}
+	return b, err == nil, err
+}
+
+// InsertLocalCDKs 在一个事务里写入一批码和它的幂等键，返回新 id，顺序与入参一致。整批成功或整批回滚。
+// 幂等键已用过时返回 ErrLocalCDKIssueKeyUsed，一张码都不会留下。
+func InsertLocalCDKs(ctx context.Context, key string, list []NewLocalCDK, now time.Time) ([]int64, error) {
+	if key == "" || len(list) == 0 {
+		return nil, errors.New("发码缺少幂等键或内容")
+	}
 	tx, err := DB.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -270,6 +302,14 @@ func InsertLocalCDKs(ctx context.Context, list []NewLocalCDK, now time.Time) ([]
 			return nil, err
 		}
 		ids = append(ids, id)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO local_cdk_issue_keys (issue_key, first_id, last_id, count, created_at) VALUES (?, ?, ?, ?, ?)`,
+		key, ids[0], ids[len(ids)-1], len(ids), now.Unix()); err != nil {
+		var se sqlite3.Error
+		if errors.As(err, &se) && (se.ExtendedCode == sqlite3.ErrConstraintPrimaryKey || se.ExtendedCode == sqlite3.ErrConstraintUnique) {
+			return nil, ErrLocalCDKIssueKeyUsed
+		}
+		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err

@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -97,8 +98,16 @@ type localFakeBrowser struct {
 	submits int
 	outcome paybrowser.Outcome
 
-	fillErr   error
-	submitErr error // Submit 返回它时按钮没被点到
+	fillErr       error
+	submitErr     error // Submit 返回它时按钮没被点到
+	amountChanges bool  // 填表之后金额变了
+	filled        bool
+}
+
+func (b *localFakeBrowser) setAmountChanges(on bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.amountChanges = on
 }
 
 func (b *localFakeBrowser) setErrs(fill, submit error) {
@@ -114,9 +123,19 @@ func (b *localFakeBrowser) New(context.Context, string, string) (payengine.Brows
 	return b, nil
 }
 
-func (b *localFakeBrowser) Open(context.Context, string, []paybrowser.Cookie) error { return nil }
+func (b *localFakeBrowser) Open(context.Context, string, []paybrowser.Cookie) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.filled = false
+	return nil
+}
 
 func (b *localFakeBrowser) ReadAmount(context.Context, string) (int64, string, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.amountChanges && b.filled {
+		return 115000, "₱1,150.00", nil
+	}
 	return 112000, "₱1,120.00", nil
 }
 
@@ -124,6 +143,7 @@ func (b *localFakeBrowser) Fill(context.Context, paybrowser.Card, paybrowser.Bil
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.fills++
+	b.filled = b.fillErr == nil
 	return b.fillErr
 }
 
@@ -506,9 +526,24 @@ func (e *localEnv) seedRealPayment() {
 	e.insertOrder("admin_test", "admin", 0, "seed@example.com", "succeeded", "", true)
 }
 
+// do 发一个请求。发码接口每次带一个新的幂等键，等于每次都是新的一次点击；专门测幂等的用 doIssue。
 func (e *localEnv) do(method, path, body string) *httptest.ResponseRecorder {
+	key := ""
+	if method == "POST" && (strings.HasSuffix(path, "/cdks/issue") || strings.HasSuffix(path, "/cardplatform/cdks")) {
+		key = fmt.Sprintf("test-issue-key-%d", localIssueKeySeq.Add(1))
+	}
+	return e.doIssue(method, path, body, key)
+}
+
+var localIssueKeySeq atomic.Int64
+
+// doIssue 带指定的幂等键发请求，key 为空时不带这个头。
+func (e *localEnv) doIssue(method, path, body, key string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
+	if key != "" {
+		req.Header.Set("Idempotency-Key", key)
+	}
 	w := httptest.NewRecorder()
 	e.router.ServeHTTP(w, req)
 	return w

@@ -143,7 +143,32 @@ func CardPlatformIssueCDKs(c *gin.Context) {
 	zovoCardIssueCDKs(c, req)
 }
 
+// issueIdempotencyKey 取发码的幂等键，缺了或过长时已写好 400。键必须由客户端在点击时生成并在重试时沿用：
+// 服务端随机生成的键对重试没有任何保护。两家服务商共用这条规则。
+func issueIdempotencyKey(c *gin.Context) (string, bool) {
+	key := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+	if key == "" || len(key) > 128 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Idempotency-Key 请求头必填（1-128 字符），同一次发码的重试要沿用同一个值"})
+		return "", false
+	}
+	return key, true
+}
+
+// localCDKIssueReplay 这个幂等键已经发过码。完整码只存哈希，拿不回来，所以这里不返回码，只说明发过哪一批，让操作者决定怎么处理。
+func localCDKIssueReplay(c *gin.Context, b db.LocalCDKIssueBatch) {
+	c.JSON(http.StatusConflict, gin.H{
+		"error": fmt.Sprintf("这次发码已经完成（ID %d-%d，共 %d 张），不会重复发。完整卡密只显示一次，本站无法再次取出；没有保存到的话，请在码列表禁用这批后重新发码",
+			b.FirstID, b.LastID, b.Count),
+		"provider":       provider.MarsWallex,
+		"already_issued": true,
+		"first_id":       b.FirstID,
+		"last_id":        b.LastID,
+		"count":          b.Count,
+	})
+}
+
 // localCDKIssue 发 MarsWallex 码。完整码只在这个响应里出现一次，不进日志和审计。
+// 和 ZovoCard 一样要求幂等键，防止重复点击多发码：同一个键只发一批，重试返回 409（见 localCDKIssueReplay）。
 func localCDKIssue(c *gin.Context, req cdkIssueRequest) {
 	plan := strings.TrimSpace(req.Plan)
 	if plan == "" {
@@ -182,7 +207,21 @@ func localCDKIssue(c *gin.Context, req cdkIssueRequest) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("备注最多 %d 字", localCDKNoteMax)})
 		return
 	}
+	key, ok := issueIdempotencyKey(c)
+	if !ok {
+		return
+	}
 	ctx := c.Request.Context()
+	// 先查键：已经发过的批次，就算现在未就绪，也要如实告诉操作者发过了
+	switch b, found, err := db.GetLocalCDKIssueBatch(ctx, key); {
+	case err != nil:
+		log.Printf("[local-cdk] 查询发码幂等键失败: %v", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询失败，没有发出任何码"})
+		return
+	case found:
+		localCDKIssueReplay(c, b)
+		return
+	}
 	ready, _ := checkMarsWallex(ctx, plan, region, syncWalletNow)
 	if !ready.OK {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "MarsWallex 未就绪，不能发码", "provider": provider.MarsWallex, "problems": ready.Problems})
@@ -205,7 +244,17 @@ func localCDKIssue(c *gin.Context, req cdkIssueRequest) {
 			Product: product, PlanKey: plan, Region: region, IssuedBy: by, Note: note,
 		})
 	}
-	ids, err := db.InsertLocalCDKs(ctx, rows, time.Now())
+	ids, err := db.InsertLocalCDKs(ctx, key, rows, time.Now())
+	if errors.Is(err, db.ErrLocalCDKIssueKeyUsed) { // 并发的重复点击：上面查的时候另一个请求还没提交
+		b, found, gerr := db.GetLocalCDKIssueBatch(ctx, key)
+		if gerr != nil || !found {
+			log.Printf("[local-cdk] 读取发码批次失败: %v", gerr)
+			c.JSON(http.StatusConflict, gin.H{"error": "这次发码已经完成，不会重复发", "provider": provider.MarsWallex, "already_issued": true})
+			return
+		}
+		localCDKIssueReplay(c, b)
+		return
+	}
 	if err != nil {
 		log.Printf("[local-cdk] 写入本地码失败: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "写入卡密失败，没有发出任何码"})

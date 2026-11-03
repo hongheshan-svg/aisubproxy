@@ -171,10 +171,8 @@ func zovoCardIssueCDKs(c *gin.Context, req cdkIssueRequest) {
 	}
 
 	cli := cardplatform.NewFromSettings()
-	// 幂等键必须由客户端在点击时生成并在重试时沿用：服务端随机生成的键对重试没有任何保护
-	idem := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
-	if idem == "" || len(idem) > 128 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Idempotency-Key 请求头必填（1-128 字符），同一次发码的重试要沿用同一个值"})
+	idem, ok := issueIdempotencyKey(c)
+	if !ok {
 		return
 	}
 	issueStartedAt := time.Now()

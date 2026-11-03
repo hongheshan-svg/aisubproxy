@@ -1,6 +1,8 @@
 <template>
   <div class="space-y-4">
-    <AdminPageHeader title="卡台选卡规则" description="卡台（ZovoCard）开卡产品的在线状态、自动选卡优先级与选卡策略" class="!mb-0" />
+    <AdminPageHeader title="ZovoCard 选卡规则" description="只对 ZovoCard 发出的码生效：卡头、开卡产品的在线状态、自动选卡优先级与选卡策略" class="!mb-0" />
+
+    <CardHeadsPanel provider="zovocard" @loaded="(items) => (headsByCode = cardHeadsByProduct(items))" />
 
     <!-- 产品在线状态 -->
     <div class="card">
@@ -100,6 +102,7 @@
             <div class="rule-bins mono text-subtle">
               {{ productMap[rule.plan_key] ? binDisplay(productMap[rule.plan_key]) : (rule.bin_prefix || '—') }}
             </div>
+            <div v-if="headMarks(rule.plan_key)" class="text-xs text-muted">{{ headMarks(rule.plan_key) }}</div>
           </div>
 
           <!-- 启用开关 -->
@@ -289,7 +292,10 @@
             <span class="mono font-semibold">{{ p.product_code }}</span>
             <span class="text-sm text-muted">{{ p.scene }}</span>
           </div>
-          <div class="text-xs text-subtle mono">{{ binDisplay(p) }}</div>
+          <div class="text-right shrink-0">
+            <div class="text-xs text-subtle mono">{{ binDisplay(p) }}</div>
+            <div v-if="headMarks(p.product_code)" class="text-xs text-muted whitespace-nowrap">{{ headMarks(p.product_code) }}</div>
+          </div>
           <el-tag v-if="!isProductOnline(p)" type="danger" size="small">已下线</el-tag>
           <el-tag v-else-if="isInRules(p.product_code)" type="info" size="small">已添加</el-tag>
           <el-tag v-else type="success" size="small">+ 添加</el-tag>
@@ -308,6 +314,8 @@
 
 <script setup lang="ts">
 import AdminPageHeader from '../../components/AdminPageHeader.vue'
+import CardHeadsPanel from './components/CardHeadsPanel.vue'
+import { cardHeadMarks, cardHeadsByProduct, type CardHead } from '../../lib/cardheads'
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { authFetch } from '../../lib/api'
 import { dialog } from '../../lib/dialog'
@@ -420,6 +428,13 @@ function binDisplay(p: CardProduct) {
 
   // bin_heads 已经够详细（含多卡段），直接展示
   return heads.join(' / ')
+}
+
+// 卡头标注（3DS、Apple Pay），按产品代码对应；只用于显示
+const headsByCode = ref<Record<string, CardHead>>({})
+function headMarks(code: string): string {
+  const h = headsByCode.value[code]
+  return h ? cardHeadMarks(h) : ''
 }
 
 // product_code → product map

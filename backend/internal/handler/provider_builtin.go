@@ -2,9 +2,11 @@ package handler
 
 import (
 	"context"
+	"errors"
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/provider"
 )
 
@@ -62,4 +64,57 @@ func (marsWallexAdapter) Check(ctx context.Context, plan, region string, public 
 	r.SetLink("wallet_sync", provider.Link{To: "/ops/marswallex-wallet", Label: "去 MarsWallex 钱包"})
 	r.SetLink("plan", provider.Link{To: "/ops/marswallex-pay", Label: "去付款配置启用套餐"})
 	return providerStatus{Readiness: r, Combos: combos, Extras: []providerExtra{}, Warnings: []string{}}
+}
+
+// CardHeads 读取卡台产品缓存（plansync 每 3 分钟从卡台同步）。卡头用 bin_heads，为空时用 BIN。
+// 缓存为空时报错：卡台还没配置或还没同步，不能把已有卡头都标成「接口已不再返回」。
+func (zovoCardAdapter) CardHeads(context.Context) ([]db.CardHeadProduct, error) {
+	ps, err := db.GetCardProducts()
+	if err != nil {
+		return nil, err
+	}
+	if len(ps) == 0 {
+		return nil, errors.New("卡台产品还没同步")
+	}
+	out := make([]db.CardHeadProduct, 0, len(ps))
+	for _, p := range ps {
+		heads := p.BinHeads
+		if len(heads) == 0 {
+			heads = []string{}
+			if p.BIN != "" {
+				heads = []string{p.BIN}
+			}
+		}
+		name := p.Description
+		if name == "" {
+			name = p.ProductCode
+		}
+		out = append(out, db.CardHeadProduct{ProductID: p.ProductCode, Name: name, CardHeads: heads, Network: p.Network, Country: p.IssuingArea})
+	}
+	return out, nil
+}
+
+// PruneMissingCardHeads：卡台下架的卡段直接删除，不保留它的 BIN（与产品缓存的规则一致）。
+func (zovoCardAdapter) PruneMissingCardHeads() bool { return true }
+
+// CardHeads 调用 MarsWallex 卡产品接口。接口没有卡头字段，卡头从产品名里识别。
+func (marsWallexAdapter) CardHeads(ctx context.Context) ([]db.CardHeadProduct, error) {
+	s := cardPool
+	if s == nil {
+		return nil, errors.New("卡池未启动")
+	}
+	ps, err := s.ListProducts(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]db.CardHeadProduct, 0, len(ps))
+	for _, p := range ps {
+		heads := []string{}
+		if h := parseCardHead(p.ProductName); h != "" {
+			heads = []string{h}
+		}
+		out = append(out, db.CardHeadProduct{ProductID: p.ProductID, Name: p.ProductName, CardHeads: heads,
+			Network: p.CardLabel, Country: p.CardCountry, Currency: p.CardCurrency})
+	}
+	return out, nil
 }

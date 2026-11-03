@@ -86,6 +86,7 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	// CDK 链路后台维护：清理到期或已完成订单的用户会话
 	handler.SetOpsAlert(alertSender("cdk", notify.SendText))
 	handler.StartOpsMaintenance(ctx)
+	handler.StartCardHeadSync(ctx)
 
 	return &Server{
 		engine: engine,
@@ -376,6 +377,12 @@ func setupRoutes(r *gin.Engine) {
 			admin.GET("/providers/default", handler.AdminGetDefaultProvider)
 			admin.PUT("/providers/default", handler.AdminPutDefaultProvider)
 			admin.GET("/providers/readiness", handler.AdminProviderReadiness)
+			// 各服务商的卡头：列表、同步、标注、手动维护
+			admin.GET("/providers/:name/card-heads", handler.AdminListCardHeads)
+			admin.POST("/providers/:name/card-heads", handler.AdminAddCardHead)
+			admin.POST("/providers/:name/card-heads/sync", handler.AdminSyncCardHeads)
+			admin.PUT("/providers/:name/card-heads/:product_id", handler.AdminUpdateCardHead)
+			admin.DELETE("/providers/:name/card-heads/:product_id", handler.AdminDeleteCardHead)
 			admin.POST("/cdks/issue", handler.CardPlatformIssueCDKs)
 			admin.GET("/cdks", handler.AdminListLocalCDKs)
 			admin.POST("/cdks/:id/disable", handler.AdminDisableLocalCDK)

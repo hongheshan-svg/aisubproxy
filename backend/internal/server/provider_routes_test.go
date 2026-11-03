@@ -20,6 +20,11 @@ var providerAdminRoutes = []struct{ method, path string }{
 	{"GET", "/api/v1/admin/providers/default"},
 	{"PUT", "/api/v1/admin/providers/default"},
 	{"GET", "/api/v1/admin/providers/readiness"},
+	{"GET", "/api/v1/admin/providers/:name/card-heads"},
+	{"POST", "/api/v1/admin/providers/:name/card-heads"},
+	{"POST", "/api/v1/admin/providers/:name/card-heads/sync"},
+	{"PUT", "/api/v1/admin/providers/:name/card-heads/:product_id"},
+	{"DELETE", "/api/v1/admin/providers/:name/card-heads/:product_id"},
 	{"POST", "/api/v1/admin/cdks/issue"},
 	{"GET", "/api/v1/admin/cdks"},
 	{"POST", "/api/v1/admin/cdks/:id/disable"},
@@ -40,7 +45,7 @@ func TestProviderRoutesRegisteredAndRequireAdminAuth(t *testing.T) {
 			t.Errorf("路由缺失: %s %s", rt.method, rt.path)
 			continue
 		}
-		req := httptest.NewRequest(rt.method, strings.ReplaceAll(rt.path, ":id", "1"), strings.NewReader(`{}`))
+		req := httptest.NewRequest(rt.method, strings.NewReplacer(":id", "1", ":name", "zovocard", ":product_id", "P1").Replace(rt.path), strings.NewReader(`{}`))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)

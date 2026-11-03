@@ -53,7 +53,7 @@ func newHarness(t *testing.T) *harness {
 	tbl := DefaultPlanTable()
 	for i := range tbl {
 		if tbl[i].Key == "plus" {
-			tbl[i].Regions["PH"] = RegionConf{Enabled: true, Currency: "PHP", CapMinor: 120000, FundCents: 3000}
+			tbl[i].Regions["PH"] = RegionConf{Enabled: true, Currency: "PHP", CapMinor: 120000, FloorMinor: 10000, FundCents: 3000}
 		}
 	}
 	if err := SavePlanTable(tbl); err != nil {

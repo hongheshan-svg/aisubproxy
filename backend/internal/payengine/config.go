@@ -98,6 +98,8 @@ type RegionConf struct {
 	CapMinor    int64  `json:"cap_minor"`
 	FundCents   int64  `json:"fund_cents"`
 	ExpectMinor int64  `json:"expect_minor"`
+	// FloorMinor 是最低金额：支付页金额低于它就在注资前放弃，单位与币种同 CapMinor。
+	FloorMinor int64 `json:"floor_minor"`
 }
 
 // PlanConf 是一个套餐及其各地区配置。Kind 与 CreditQuantity 由套餐键决定，保存时客户端传什么都以键为准。
@@ -119,7 +121,7 @@ func defaultPlan(key string) PlanConf {
 			p.Regions[r] = RegionConf{Currency: defaultCurrency[r]}
 		}
 		expect, capMinor := creditDefaultPH(q)
-		p.Regions["PH"] = RegionConf{Currency: "PHP", ExpectMinor: expect, CapMinor: capMinor}
+		p.Regions["PH"] = RegionConf{Currency: "PHP", ExpectMinor: expect, CapMinor: capMinor, FloorMinor: expect}
 		return p
 	}
 	d := planDefaults[key]
@@ -207,11 +209,17 @@ func SavePlanTable(p []PlanConf) error {
 			if !contains(Regions, r) {
 				return fmt.Errorf("%w: 未知地区", ErrBadRequest)
 			}
-			if rc.CapMinor < 0 || rc.FundCents < 0 || rc.ExpectMinor < 0 {
+			if rc.CapMinor < 0 || rc.FundCents < 0 || rc.ExpectMinor < 0 || rc.FloorMinor < 0 {
 				return fmt.Errorf("%w: %s/%s 金额不能为负", ErrBadRequest, pc.Key, r)
 			}
 			if rc.ExpectMinor > 0 && rc.CapMinor > 0 && rc.CapMinor < rc.ExpectMinor {
 				return fmt.Errorf("%w: %s/%s 金额上限不能低于预期金额", ErrBadRequest, pc.Key, r)
+			}
+			if rc.FloorMinor > 0 && rc.CapMinor > 0 && rc.FloorMinor > rc.CapMinor {
+				return fmt.Errorf("%w: %s/%s 最低金额不能高于金额上限", ErrBadRequest, pc.Key, r)
+			}
+			if rc.FloorMinor > 0 && rc.ExpectMinor > 0 && rc.FloorMinor > rc.ExpectMinor {
+				return fmt.Errorf("%w: %s/%s 最低金额不能高于预期金额", ErrBadRequest, pc.Key, r)
 			}
 			if rc.FundCents > pol.MaxFundCents {
 				return fmt.Errorf("%w: %s/%s 注资金额 %d 分超过单笔上限 %d 分", ErrBadRequest, pc.Key, r, rc.FundCents, pol.MaxFundCents)
@@ -243,7 +251,7 @@ func unavailable(format string, a ...any) error {
 }
 
 // ResolvePlan 取出可用的套餐与地区配置。
-// 真实付款要求：地区已启用、币种、金额上限与注资金额大于 0；订阅开通还要 ChatGPT 套餐名与期望套餐类型齐全。
+// 真实付款要求：地区已启用、币种、最低金额、金额上限与注资金额大于 0；订阅开通还要 ChatGPT 套餐名与期望套餐类型齐全。
 // 试运行：订阅开通只要求 ChatGPT 套餐名；点数档没有额外要求（读金额、填表都不点支付，金额上限不用于试运行）。
 func ResolvePlan(planKey, region string, dryRun bool) (PlanConf, RegionConf, error) {
 	tbl, err := LoadPlanTable()
@@ -278,6 +286,9 @@ func ResolvePlan(planKey, region string, dryRun bool) (PlanConf, RegionConf, err
 	}
 	if rc.Currency == "" {
 		return PlanConf{}, RegionConf{}, unavailable("套餐 %s 在地区 %s 未配置币种", plan.Label, region)
+	}
+	if rc.FloorMinor <= 0 {
+		return PlanConf{}, RegionConf{}, unavailable("套餐 %s 在地区 %s 未配置最低金额", plan.Label, region)
 	}
 	if rc.CapMinor <= 0 {
 		return PlanConf{}, RegionConf{}, unavailable("套餐 %s 在地区 %s 未配置金额上限", plan.Label, region)

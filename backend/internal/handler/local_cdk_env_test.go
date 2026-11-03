@@ -465,11 +465,11 @@ func setupLocalEnv(t *testing.T) *localEnv {
 	tbl := payengine.DefaultPlanTable()
 	for i := range tbl {
 		if tbl[i].Key == "plus" {
-			tbl[i].Regions["PH"] = payengine.RegionConf{Enabled: true, Currency: "PHP", CapMinor: 120000, FundCents: 3000}
+			tbl[i].Regions["PH"] = payengine.RegionConf{Enabled: true, Currency: "PHP", CapMinor: 120000, FloorMinor: 10000, FundCents: 3000}
 		}
 		if tbl[i].Key == "pro_20x" {
 			tbl[i].ExpectPlanType = "pro"
-			tbl[i].Regions["US"] = payengine.RegionConf{Enabled: true, Currency: "USD", CapMinor: 25000, FundCents: 3000}
+			tbl[i].Regions["US"] = payengine.RegionConf{Enabled: true, Currency: "USD", CapMinor: 25000, FloorMinor: 1000, FundCents: 3000}
 		}
 	}
 	if err := payengine.SavePlanTable(tbl); err != nil {

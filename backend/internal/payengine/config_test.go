@@ -64,17 +64,17 @@ func TestResolvePlanRules(t *testing.T) {
 	if _, _, err := ResolvePlan("plus", "PH", false); !errors.Is(err, ErrPlanUnavailable) {
 		t.Fatalf("未启用应不可用: %v", err)
 	}
-	saveWith(t, "plus", "PH", RegionConf{Enabled: true, Currency: "PHP", FundCents: 100})
+	saveWith(t, "plus", "PH", RegionConf{Enabled: true, Currency: "PHP", FloorMinor: 100, FundCents: 100})
 	_, _, err := ResolvePlan("plus", "PH", false)
 	if !errors.Is(err, ErrPlanUnavailable) || !strings.Contains(err.Error(), "金额上限") {
 		t.Fatalf("缺金额上限: %v", err)
 	}
-	saveWith(t, "plus", "PH", RegionConf{Enabled: true, Currency: "PHP", CapMinor: 5000, FundCents: 100})
+	saveWith(t, "plus", "PH", RegionConf{Enabled: true, Currency: "PHP", CapMinor: 5000, FloorMinor: 100, FundCents: 100})
 	p, rc, err := ResolvePlan("plus", "PH", false)
 	if err != nil || p.Key != "plus" || rc.CapMinor != 5000 {
 		t.Fatalf("应可用: %v %+v %+v", err, p, rc)
 	}
-	saveWith(t, "go", "PH", RegionConf{Enabled: true, Currency: "PHP", CapMinor: 5000, FundCents: 100})
+	saveWith(t, "go", "PH", RegionConf{Enabled: true, Currency: "PHP", CapMinor: 5000, FloorMinor: 100, FundCents: 100})
 	if _, _, err := ResolvePlan("go", "PH", false); !errors.Is(err, ErrPlanUnavailable) {
 		t.Fatalf("go 缺期望类型应不可用: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestSavePlanTableValidates(t *testing.T) {
 		}
 	}
 	tbl := DefaultPlanTable()
-	tbl[1].Regions["PH"] = RegionConf{Enabled: true, Currency: "PHP", CapMinor: 1234, FundCents: 99}
+	tbl[1].Regions["PH"] = RegionConf{Enabled: true, Currency: "PHP", CapMinor: 1234, FloorMinor: 1000, FundCents: 99}
 	if err := SavePlanTable(tbl); err != nil {
 		t.Fatal(err)
 	}
@@ -315,11 +315,11 @@ func TestResolveCreditPlan(t *testing.T) {
 	if _, _, err := ResolvePlan("credit250", "PH", false); !errors.Is(err, ErrPlanUnavailable) {
 		t.Fatalf("未启用应不可用: %v", err)
 	}
-	saveWith(t, "credit250", "PH", RegionConf{Enabled: true, Currency: "PHP", ExpectMinor: 56500, CapMinor: 63280})
+	saveWith(t, "credit250", "PH", RegionConf{Enabled: true, Currency: "PHP", ExpectMinor: 56500, CapMinor: 63280, FloorMinor: 56500})
 	if _, _, err := ResolvePlan("credit250", "PH", false); !errors.Is(err, ErrPlanUnavailable) || !strings.Contains(err.Error(), "注资") {
 		t.Fatalf("缺注资应不可用: %v", err)
 	}
-	saveWith(t, "credit250", "PH", RegionConf{Enabled: true, Currency: "PHP", ExpectMinor: 56500, CapMinor: 63280, FundCents: 1500})
+	saveWith(t, "credit250", "PH", RegionConf{Enabled: true, Currency: "PHP", ExpectMinor: 56500, CapMinor: 63280, FloorMinor: 56500, FundCents: 1500})
 	p, rc, err := ResolvePlan("credit250", "PH", false)
 	if err != nil || p.Kind != KindCredit || p.CreditQuantity != 250 || rc.CapMinor != 63280 {
 		t.Fatalf("应可用: %v %+v %+v", err, p, rc)
@@ -352,5 +352,65 @@ func TestSavePlanTableCredit(t *testing.T) {
 	bad[i].Regions["PH"] = RegionConf{Currency: "PHP", ExpectMinor: -1}
 	if err := SavePlanTable(bad); !errors.Is(err, ErrBadRequest) {
 		t.Fatalf("负的预期金额应拒绝: %v", err)
+	}
+}
+
+func TestResolvePlanRequiresFloor(t *testing.T) {
+	dbtest.Open(t)
+	saveWith(t, "plus", "PH", RegionConf{Enabled: true, Currency: "PHP", CapMinor: 12000, FundCents: 3000})
+	if _, _, err := ResolvePlan("plus", "PH", false); !errors.Is(err, ErrPlanUnavailable) || !strings.Contains(err.Error(), "未配置最低金额") {
+		t.Fatalf("缺最低金额应不可用: %v", err)
+	}
+	if _, _, err := ResolvePlan("plus", "PH", true); err != nil {
+		t.Fatalf("试运行不要求最低金额: %v", err)
+	}
+}
+
+func TestSavePlanTableValidatesFloor(t *testing.T) {
+	dbtest.Open(t)
+	build := func(rc RegionConf) []PlanConf {
+		tbl := DefaultPlanTable()
+		tbl[1].Regions["PH"] = rc
+		return tbl
+	}
+	base := RegionConf{Enabled: true, Currency: "PHP", FundCents: 3000}
+	cases := []struct {
+		name            string
+		expect, cp, fl  int64
+		wantErr, wantIn string
+	}{
+		{"负数", 0, 0, -1, "bad", ""},
+		{"高于上限", 0, 12000, 12001, "bad", "最低金额"},
+		{"高于预期金额", 10000, 12000, 10001, "bad", "最低金额"},
+		{"等于预期金额", 10000, 12000, 10000, "", ""},
+	}
+	for _, c := range cases {
+		rc := base
+		rc.ExpectMinor, rc.CapMinor, rc.FloorMinor = c.expect, c.cp, c.fl
+		err := SavePlanTable(build(rc))
+		if c.wantErr == "" {
+			if err != nil {
+				t.Fatalf("%s 应通过: %v", c.name, err)
+			}
+			continue
+		}
+		if !errors.Is(err, ErrBadRequest) || !strings.Contains(err.Error(), c.wantIn) {
+			t.Fatalf("%s 应拒绝（含 %q）: %v", c.name, c.wantIn, err)
+		}
+	}
+}
+
+func TestDefaultFloor(t *testing.T) {
+	for _, p := range DefaultPlanTable() {
+		for r, rc := range p.Regions {
+			switch {
+			case p.Kind == KindCredit && r == "PH":
+				if rc.FloorMinor != rc.ExpectMinor || rc.FloorMinor <= 0 {
+					t.Fatalf("%s/PH 出厂最低金额应等于预期金额: %+v", p.Key, rc)
+				}
+			case rc.FloorMinor != 0:
+				t.Fatalf("%s/%s 出厂最低金额应为 0: %+v", p.Key, r, rc)
+			}
+		}
 	}
 }

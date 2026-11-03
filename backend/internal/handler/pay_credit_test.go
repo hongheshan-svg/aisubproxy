@@ -22,7 +22,7 @@ func (e *localEnv) enableCredit() {
 	}
 	for i := range tbl {
 		if tbl[i].Key == "credit250" {
-			tbl[i].Regions["PH"] = payengine.RegionConf{Enabled: true, Currency: "PHP", ExpectMinor: 112000, CapMinor: 120000, FundCents: 3000}
+			tbl[i].Regions["PH"] = payengine.RegionConf{Enabled: true, Currency: "PHP", ExpectMinor: 112000, CapMinor: 120000, FloorMinor: 100000, FundCents: 3000}
 		}
 	}
 	if err := payengine.SavePlanTable(tbl); err != nil {
@@ -299,7 +299,7 @@ func TestPayConfigCreditPlans(t *testing.T) {
 	if w := put(bad); w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "预期金额") {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}
-	regions["PH"] = payengine.RegionConf{Enabled: true, Currency: "PHP", ExpectMinor: 56500, CapMinor: 70000, FundCents: 1500}
+	regions["PH"] = payengine.RegionConf{Enabled: true, Currency: "PHP", ExpectMinor: 56500, CapMinor: 70000, FloorMinor: 50000, FundCents: 1500}
 	if w := put(bad); w.Code != http.StatusOK {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}

@@ -136,6 +136,8 @@ type job struct {
 
 	// keepSession 为 true 时写终态不清空会话，留给续费协程关闭续费，最长保留 SessionKeep（见 renewal.go）
 	keepSession bool
+
+	floorMinor int64 // 最低金额，建会话时取自套餐配置；不落库，openPage 判下限用
 }
 
 // note 记下一列，随下一次状态写入落库。
@@ -479,13 +481,14 @@ func (s *Service) check(ctx context.Context, j *job) error {
 // 会话带链接时不管 tag 都用这个链接（托管页）；没有链接且 tag 是 custom_checkout_session 时，用 processor_entity 和会话号拼内嵌结账页链接，
 // 拼不出来就在这里放弃。两样都没有时照旧报「未返回支付链接」。链接一律再过支付域名白名单（acceptCheckoutURL）。
 func (s *Service) createLink(ctx context.Context, j *job) error {
-	plan, _, err := ResolvePlan(j.o.PlanKey, j.o.Region, j.o.DryRun)
+	plan, rc, err := ResolvePlan(j.o.PlanKey, j.o.Region, j.o.DryRun)
 	if errors.Is(err, ErrPlanUnavailable) {
 		return abort("plan_unavailable", "%v", err)
 	}
 	if err != nil {
 		return abort("internal_error", "读取套餐配置失败：%v", err)
 	}
+	j.floorMinor = rc.FloorMinor // 订阅单和点数单共用这一处
 	if j.o.Kind == KindCredit {
 		return s.createCreditLink(ctx, j)
 	}
@@ -676,6 +679,16 @@ func (s *Service) openPage(ctx context.Context, j *job) error {
 	j.note("amount_minor", minor)
 	if !j.o.DryRun && minor > j.o.CapMinor {
 		return abort("amount_over_cap", "应付金额 %s 超过上限 %s %s", text, formatMinor(j.o.CapMinor, j.o.Currency), j.o.Currency)
+	}
+	// 下限：偏低多半是选错了档位或带了优惠。必须在任何注资动作之前判
+	if j.o.DryRun {
+		if j.floorMinor <= 0 {
+			s.event(ctx, j, "info", "未配置最低金额，跳过下限检查", "")
+		} else if minor < j.floorMinor {
+			s.event(ctx, j, "warn", fmt.Sprintf("支付页金额 %s 低于最低金额 %s %s（可能选错了档位或带了优惠）；真实付款会在此放弃", text, formatMinor(j.floorMinor, j.o.Currency), j.o.Currency), "")
+		}
+	} else if j.floorMinor > 0 && minor < j.floorMinor {
+		return abort("amount_below_floor", "支付页金额 %s 低于该套餐在该地区的最低金额 %s %s（可能选错了档位或带了优惠），已放弃，未注资", text, formatMinor(j.floorMinor, j.o.Currency), j.o.Currency)
 	}
 	return nil
 }

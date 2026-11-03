@@ -46,7 +46,7 @@ func payEnv(t *testing.T) (*payengine.Service, string) {
 	tbl := payengine.DefaultPlanTable()
 	for i := range tbl {
 		if tbl[i].Key == "plus" {
-			tbl[i].Regions["PH"] = payengine.RegionConf{Enabled: true, Currency: "PHP", CapMinor: 120000, FundCents: 3000}
+			tbl[i].Regions["PH"] = payengine.RegionConf{Enabled: true, Currency: "PHP", CapMinor: 120000, FloorMinor: 10000, FundCents: 3000}
 		}
 	}
 	if err := payengine.SavePlanTable(tbl); err != nil {
@@ -491,7 +491,7 @@ func TestPayPutConfig(t *testing.T) {
 	plans := payengine.DefaultPlanTable()
 	for i := range plans {
 		if plans[i].Key == "plus" {
-			plans[i].Regions["US"] = payengine.RegionConf{Enabled: true, Currency: "USD", CapMinor: 3000, FundCents: 3000}
+			plans[i].Regions["US"] = payengine.RegionConf{Enabled: true, Currency: "USD", CapMinor: 3000, FloorMinor: 1000, FundCents: 3000}
 		}
 	}
 	pb, _ := json.Marshal(map[string]any{"plans": plans, "concurrency": 2})

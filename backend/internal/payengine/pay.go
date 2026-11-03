@@ -150,6 +150,14 @@ func (s *Service) fillCard(ctx context.Context, j *job) error {
 	j.note("billing_state", bill.State)
 	card := paybrowser.Card{Number: sv.CardNo, ExpMonth: mm, ExpYear: yy, CVC: sv.CVV2}
 	err = j.browser.Fill(fctx, card, bill)
+	if err == nil && j.o.Kind == KindCredit {
+		// 点数单：「保存付款信息」勾着的话，我们的卡会留在用户账号上。确认不了就放弃，这时还没点支付，已注资的卡照常回收
+		if serr := noSavePayment(fctx, j.browser); serr != nil {
+			s.noteFillReport(ctx, j, j.browser, "填表")
+			s.notePageDiag(ctx, j, j.browser, "「保存付款信息」无法确认")
+			return abort("save_payment_unconfirmed", "%v，已放弃，未点支付", serr)
+		}
+	}
 	s.noteFillReport(ctx, j, j.browser, "填表")
 	if err != nil {
 		s.notePageDiag(ctx, j, j.browser, "填表失败")

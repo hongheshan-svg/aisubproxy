@@ -41,6 +41,7 @@ type payRecord struct {
 	Name, Country, Line1, City, State, Zip string
 	Email, Phone, DecoyNumber              string
 	LinkSave                               bool
+	SavePayment                            bool
 }
 
 // checkoutKind 是一份仿造支付页。旧页的字段迎合 selectors.go 的假设；Stripe 页照真实 DOM 写，

@@ -26,12 +26,17 @@ var settableColumns = map[string]bool{
 	"billing_state": true, "page_outcome": true, "submitted_at": true, "failure": true,
 	"error_code": true, "error_message": true, "verify_until": true, "next_check_at": true,
 	"resolved_by": true, "resolve_note": true,
+	"kind": true, "credit_quantity": true, "renewal_state": true, "renewal_attempts": true,
+	"renewal_checked_at": true, "renewal_next_at": true, "card_saved": true, "saved_cards_before": true,
+	"credit_balance_before": true,
 }
 
 const orderColumns = `id, order_no, provider, source, source_ref, dry_run, plan_key, region, currency, cap_minor, fund_cents,
 	account_email, account_id, state, session_sealed, checkout_session_id, checkout_url, amount_minor, amount_text,
 	card_id, card_last4, lease_token, fund_order_no, billing_state, page_outcome, submitted_at, failure, error_code,
-	error_message, verify_until, next_check_at, resolved_by, resolve_note, created_at, updated_at, finished_at`
+	error_message, verify_until, next_check_at, resolved_by, resolve_note, created_at, updated_at, finished_at,
+	kind, credit_quantity, renewal_state, renewal_attempts, renewal_checked_at, renewal_next_at, card_saved,
+	saved_cards_before, credit_balance_before`
 
 // newOrderNo 生成单号：PO + yyMMddHHmmss（UTC）+ 8 位小写十六进制，共 22 位。
 func newOrderNo(now time.Time) string {
@@ -72,6 +77,9 @@ func insertOrder(ctx context.Context, o *Order) error {
 	if o.State == "" {
 		o.State = StateQueued
 	}
+	if o.Kind == "" {
+		o.Kind = KindSubscription
+	}
 	o.CreatedAt, o.UpdatedAt = now, now
 	tx, err := db.DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -79,10 +87,11 @@ func insertOrder(ctx context.Context, o *Order) error {
 	}
 	defer tx.Rollback()
 	res, err := tx.ExecContext(ctx, `INSERT INTO pay_orders (order_no, provider, source, source_ref, dry_run, plan_key, region, currency,
-		cap_minor, fund_cents, account_email, account_id, state, session_sealed, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		cap_minor, fund_cents, account_email, account_id, state, session_sealed, created_at, updated_at, kind, credit_quantity)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		o.OrderNo, o.Provider, o.Source, o.SourceRef, dryRunColumn(o), o.PlanKey, o.Region, o.Currency,
-		o.CapMinor, o.FundCents, o.AccountEmail, o.AccountID, o.State, o.SessionSealed, o.CreatedAt, o.UpdatedAt)
+		o.CapMinor, o.FundCents, o.AccountEmail, o.AccountID, o.State, o.SessionSealed, o.CreatedAt, o.UpdatedAt,
+		o.Kind, o.CreditQuantity)
 	if err != nil {
 		if isInflightConflict(err) {
 			return fmt.Errorf("%w: %s", ErrInflight, o.AccountEmail)
@@ -99,8 +108,18 @@ func insertOrder(ctx context.Context, o *Order) error {
 	return tx.Commit()
 }
 
-// move 在事务内完成「校验 from → 更新列 → 写事件」。terminal 为 true 时另设 finished_at 并清空会话。
-func move(ctx context.Context, no, from, to, level, msg string, set map[string]any, terminal bool) error {
+// moveMode 决定 move 除了状态和列之外还动什么。
+type moveMode int
+
+const (
+	moveStep           moveMode = iota // 非终态：只改状态和列
+	moveEnd                            // 写终态：另设 finished_at，清空会话
+	moveEndKeepSession                 // 写终态：另设 finished_at，会话留着关闭续费用，到点由续费协程清空（见 renewal.go）
+	moveStepClear                      // 不写 finished_at，但清空会话：人工定论失败时用
+)
+
+// move 在事务内完成「校验 from → 更新列 → 写事件」，mode 见 moveMode。
+func move(ctx context.Context, no, from, to, level, msg string, set map[string]any, mode moveMode) error {
 	keys := make([]string, 0, len(set))
 	for k := range set {
 		if !settableColumns[k] {
@@ -112,9 +131,15 @@ func move(ctx context.Context, no, from, to, level, msg string, set map[string]a
 	now := time.Now().UTC().Unix()
 	sqlText := "UPDATE pay_orders SET state = ?, updated_at = ?"
 	args := []any{to, now}
-	if terminal {
+	switch mode {
+	case moveEnd:
 		sqlText += ", finished_at = ?, session_sealed = ''"
 		args = append(args, now)
+	case moveEndKeepSession:
+		sqlText += ", finished_at = ?"
+		args = append(args, now)
+	case moveStepClear:
+		sqlText += ", session_sealed = ''"
 	}
 	for _, k := range keys {
 		sqlText += ", " + k + " = ?"
@@ -155,12 +180,12 @@ func move(ctx context.Context, no, from, to, level, msg string, set map[string]a
 
 // transition 仅当当前状态为 from 时把状态改为 to，同时更新 set 中的列并写一条事件。
 func transition(ctx context.Context, no, from, to, level, msg string, set map[string]any) error {
-	return move(ctx, no, from, to, level, msg, set, false)
+	return move(ctx, no, from, to, level, msg, set, moveStep)
 }
 
 // finish 同 transition，另设 finished_at 并清空 session_sealed。
 func finish(ctx context.Context, no, from, to, level, msg string, set map[string]any) error {
-	return move(ctx, no, from, to, level, msg, set, true)
+	return move(ctx, no, from, to, level, msg, set, moveEnd)
 }
 
 // addEvent 追加一条时间线事件，不改状态，事件的 state 取单据当前状态。
@@ -185,12 +210,15 @@ func scanOrder(r rowScanner) (*Order, error) {
 	err := r.Scan(&o.ID, &o.OrderNo, &o.Provider, &o.Source, &o.SourceRef, &dry, &o.PlanKey, &o.Region, &o.Currency, &o.CapMinor, &o.FundCents,
 		&o.AccountEmail, &o.AccountID, &o.State, &o.SessionSealed, &o.CheckoutSessionID, &o.CheckoutURL, &o.AmountMinor, &o.AmountText,
 		&o.CardID, &o.CardLast4, &o.LeaseToken, &o.FundOrderNo, &o.BillingState, &o.PageOutcome, &o.SubmittedAt, &o.Failure, &o.ErrorCode,
-		&o.ErrorMessage, &o.VerifyUntil, &o.NextCheckAt, &o.ResolvedBy, &o.ResolveNote, &o.CreatedAt, &o.UpdatedAt, &o.FinishedAt)
+		&o.ErrorMessage, &o.VerifyUntil, &o.NextCheckAt, &o.ResolvedBy, &o.ResolveNote, &o.CreatedAt, &o.UpdatedAt, &o.FinishedAt,
+		&o.Kind, &o.CreditQuantity, &o.RenewalState, &o.RenewalAttempts, &o.RenewalCheckedAt, &o.RenewalNextAt, &o.CardSaved,
+		&o.SavedCardsBefore, &o.CreditBalanceBefore)
 	if err != nil {
 		return nil, err
 	}
 	o.DryRun = dry != 0
 	o.DryRunFill = dry == dryRunFillValue
+	o.HasSession = o.SessionSealed != ""
 	return &o, nil
 }
 
@@ -218,6 +246,18 @@ func collectOrders(rows *sql.Rows) ([]Order, error) {
 
 // listOrders 按 id 倒序分页列出单据；state 为空不筛选。size 默认 20、上限 100。返回总数。
 func listOrders(ctx context.Context, state string, page, size int) ([]Order, int, error) {
+	return listOrdersBy(ctx, OrderFilter{State: state}, page, size)
+}
+
+// OrderFilter 是单据列表的筛选条件，空字段不筛选。
+type OrderFilter struct {
+	State   string // 单据状态
+	Renewal string // 续费进度（renewal_state）
+	Kind    string // 单据种类
+}
+
+// listOrdersBy 按筛选条件、id 倒序分页列出单据；返回总数。
+func listOrdersBy(ctx context.Context, f OrderFilter, page, size int) ([]Order, int, error) {
 	if size <= 0 {
 		size = 20
 	}
@@ -227,9 +267,16 @@ func listOrders(ctx context.Context, state string, page, size int) ([]Order, int
 	if page < 1 {
 		page = 1
 	}
-	where, args := "", []any{}
-	if state != "" {
-		where, args = " WHERE state = ?", append(args, state)
+	var conds []string
+	args := []any{}
+	for _, c := range []struct{ col, val string }{{"state", f.State}, {"renewal_state", f.Renewal}, {"kind", f.Kind}} {
+		if c.val != "" {
+			conds, args = append(conds, c.col+" = ?"), append(args, c.val)
+		}
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = " WHERE " + strings.Join(conds, " AND ")
 	}
 	var total int
 	if err := db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM pay_orders`+where, args...).Scan(&total); err != nil {

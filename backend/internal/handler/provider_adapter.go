@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
+	"github.com/tuzi/cdk-recharge-system/internal/payengine"
 	"github.com/tuzi/cdk-recharge-system/internal/provider"
 )
 
@@ -182,20 +184,48 @@ func checkCardSupply(ctx context.Context, cs provider.CardSupply, plan, region s
 	if engine := payEngine; engine != nil && !engine.HasPool(string(n)) {
 		st.Readiness.Fail("pay_pool", "付款卡池", "付款引擎没有接入这家的卡池")
 	}
-	// 硬门槛：系统没有自动确认过一笔这家的真实付款，就不能对外承诺这条路能走通。试运行单、人工定论的单、别家的单都不算
-	switch passed, err := db.HasRealSucceededPayOrder(ctx, string(n)); {
+	checkFirstRealPayment(ctx, &st, cs, plan)
+	return st
+}
+
+// checkFirstRealPayment 是发码硬门槛：系统没有自动确认过一笔这家的真实付款，就不能对外承诺这条路能走通。
+// 试运行单、人工定论的单、别家的单都不算。订阅开通码和点数码分开算（设计 2026-11-03 §3.3、§5.4）：
+//   - 订阅开通码：那笔开通单还要已经关闭续费并核实；
+//   - 点数码：要有一笔真实点数单成功。
+//
+// 没指定档位时（后台总览）按订阅开通码判断就绪，点数码的门槛另外记一条提醒，不影响整体就绪。
+func checkFirstRealPayment(ctx context.Context, st *providerStatus, cs provider.CardSupply, plan string) {
+	n := cs.Name()
+	kind := payengine.KindSubscription
+	if strings.TrimSpace(plan) != "" {
+		kind = payengine.PlanKind(plan)
+	}
+	passed, err := db.HasRealSucceededPayOrder(ctx, string(n), kind)
+	switch {
 	case err != nil:
 		log.Printf("[provider] 查询 %s 真实付款记录失败: %v", n, err)
 		st.Readiness.Fail("first_real_payment", "首笔真实付款", "查询真实付款记录失败，按未通过处理")
+	case !passed && kind == payengine.KindCredit:
+		st.Readiness.Fail("first_real_payment", "首笔真实付款", "需要一笔系统自动确认成功的真实点数付款（订阅开通单、试运行单和人工定论的单都不算），请先在后台测试兑换跑通一笔点数单")
 	case !passed:
-		st.Readiness.Fail("first_real_payment", "首笔真实付款", "需要一笔系统自动确认成功的真实付款（试运行单和人工定论的单都不算），请先在后台测试兑换跑通一笔")
+		st.Readiness.Fail("first_real_payment", "首笔真实付款", "需要一笔系统自动确认成功的真实付款，并且开通后已关闭续费（试运行单、人工定论的单、续费没关掉的单都不算），请先在后台测试兑换跑通一笔")
+	case kind == payengine.KindCredit:
+		st.Readiness.Pass("first_real_payment", "首笔真实付款", "已有系统自动确认成功的真实点数付款")
 	default:
-		st.Readiness.Pass("first_real_payment", "首笔真实付款", "已有系统自动确认成功的真实付款")
+		st.Readiness.Pass("first_real_payment", "首笔真实付款", "已有系统自动确认成功、并已关闭续费的真实开通付款")
 	}
-	if n == provider.MarsWallex {
-		st.Readiness.SetLink("first_real_payment", provider.Link{To: "/ops/marswallex-pay", Label: "去自动付款做真实付款"})
+	// 测试兑换页可以选供卡型服务商，链接带上服务商名做预选
+	st.Readiness.SetLink("first_real_payment", provider.Link{To: "/ops/marswallex-pay?provider=" + string(n), Label: "去自动付款做真实付款"})
+	if strings.TrimSpace(plan) != "" || !cs.Supports("gpt", payengine.CreditPlanKeys[0]) {
+		return
 	}
-	return st
+	switch ok, err := db.HasRealSucceededPayOrder(ctx, string(n), payengine.KindCredit); {
+	case err != nil:
+		log.Printf("[provider] 查询 %s 真实点数付款记录失败: %v", n, err)
+		st.Warnings = append(st.Warnings, "查询真实点数付款记录失败，点数码暂按未通过处理")
+	case !ok:
+		st.Warnings = append(st.Warnings, "点数码还没有首笔系统自动确认成功的真实点数付款，发点数码之前要先在后台测试兑换跑通一笔")
+	}
 }
 
 // checkProvider 是后台用的就绪检查，任意类型。

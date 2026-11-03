@@ -98,7 +98,7 @@ func TestPayEngineNilReturns503(t *testing.T) {
 	for name, h := range map[string]gin.HandlerFunc{
 		"submit": AdminPaySubmit, "list": AdminPayList, "get": AdminPayGet, "resolve": AdminPayResolve, "shot": AdminPayShot,
 		"getConfig": AdminPayGetConfig, "putConfig": AdminPayPutConfig, "getProxies": AdminPayGetProxies,
-		"putProxies": AdminPayPutProxies, "browserCheck": AdminPayBrowserCheck,
+		"putProxies": AdminPayPutProxies, "browserCheck": AdminPayBrowserCheck, "retryRenewal": AdminPayRetryRenewal,
 	} {
 		w := payDo(h, "GET", "/x", "/x", "{}")
 		if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "付款引擎未启动") {

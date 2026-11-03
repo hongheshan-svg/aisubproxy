@@ -164,13 +164,22 @@ func (s *Service) verifyOrder(ctx context.Context, o *Order) {
 		s.verifyEscalate(ctx, j, "provider_unavailable", providerUnavailableText(o.Provider)+"，无法核对授权交易")
 		return
 	}
+	if o.Kind == KindCredit {
+		s.verifyCredit(ctx, j) // 点数单不看 plan_type，见 credit.go
+		return
+	}
 	opened, accErr := s.verifyAccount(ctx, j)
 	if ctx.Err() != nil {
 		return // 停机：下次启动接着查
 	}
 	if opened {
-		s.verifyConclude(ctx, j, StateSucceeded, "info", "账号已开通，付款成功",
-			cardpool.Outcome{Result: cardpool.ResultSuccess}, map[string]any{"error_code": "", "error_message": ""})
+		set := map[string]any{"error_code": "", "error_message": ""}
+		if wantsRenewalCancel(o) {
+			// 开通成功后关闭续费：会话留给续费协程，关掉或到点再清空（见 renewal.go）
+			j.keepSession = true
+			set["renewal_state"], set["renewal_next_at"] = RenewalPending, s.now().Unix()
+		}
+		s.verifyConclude(ctx, j, StateSucceeded, "info", "账号已开通，付款成功", cardpool.Outcome{Result: cardpool.ResultSuccess}, set)
 		return
 	}
 	s.noteVerifyErr(ctx, j, "account", "查询账号失败，等下次检查：", accErr)
@@ -331,28 +340,37 @@ func (s *Service) verifyAccount(ctx context.Context, j *job) (bool, error) {
 	if expect == "" {
 		return false, fmt.Errorf("套餐 %s 未配置期望套餐类型", j.o.PlanKey)
 	}
-	sess, err := openSession(j.o.SessionSealed)
+	gpt, err := s.verifyClient(ctx, j)
 	if err != nil {
-		return false, errors.New("会话密文无法解开")
-	}
-	j.useSession(sess)
-	proxies, err := LoadProxies()
-	if err != nil {
-		return false, fmt.Errorf("读取地区代理失败：%w", err)
-	}
-	j.proxy = proxies[j.o.Region]
-	gpt, err := s.opts.ChatGPT(j.proxy)
-	if err != nil {
-		return false, fmt.Errorf("创建 ChatGPT 客户端失败：%w", err)
-	}
-	if err := gpt.Refresh(ctx, &j.sess); err != nil {
-		return false, fmt.Errorf("刷新会话失败：%w", err)
+		return false, err
 	}
 	acc, err := gpt.Account(ctx, j.sess)
 	if err != nil {
 		return false, err
 	}
 	return strings.EqualFold(strings.TrimSpace(acc.PlanType), expect), nil
+}
+
+// verifyClient 解开单据里的会话（终态才清空）、按地区代理建 ChatGPT 客户端并刷新会话。确认阶段查账号、查点数余额、读已存卡共用。
+func (s *Service) verifyClient(ctx context.Context, j *job) (ChatGPT, error) {
+	sess, err := openSession(j.o.SessionSealed)
+	if err != nil {
+		return nil, errors.New("会话密文无法解开")
+	}
+	j.useSession(sess)
+	proxies, err := LoadProxies()
+	if err != nil {
+		return nil, fmt.Errorf("读取地区代理失败：%w", err)
+	}
+	j.proxy = proxies[j.o.Region]
+	gpt, err := s.opts.ChatGPT(j.proxy)
+	if err != nil {
+		return nil, fmt.Errorf("创建 ChatGPT 客户端失败：%w", err)
+	}
+	if err := gpt.Refresh(ctx, &j.sess); err != nil {
+		return nil, fmt.Errorf("刷新会话失败：%w", err)
+	}
+	return gpt, nil
 }
 
 // authWindowStart 返回一单授权交易窗口的起点（含）：submitted_at 减去 authClockSkew。定论与 Evidence 共用，口径才一致。
@@ -426,8 +444,11 @@ func (s *Service) verifyReschedule(ctx context.Context, j *job) {
 	}
 }
 
-// verifyEscalate 转待人工：Release(aborted)，告警。
+// verifyEscalate 转待人工：Release(aborted)，告警。真实开通单的会话留到 SessionKeep：人工在这之内定论成功，还能关闭续费。
 func (s *Service) verifyEscalate(ctx context.Context, j *job, code, reason string) {
+	if wantsRenewalCancel(j.o) {
+		j.keepSession = true
+	}
 	msg := reason
 	if j.o.ErrorMessage != "" {
 		msg += "；页面或浏览器提示：" + j.o.ErrorMessage

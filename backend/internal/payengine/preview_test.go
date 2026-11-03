@@ -269,6 +269,13 @@ func TestDryRunFillEndToEndRealChrome(t *testing.T) {
 	h := newHarness(t)
 	h.svc.opts.Browser = launchBrowser // 显式给工厂，不算默认的真实浏览器：不清理系统临时目录，免得影响并行的其它包
 	h.gpt.checkout.URL = "http://127.0.0.1:" + port + "/checkout-stripe.html?mode=success&token=secret-token"
+	// 本机仿造页不在支付域名白名单里：只为这个地址放行，其余仍按白名单
+	h.svc.checkURL = func(raw string) error {
+		if raw == h.gpt.checkout.URL {
+			return nil
+		}
+		return checkCheckoutURL(raw)
+	}
 	h.start(t)
 	o := h.submitFillPreview(t)
 

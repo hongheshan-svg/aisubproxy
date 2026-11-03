@@ -43,6 +43,11 @@ type localFakeGPT struct {
 	subscribedFrom int
 	accountCalls   int
 	checkouts      int
+	cancels        int
+	// creditReady 为 true 时账号是可以买点数的个人 Plus 账号（计费币种 PHP、没有欠费）
+	creditReady   bool
+	creditBuys    int
+	creditBalance string // 非空时余额接口可用，返回它
 }
 
 func (g *localFakeGPT) Refresh(_ context.Context, s *chatgpt.Session) error {
@@ -59,6 +64,11 @@ func (g *localFakeGPT) Account(context.Context, chatgpt.Session) (chatgpt.Accoun
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.accountCalls++
+	if g.creditReady {
+		no := false
+		return chatgpt.Account{AccountID: "acc-1", PlanType: "plus", HasActiveSubscription: true, Structure: "personal",
+			BillingCurrency: "PHP", IsDelinquent: &no}, nil
+	}
 	if g.subscribedFrom > 0 && g.accountCalls >= g.subscribedFrom {
 		return chatgpt.Account{AccountID: "acc-1", PlanType: "plus", HasActiveSubscription: true}, nil
 	}
@@ -69,7 +79,56 @@ func (g *localFakeGPT) CreateCheckout(context.Context, chatgpt.Session, string, 
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.checkouts++
-	return chatgpt.Checkout{SessionID: "cs_live_abc", URL: "https://pay.example/c/cs_live_abc"}, nil
+	return chatgpt.Checkout{SessionID: "cs_live_abc", URL: "https://pay.openai.com/c/pay/cs_live_abc"}, nil
+}
+
+func (g *localFakeGPT) CreateCreditCheckout(context.Context, chatgpt.Session, string, int) (chatgpt.CreditCheckoutResult, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.checkouts++
+	g.creditBuys++
+	return chatgpt.CreditCheckoutResult{Tag: chatgpt.CheckoutTagHosted, SessionID: "cs_live_credit", URL: "https://checkout.stripe.com/c/pay/cs_live_credit"}, nil
+}
+
+// CancelRenewal 记次数；之后的 SubscriptionStatus 报告不再续费。
+func (g *localFakeGPT) CancelRenewal(context.Context, chatgpt.Session, string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.cancels++
+	return nil
+}
+
+func (g *localFakeGPT) SubscriptionStatus(context.Context, chatgpt.Session, string) (chatgpt.RenewalInfo, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	renew := g.cancels == 0
+	return chatgpt.RenewalInfo{WillRenew: &renew}, nil
+}
+
+func (g *localFakeGPT) SavedCards(context.Context, chatgpt.Session, string) ([]chatgpt.SavedCard, error) {
+	return []chatgpt.SavedCard{}, nil
+}
+
+func (g *localFakeGPT) CreditBalance(context.Context, chatgpt.Session, string) (chatgpt.CreditBalanceInfo, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.creditBalance == "" {
+		return chatgpt.CreditBalanceInfo{}, nil
+	}
+	return chatgpt.CreditBalanceInfo{Available: true, Balance: g.creditBalance}, nil
+}
+
+// creditBuyCount 是建点数结账会话的次数。
+func (g *localFakeGPT) creditBuyCount() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.creditBuys
+}
+
+func (g *localFakeGPT) cancelCount() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.cancels
 }
 
 func (g *localFakeGPT) setRefreshErr(err error) {
@@ -103,6 +162,7 @@ type localFakeBrowser struct {
 	submitErr     error // Submit 返回它时按钮没被点到
 	amountChanges bool  // 填表之后金额变了
 	filled        bool
+	savePayChecks int // EnsureNoSavePayment 的调用次数
 }
 
 func (b *localFakeBrowser) setAmountChanges(on bool) {
@@ -167,6 +227,14 @@ func (b *localFakeBrowser) EnterOTP(context.Context, string) error { return nil 
 func (b *localFakeBrowser) FillReport() paybrowser.FillReport { return paybrowser.FillReport{} }
 
 func (b *localFakeBrowser) PayButtonState(context.Context) string { return "enabled" }
+
+// EnsureNoSavePayment 记次数：只有点数单会调用。
+func (b *localFakeBrowser) EnsureNoSavePayment(context.Context) (string, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.savePayChecks++
+	return "页面没有", nil
+}
 
 func (b *localFakeBrowser) Diagnose(context.Context) []string { return nil }
 
@@ -295,7 +363,27 @@ func localEnvTimeouts() *payengine.Timeouts {
 	tm.VerifyEvery = 0
 	tm.DeclineGrace = 2 * time.Minute
 	tm.VerifyTick = 5 * time.Millisecond
+	tm.RenewalTick = 5 * time.Millisecond
 	return &tm
+}
+
+// waitRenewalCancelled 等这张单关闭续费并清空会话，最多 5 秒。
+func (e *localEnv) waitRenewalCancelled(no string) {
+	e.t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var renewal, sealed string
+		if err := db.DB.QueryRow(`SELECT renewal_state, session_sealed FROM pay_orders WHERE order_no = ?`, no).Scan(&renewal, &sealed); err != nil {
+			e.t.Fatal(err)
+		}
+		if renewal == "cancelled" && sealed == "" {
+			return
+		}
+		if time.Now().After(deadline) {
+			e.t.Fatalf("单据 %s 没有关闭续费: %q 会话为空=%v", no, renewal, sealed == "")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 // newLocalEnv 建好内存库、MarsWallex 配置、plus/PH 套餐、一张可用的 USD 卡和有钱的主钱包。
@@ -529,10 +617,27 @@ func (e *localEnv) waitOrdersFailed(id int64, n int) {
 	}
 }
 
-// seedRealPayment 写一笔系统自动确认成功的真实付款单：过发码硬门槛。
+// seedRealPayment 写一笔系统自动确认成功、已关闭续费的真实开通单：过订阅开通码的发码硬门槛。
 func (e *localEnv) seedRealPayment() {
 	e.t.Helper()
-	e.insertOrder("admin_test", "admin", 0, "seed@example.com", "succeeded", "", true)
+	e.markRenewalCancelled(e.insertOrder("admin_test", "admin", 0, "seed@example.com", "succeeded", "", true))
+}
+
+// markRenewalCancelled 把一张成功的开通单记成已关闭续费并核实。
+func (e *localEnv) markRenewalCancelled(no string) {
+	e.t.Helper()
+	if _, err := db.DB.Exec(`UPDATE pay_orders SET renewal_state = 'cancelled' WHERE order_no = ?`, no); err != nil {
+		e.t.Fatal(err)
+	}
+}
+
+// seedRealCreditPayment 写一笔系统自动确认成功的真实点数单：过点数码的发码硬门槛。
+func (e *localEnv) seedRealCreditPayment() {
+	e.t.Helper()
+	no := e.insertOrder("admin_test", "admin", 0, "seed-credit@example.com", "succeeded", "", true)
+	if _, err := db.DB.Exec(`UPDATE pay_orders SET kind = 'credit', plan_key = 'credit250', credit_quantity = 250 WHERE order_no = ?`, no); err != nil {
+		e.t.Fatal(err)
+	}
 }
 
 // do 发一个请求。发码接口每次带一个新的幂等键，等于每次都是新的一次点击；专门测幂等的用 doIssue。

@@ -21,8 +21,57 @@ const (
 	MaxConcurrency = 3
 )
 
-// PlanKeys 是支持的套餐键（顺序即展示顺序）。
-var PlanKeys = []string{"go", "plus", "pro_5x", "pro_20x", "pro_50x"}
+// SubscriptionPlanKeys 是订阅开通的套餐键（顺序即展示顺序）。
+var SubscriptionPlanKeys = []string{"go", "plus", "pro_5x", "pro_20x", "pro_50x"}
+
+// 单据种类，与 pay_orders.kind 列的取值一致。
+const (
+	KindSubscription = db.PayKindSubscription // 订阅开通
+	KindCredit       = db.PayKindCredit       // Codex 点数
+)
+
+// CreditPlanKeys 是 Codex 点数各档的键，与 ZovoCard 同名，数量取自键名。
+var CreditPlanKeys = []string{"credit250", "credit500", "credit1000", "credit2500", "credit5000", "credit25000"}
+
+// PlanKeys 是套餐表里的全部键：订阅开通在前、点数各档在后（顺序即展示顺序）。
+var PlanKeys = append(append([]string{}, SubscriptionPlanKeys...), CreditPlanKeys...)
+
+// SupportedPlanKeys 返回付款引擎实际实现的全部套餐键（订阅开通五档、点数六档）的副本，供服务商能力清单使用。
+func SupportedPlanKeys() []string { return append([]string(nil), PlanKeys...) }
+
+// PlanKind 返回套餐键对应的单据种类：点数档为 credit，其余为 subscription。发码门槛按它分别计算。
+func PlanKind(planKey string) string {
+	if contains(CreditPlanKeys, strings.TrimSpace(planKey)) {
+		return KindCredit
+	}
+	return KindSubscription
+}
+
+// CreditQuantity 返回点数档的点数（取自键名，如 credit250 → 250）；不是点数档返回 0。
+func CreditQuantity(planKey string) int {
+	key := strings.TrimSpace(planKey)
+	if !contains(CreditPlanKeys, key) {
+		return 0
+	}
+	n, err := strconv.Atoi(strings.TrimPrefix(key, "credit"))
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
+}
+
+// 点数各档在 PH 的默认金额（设计 2026-11-03 §5.3，取自 ZovoCard 文档）：每 250 点 ₱565，按数量线性计算；上限为预期金额 × 1.12。
+// 金额为比索的最小单位（分）。其他地区没有默认值，管理员配置后才能用。
+const (
+	creditPHPPer250Minor = 56500
+	creditCapPercent     = 112
+)
+
+// creditDefaultPH 返回点数档在 PH 的默认预期金额与上限。
+func creditDefaultPH(quantity int) (expect, capMinor int64) {
+	expect = int64(creditPHPPer250Minor) * int64(quantity) / 250
+	return expect, expect * creditCapPercent / 100
+}
 
 // Regions 是支持的地区（顺序即展示顺序）。
 var Regions = []string{"PH", "US", "JP", "CL", "EG"}
@@ -42,29 +91,51 @@ var planDefaults = map[string]planDefault{
 var currencyRe = regexp.MustCompile(`^[A-Z]{3}$`)
 
 // RegionConf 是某套餐在某地区的付款参数；金额均为最小单位。
+// ExpectMinor 是预期应付金额，只用于展示和校验配置（上限不能低于它），付款时以支付页实际读到的金额为准、以 CapMinor 为上限。
 type RegionConf struct {
-	Enabled   bool   `json:"enabled"`
-	Currency  string `json:"currency"`
-	CapMinor  int64  `json:"cap_minor"`
-	FundCents int64  `json:"fund_cents"`
+	Enabled     bool   `json:"enabled"`
+	Currency    string `json:"currency"`
+	CapMinor    int64  `json:"cap_minor"`
+	FundCents   int64  `json:"fund_cents"`
+	ExpectMinor int64  `json:"expect_minor"`
 }
 
-// PlanConf 是一个套餐及其各地区配置。
+// PlanConf 是一个套餐及其各地区配置。Kind 与 CreditQuantity 由套餐键决定，保存时客户端传什么都以键为准。
+// 点数档没有 ChatGPT 套餐名和期望套餐类型：建结账会话用 credit_purchase_data，确认阶段不看 plan_type。
 type PlanConf struct {
 	Key             string                `json:"key"`
 	Label           string                `json:"label"`
+	Kind            string                `json:"kind"`
+	CreditQuantity  int                   `json:"credit_quantity"`
 	ChatGPTPlanName string                `json:"chatgpt_plan_name"`
 	ExpectPlanType  string                `json:"expect_plan_type"`
 	Regions         map[string]RegionConf `json:"regions"`
 }
 
 func defaultPlan(key string) PlanConf {
+	if q := CreditQuantity(key); q > 0 {
+		p := PlanConf{Key: key, Label: fmt.Sprintf("Codex 点数 %d", q), Kind: KindCredit, CreditQuantity: q, Regions: map[string]RegionConf{}}
+		for _, r := range Regions {
+			p.Regions[r] = RegionConf{Currency: defaultCurrency[r]}
+		}
+		expect, capMinor := creditDefaultPH(q)
+		p.Regions["PH"] = RegionConf{Currency: "PHP", ExpectMinor: expect, CapMinor: capMinor}
+		return p
+	}
 	d := planDefaults[key]
-	p := PlanConf{Key: key, Label: d.label, ChatGPTPlanName: d.name, ExpectPlanType: d.expect, Regions: map[string]RegionConf{}}
+	p := PlanConf{Key: key, Label: d.label, Kind: KindSubscription, ChatGPTPlanName: d.name, ExpectPlanType: d.expect, Regions: map[string]RegionConf{}}
 	for _, r := range Regions {
 		p.Regions[r] = RegionConf{Currency: defaultCurrency[r]}
 	}
 	return p
+}
+
+// normalizePlan 把由套餐键决定的字段改回键的取值：种类、点数；点数档不留 ChatGPT 套餐名和期望套餐类型。
+func normalizePlan(p *PlanConf) {
+	p.Kind, p.CreditQuantity = PlanKind(p.Key), CreditQuantity(p.Key)
+	if p.Kind == KindCredit {
+		p.ChatGPTPlanName, p.ExpectPlanType = "", ""
+	}
 }
 
 // DefaultPlanTable 返回全部未启用、金额为 0 的默认套餐表。
@@ -101,6 +172,7 @@ func LoadPlanTable() ([]PlanConf, error) {
 					tbl[i].Regions[r] = rc
 				}
 			}
+			normalizePlan(&tbl[i])
 		}
 	}
 	return tbl, nil
@@ -115,7 +187,7 @@ func contains(list []string, s string) bool {
 	return false
 }
 
-// SavePlanTable 校验后保存套餐表。
+// SavePlanTable 校验后保存套餐表。种类、点数由套餐键决定，客户端传来的值不采用。
 func SavePlanTable(p []PlanConf) error {
 	// 注资金额不能超过单笔上限，否则这个套餐的单子每张都会在注资时被拒
 	pol, err := cardpool.LoadPolicy()
@@ -135,8 +207,11 @@ func SavePlanTable(p []PlanConf) error {
 			if !contains(Regions, r) {
 				return fmt.Errorf("%w: 未知地区", ErrBadRequest)
 			}
-			if rc.CapMinor < 0 || rc.FundCents < 0 {
+			if rc.CapMinor < 0 || rc.FundCents < 0 || rc.ExpectMinor < 0 {
 				return fmt.Errorf("%w: %s/%s 金额不能为负", ErrBadRequest, pc.Key, r)
+			}
+			if rc.ExpectMinor > 0 && rc.CapMinor > 0 && rc.CapMinor < rc.ExpectMinor {
+				return fmt.Errorf("%w: %s/%s 金额上限不能低于预期金额", ErrBadRequest, pc.Key, r)
 			}
 			if rc.FundCents > pol.MaxFundCents {
 				return fmt.Errorf("%w: %s/%s 注资金额 %d 分超过单笔上限 %d 分", ErrBadRequest, pc.Key, r, rc.FundCents, pol.MaxFundCents)
@@ -146,7 +221,12 @@ func SavePlanTable(p []PlanConf) error {
 			}
 		}
 	}
-	b, err := json.Marshal(p)
+	out := make([]PlanConf, len(p))
+	copy(out, p)
+	for i := range out {
+		normalizePlan(&out[i])
+	}
+	b, err := json.Marshal(out)
 	if err != nil {
 		return err
 	}
@@ -163,8 +243,8 @@ func unavailable(format string, a ...any) error {
 }
 
 // ResolvePlan 取出可用的套餐与地区配置。
-// 真实付款要求：地区已启用、币种、金额上限与注资金额大于 0、ChatGPT 套餐名与期望套餐类型齐全；
-// 试运行只要求 ChatGPT 套餐名。
+// 真实付款要求：地区已启用、币种、金额上限与注资金额大于 0；订阅开通还要 ChatGPT 套餐名与期望套餐类型齐全。
+// 试运行：订阅开通只要求 ChatGPT 套餐名；点数档没有额外要求（读金额、填表都不点支付，金额上限不用于试运行）。
 func ResolvePlan(planKey, region string, dryRun bool) (PlanConf, RegionConf, error) {
 	tbl, err := LoadPlanTable()
 	if err != nil {
@@ -183,7 +263,8 @@ func ResolvePlan(planKey, region string, dryRun bool) (PlanConf, RegionConf, err
 	if !ok {
 		return PlanConf{}, RegionConf{}, unavailable("未知地区")
 	}
-	if plan.ChatGPTPlanName == "" {
+	credit := plan.Kind == KindCredit
+	if !credit && plan.ChatGPTPlanName == "" {
 		return PlanConf{}, RegionConf{}, unavailable("套餐 %s 未配置 ChatGPT 套餐名", plan.Label)
 	}
 	if dryRun {
@@ -192,7 +273,7 @@ func ResolvePlan(planKey, region string, dryRun bool) (PlanConf, RegionConf, err
 	if !rc.Enabled {
 		return PlanConf{}, RegionConf{}, unavailable("套餐 %s 在地区 %s 未启用", plan.Label, region)
 	}
-	if plan.ExpectPlanType == "" {
+	if !credit && plan.ExpectPlanType == "" {
 		return PlanConf{}, RegionConf{}, unavailable("套餐 %s 未配置期望套餐类型", plan.Label)
 	}
 	if rc.Currency == "" {

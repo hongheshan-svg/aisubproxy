@@ -39,10 +39,11 @@ func (s *Service) Kick() {
 func (s *Service) Start(ctx context.Context) {
 	s.cleanProfiles() // 第一次派发之前先扫一遍，之后由清理协程每小时一次
 	s.tryRecover(ctx)
-	s.loops.Add(3)
+	s.loops.Add(4)
 	go s.loop(ctx)
 	go s.verifyLoop(ctx)
 	go s.cleanLoop(ctx)
+	go s.renewalLoop(ctx)
 	s.Kick()
 }
 
@@ -132,6 +133,9 @@ type job struct {
 	holderName string          // 持卡人英文名，填表用
 	secrets    []string        // 要从文字里抹掉的 CVV、验证码
 	cardNo     *regexp.Regexp  // 匹配完整卡号（含空格或连字符分组），要从文字里抹掉
+
+	// keepSession 为 true 时写终态不清空会话，留给续费协程关闭续费，最长保留 SessionKeep（见 renewal.go）
+	keepSession bool
 }
 
 // note 记下一列，随下一次状态写入落库。
@@ -246,10 +250,14 @@ func (s *Service) advance(ctx context.Context, j *job, to, msg string, set map[s
 	return nil
 }
 
-// end 先关闭浏览器，再把单据写入终态 to。
+// end 先关闭浏览器，再把单据写入终态 to。j.keepSession 为 true 时会话留着（关闭续费用），否则清空。
 func (s *Service) end(ctx context.Context, j *job, to, level, msg string, set map[string]any) error {
 	j.closeBrowser()
-	if err := finish(ctx, j.o.OrderNo, j.o.State, to, level, msg, j.merge(set)); err != nil {
+	mode := moveEnd
+	if j.keepSession {
+		mode = moveEndKeepSession
+	}
+	if err := move(ctx, j.o.OrderNo, j.o.State, to, level, msg, j.merge(set), mode); err != nil {
 		return err
 	}
 	j.o.State, j.pending = to, nil
@@ -427,7 +435,7 @@ func (s *Service) run(ctx context.Context, j *job) error {
 	return s.pay(ctx, j)
 }
 
-// check 是步骤 2：解开会话、刷新 token、查账号；已有有效订阅则放弃（升级不在本流程）。
+// check 是步骤 2：解开会话、刷新 token、查账号。开通单：已有有效订阅则放弃（升级不在本流程）；点数单的条件见 checkCredit。
 func (s *Service) check(ctx context.Context, j *job) error {
 	sess, err := openSession(j.o.SessionSealed)
 	if errors.Is(err, chatgpt.ErrBadSession) {
@@ -453,13 +461,21 @@ func (s *Service) check(ctx context.Context, j *job) error {
 		return s.chatgptAbort(j, "chatgpt_failed", "查询账号失败", err)
 	}
 	j.note("account_id", acc.AccountID)
+	j.o.AccountID = acc.AccountID
+	if j.o.Kind == KindCredit {
+		if err := s.checkCredit(ctx, j, acc); err != nil {
+			return err
+		}
+		s.snapshotCredit(ctx, j)
+		return nil
+	}
 	if acc.HasActiveSubscription {
 		return abort("already_subscribed", "账号已有有效订阅（%s），不能直接开通", acc.PlanType)
 	}
 	return nil
 }
 
-// createLink 是步骤 3：按套餐表创建支付会话，记下会话号与支付链接。
+// createLink 是步骤 3：按套餐表创建支付会话，记下会话号与支付链接。点数单见 createCreditLink。
 func (s *Service) createLink(ctx context.Context, j *job) error {
 	plan, _, err := ResolvePlan(j.o.PlanKey, j.o.Region, j.o.DryRun)
 	if errors.Is(err, ErrPlanUnavailable) {
@@ -468,18 +484,59 @@ func (s *Service) createLink(ctx context.Context, j *job) error {
 	if err != nil {
 		return abort("internal_error", "读取套餐配置失败：%v", err)
 	}
+	if j.o.Kind == KindCredit {
+		return s.createCreditLink(ctx, j)
+	}
 	co, err := j.gpt.CreateCheckout(ctx, j.sess, plan.ChatGPTPlanName, j.o.Region, j.o.Currency)
 	if err != nil {
 		return s.chatgptAbort(j, "checkout_failed", "创建支付会话失败", err)
 	}
 	j.note("checkout_session_id", co.SessionID)
-	if co.URL == "" {
+	return s.acceptCheckoutURL(ctx, j, co.SessionID, co.URL)
+}
+
+// acceptCheckoutURL 校验支付链接并推进到 link_created。链接为空记 checkout_failed；
+// 不在支付域名白名单里记 checkout_url_untrusted，链接不落库、不打开。两种情况都还没取卡、没注资。
+func (s *Service) acceptCheckoutURL(ctx context.Context, j *job, sessionID, link string) error {
+	if strings.TrimSpace(link) == "" {
 		return abort("checkout_failed", "创建支付会话未返回支付链接")
 	}
-	if err := s.advance(ctx, j, StateLinkCreated, "已生成支付链接", map[string]any{"checkout_url": co.URL}); err != nil {
+	if err := s.checkURL(link); err != nil {
 		return err
 	}
-	j.o.CheckoutSessionID, j.o.CheckoutURL = co.SessionID, co.URL
+	if err := s.advance(ctx, j, StateLinkCreated, "已生成支付链接", map[string]any{"checkout_url": link}); err != nil {
+		return err
+	}
+	j.o.CheckoutSessionID, j.o.CheckoutURL = sessionID, link
+	return nil
+}
+
+// trustedCheckoutHosts 是付款引擎允许打开的支付页域名：OpenAI 的支付域名和 Stripe 托管结账页。
+// 只认这两个主机名本身，子域名、相似域名、chatgpt.com（自定义结账页，引擎不支持）一律不认。
+// 这份名单只管付款；免付款探测工具另有一份更宽的名单，只用于报告，两份互不复用。
+var trustedCheckoutHosts = map[string]bool{
+	"pay.openai.com":      true,
+	"checkout.stripe.com": true,
+}
+
+// checkCheckoutURL 校验支付链接：必须是 https、没有账号密码、没有端口，主机名正好在 trustedCheckoutHosts 里。
+// 不通过时返回 checkout_url_untrusted 的放弃原因，说明里只写域名，绝不写完整链接（链接里带会话号）。
+func checkCheckoutURL(raw string) error {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return abort("checkout_url_untrusted", "支付链接无法解析出域名，已放弃，未注资")
+	}
+	host := strings.ToLower(u.Hostname())
+	switch {
+	case u.Scheme != "https":
+		return abort("checkout_url_untrusted", "支付链接不是 https（域名 %s），已放弃，未注资", host)
+	case u.User != nil:
+		return abort("checkout_url_untrusted", "支付链接带账号信息（域名 %s），已放弃，未注资", host)
+	case u.Port() != "":
+		return abort("checkout_url_untrusted", "支付链接带端口（域名 %s），已放弃，未注资", host)
+	case !trustedCheckoutHosts[host]:
+		return abort("checkout_url_untrusted", "支付链接的域名 %s 不在支付域名白名单里，已放弃，未注资", host)
+	}
 	return nil
 }
 
@@ -498,6 +555,10 @@ func (s *Service) openPage(ctx context.Context, j *job) error {
 	j.browser = b
 	if j.o.DryRun {
 		b.LockSubmit() // 试运行单：浏览器对象本身拒绝点击，不只靠流程分支
+	}
+	// 建链接时已经校验过；打开之前再拦一次，不让任何别的路径带进来的链接被打开
+	if err := s.checkURL(j.o.CheckoutURL); err != nil {
+		return err
 	}
 
 	pctx, cancel := context.WithTimeout(ctx, s.t.PageLoad)

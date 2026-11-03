@@ -38,6 +38,8 @@ var fillFailureCodes = map[string]bool{
 	"card_expiry_invalid":   true,
 	"submit_not_clicked":    true,
 	"amount_changed":        true,
+	// 点数单填表后确认不了「保存付款信息」没勾选：页面变了，继续跑每单都会注资后放弃
+	"save_payment_unconfirmed": true,
 }
 
 // BreakerStatus 是熔断的当前状态。

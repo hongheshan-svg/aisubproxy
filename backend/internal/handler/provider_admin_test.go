@@ -179,7 +179,6 @@ func TestIssueRejectsUnsupportedProductForMarsWallex(t *testing.T) {
 	for _, body := range []string{
 		`{"plan":"premium_monthly","product":"x","count":1,"funding_confirmed":true,"region":"PH"}`,
 		`{"plan":"plus_monthly","count":1,"funding_confirmed":true,"region":"PH"}`, // 推断成 X
-		`{"plan":"credit250","count":1,"funding_confirmed":true,"region":"PH"}`,
 		`{"plan":"claude_pro","count":1,"funding_confirmed":true,"region":"PH"}`,
 		`{"plan":"plus","product":"grok","count":1,"funding_confirmed":true,"region":"PH"}`,
 		`{"plan":"pro_20x_renew","count":1,"funding_confirmed":true,"region":"PH"}`,
@@ -778,7 +777,8 @@ func TestReadinessConfigProblemIsPlainText(t *testing.T) {
 	}
 	for _, it := range mw["checks"].([]any) {
 		if c := it.(map[string]any); c["key"] == "first_real_payment" {
-			if link, _ := c["link"].(map[string]any); link["to"] != "/ops/marswallex-pay" {
+			// 测试兑换页按 provider 参数预选服务商（ACC2-2）
+			if link, _ := c["link"].(map[string]any); link["to"] != "/ops/marswallex-pay?provider=marswallex" {
 				t.Fatalf("first_real_payment 应带链接: %v", c)
 			}
 		}

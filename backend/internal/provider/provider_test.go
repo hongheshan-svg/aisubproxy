@@ -7,6 +7,7 @@ import (
 
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/db/dbtest"
+	"github.com/tuzi/cdk-recharge-system/internal/payengine"
 )
 
 func TestDefaultProviderLoadSave(t *testing.T) {
@@ -53,7 +54,9 @@ func TestSupports(t *testing.T) {
 	}{
 		{MarsWallex, "gpt", "plus", true},
 		{MarsWallex, "GPT", "pro_20x", true},
-		{MarsWallex, "gpt", "credit250", false},
+		{MarsWallex, "gpt", "credit250", true},
+		{MarsWallex, "gpt", "credit25000", true},
+		{MarsWallex, "gpt", "credit100", false},
 		{MarsWallex, "gpt", "pro_20x_renew", false},
 		{MarsWallex, "x", "premium_monthly", false},
 		{MarsWallex, "grok", "plus", false}, // 键同名也不行
@@ -88,9 +91,37 @@ func TestCapabilitiesFromSupports(t *testing.T) {
 	if r := byKey["gpt/pro_20x"]; r.Notes[MarsWallex] != "仅限无订阅账号" || r.Notes[ZovoCard] != "" {
 		t.Fatalf("pro_20x 要标注: %+v", r)
 	}
-	for _, k := range []string{"gpt/credit*", "x/*", "grok/*", "claude/*"} {
+	for _, k := range []string{"x/*", "grok/*", "claude/*"} {
 		if r := byKey[k]; r.Support[MarsWallex] || !r.Support[ZovoCard] {
 			t.Fatalf("%s: %+v", k, r)
+		}
+	}
+	// Codex 点数：MarsWallex 能力取自引擎，合成一行并标注限制
+	if r := byKey["gpt/credit*"]; !r.Support[MarsWallex] || !r.Support[ZovoCard] ||
+		r.Notes[MarsWallex] != "仅限已订阅 Plus 或 Pro 的账号，按账号计费币种付款" || r.Notes[ZovoCard] != "" {
+		t.Fatalf("credit*: %+v", r)
+	}
+	for k := range byKey {
+		if strings.HasPrefix(k, "gpt/credit") && k != "gpt/credit*" {
+			t.Fatalf("点数档应合成一行: %s", k)
+		}
+	}
+}
+
+// MarsWallex 的能力清单就是引擎实际实现的套餐键：订阅开通五档、点数六档，一个不多一个不少。
+func TestMarsWallexSupportsEnginePlans(t *testing.T) {
+	keys := payengine.SupportedPlanKeys()
+	if len(keys) != 11 {
+		t.Fatalf("引擎套餐键 %d 个: %v", len(keys), keys)
+	}
+	for _, k := range keys {
+		if !Supports(MarsWallex, "gpt", k) {
+			t.Errorf("MarsWallex 应支持 %s", k)
+		}
+	}
+	for _, k := range []string{"pro_20x_renew", "credit", "credit0", "plus_upgrade"} {
+		if Supports(MarsWallex, "gpt", k) {
+			t.Errorf("MarsWallex 不应支持 %s", k)
 		}
 	}
 }

@@ -88,15 +88,93 @@ export function formatMinor(minor: number, currency: string): string {
   return `${neg ? '-' : ''}${text} ${currency}`
 }
 
+/** 点数档（kind=credit）：没有 ChatGPT 套餐名，按点数数量下单。 */
+export function isCreditPlan(p: { kind?: string } | null | undefined): boolean {
+  return p?.kind === 'credit'
+}
+
+// 点数档在 PH 的默认金额，与后端 creditDefaultPH 一致：每 250 点 565.00 PHP，上限是预期金额的 112%（都向下取整到最小单位）。
+const CREDIT_PHP_PER_250_MINOR = 56500
+const CREDIT_CAP_PERCENT = 112
+
+export function creditDefaultPH(quantity: number): { currency: string; expect_minor: number; cap_minor: number } {
+  const q = Math.max(0, Math.floor(quantity || 0))
+  const expect = Math.floor((CREDIT_PHP_PER_250_MINOR * q) / 250)
+  return { currency: 'PHP', expect_minor: expect, cap_minor: Math.floor((expect * CREDIT_CAP_PERCENT) / 100) }
+}
+
+// ---------- 付款配置：套餐表与编辑表单互转 ----------
+
+export interface RegionConf { enabled: boolean; currency: string; expect_minor?: number; cap_minor: number; fund_cents: number }
+export interface PlanConf {
+  key: string; label: string; chatgpt_plan_name: string; expect_plan_type: string
+  kind?: string; credit_quantity?: number
+  regions: Record<string, RegionConf>
+}
+/** 表单里的金额是主单位（PHP 565.00 填 565），保存时再换回最小单位。 */
+export interface FormRow {
+  region: string; enabled: boolean; initEnabled: boolean; currency: string
+  expect: number | null; cap: number | null; fund: number | null
+}
+export interface FormPlan {
+  key: string; label: string; chatgpt_plan_name: string; expect_plan_type: string
+  kind: string; credit_quantity: number; rows: FormRow[]
+}
+
+export function planToForm(p: PlanConf, regions: readonly string[]): FormPlan {
+  return {
+    key: p.key, label: p.label, chatgpt_plan_name: p.chatgpt_plan_name, expect_plan_type: p.expect_plan_type,
+    kind: p.kind || '', credit_quantity: p.credit_quantity || 0,
+    rows: regions.map((r) => {
+      const rc = p.regions?.[r] || { enabled: false, currency: '', expect_minor: 0, cap_minor: 0, fund_cents: 0 }
+      return {
+        region: r, enabled: rc.enabled, initEnabled: rc.enabled, currency: rc.currency,
+        expect: fromMinor(rc.expect_minor || 0, rc.currency), cap: fromMinor(rc.cap_minor, rc.currency), fund: rc.fund_cents / 100,
+      }
+    }),
+  }
+}
+
+/** 表单转回套餐表。每个地区都写出来：服务端要求套餐表完整（11 个套餐 × 5 个地区），缺了会整体拒绝。 */
+export function formToPlan(p: FormPlan): PlanConf {
+  return {
+    key: p.key, label: p.label, chatgpt_plan_name: p.chatgpt_plan_name, expect_plan_type: p.expect_plan_type,
+    kind: p.kind, credit_quantity: p.credit_quantity,
+    regions: Object.fromEntries(p.rows.map((row) => {
+      const cur = row.currency.trim().toUpperCase()
+      return [row.region, {
+        enabled: row.enabled, currency: cur,
+        expect_minor: toMinor(row.expect || 0, cur), cap_minor: toMinor(row.cap || 0, cur), fund_cents: Math.round((row.fund || 0) * 100),
+      }]
+    })),
+  }
+}
+
+/** 把点数档的 PH 行恢复成默认币种、预期金额和上限；不动启用开关和注资金额（注资没有默认值，要按汇率填）。 */
+export function applyCreditDefaultPH(p: FormPlan): boolean {
+  const row = p.rows.find((r) => r.region === 'PH')
+  if (!row || !isCreditPlan(p) || !(p.credit_quantity > 0)) return false
+  const d = creditDefaultPH(p.credit_quantity)
+  row.currency = d.currency
+  row.expect = fromMinor(d.expect_minor, d.currency)
+  row.cap = fromMinor(d.cap_minor, d.currency)
+  return true
+}
+
+/** 金额上限低于预期金额时的提示（两者都大于 0 才比较），与后端保存时的校验一致。 */
+export function capBelowExpect(capMinor: number, expectMinor: number): boolean {
+  return capMinor > 0 && expectMinor > 0 && capMinor < expectMinor
+}
+
 // payBlockReason 返回这个套餐与地区不能提交的原因，可以提交时返回空串。
-// 试运行只要求有 ChatGPT 套餐名；真实付款还要求地区已启用且金额都已配置。与后端 ResolvePlan 的规则一致。
+// 试运行只要求有 ChatGPT 套餐名（点数档不需要）；真实付款还要求地区已启用且金额都已配置。与后端 ResolvePlan 的规则一致。
 export function payBlockReason(
-  plan: { chatgpt_plan_name: string; regions?: Record<string, { enabled: boolean; cap_minor: number; fund_cents: number }> } | undefined,
+  plan: { chatgpt_plan_name: string; kind?: string; regions?: Record<string, { enabled: boolean; cap_minor: number; fund_cents: number }> } | undefined,
   region: string,
   dryRun: boolean,
 ): string {
   if (!plan) return '请选择套餐'
-  if (!plan.chatgpt_plan_name) return '该套餐没有 ChatGPT 套餐名，无法提交'
+  if (!isCreditPlan(plan) && !plan.chatgpt_plan_name) return '该套餐没有 ChatGPT 套餐名，无法提交'
   if (dryRun) return ''
   const rc = plan.regions?.[region]
   if (!rc || !rc.enabled) return '该套餐在此地区未启用，不能真实付款（可先试运行）'

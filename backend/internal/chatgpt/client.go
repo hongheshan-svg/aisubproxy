@@ -160,6 +160,12 @@ type Account struct {
 	Email                 string
 	PlanType              string
 	HasActiveSubscription bool
+
+	// 以下是 Codex 点数的 checking 要用的字段，取自 accounts/check（调研 §1.4、§1.5），接口没返回时为空或 nil，调用方按「核实不了」处理。
+	Structure       string // account.structure：personal、workspace 等
+	BillingCurrency string // entitlement.billing_currency，转成大写
+	IsDelinquent    *bool  // entitlement.is_delinquent，其次 last_active_subscription.is_delinquent
+	WillRenew       *bool  // last_active_subscription.will_renew，其次 entitlement.will_renew
 }
 
 // Account 查询默认账号；无有效订阅时 PlanType 为 "free"。
@@ -182,7 +188,22 @@ func (c *Client) Account(ctx context.Context, s Session) (Account, error) {
 	if !out.HasActiveSubscription {
 		out.PlanType = "free"
 	}
+	last, _ := acc["last_active_subscription"].(map[string]interface{})
+	out.Structure = strings.ToLower(firstString(info["structure"]))
+	out.BillingCurrency = strings.ToUpper(firstString(ent["billing_currency"]))
+	out.IsDelinquent = firstBool(ent["is_delinquent"], last["is_delinquent"])
+	out.WillRenew = firstBool(last["will_renew"], ent["will_renew"])
 	return out, nil
+}
+
+// firstBool 取第一个 JSON 布尔值，都不是返回 nil。
+func firstBool(vals ...interface{}) *bool {
+	for _, v := range vals {
+		if b := optBool(v); b != nil {
+			return b
+		}
+	}
+	return nil
 }
 
 func firstString(vals ...interface{}) string {

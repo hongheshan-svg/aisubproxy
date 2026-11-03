@@ -22,7 +22,7 @@ var _ Pool = (*cardpool.Service)(nil)
 const (
 	testAccessToken  = "at-secret-123"
 	testSessionToken = "st-secret-456"
-	testCheckoutURL  = "https://pay.example/c/cs_live_abc"
+	testCheckoutURL  = "https://pay.openai.com/c/pay/cs_live_abc"
 )
 
 func sessionFor(email string) string {

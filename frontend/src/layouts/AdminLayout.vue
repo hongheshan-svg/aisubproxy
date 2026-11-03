@@ -395,6 +395,7 @@ async function submitPwd() {
 .env-badge.env-prod { color: var(--good, #16a34a); border-color: currentColor; }
 .env-badge.env-test { color: var(--warn, #d97706); border-color: currentColor; }
 .env-badge.env-custom, .env-badge.env-unknown { color: var(--err, #dc2626); border-color: currentColor; }
+.is-mobile .crumb-group, .is-mobile .crumb-group + .crumb-sep { display: none; }
 .is-mobile .env-badge { padding: 4px 6px; font-size: 11px; }
 .crumb-link { font-weight: 500; color: var(--ink-2); }
 .crumb-tab { font-weight: 600; }

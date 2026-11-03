@@ -69,6 +69,7 @@ import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import ApiErrorNotice from '../../components/ApiErrorNotice.vue'
 import { authFetch } from '../../lib/api'
 import { payApi } from '../../lib/pay'
+import { mapApiError } from '../../lib/errors'
 import { poolApi } from '../../lib/cardpool'
 import { breakerReason, type Breaker } from '../../lib/payui'
 import {
@@ -109,7 +110,7 @@ const tCards = ref<TodoState<number>>(loadingT)
 const tBalance = ref<TodoState<string>>(loadingT)
 const todosLoading = ref(false)
 const failMsg = (r: { status: number; data: any }, what: string): TodoState<any> =>
-  ({ state: 'fail', error: r.data?.error || `${what}（${r.status || '网络错误'}）` })
+  ({ state: 'fail', error: mapApiError(r.data?.error || `${what}（${r.status || '网络错误'}）`).text })
 
 async function loadTodos() {
   todosLoading.value = true
@@ -125,7 +126,7 @@ async function loadTodos() {
     tWebhook.value = { state: 'ok', value: ov.data.failed_events ?? 0 }
     tCards.value = { state: 'ok', value: availableCards(ov.data) }
     const bal = mainUsdBalance(ov.data)
-    tBalance.value = bal === null ? { state: 'fail', error: ov.data.balance_error || '没有美元余额项' } : { state: 'ok', value: bal }
+    tBalance.value = bal === null ? { state: 'fail', error: mapApiError(ov.data.balance_error || '没有美元余额项').text } : { state: 'ok', value: bal }
   } else {
     const f = failMsg(ov, '卡池概览')
     tReviewPool.value = f; tWebhook.value = f; tCards.value = f; tBalance.value = f

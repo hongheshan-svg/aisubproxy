@@ -129,7 +129,7 @@
         <el-table-column label="注资" width="90"><template #default="{ row }">{{ row.fund_cents ? centsToUsd(row.fund_cents) + ' 美元' : '—' }}</template></el-table-column>
         <el-table-column prop="note" label="备注" min-width="120" show-overflow-tooltip />
         <el-table-column label="时间" min-width="150"><template #default="{ row }">{{ fmtTime(row.created_at) }}</template></el-table-column>
-        <el-table-column label="操作" width="90" fixed="right">
+        <el-table-column label="操作" width="90">
           <template #default="{ row }">
             <el-button v-if="canDisableLocal(row.status)" size="small" type="danger" plain :loading="busyId === row.id" @click="disableOne(row)">禁用</el-button>
             <el-button v-else-if="canEnableLocal(row.status, row.status_reason)" size="small" type="success" plain :loading="busyId === row.id" @click="enableOne(row)">启用</el-button>

@@ -941,11 +941,18 @@ html.dark[data-skin="zovo"] .el-pagination.is-background .el-pager li.is-active 
 html[data-skin="zovo"] .el-pagination.is-background .el-pager li:not(.is-active),
 html[data-skin="zovo"] .el-pagination.is-background .btn-prev,
 html[data-skin="zovo"] .el-pagination.is-background .btn-next { background: var(--surface-2) !important; color: var(--ink-2); }
+/* 选中项必须比悬停更醒目：服务商、运行方式这类单选选错会动钱 */
 html[data-skin="zovo"] .el-radio-button__original-radio:checked + .el-radio-button__inner {
-  background: var(--primary-soft) !important;
-  color: var(--primary) !important;
-  border-color: color-mix(in oklab, var(--primary) 45%, transparent) !important;
+  background: var(--accent-grad, var(--primary)) !important;
+  color: var(--primary-on, #fff) !important;
+  font-weight: 600;
+  border-color: var(--primary) !important;
   box-shadow: none !important;
+}
+html.dark[data-skin="zovo"] .el-radio-button__original-radio:checked + .el-radio-button__inner { color: #0a0a12 !important; }
+html[data-skin="zovo"] .el-radio-button__original-radio:not(:checked) + .el-radio-button__inner:hover {
+  background: var(--surface-2) !important;
+  color: var(--ink) !important;
 }
 html[data-skin="zovo"] ::selection { background: var(--primary-soft); color: var(--ink); }
 html.dark[data-skin="zovo"] ::-webkit-scrollbar { width: 10px; height: 10px; }

@@ -25,11 +25,12 @@
 
       <el-table :data="rows" size="small" stripe v-loading="loading" :empty-text="loadError ? '读取失败' : '没有记录'">
         <el-table-column prop="id" label="ID" width="64" />
-        <el-table-column label="状态" min-width="160">
+        <el-table-column label="状态" min-width="240">
           <template #default="{ row }">
             <el-tag size="small" :type="row.state === 'unknown' ? 'danger' : row.state === 'disabling' ? 'warning' : row.state === 'done' ? 'success' : 'info'">
               {{ swapStateLabel(row.state) }}
             </el-tag>
+            <div v-if="row.state === 'disabling'" class="text-xs text-warn mt-1" style="white-space: normal">{{ DISABLING_HINT }}</div>
           </template>
         </el-table-column>
         <el-table-column label="旧码 → 新码" min-width="200">
@@ -43,10 +44,9 @@
         <el-table-column prop="ip" label="IP" min-width="110" />
         <el-table-column prop="note" label="备注" min-width="140" show-overflow-tooltip />
         <el-table-column label="更新时间" min-width="150"><template #default="{ row }">{{ fmtTime(row.updated_at) }}</template></el-table-column>
-        <el-table-column label="操作" min-width="150" fixed="right">
+        <el-table-column label="操作" min-width="120">
           <template #default="{ row }">
             <el-button v-if="canResolveSwap(row.state)" size="small" type="primary" plain @click="openResolve(row)">核对</el-button>
-            <span v-else-if="row.state === 'disabling'" class="text-xs text-warn">{{ DISABLING_HINT }}</span>
           </template>
         </el-table-column>
       </el-table>

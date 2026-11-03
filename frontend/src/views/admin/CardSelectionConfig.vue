@@ -292,8 +292,10 @@
             <span class="mono font-semibold">{{ p.product_code }}</span>
             <span class="text-sm text-muted">{{ p.scene }}</span>
           </div>
-          <div class="text-xs text-subtle mono">{{ binDisplay(p) }}</div>
-          <div v-if="headMarks(p.product_code)" class="text-xs text-muted">{{ headMarks(p.product_code) }}</div>
+          <div class="text-right shrink-0">
+            <div class="text-xs text-subtle mono">{{ binDisplay(p) }}</div>
+            <div v-if="headMarks(p.product_code)" class="text-xs text-muted whitespace-nowrap">{{ headMarks(p.product_code) }}</div>
+          </div>
           <el-tag v-if="!isProductOnline(p)" type="danger" size="small">已下线</el-tag>
           <el-tag v-else-if="isInRules(p.product_code)" type="info" size="small">已添加</el-tag>
           <el-tag v-else type="success" size="small">+ 添加</el-tag>

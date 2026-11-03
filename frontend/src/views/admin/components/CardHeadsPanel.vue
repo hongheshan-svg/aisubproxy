@@ -35,11 +35,11 @@
       <el-table-column label="名称" min-width="200" show-overflow-tooltip>
         <template #default="{ row }">
           {{ row.name || '—' }}
-          <div class="text-xs text-subtle mono">{{ row.product_id }}</div>
+          <div v-if="row.name && row.name !== row.product_id" class="text-xs text-subtle mono">{{ row.product_id }}</div>
         </template>
       </el-table-column>
       <el-table-column prop="network" label="卡组织" width="90" />
-      <el-table-column prop="country" label="国家" width="70" />
+      <el-table-column prop="country" label="国家" min-width="110" show-overflow-tooltip />
       <el-table-column prop="currency" label="币种" width="70" />
       <el-table-column label="3DS" width="80">
         <template #default="{ row }"><TriTag :value="row.three_ds" /></template>
@@ -51,7 +51,7 @@
       <el-table-column label="来源" width="70">
         <template #default="{ row }">{{ row.source === 'api' ? '接口' : '手动' }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="130" fixed="right">
+      <el-table-column label="操作" width="130">
         <template #default="{ row }">
           <el-button size="small" link type="primary" @click="openEdit(row)">{{ row.source === 'manual' ? '编辑' : '编辑标注' }}</el-button>
           <el-button v-if="row.source === 'manual'" size="small" link type="danger" @click="remove(row)">删除</el-button>

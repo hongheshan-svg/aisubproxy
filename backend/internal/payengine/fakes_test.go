@@ -187,6 +187,60 @@ type fakeChatGPT struct {
 	checkout                            chatgpt.Checkout
 	// accountFn 非 nil 时优先于 account / accountErr，n 为第几次调用 Account（从 1 起）。
 	accountFn func(n int) (chatgpt.Account, error)
+
+	// 关闭续费：cancelFn、subStatusFn 非 nil 时按第 n 次调用取值；未设置时取消成功、核实为不再续费。
+	cancelFn    func(n int) error
+	subStatusFn func(n int) (chatgpt.RenewalInfo, error)
+
+	// 点数：未设置时结账返回 Stripe 托管页，已存卡为空，余额不可用。
+	creditCheckout    *chatgpt.CreditCheckoutResult
+	creditCheckoutErr error
+	savedCardsFn      func(n int) ([]chatgpt.SavedCard, error)
+	balanceFn         func(n int) (chatgpt.CreditBalanceInfo, error)
+}
+
+func (g *fakeChatGPT) CreateCreditCheckout(_ context.Context, s chatgpt.Session, accountID string, quantity int) (chatgpt.CreditCheckoutResult, error) {
+	g.hit("CreateCreditCheckout", accountID, quantity)
+	if g.creditCheckoutErr != nil {
+		return chatgpt.CreditCheckoutResult{}, g.creditCheckoutErr
+	}
+	if g.creditCheckout != nil {
+		return *g.creditCheckout, nil
+	}
+	return chatgpt.CreditCheckoutResult{Tag: chatgpt.CheckoutTagHosted, SessionID: "cs_live_credit", URL: "https://checkout.stripe.com/c/pay/cs_live_credit"}, nil
+}
+
+func (g *fakeChatGPT) CancelRenewal(_ context.Context, s chatgpt.Session, accountID string) error {
+	g.hit("CancelRenewal", accountID, s.AccessToken)
+	if g.cancelFn != nil {
+		return g.cancelFn(g.count("CancelRenewal"))
+	}
+	return nil
+}
+
+func (g *fakeChatGPT) SubscriptionStatus(_ context.Context, s chatgpt.Session, accountID string) (chatgpt.RenewalInfo, error) {
+	g.hit("SubscriptionStatus", accountID)
+	if g.subStatusFn != nil {
+		return g.subStatusFn(g.count("SubscriptionStatus"))
+	}
+	off := false
+	return chatgpt.RenewalInfo{WillRenew: &off}, nil
+}
+
+func (g *fakeChatGPT) SavedCards(_ context.Context, s chatgpt.Session, accountID string) ([]chatgpt.SavedCard, error) {
+	g.hit("SavedCards", accountID)
+	if g.savedCardsFn != nil {
+		return g.savedCardsFn(g.count("SavedCards"))
+	}
+	return []chatgpt.SavedCard{}, nil
+}
+
+func (g *fakeChatGPT) CreditBalance(_ context.Context, s chatgpt.Session, accountID string) (chatgpt.CreditBalanceInfo, error) {
+	g.hit("CreditBalance", accountID)
+	if g.balanceFn != nil {
+		return g.balanceFn(g.count("CreditBalance"))
+	}
+	return chatgpt.CreditBalanceInfo{}, nil
 }
 
 func (g *fakeChatGPT) Refresh(_ context.Context, s *chatgpt.Session) error {

@@ -68,14 +68,18 @@ func TestLocalCDKEndToEnd(t *testing.T) {
 		t.Fatalf("MW 码不能碰 ZovoCard: %v", e.zovo.paths)
 	}
 
-	// 只有一张单，来源和引用正确，会话已清空
-	var no, source, ref, sealed, plan, region string
-	if err := db.DB.QueryRow(`SELECT order_no, source, source_ref, session_sealed, plan_key, region FROM pay_orders WHERE source = 'cdk'`).
-		Scan(&no, &source, &ref, &sealed, &plan, &region); err != nil {
+	// 只有一张单，来源和引用正确；开通成功后关闭续费，会话随之清空
+	var no, source, ref, plan, region string
+	if err := db.DB.QueryRow(`SELECT order_no, source, source_ref, plan_key, region FROM pay_orders WHERE source = 'cdk'`).
+		Scan(&no, &source, &ref, &plan, &region); err != nil {
 		t.Fatal(err)
 	}
-	if ref != db.LocalCDKSourceRef(id) || sealed != "" || plan != "plus" || region != "PH" {
-		t.Fatalf("单据不符: ref=%s sealed=%q %s/%s", ref, sealed, plan, region)
+	if ref != db.LocalCDKSourceRef(id) || plan != "plus" || region != "PH" {
+		t.Fatalf("单据不符: ref=%s %s/%s", ref, plan, region)
+	}
+	e.waitRenewalCancelled(no)
+	if n := e.gpt.cancelCount(); n != 1 {
+		t.Fatalf("关闭续费 %d 次", n)
 	}
 
 	// 码是 consumed，再兑就被拒，且不再建单

@@ -29,8 +29,9 @@ func TestHappyPathSucceeded(t *testing.T) {
 	if h.gpt.count("Account") != 3 {
 		t.Fatalf("Account 应调用 3 次（预检 + 2 次确认）: %d", h.gpt.count("Account"))
 	}
-	if g.SessionSealed != "" || g.FinishedAt == nil {
-		t.Fatalf("终态应清空会话并记结束时间: %+v", g)
+	// 成功的真实开通单留着会话交给续费协程关闭续费（见 renewal_test.go），关掉或到点再清空
+	if g.SessionSealed == "" || g.FinishedAt == nil || g.RenewalState != RenewalPending {
+		t.Fatalf("成功应记结束时间，并留会话待关闭续费: %+v", g)
 	}
 	if g.SubmittedAt == nil || *g.SubmittedAt != before {
 		t.Fatalf("submitted_at 应取 Options.Now: %v, 期望 %d", g.SubmittedAt, before)
@@ -160,7 +161,8 @@ func TestOTPTimeoutNeedsReview(t *testing.T) {
 
 	h.clock.Advance(h.timeouts.Verify + time.Second)
 	g = waitDone(t, o.OrderNo)
-	if g.State != StateNeedsReview || g.ErrorCode != "verify_timeout" || g.SessionSealed != "" {
+	// 真实开通单转待人工时会话留到 SessionKeep：人工在这之内定论成功还能关闭续费
+	if g.State != StateNeedsReview || g.ErrorCode != "verify_timeout" || g.SessionSealed == "" || g.RenewalState != RenewalNone {
 		t.Fatalf("应转待人工: %+v", g)
 	}
 	if a := h.alerts.Texts(); len(a) != 1 || !strings.Contains(a[0], o.OrderNo) || !strings.Contains(a[0], "待人工") {

@@ -1955,12 +1955,18 @@ func TestResolve(t *testing.T) {
 		if g.FinishedAt == nil || *g.FinishedAt != 12345 {
 			t.Fatalf("不应重写 finished_at: %v", g.FinishedAt)
 		}
-		ev := eventStates(t, o.OrderNo)
-		if last := ev[len(ev)-1]; last.State != StateSucceeded || !strings.Contains(last.Message, "admin") {
-			t.Fatalf("应记定论事件: %+v", last)
+		if e := waitEvent(t, o.OrderNo, "人工定论为成功"); e.State != StateSucceeded || !strings.Contains(e.Message, "admin") {
+			t.Fatalf("应记定论事件: %+v", e)
 		}
 		if len(h.pool.released()) != 0 || h.pool.total() != 0 || len(h.br.browsers()) != 0 {
 			t.Fatal("人工定论只改本单结果，不碰卡池与浏览器")
+		}
+		// 这张单转待人工时会话已清空：关不了续费，记 skipped 并告警
+		if g.RenewalState != RenewalSkipped || g.SessionSealed != "" {
+			t.Fatalf("会话已清空应记 skipped: %+v", g)
+		}
+		if a := h.alerts.Texts(); len(a) != 1 || !strings.Contains(a[0], o.OrderNo) || !strings.Contains(a[0], "自行在 ChatGPT 设置里关闭续费") {
+			t.Fatalf("应告警一次: %v", a)
 		}
 	})
 	t.Run("标记失败", func(t *testing.T) {

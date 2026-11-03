@@ -169,8 +169,13 @@ func (s *Service) verifyOrder(ctx context.Context, o *Order) {
 		return // 停机：下次启动接着查
 	}
 	if opened {
-		s.verifyConclude(ctx, j, StateSucceeded, "info", "账号已开通，付款成功",
-			cardpool.Outcome{Result: cardpool.ResultSuccess}, map[string]any{"error_code": "", "error_message": ""})
+		set := map[string]any{"error_code": "", "error_message": ""}
+		if wantsRenewalCancel(o) {
+			// 开通成功后关闭续费：会话留给续费协程，关掉或到点再清空（见 renewal.go）
+			j.keepSession = true
+			set["renewal_state"], set["renewal_next_at"] = RenewalPending, s.now().Unix()
+		}
+		s.verifyConclude(ctx, j, StateSucceeded, "info", "账号已开通，付款成功", cardpool.Outcome{Result: cardpool.ResultSuccess}, set)
 		return
 	}
 	s.noteVerifyErr(ctx, j, "account", "查询账号失败，等下次检查：", accErr)
@@ -426,8 +431,11 @@ func (s *Service) verifyReschedule(ctx context.Context, j *job) {
 	}
 }
 
-// verifyEscalate 转待人工：Release(aborted)，告警。
+// verifyEscalate 转待人工：Release(aborted)，告警。真实开通单的会话留到 SessionKeep：人工在这之内定论成功，还能关闭续费。
 func (s *Service) verifyEscalate(ctx context.Context, j *job, code, reason string) {
+	if wantsRenewalCancel(j.o) {
+		j.keepSession = true
+	}
 	msg := reason
 	if j.o.ErrorMessage != "" {
 		msg += "；页面或浏览器提示：" + j.o.ErrorMessage

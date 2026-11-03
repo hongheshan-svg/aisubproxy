@@ -35,10 +35,16 @@ type Pool interface {
 }
 
 // ChatGPT 是引擎用到的 ChatGPT 接口，*chatgpt.Client 直接满足。
+// 写操作只有 CreateCheckout、CreateCreditCheckout（建结账会话，不花钱）和 CancelRenewal（取消下期续费），其余只读。
 type ChatGPT interface {
 	Refresh(context.Context, *chatgpt.Session) error
 	Account(context.Context, chatgpt.Session) (chatgpt.Account, error)
 	CreateCheckout(context.Context, chatgpt.Session, string, string, string) (chatgpt.Checkout, error)
+	CreateCreditCheckout(ctx context.Context, s chatgpt.Session, accountID string, quantity int) (chatgpt.CreditCheckoutResult, error)
+	CancelRenewal(ctx context.Context, s chatgpt.Session, accountID string) error
+	SubscriptionStatus(ctx context.Context, s chatgpt.Session, accountID string) (chatgpt.RenewalInfo, error)
+	SavedCards(ctx context.Context, s chatgpt.Session, accountID string) ([]chatgpt.SavedCard, error)
+	CreditBalance(ctx context.Context, s chatgpt.Session, accountID string) (chatgpt.CreditBalanceInfo, error)
 }
 
 // FormBrowser 是填表用到的浏览器能力，没有 Submit：只拿到它的代码点不了支付。
@@ -65,8 +71,10 @@ type Browser interface {
 
 // Timeouts 是各步骤的超时；测试可缩短。VerifyTick 是确认协程扫描到期单据的间隔；
 // OutcomeMargin 是等页面结果时外层时限比 SubmitResult 多出的余量；Backfill 是定论失败前补拉一次交易的时限。
+// RenewalTick 是续费协程的扫描间隔；SessionKeep 是单据结束后会话最长保留多久（关闭续费要用）。
 type Timeouts struct {
 	PageLoad, Fill, SubmitResult, OTP, Fund, Verify, VerifyEvery, DeclineGrace, VerifyTick, OutcomeMargin, Backfill time.Duration
+	RenewalTick, SessionKeep                                                                                        time.Duration
 }
 
 // DefaultTimeouts 返回引擎默认超时：页面加载 60 秒、填表 2 分钟、提交后等待页面结果 2 分钟、
@@ -86,6 +94,9 @@ func DefaultTimeouts() Timeouts {
 
 		OutcomeMargin: 10 * time.Second,
 		Backfill:      30 * time.Second,
+
+		RenewalTick: defaultRenewalTick,
+		SessionKeep: defaultSessionKeep,
 	}
 }
 
@@ -132,6 +143,7 @@ type Service struct {
 	recoveryFailed bool            // 重启恢复失败过（已告警）；只在 Start 和其后的工作协程里读写，二者不并发
 	graceRestored  map[string]bool // 本次启动已补过宽限期的被拒单，恢复重试时不再补；读写范围同上
 	recovered      atomic.Bool     // 重启恢复已完成：此前不派发，确认协程不接管、不定论被拒单
+	renewing       map[string]bool // 正在关闭续费的单号（续费协程与手动重试互斥）；受 mu 保护
 
 	// checkURL 校验支付链接，New 里固定为 checkCheckoutURL。不开放给 Options：只有包内测试（用本机仿造页跑真实 Chrome）能换掉它。
 	checkURL func(string) error
@@ -168,8 +180,15 @@ func New(o Options) *Service {
 	if t.Backfill <= 0 {
 		t.Backfill = DefaultTimeouts().Backfill
 	}
+	if t.RenewalTick <= 0 {
+		t.RenewalTick = defaultRenewalTick
+	}
+	// 会话保留不能比默认更长：到点一律清空（设计 §3.1 最长 1 小时）
+	if t.SessionKeep <= 0 || t.SessionKeep > defaultSessionKeep {
+		t.SessionKeep = defaultSessionKeep
+	}
 	return &Service{opts: o, t: t, realBrowser: realBrowser, kick: make(chan struct{}, 1), running: map[string]bool{}, verifyErrs: map[string]map[string]string{},
-		checkURL: checkCheckoutURL}
+		renewing: map[string]bool{}, checkURL: checkCheckoutURL}
 }
 
 func (s *Service) now() time.Time { return s.opts.Now() }
@@ -267,6 +286,7 @@ func (s *Service) Submit(ctx context.Context, r Request) (*Order, error) {
 	}
 	o := &Order{
 		Provider:      prov,
+		Kind:          PlanKind(r.PlanKey),
 		Source:        r.Source,
 		SourceRef:     r.SourceRef,
 		DryRun:        dryRun,
@@ -318,20 +338,14 @@ func (s *Service) List(ctx context.Context, state string, page, size int) ([]Ord
 }
 
 // Resolve 人工定论一张待人工的单据：result 为 succeeded 或 failed，note 去空白后不能为空，否则返回 ErrBadRequest。
-// 只改本单结果，不释放租约（转待人工时已释放）、不触发任何付款。needs_review 已写过一次终态字段，这里用 transition，
-// 不重写 finished_at。待人工的单一定已经提交，标记失败时记为 declined，绝不记成 not_submitted。
+// 只改本单结果，不释放租约（转待人工时已释放）、不触发任何付款。needs_review 已写过一次终态字段，这里不重写 finished_at。
+//
+// 标记失败时按有没有提交过区分：提交过（submitted_at 非空）记 declined，绝不记成 not_submitted；
+// 没提交过的（例如重启时已经取卡、但所属服务商没有卡池而转人工的单）记 not_submitted，保留原错误码。会话随之清空。
+// 标记成功时，真实开通单还要关闭续费：会话还在就交给续费协程（pending），会话已清空记 skipped 并告警。
 func (s *Service) Resolve(ctx context.Context, no, result, note, by string) error {
 	note, by = strings.TrimSpace(note), strings.TrimSpace(by)
-	set := map[string]any{"resolved_by": by, "resolve_note": note}
-	label := "成功"
-	switch result {
-	case StateSucceeded:
-		// 与确认阶段的成功定论一致：成功的单不留错误信息；标记失败时保留，那是定论的依据
-		set["error_code"], set["error_message"] = "", ""
-	case StateFailed:
-		label = "失败"
-		set["failure"] = FailureDeclined
-	default:
+	if result != StateSucceeded && result != StateFailed {
 		return fmt.Errorf("%w: 结果只能是 succeeded 或 failed", ErrBadRequest)
 	}
 	if note == "" {
@@ -340,11 +354,44 @@ func (s *Service) Resolve(ctx context.Context, no, result, note, by string) erro
 	if by == "" {
 		return fmt.Errorf("%w: 缺少操作人", ErrBadRequest)
 	}
-	// 只靠条件更新判断状态：先读再判断的话，两人同时定论时后者走的是另一条分支
+	// 只读建单后不再变的字段（种类、试运行、提交时间）和会话；状态只靠下面的条件更新判断：
+	// 先读状态再判断的话，两人同时定论时后者走的是另一条分支
+	o, err := getOrder(ctx, no)
+	if err != nil {
+		return err
+	}
+	set := map[string]any{"resolved_by": by, "resolve_note": note}
+	label, mode := "成功", moveStep
+	renewalSkipped := false
+	switch result {
+	case StateSucceeded:
+		// 与确认阶段的成功定论一致：成功的单不留错误信息；标记失败时保留，那是定论的依据
+		set["error_code"], set["error_message"] = "", ""
+		if wantsRenewalCancel(o) {
+			if o.SessionSealed != "" {
+				set["renewal_state"], set["renewal_next_at"] = RenewalPending, s.now().Unix()
+			} else {
+				set["renewal_state"], renewalSkipped = RenewalSkipped, true
+			}
+		}
+	case StateFailed:
+		label, mode = "失败", moveStepClear
+		set["failure"] = FailureDeclined
+		if o.SubmittedAt == nil {
+			set["failure"] = FailureNotSubmitted
+		}
+	}
 	msg := fmt.Sprintf("%s 人工定论为%s：%s", by, label, note)
-	err := transition(ctx, no, StateNeedsReview, result, "info", msg, set)
+	err = move(ctx, no, StateNeedsReview, result, "info", msg, set, mode)
 	if errors.Is(err, ErrStateChanged) {
 		return fmt.Errorf("%w: 只有待人工的单据才能定论（%w）", ErrBadRequest, err)
+	}
+	if err == nil && renewalSkipped {
+		const why = "会话已清空，无法关闭续费，请让用户自行在 ChatGPT 设置里关闭续费"
+		if eerr := addEvent(ctx, no, "warn", why, ""); eerr != nil {
+			log.Printf("[payengine] 单据 %s 写时间线失败: %v", no, eerr)
+		}
+		s.opts.Alert(fmt.Sprintf("付款单 %s 人工定论为成功，但%s。", no, why))
 	}
 	return err
 }

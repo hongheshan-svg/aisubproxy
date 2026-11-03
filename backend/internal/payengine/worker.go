@@ -39,10 +39,11 @@ func (s *Service) Kick() {
 func (s *Service) Start(ctx context.Context) {
 	s.cleanProfiles() // 第一次派发之前先扫一遍，之后由清理协程每小时一次
 	s.tryRecover(ctx)
-	s.loops.Add(3)
+	s.loops.Add(4)
 	go s.loop(ctx)
 	go s.verifyLoop(ctx)
 	go s.cleanLoop(ctx)
+	go s.renewalLoop(ctx)
 	s.Kick()
 }
 
@@ -132,6 +133,9 @@ type job struct {
 	holderName string          // 持卡人英文名，填表用
 	secrets    []string        // 要从文字里抹掉的 CVV、验证码
 	cardNo     *regexp.Regexp  // 匹配完整卡号（含空格或连字符分组），要从文字里抹掉
+
+	// keepSession 为 true 时写终态不清空会话，留给续费协程关闭续费，最长保留 SessionKeep（见 renewal.go）
+	keepSession bool
 }
 
 // note 记下一列，随下一次状态写入落库。
@@ -246,10 +250,14 @@ func (s *Service) advance(ctx context.Context, j *job, to, msg string, set map[s
 	return nil
 }
 
-// end 先关闭浏览器，再把单据写入终态 to。
+// end 先关闭浏览器，再把单据写入终态 to。j.keepSession 为 true 时会话留着（关闭续费用），否则清空。
 func (s *Service) end(ctx context.Context, j *job, to, level, msg string, set map[string]any) error {
 	j.closeBrowser()
-	if err := finish(ctx, j.o.OrderNo, j.o.State, to, level, msg, j.merge(set)); err != nil {
+	mode := moveEnd
+	if j.keepSession {
+		mode = moveEndKeepSession
+	}
+	if err := move(ctx, j.o.OrderNo, j.o.State, to, level, msg, j.merge(set), mode); err != nil {
 		return err
 	}
 	j.o.State, j.pending = to, nil

@@ -43,6 +43,7 @@ type localFakeGPT struct {
 	subscribedFrom int
 	accountCalls   int
 	checkouts      int
+	cancels        int
 }
 
 func (g *localFakeGPT) Refresh(_ context.Context, s *chatgpt.Session) error {
@@ -70,6 +71,42 @@ func (g *localFakeGPT) CreateCheckout(context.Context, chatgpt.Session, string, 
 	defer g.mu.Unlock()
 	g.checkouts++
 	return chatgpt.Checkout{SessionID: "cs_live_abc", URL: "https://pay.openai.com/c/pay/cs_live_abc"}, nil
+}
+
+func (g *localFakeGPT) CreateCreditCheckout(context.Context, chatgpt.Session, string, int) (chatgpt.CreditCheckoutResult, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.checkouts++
+	return chatgpt.CreditCheckoutResult{Tag: chatgpt.CheckoutTagHosted, SessionID: "cs_live_credit", URL: "https://checkout.stripe.com/c/pay/cs_live_credit"}, nil
+}
+
+// CancelRenewal 记次数；之后的 SubscriptionStatus 报告不再续费。
+func (g *localFakeGPT) CancelRenewal(context.Context, chatgpt.Session, string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.cancels++
+	return nil
+}
+
+func (g *localFakeGPT) SubscriptionStatus(context.Context, chatgpt.Session, string) (chatgpt.RenewalInfo, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	renew := g.cancels == 0
+	return chatgpt.RenewalInfo{WillRenew: &renew}, nil
+}
+
+func (g *localFakeGPT) SavedCards(context.Context, chatgpt.Session, string) ([]chatgpt.SavedCard, error) {
+	return []chatgpt.SavedCard{}, nil
+}
+
+func (g *localFakeGPT) CreditBalance(context.Context, chatgpt.Session, string) (chatgpt.CreditBalanceInfo, error) {
+	return chatgpt.CreditBalanceInfo{}, nil
+}
+
+func (g *localFakeGPT) cancelCount() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.cancels
 }
 
 func (g *localFakeGPT) setRefreshErr(err error) {
@@ -295,7 +332,27 @@ func localEnvTimeouts() *payengine.Timeouts {
 	tm.VerifyEvery = 0
 	tm.DeclineGrace = 2 * time.Minute
 	tm.VerifyTick = 5 * time.Millisecond
+	tm.RenewalTick = 5 * time.Millisecond
 	return &tm
+}
+
+// waitRenewalCancelled 等这张单关闭续费并清空会话，最多 5 秒。
+func (e *localEnv) waitRenewalCancelled(no string) {
+	e.t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var renewal, sealed string
+		if err := db.DB.QueryRow(`SELECT renewal_state, session_sealed FROM pay_orders WHERE order_no = ?`, no).Scan(&renewal, &sealed); err != nil {
+			e.t.Fatal(err)
+		}
+		if renewal == "cancelled" && sealed == "" {
+			return
+		}
+		if time.Now().After(deadline) {
+			e.t.Fatalf("单据 %s 没有关闭续费: %q 会话为空=%v", no, renewal, sealed == "")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 // newLocalEnv 建好内存库、MarsWallex 配置、plus/PH 套餐、一张可用的 USD 卡和有钱的主钱包。

@@ -23,6 +23,9 @@
     noamount=1       没有读屏金额容器
     savepay=1        「保存付款信息」勾选框一开始就勾上
     addr=1           卡号框输入满 16 位后才出现国家（选项 US、PH）和邮编
+    addr=stripe      仿真实页面（2026-11-04 实测）：卡号框输入满 16 位后出现国家（US、PH）、姓名、街道地址；
+                     城市、州（含 OR）、邮编在 DOM 里但 display:none，点「Enter address manually」后才可见
+    addr=stripe-nolink  同 addr=stripe，但没有「Enter address manually」，三个字段一直不可见
     nocvc=1          没有 CVC 框（测必填字段缺失时报错）
   结账页发来 collect 消息时回传各字段的值和卡号框收到的真实按键次数（与 card.html 相同的协议）。
 -->
@@ -63,6 +66,29 @@
         '<label>Country or region <select id="payment-countryInput" name="country" autocomplete="billing country">' +
         '<option value="US">United States</option><option value="PH">Philippines</option></select></label>' +
         '<label>ZIP <input id="payment-postalCodeInput" name="postalCode" autocomplete="billing postal-code"></label>'
+    })
+  }
+
+  if (q.get('addr') === 'stripe' || q.get('addr') === 'stripe-nolink') {
+    number.addEventListener('input', function () {
+      if (document.getElementById('billingAddress-countryInput') || number.value.replace(/\D/g, '').length < 16) return
+      document.getElementById('address').innerHTML =
+        '<label>Country or region <select id="billingAddress-countryInput" name="country" autocomplete="billing country">' +
+        '<option value="US">United States</option><option value="PH">Philippines</option></select></label>' +
+        '<label>Full name <input id="billingAddress-nameInput" name="name" autocomplete="billing name"></label>' +
+        '<label>Address line 1 <input id="billingAddress-addressLine1Input" name="addressLine1" autocomplete="billing address-line1"></label>' +
+        (q.get('addr') === 'stripe' ? '<button type="button" id="manual">Enter address manually</button>' : '') +
+        '<div id="folded" style="display:none">' +
+        '<label>City <input id="billingAddress-localityInput" name="locality" autocomplete="billing address-level2"></label>' +
+        '<label>State <select id="billingAddress-administrativeAreaInput" name="administrativeArea" autocomplete="billing address-level1">' +
+        '<option value="">State</option><option value="OR">Oregon</option><option value="WA">Washington</option></select></label>' +
+        '<label>ZIP <input id="billingAddress-postalCodeInput" name="postalCode" autocomplete="billing postal-code"></label>' +
+        '</div>'
+      var manual = document.getElementById('manual')
+      if (manual) manual.addEventListener('click', function () {
+        document.getElementById('folded').style.display = 'block'
+        manual.remove()
+      })
     })
   }
 

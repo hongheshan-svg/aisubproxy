@@ -151,33 +151,63 @@ func (b *Browser) fillHostedAddress(ctx context.Context, st *fillState, bl Billi
 }
 
 // fillEmbeddedAddress 填内嵌页的账单地址（设计 §5.7）。Payment Element 上地址字段可能一个都没有，所以六项都可选：
-// 出现的照常填写，没出现的记进 FillReport.Absent，不报错。不点手动地址入口，这一步也不会点别的东西。
-// 地址字段即使有，也要等卡号填完才出现（未核实，见设计 §8），所以只有第一个要找的字段最多等 addressWait，之后每个只看当下有没有。
-// 国家排第一：改国家会重绘其余地址字段。值为空的字段同 fillOne 一样跳过，不找也不记。
+// 每个有值的字段分三种情况：可见就照常填；DOM 里有但不可见，是折叠起来的必填字段（2026-11-04 实测城市、州、邮编默认折叠），
+// 同托管页一样可点手动地址入口展开，展不开就报「找不到」放弃；DOM 里根本没有，才记进 FillReport.Absent、不报错。
+// 顺序同托管页：国家排第一（改国家会重绘其余地址字段），选完后先试一次展开，再填姓名、街道，最后填城市、州、邮编。
+// 地址字段要等卡号填完才出现，所以只有第一个要找的字段最多等 addressWait，之后每个只看当下有没有。
+// 值为空的字段同 fillOne 一样跳过，不找也不记。
 func (b *Browser) fillEmbeddedAddress(ctx context.Context, st *fillState, bl Billing) error {
 	wait := addressWait
-	for _, f := range []field{
-		{"国家", Sel.Country, bl.Country, kindChoice},
-		{"州/省", Sel.State, bl.State, kindChoice},
-		{"城市", Sel.City, bl.City, kindText},
-		{"邮编", Sel.Zip, bl.Zip, kindText},
-		{"姓名", Sel.Name, bl.Name, kindText},
-		{"街道地址", Sel.Line1, bl.Line1, kindText},
-	} {
+	one := func(f field) error {
 		if strings.TrimSpace(f.value) == "" {
-			continue
+			return nil
 		}
-		e, err := b.waitFind(ctx, wait, func(frames []frameRef) *elem { return b.find(ctx, frames, f.sels, false) })
+		visible := false
+		e, err := b.waitFind(ctx, wait, func(frames []frameRef) *elem {
+			if e := b.find(ctx, frames, f.sels, false); e != nil {
+				visible = true
+				return e
+			}
+			visible = false
+			return b.findAny(ctx, frames, f.sels)
+		})
 		if err != nil {
 			return err
 		}
 		wait = 0
-		if e == nil {
+		switch {
+		case e == nil:
 			b.updateReport(func(r *FillReport) { r.Absent = append(r.Absent, f.label) })
-			continue
+			return nil
+		case visible:
+			// 已经出现：交给 fillOne 重新找一次再填，页面恰好重绘时它会等字段回来
+			return b.fillOne(ctx, st, f, fieldWait, false)
 		}
-		// 已经出现：交给 fillOne 重新找一次再填，页面恰好重绘时它会等字段回来
-		if err := b.fillOne(ctx, st, f, fieldWait, false); err != nil {
+		// 在 DOM 里但不可见：折叠的必填字段，等它展开
+		return b.fillOne(ctx, st, f, addressWait, true)
+	}
+
+	if err := one(field{"国家", Sel.Country, bl.Country, kindChoice}); err != nil {
+		return err
+	}
+	hideable := []field{
+		{"城市", Sel.City, bl.City, kindText},
+		{"州/省", Sel.State, bl.State, kindChoice},
+		{"邮编", Sel.Zip, bl.Zip, kindText},
+	}
+	if err := b.revealAddress(ctx, st, hideable); err != nil {
+		return err
+	}
+	for _, f := range []field{
+		{"姓名", Sel.Name, bl.Name, kindText},
+		{"街道地址", Sel.Line1, bl.Line1, kindText},
+	} {
+		if err := one(f); err != nil {
+			return err
+		}
+	}
+	for _, f := range hideable {
+		if err := one(f); err != nil {
 			return err
 		}
 	}

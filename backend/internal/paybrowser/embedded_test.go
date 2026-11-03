@@ -355,14 +355,14 @@ func TestEmbeddedFillWithoutAddress(t *testing.T) {
 		t.Fatalf("Fill: %v", err)
 	}
 	r := b.FillReport()
-	if want := []string{"国家", "州/省", "城市", "邮编", "姓名", "街道地址"}; !slices.Equal(r.Absent, want) {
+	if want := []string{"国家", "姓名", "街道地址", "城市", "州/省", "邮编"}; !slices.Equal(r.Absent, want) {
 		t.Fatalf("Absent = %v，期望 %v", r.Absent, want)
 	}
 	if got, want := fieldLabels(t, r), []string{"卡号", "有效期", "CVC"}; !slices.Equal(got, want) {
 		t.Fatalf("填过的字段 = %v，期望 %v", got, want)
 	}
 	lines := strings.Join(r.Lines(), "\n")
-	for _, want := range []string{"页面没有的字段：国家、州/省、城市、邮编、姓名、街道地址", "手动地址：未点击"} {
+	for _, want := range []string{"页面没有的字段：国家、姓名、街道地址、城市、州/省、邮编", "手动地址：未点击"} {
 		if !strings.Contains(lines, want) {
 			t.Errorf("报告缺少 %q：\n%s", want, lines)
 		}
@@ -385,7 +385,7 @@ func TestEmbeddedFillWithAddress(t *testing.T) {
 		t.Fatalf("Fill: %v", err)
 	}
 	r := b.FillReport()
-	if want := []string{"州/省", "城市", "姓名", "街道地址"}; !slices.Equal(r.Absent, want) {
+	if want := []string{"姓名", "街道地址", "城市", "州/省"}; !slices.Equal(r.Absent, want) {
 		t.Fatalf("Absent = %v，期望 %v", r.Absent, want)
 	}
 	if got, want := fieldLabels(t, r), []string{"卡号", "有效期", "CVC", "国家", "邮编"}; !slices.Equal(got, want) {
@@ -396,6 +396,59 @@ func TestEmbeddedFillWithAddress(t *testing.T) {
 		if err != nil || got != want {
 			t.Fatalf("页面上 %s = %q, %v，期望 %q", sel, got, err, want)
 		}
+	}
+}
+
+// 真实页面（2026-11-04 实测）：城市、州、邮编在 DOM 里但折叠不可见，要点「Enter address manually」展开后再填。
+func TestEmbeddedFillStripeAddressRevealsHidden(t *testing.T) {
+	needChrome(t)
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "addr=stripe")
+
+	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+		t.Fatalf("Fill: %v", err)
+	}
+	r := b.FillReport()
+	if len(r.Absent) != 0 {
+		t.Fatalf("Absent = %v，期望为空", r.Absent)
+	}
+	want := []string{"卡号", "有效期", "CVC", "国家", "姓名", "街道地址", "城市", "州/省", "邮编"}
+	if got := fieldLabels(t, r); !slices.Equal(got, want) {
+		t.Fatalf("填过的字段 = %v，期望 %v", got, want)
+	}
+	if lines := strings.Join(r.Lines(), "\n"); !strings.Contains(lines, "手动地址：已点击 1 次") {
+		t.Errorf("报告缺少「手动地址：已点击 1 次」：\n%s", lines)
+	}
+	for sel, want := range map[string]string{
+		"#billingAddress-localityInput":           "Portland",
+		"#billingAddress-administrativeAreaInput": "OR",
+		"#billingAddress-postalCodeInput":         "97201",
+		"#billingAddress-addressLine1Input":       "1 Main St",
+		"#billingAddress-countryInput":            "US",
+	} {
+		got, err := paybrowser.FieldValue(ctx, b, sel)
+		if err != nil || got != want {
+			t.Fatalf("页面上 %s = %q, %v，期望 %q", sel, got, err, want)
+		}
+	}
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("只填表不提交：仿造页收到 %d 次提交", n)
+	}
+}
+
+// 折叠的地址字段展不开时报错放弃，不能当成「页面没有」放过去。
+func TestEmbeddedFillStripeAddressHiddenFails(t *testing.T) {
+	needChrome(t)
+	t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "addr=stripe-nolink")
+
+	err := b.Fill(ctx, testCard, embeddedBilling)
+	if err == nil || !strings.Contains(err.Error(), "找不到「城市」输入框") {
+		t.Fatalf("Fill = %v，期望报找不到「城市」输入框", err)
+	}
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("Fill 失败时仿造页收到 %d 次提交", n)
 	}
 }
 

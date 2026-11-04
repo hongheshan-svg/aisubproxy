@@ -53,10 +53,12 @@ const savePaymentJS = `((wantChecked) => {
 const savePaymentRounds = 3
 
 // EnsureNoSavePayment 确认支付页上没有勾着的「保存付款信息」勾选框，勾着就取消。返回处理结果（页面没有、未勾选、已取消），
-// 也写进 FillReport；内嵌页上第一轮鼠标没点（落点不对）时，报告里再接「；改用脚本点击（原因）」，返回值不变。
+// 也写进 FillReport；内嵌页上第一轮鼠标没点（落点不对）、之后真的改用脚本点了时，报告里再接「；改用脚本点击（原因）」
+// （同 setCheck），返回值不变。
 // 读不出页面、取消不掉、勾选框是提交控件（errSubmitControl，不点）都报错：调用方按「未提交」放弃。只读写勾选框，绝不点支付按钮。
 func (b *Browser) EnsureNoSavePayment(ctx context.Context) (string, error) {
 	note, how := "", ""
+	why := "" // 内嵌页上第一轮鼠标没点的原因；之后真的改用脚本点了，才写进报告
 	err := b.do(ctx, func(ctx context.Context) error {
 		for round := 0; round < savePaymentRounds; round++ {
 			found, checked, err := b.countSavePayment(ctx)
@@ -88,11 +90,14 @@ func (b *Browser) EnsureNoSavePayment(ctx context.Context) (string, error) {
 			}
 			if round == 0 {
 				// 点不到（内嵌页上落点不对时不点）也没关系，下一轮看结果，再用脚本点
-				if why := b.refusedNote(b.clickBox(ctx, e)); why != "" {
+				why = b.refusedNote(b.clickBox(ctx, e))
+			} else {
+				if why != "" {
 					how = "改用脚本点击（" + why + "）"
 				}
-			} else if err := callOn(ctx, e.obj, `function () { this.click() }`, nil); err != nil {
-				return fmt.Errorf("取消「保存付款信息」失败: %w", err)
+				if err := callOn(ctx, e.obj, `function () { this.click() }`, nil); err != nil {
+					return fmt.Errorf("取消「保存付款信息」失败: %w", err)
+				}
 			}
 			if err := sleep(ctx, settleDelay); err != nil {
 				return err

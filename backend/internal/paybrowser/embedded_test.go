@@ -1845,6 +1845,66 @@ func TestEmbeddedSubmitRefusesMovingButton(t *testing.T) {
 	}
 }
 
+// 首屏以下的支付按钮、卡片 iframe 装在 overflow-y: hidden 的滚动容器里（仿造页 fold=hidden：用户滚不动，脚本能滚）：
+// 落点检查找滚动容器时把 overflow: hidden 也算上，滚进可视区后照常点，只点一次；填表时也不必退到直接设焦点。
+func TestEmbeddedSubmitBelowFoldHiddenScroller(t *testing.T) {
+	needChrome(t)
+	t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "fold=hidden")
+
+	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+		t.Fatalf("Fill: %v", err)
+	}
+	if lines := strings.Join(b.FillReport().Lines(), "\n"); strings.Contains(lines, "直接设焦点") {
+		t.Errorf("overflow: hidden 容器里首屏以下的字段滚进可视区后应能用鼠标点，不该直接设焦点：\n%s", lines)
+	}
+	if err := b.Submit(ctx); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for len(f.payments()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if n := payClicks(t, ctx, b); n != "1" {
+		t.Fatalf("支付按钮收到 %s 次可信点击，期望 1", n)
+	}
+	if n := len(f.payments()); n != 1 {
+		t.Fatalf("仿造页收到 %d 次提交，期望正好 1 次", n)
+	}
+}
+
+// 滚动之后页面还要调整一阵布局（仿造页 scrollshift=1：每次滚动都让上方占位块在约 300ms 里逐帧变高或变矮 100px）：
+// 落点检查滚动过之后等位置停稳再读，不在调整途中把它判成「位置还在变」；停稳了照常点，只点一次。
+func TestEmbeddedSubmitWaitsScrollShift(t *testing.T) {
+	needChrome(t)
+	t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "fold=main&scrollshift=1")
+
+	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+		t.Fatalf("Fill: %v", err)
+	}
+	// 滚回顶上（这一下也会触发一次调整），让 Submit 的落点检查自己再滚一次
+	if err := paybrowser.EvalMain(ctx, b, `document.querySelector('main').scrollTop = 0`); err != nil {
+		t.Fatalf("滚回顶上: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond)
+	if err := b.Submit(ctx); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for len(f.payments()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if n := payClicks(t, ctx, b); n != "1" {
+		t.Fatalf("支付按钮收到 %s 次可信点击，期望 1", n)
+	}
+	if n := len(f.payments()); n != 1 {
+		t.Fatalf("仿造页收到 %d 次提交，期望正好 1 次", n)
+	}
+}
+
 // 支付按钮的中心在主页面可视区外（这里把它固定在左边缘外面一半多），滚也滚不过来：elementFromPoint 读不到元素，
 // Submit 报「没过落点检查（点击落点不在页面上）」，不点、不置位。
 func TestEmbeddedSubmitRefusesOffscreenButton(t *testing.T) {

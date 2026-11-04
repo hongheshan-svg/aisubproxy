@@ -392,14 +392,19 @@ func click(ctx context.Context, e *elem) error {
 
 const (
 	landSettle       = 50 * time.Millisecond  // 落点检查时两次读位置的间隔
-	landScrollSettle = 150 * time.Millisecond // 落点检查真的滚动过时，读位置前多等这么久，让页面跟上
+	landScrollSettle = 150 * time.Millisecond // 落点检查真的滚动过时，读位置前至少等这么久，让页面跟上
+	landScrollMax    = time.Second            // 落点检查真的滚动过时，最多等这么久等位置停稳（见 settleAfterScroll）
 	landTolerance    = 1.0                    // 两次读到的中心点相差不超过这么多像素，才算没在移动
 	landEdge         = 10.0                   // 中心点离主页面可视区边缘不足这么多像素，就先用脚本滚动
 )
 
 // scrollIntoMainViewJS 以主页面上的元素（装着目标的顶层 iframe）为 this，把主页面可视区里的点 (x, y) 挪到可视区中部。
-// 点在可视区外、或离边缘不足 edge 像素时才滚：从 this 往上找可滚动的祖先（overflow 为 auto 或 scroll，且内容比框高或宽），
-// 由近到远逐个 scrollBy，近的滚到头还差的交给更外一层，最后是 document.scrollingElement。只是脚本滚动，不发鼠标、键盘事件。
+// 点在可视区外、或离边缘不足 edge 像素时才滚：从 this 往上找可滚动的祖先，由近到远逐个 scrollBy，近的滚到头还差的交给更外一层，
+// 最后是 document.scrollingElement（两个方向都滚）。只是脚本滚动，不发鼠标、键盘事件。
+//   - 某个方向算可滚：那个方向的 overflow 是 auto、scroll、hidden 或 clip，而且内容比框长。hidden 用户滚不动、脚本能滚，
+//     浏览器自己的滚入（scrollIntoView）也会滚它；clip 脚本也滚不动，scrollBy 位移是 0，差的照样交给外层。
+//   - 只沿算可滚的方向 scrollBy：只因纵向可滚被选中的容器，不横着滚它。
+//
 // 返回滚了没有。可视区宽高取 innerWidth/innerHeight 与 documentElement 的 clientWidth/clientHeight（不含滚动条）中较小的。
 const scrollIntoMainViewJS = `function (x, y, edge) {
 	const de = document.documentElement
@@ -408,20 +413,23 @@ const scrollIntoMainViewJS = `function (x, y, edge) {
 	let dx = x < edge || x >= w - edge ? x - w / 2 : 0
 	let dy = y < edge || y >= h - edge ? y - h / 2 : 0
 	if (!dx && !dy) return false
-	const can = o => o === 'auto' || o === 'scroll'
+	const can = o => o === 'auto' || o === 'scroll' || o === 'hidden' || o === 'clip'
 	const boxes = []
 	for (let el = this.parentElement; el; el = el.parentElement) {
 		const s = getComputedStyle(el)
-		if ((can(s.overflowY) && el.scrollHeight > el.clientHeight) || (can(s.overflowX) && el.scrollWidth > el.clientWidth)) boxes.push(el)
+		const ax = can(s.overflowX) && el.scrollWidth > el.clientWidth
+		const ay = can(s.overflowY) && el.scrollHeight > el.clientHeight
+		if (ax || ay) boxes.push({ el, ax, ay })
 	}
 	const root = document.scrollingElement || de
-	if (!boxes.includes(root)) boxes.push(root)
+	if (!boxes.some(b => b.el === root)) boxes.push({ el: root, ax: true, ay: true })
 	let moved = false
-	for (const box of boxes) {
+	for (const { el, ax, ay } of boxes) {
 		if (Math.abs(dx) < 1 && Math.abs(dy) < 1) break
-		const top = box.scrollTop, left = box.scrollLeft
-		box.scrollBy({ left: dx, top: dy, behavior: 'instant' })
-		const my = box.scrollTop - top, mx = box.scrollLeft - left
+		if (!(ax && Math.abs(dx) >= 1) && !(ay && Math.abs(dy) >= 1)) continue
+		const top = el.scrollTop, left = el.scrollLeft
+		el.scrollBy({ left: ax ? dx : 0, top: ay ? dy : 0, behavior: 'instant' })
+		const my = el.scrollTop - top, mx = el.scrollLeft - left
 		if (my || mx) moved = true
 		dy -= my
 		dx -= mx
@@ -463,21 +471,28 @@ func (b *Browser) scrollAnchor(ctx context.Context, frames []frameRef, e *elem) 
 //     依据 2026-11-04 实测：卡片、地址 iframe 在首屏以下，iframe 里元素的滚入不带动主页面；主页面的 html 滚不动，
 //     真正的滚动容器是 main（overflow-y: auto），所以只滚 window 也没用。滚完仍在视口外，调用方的 elementFromPoint
 //     读不到元素，照旧不通过。
-//   - 隔 landSettle 读两次位置，相差超过 landTolerance 说明还在移动，不通过。
+//   - 没滚动过：隔 landSettle 读两次位置，相差超过 landTolerance 说明还在移动，不通过。
+//   - 滚动过（CDP 滚入让位置变了，或脚本滚动真滚了）：settleAfterScroll 等位置停稳，到 landScrollMax 还在变就不通过。
 //
-// frames 的第一个必须是主页面。只滚动、读位置，不发任何鼠标、键盘事件。
+// 两次读位置只能看出主线程上的移动：transform 动画由合成线程驱动，读两次可能读到同一个值。点支付前的最后检查（payClickJS）
+// 另看正在跑的动画。frames 的第一个必须是主页面。只滚动、读位置，不发任何鼠标、键盘事件。
 func (b *Browser) landPoint(ctx context.Context, frames []frameRef, e *elem) (x, y float64, err error) {
-	if err := dom.ScrollIntoViewIfNeeded().WithObjectID(e.obj).Do(ctx); err != nil {
-		return 0, 0, err
-	}
 	center := func() (float64, float64, error) {
 		x0, y0, x1, y1, err := bounds(ctx, e)
 		return (x0 + x1) / 2, (y0 + y1) / 2, err
+	}
+	bx, by, err := center() // 滚入之前的位置，用来看 CDP 滚入有没有真的滚动
+	if err != nil {
+		return 0, 0, err
+	}
+	if err := dom.ScrollIntoViewIfNeeded().WithObjectID(e.obj).Do(ctx); err != nil {
+		return 0, 0, err
 	}
 	x0, y0, err := center()
 	if err != nil {
 		return 0, 0, err
 	}
+	scrolled := math.Abs(x0-bx) > landTolerance || math.Abs(y0-by) > landTolerance
 	anchor, err := b.scrollAnchor(ctx, frames, e)
 	if err != nil {
 		return 0, 0, err
@@ -486,13 +501,8 @@ func (b *Browser) landPoint(ctx context.Context, frames []frameRef, e *elem) (x,
 	if err := callOn(ctx, anchor, scrollIntoMainViewJS, &moved, x0, y0, landEdge); err != nil {
 		return 0, 0, err
 	}
-	if moved {
-		if err := sleep(ctx, landScrollSettle); err != nil {
-			return 0, 0, err
-		}
-		if x0, y0, err = center(); err != nil {
-			return 0, 0, err
-		}
+	if scrolled || moved {
+		return settleAfterScroll(ctx, center)
 	}
 	if err := sleep(ctx, landSettle); err != nil {
 		return 0, 0, err
@@ -504,6 +514,38 @@ func (b *Browser) landPoint(ctx context.Context, frames []frameRef, e *elem) (x,
 		return 0, 0, errors.New("位置还在变，没有点击")
 	}
 	return x, y, nil
+}
+
+// settleAfterScroll 在落点检查滚动过之后等位置停稳：先等 landScrollSettle，再每隔 landSettle 读一次中心点，
+// 相邻两次相差都不超过 landTolerance 就算停稳，返回这次读到的位置；从开始等算起到 landScrollMax 还在变，就不通过。
+//
+// 为什么不固定等：滚动会触发页面的滚动监听，比如收起吸顶栏、懒加载改布局，这些调整要多久不一定。固定等 150ms 太短时，
+// 后面那两次读位置会把还在调整的布局判成「位置还在变」，点支付就在注资之后放弃；固定等得长，又拖慢每一个字段。
+// 所以至少等 150ms，停稳就走，最多等 1 秒。一直在动的元素照样不通过。
+func settleAfterScroll(ctx context.Context, center func() (float64, float64, error)) (x, y float64, err error) {
+	start := time.Now()
+	if err := sleep(ctx, landScrollSettle); err != nil {
+		return 0, 0, err
+	}
+	px, py, err := center()
+	if err != nil {
+		return 0, 0, err
+	}
+	for {
+		if err := sleep(ctx, landSettle); err != nil {
+			return 0, 0, err
+		}
+		if x, y, err = center(); err != nil {
+			return 0, 0, err
+		}
+		if math.Abs(x-px) <= landTolerance && math.Abs(y-py) <= landTolerance {
+			return x, y, nil
+		}
+		if time.Since(start) >= landScrollMax {
+			return 0, 0, errors.New("位置还在变，没有点击")
+		}
+		px, py = x, y
+	}
 }
 
 // landsInOwnFrame 把元素滚进视野、等它停稳（landPoint），确认鼠标点下去会落在它自己所在的 iframe 上，返回这个坐标。

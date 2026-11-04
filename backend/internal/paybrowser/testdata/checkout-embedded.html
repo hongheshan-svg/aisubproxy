@@ -43,6 +43,9 @@
                     main 最上面放 1200px 占位块，卡片 iframe 和支付按钮都在 main 的首屏以下。
                     main 设 scroll-padding-top: 3000px，让 iframe 里元素的滚入在 main 上落空（同 fold=1 的说明），
                     只有对 main 本身的脚本 scrollBy 能滚；window.scrollBy 滚不动任何东西
+    fold=hidden     同 fold=main，但 main 是 overflow-y: hidden（用户滚不动、脚本能滚）
+    scrollshift=1   配 fold=main：main 每次滚动（上一次的变化做完之后）都让最上面的占位块在约 300ms 里逐帧变高或变矮 100px
+                    （1200px 与 1100px 之间来回），下面的卡片 iframe、支付按钮跟着挪。仿滚动时收起吸顶栏、懒加载改布局
     cover=1         卡片 iframe 回 number-full 消息（卡号填满）后，一个透明的 position:fixed 层（#cover，pointer-events: auto）
                     盖住支付按钮，主页面滚动时跟着按钮挪；它收到可信点击（误点）时 #cover-clicks（hidden）加一
     busy=1          卡片 iframe 回 address-changed 消息（地址里任一字段变了）后，支付按钮 disabled、aria-busy="true"
@@ -55,7 +58,7 @@
     payclicks=1     只为下一条：支付按钮收到可信点击时 #pay-clicks 加一，页面别的不变
     savepaybutton=1 结账 form 里多一个不写 type 的 <button role="checkbox" aria-checked="true">，文字是 Save payment details …：
                     form 里不写 type 的 button 默认就是提交按钮，点它（鼠标或脚本 click()）就是提交结账表单、付款
-    clip=1、fold=1、fold=main、cover=1、busy=…、payclicks=1 时，支付按钮收到可信点击，#pay-clicks（hidden）加一
+    clip=1、fold=1、fold=main、fold=hidden、cover=1、busy=…、payclicks=1 时，支付按钮收到可信点击，#pay-clicks（hidden）加一
     #main-keys（hidden）总是有，记本页收到的可信 keydown 次数
     linkverify=1    卡片 iframe 回 linkverify-shown 消息（它弹出了 Link 验证框）时，#link-state（hidden）设为 shown
     其余参数原样传给卡片 iframe（amount、currency、nocurrency、noamount、savepay、linksave、terms、linkverify、addr、clip、low，
@@ -86,7 +89,7 @@
 <script>
   var CARD_ORIGIN = '__CARD_ORIGIN__'
   var q = new URLSearchParams(location.search)
-  var own = ['twobuttons', 'nobutton', 'leave', 'decline', 'challenge', 'rerender', 'pushstate', 'cover', 'busy', 'payclicks', 'savepaybutton', 'acsnobutton']
+  var own = ['twobuttons', 'nobutton', 'leave', 'decline', 'challenge', 'rerender', 'pushstate', 'cover', 'busy', 'payclicks', 'savepaybutton', 'acsnobutton', 'scrollshift']
   var cardQuery = new URLSearchParams()
   q.forEach(function (v, k) {
     if (own.indexOf(k) < 0) cardQuery.append(k, v)
@@ -100,16 +103,31 @@
     pay.style.cssText = 'display: block; width: 100%; height: 80px; margin: 0'
   }
   var fold = q.get('fold')
-  if (fold === '1' || fold === 'main') {
+  if (fold === '1' || fold === 'main' || fold === 'hidden') {
     var spacer = document.createElement('div')
     spacer.style.height = '1200px'
     var mainCol = document.querySelector('main')
     mainCol.insertBefore(spacer, mainCol.firstChild)
-    if (fold === 'main') {
+    if (fold === 'main' || fold === 'hidden') {
       var foldStyle = document.createElement('style')
-      foldStyle.textContent = 'html, body { height: 100%; } body { margin: 0 auto; } main { height: 100%; overflow-y: auto; }'
+      foldStyle.textContent = 'html, body { height: 100%; } body { margin: 0 auto; } main { height: 100%; overflow-y: ' +
+        (fold === 'hidden' ? 'hidden' : 'auto') + '; }'
       document.head.appendChild(foldStyle)
       mainCol.style.scrollPaddingTop = '3000px'
+      if (q.get('scrollshift') === '1') {
+        var shifting = false
+        mainCol.addEventListener('scroll', function () {
+          if (shifting) return
+          shifting = true
+          var from = parseFloat(spacer.style.height), to = from === 1200 ? 1100 : 1200, start = performance.now()
+          requestAnimationFrame(function step(now) {
+            var k = Math.min(1, (now - start) / 300)
+            spacer.style.height = (from + (to - from) * k) + 'px'
+            if (k < 1) requestAnimationFrame(step)
+            else shifting = false
+          })
+        })
+      }
     } else {
       document.documentElement.style.scrollPaddingTop = '3000px'
     }
@@ -128,7 +146,7 @@
     if (e.isTrusted) mainKeys.value = String(Number(mainKeys.value) + 1)
   }, true)
   var cover = q.get('cover') === '1', busy = q.get('busy')
-  if (q.get('clip') === '1' || fold === '1' || fold === 'main' || cover || busy || q.get('payclicks') === '1') {
+  if (q.get('clip') === '1' || fold === '1' || fold === 'main' || fold === 'hidden' || cover || busy || q.get('payclicks') === '1') {
     var payClicks = counter('pay-clicks')
     pay.addEventListener('click', function (e) {
       if (e.isTrusted) payClicks.value = String(Number(payClicks.value) + 1)

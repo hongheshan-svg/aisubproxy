@@ -24,6 +24,8 @@ regexes = [
   '''^eyJhbGciOiJIUzI1NiJ9\.eyJzdWIiOiIxMjM0NTY3ODkwIn0\.sig_part-1$''',
   # docs/marswallex-openapi-zh.md：官方文档里的 Authorization 示例，原文见 docs/marswallex-openapi-{zh,en}.json
   '''^fZjOVab5E7xDfDEyXU75SFaI137s8iL6$''',
+  # docs/research/2026-11-04-agent-topup-payments.md：Tether 官方 USDT-TRC20 合约地址（公开信息，入账校验要用），不是密钥
+  '''^TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t$''',
   # deploy/app.env.example：APP_MASTER_KEY= 留空，规则跨行把下一行配置当成了值（只在扫描整个目录时出现）
   '''^JWT_EXPIRATION_HOURS=\d+$''',
 ]

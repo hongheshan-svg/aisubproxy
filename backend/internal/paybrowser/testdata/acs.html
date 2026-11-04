@@ -26,7 +26,12 @@
   if (q.get('wrap') === '1') {
     var inner = new URLSearchParams(q)
     inner.delete('wrap')
-    document.write('<iframe id="wrap" src="acs.html' + (String(inner) ? '?' + inner : '') + '" title="Bank authentication"></iframe>')
+    // 用 DOM 接口建 iframe，不把网址参数拼进 HTML（避免 document.write 注入）；地址固定以 acs.html 开头
+    var frame = document.createElement('iframe')
+    frame.id = 'wrap'
+    frame.title = 'Bank authentication'
+    frame.src = 'acs.html' + (String(inner) ? '?' + String(inner) : '')
+    document.body.appendChild(frame)
   }
   if (q.get('clip') === '1') {
     document.write('<style>html { overflow: hidden; height: 100%; }' +

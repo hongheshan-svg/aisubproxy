@@ -150,7 +150,7 @@
               代理状态读取失败，下面的状态不可信。<el-button size="small" link type="primary" @click="loadProxies">重试</el-button>
             </div>
             <div v-for="r in regionList" :key="r" class="flex flex-wrap items-center gap-2">
-              <span class="w-10 text-sm">{{ r }}</span>
+              <span class="w-20 text-sm">{{ regionWithName(r) }}</span>
               <el-tag v-if="proxiesFailed" size="small" type="warning">读取失败</el-tag>
               <el-tag v-else size="small" :type="proxies[r] ? 'success' : 'info'">{{ proxies[r] ? '已配置' : '未配置' }}</el-tag>
               <el-input
@@ -161,7 +161,7 @@
               <el-button size="small" :loading="proxyTesting === r" :disabled="!!proxyTesting && proxyTesting !== r" @click="testProxy(r)">
                 {{ proxies[r] ? '测试' : '测试直连' }}
               </el-button>
-              <div v-if="proxyTestResults[r]" class="basis-full pl-12 text-sm" :class="'text-' + proxyTestResults[r].tone">{{ proxyTestResults[r].text }}</div>
+              <div v-if="proxyTestResults[r]" class="basis-full pl-[88px] text-sm" :class="'text-' + proxyTestResults[r].tone">{{ proxyTestResults[r].text }}</div>
             </div>
             <el-button type="primary" :loading="proxySaving" :disabled="!hasProxyInput" @click="saveProxies">保存代理</el-button>
           </div>
@@ -320,7 +320,7 @@ import { authFetch } from '../../lib/api'
 import { dialog } from '../../lib/dialog'
 import { errText, fmtTs } from '../../lib/cardpool'
 import {
-  STATES, failureText, formToPlan, formatMinor, isTerminal, pageOutcomeLabel, payApi, planToForm, proxyTestText, stateLabel,
+  STATES, failureText, formToPlan, formatMinor, isTerminal, pageOutcomeLabel, payApi, planToForm, proxyTestText, regionWithName, stateLabel,
   payBlockReason, type BuiltinPrices, type FormPlan, type PlanConf, type ProxyTestResult,
 } from '../../lib/pay'
 import { loadRegistry, providerLabel, registry } from '../../lib/provider'

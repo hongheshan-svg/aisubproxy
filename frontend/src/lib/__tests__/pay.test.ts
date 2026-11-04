@@ -1,8 +1,21 @@
 import { describe, expect, it } from 'vitest'
 import {
   applyBuiltinPrice, failureLabel, failureText, floorProblem, formatMinor, formToPlan, fromMinor, isTerminal, pageOutcomeLabel, payBlockReason, planToForm,
-  proxyTestText, stateLabel, toMinor, type PlanConf,
+  proxyTestText, regionWithName, stateLabel, toMinor, type PlanConf,
 } from '../pay'
+
+describe('regionWithName', () => {
+  it('已知地区在缩写后带中文国名', () => {
+    expect(regionWithName('PH')).toBe('PH 菲律宾')
+    expect(regionWithName('US')).toBe('US 美国')
+    expect(regionWithName('JP')).toBe('JP 日本')
+    expect(regionWithName('CL')).toBe('CL 智利')
+    expect(regionWithName('EG')).toBe('EG 埃及')
+  })
+  it('不认识的地区只显示缩写', () => {
+    expect(regionWithName('ZZ')).toBe('ZZ')
+  })
+})
 
 describe('proxyTestText', () => {
   it('一致', () => {

@@ -209,6 +209,12 @@ export interface ProxyTestResult {
 
 const COUNTRY_NAME: Record<string, string> = { PH: '菲律宾', US: '美国', JP: '日本', CL: '智利', EG: '埃及', SG: '新加坡' }
 
+/** 地区缩写后带中文国名，如「PH 菲律宾」；不认识的地区只显示缩写。 */
+export function regionWithName(code: string): string {
+  const name = COUNTRY_NAME[code]
+  return name ? `${code} ${name}` : code
+}
+
 /** 代理测试结果的展示文案；tone 对应界面颜色：ok 绿、warn 警告色、err 红。 */
 export function proxyTestText(r: ProxyTestResult): { tone: 'ok' | 'warn' | 'err'; text: string } {
   if (!r.ok) return { tone: 'err', text: `测试失败：${r.error || '原因未知'}` }

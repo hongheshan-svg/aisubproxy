@@ -1,8 +1,12 @@
+import { defineComponent, h } from 'vue'
 import { createRouter, createWebHistory, RouteRecordRaw } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 
 // 管理端入口故意不用 /admin，降低扫路径风险。API 仍为 /api/v1/admin/*（服务端鉴权）。
 const OPS_BASE = '/ops'
+
+// 任务 10 会换成真实页面；在此之前先占位
+const AgentPlaceholder = defineComponent({ render: () => h('div', '页面建设中') })
 
 const routes: RouteRecordRaw[] = [
   {
@@ -104,6 +108,26 @@ const routes: RouteRecordRaw[] = [
       { path: 'reconcile', redirect: `${OPS_BASE}/orders` },
     ],
   },
+  // 代理商后台：自己的登录页和布局，不进管理员侧栏（子路由不设 meta.title）
+  {
+    path: '/agent/login',
+    name: 'AgentLogin',
+    component: () => import('../views/agent/AgentLogin.vue'),
+  },
+  {
+    path: '/agent',
+    component: () => import('../layouts/AgentLayout.vue'),
+    meta: { requiresAgent: true },
+    children: [
+      { path: '', name: 'AgentHome', component: AgentPlaceholder },
+      { path: 'order', name: 'AgentOrder', component: AgentPlaceholder },
+      { path: 'codes', name: 'AgentCodes', component: AgentPlaceholder },
+      { path: 'orders', name: 'AgentOrders', component: AgentPlaceholder },
+      { path: 'orders/:id', name: 'AgentOrderDetail', component: AgentPlaceholder },
+      { path: 'ledger', name: 'AgentLedger', component: AgentPlaceholder },
+      { path: 'account', name: 'AgentAccount', component: AgentPlaceholder },
+    ],
+  },
   {
     path: '/:pathMatch(.*)*',
     name: 'NotFound',
@@ -147,7 +171,29 @@ async function serverSessionAlive(): Promise<boolean> {
   return true
 }
 
+// 代理商会话：每次页面加载只向服务端确认一次；明确 401 才跳登录页，网络错误不踢人。不读写管理员的 authStore。
+let agentVerified = false
+async function agentSessionAlive(): Promise<boolean> {
+  if (agentVerified) return true
+  try {
+    const r = await fetch('/api/v1/agent/me', { credentials: 'include' })
+    if (r.status === 401) return false
+  } catch {
+    /* 后端不可达：放行，页面自己的请求会再报错 */
+  }
+  agentVerified = true
+  return true
+}
+
 router.beforeEach(async (to) => {
+  if (to.matched.some((r) => r.meta.requiresAgent)) {
+    if (!(await agentSessionAlive())) {
+      agentVerified = false
+      return { path: '/agent/login', query: { redirect: to.fullPath } }
+    }
+    return
+  }
+  if (to.path === '/agent/login') return
   const authStore = useAuthStore()
   const installed = await ensureSetupStatus()
 

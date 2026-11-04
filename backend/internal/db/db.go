@@ -191,6 +191,12 @@ func createTables() error {
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_cdk_bind_token ON cdk_session_bindings(redemption_token)`,
+		// 只增不改的令牌表：同一张码重复预览会拿到多个令牌，旧令牌也要认（审计 N-2）。
+		`CREATE TABLE IF NOT EXISTS cdk_redemption_tokens (
+			token TEXT PRIMARY KEY,
+			cdk_code TEXT NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
 
 		// 代理失败换码日志（旧码 → 新码，仅未扣款失败）
 		`CREATE TABLE IF NOT EXISTS agent_cdk_exchanges (
@@ -293,6 +299,9 @@ func createTables() error {
 
 	log.Println("✓ 数据表已准备就绪")
 	if err := migrateCDKPlanTypes(); err != nil {
+		return err
+	}
+	if err := backfillRedemptionTokens(); err != nil {
 		return err
 	}
 	if err := migrateLegacyCDKCodes(); err != nil {
@@ -880,7 +889,30 @@ func BindCDKRedemptionToken(provider, cdkCode, redemptionToken string) error {
 			redemption_token = excluded.redemption_token,
 			updated_at = CURRENT_TIMESTAMP
 	`, code, tok, provider)
+	if err != nil {
+		return err
+	}
+	return recordRedemptionToken(code, tok)
+}
+
+// recordRedemptionToken 把令牌记进只增不改的令牌表；已存在就忽略。令牌不设保留期限（每条只有几十字节）。
+func recordRedemptionToken(code, tok string) error {
+	if code == "" || tok == "" {
+		return nil
+	}
+	_, err := DB.Exec(`INSERT OR IGNORE INTO cdk_redemption_tokens (token, cdk_code) VALUES (?, ?)`, tok, code)
 	return err
+}
+
+// backfillRedemptionTokens 把绑定表里已有的令牌补进令牌表，可重复执行。
+func backfillRedemptionTokens() error {
+	_, err := DB.Exec(`INSERT OR IGNORE INTO cdk_redemption_tokens (token, cdk_code)
+		SELECT redemption_token, cdk_code FROM cdk_session_bindings
+		WHERE redemption_token IS NOT NULL AND redemption_token != ''`)
+	if err != nil {
+		return fmt.Errorf("补齐兑换令牌表失败: %w", err)
+	}
+	return nil
 }
 
 // FindCodeByRedemptionToken 预检绑 session 时反查完整卡密
@@ -904,7 +936,7 @@ func FindCodeByRedemptionToken(redemptionToken string) (string, error) {
 	return code, err
 }
 
-// KnownRedemptionTokens 返回 tokens 里本站有绑定记录（cdk_session_bindings.redemption_token）的那些。
+// KnownRedemptionTokens 返回 tokens 里本站预览时记过的那些（cdk_redemption_tokens，只增不改；同码多次预览的旧令牌也在内）。
 // 批量查结果用：只有本站兑换预览时写过绑定的上游令牌才转发上游（审计 money N-1）。
 func KnownRedemptionTokens(tokens []string) (map[string]bool, error) {
 	out := make(map[string]bool, len(tokens))
@@ -920,8 +952,8 @@ func KnownRedemptionTokens(tokens []string) (map[string]bool, error) {
 	if DB == nil {
 		return nil, fmt.Errorf("db not ready")
 	}
-	rows, err := DB.Query(`SELECT DISTINCT redemption_token FROM cdk_session_bindings
-		WHERE redemption_token IN (?`+strings.Repeat(",?", len(args)-1)+`)`, args...)
+	rows, err := DB.Query(`SELECT token FROM cdk_redemption_tokens
+		WHERE token IN (?`+strings.Repeat(",?", len(args)-1)+`)`, args...)
 	if err != nil {
 		return nil, err
 	}

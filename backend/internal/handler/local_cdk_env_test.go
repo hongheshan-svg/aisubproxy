@@ -267,6 +267,7 @@ type localZovoStub struct {
 	mu    sync.Mutex
 	paths []string
 	body  []string
+	query []string
 }
 
 // zovoPreflightBody 不带 email：真实卡台回的是它核验过的账号邮箱（与会话一致），绑定会按它记（审计 F-2）。
@@ -286,6 +287,7 @@ func newLocalZovoStub(t *testing.T) *localZovoStub {
 		z.mu.Lock()
 		z.paths = append(z.paths, r.URL.Path)
 		z.body = append(z.body, string(b))
+		z.query = append(z.query, r.URL.RawQuery)
 		z.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
@@ -328,6 +330,13 @@ func (z *localZovoStub) hits(path string) int {
 		}
 	}
 	return n
+}
+
+// requestQueries 返回收到的所有请求的查询串（令牌走 GET 查询参数的接口用）。
+func (z *localZovoStub) requestQueries() string {
+	z.mu.Lock()
+	defer z.mu.Unlock()
+	return strings.Join(z.query, "\n")
 }
 
 func (z *localZovoStub) requestBodies() string {

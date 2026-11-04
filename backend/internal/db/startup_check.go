@@ -70,3 +70,13 @@ func CheckCardSecretsMigratable() error {
 	}
 	return nil
 }
+
+// IsMissingSchemaErr 判断错误是不是「库里没有这张表或这一列」（SQLite 的 no such table / no such column）。
+// --check 跑在旧版本的库上，用它把新版本才有的表列映射成「跳过这条检查」。
+func IsMissingSchemaErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "no such table") || strings.Contains(msg, "no such column")
+}

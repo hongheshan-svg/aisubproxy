@@ -788,6 +788,7 @@ func CardPlatformDeleteCard(c *gin.Context) {
 	if len(raw) > 0 && string(raw) != "null" {
 		var m any
 		if json.Unmarshal(raw, &m) == nil && m != nil {
+			stripOrderValue(m)
 			out["data"] = m
 		}
 	}
@@ -811,9 +812,14 @@ func CardPlatformGetCDKOrder(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{})
 		return
 	}
+	writeCDKOrderRaw(c, cli, raw)
+}
+
+// writeCDKOrderRaw 解析上游单笔订单并剔除敏感字段后回写；解析不了的不透传，回 502。
+func writeCDKOrderRaw(c *gin.Context, cli *cardplatform.Client, raw []byte) {
 	var m map[string]any
-	if json.Unmarshal(raw, &m) != nil {
-		c.Data(http.StatusOK, "application/json; charset=utf-8", raw)
+	if json.Unmarshal(raw, &m) != nil || m == nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "卡台返回格式不对"})
 		return
 	}
 	enrichOneCDKOrder(c, cli, m)
@@ -919,25 +925,40 @@ func enrichOneCDKOrder(c *gin.Context, cli *cardplatform.Client, m map[string]an
 	m["cdk_lifecycle"] = cdkLifecycleLabel(strAny(m["cdk_status"]), strAny(m["status"]), strAny(m["service_fee_status"]))
 }
 
-// stripOrderCardNumber 卡台订单透传给前端前去掉完整卡号（card_number / pan），只在缺 card_last_four 时用后 4 位补上。
+// stripOrderCardNumber 卡台订单透传给前端前递归去掉完整卡号（card_number / pan）和 CVV、有效期，
+// 嵌套的 map、slice 都处理；同一层缺 card_last_four 时用卡号后 4 位补上。
 func stripOrderCardNumber(m map[string]any) {
-	for _, k := range []string{"card_number", "pan"} {
-		v, ok := m[k]
-		if !ok {
-			continue
-		}
-		delete(m, k)
-		if strAny(m["card_last_four"]) != "" {
-			continue
-		}
-		digits := make([]byte, 0, 19)
-		for _, ch := range []byte(strAny(v)) {
-			if ch >= '0' && ch <= '9' {
-				digits = append(digits, ch)
+	stripOrderValue(m)
+}
+
+func stripOrderValue(v any) {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, val := range t {
+			switch {
+			case db.SensitiveCardFieldDrop(k):
+				delete(t, k)
+			case db.SensitiveCardFieldPAN(k):
+				delete(t, k)
+				if strAny(t["card_last_four"]) != "" {
+					continue
+				}
+				digits := make([]byte, 0, 19)
+				for _, ch := range []byte(strAny(val)) {
+					if ch >= '0' && ch <= '9' {
+						digits = append(digits, ch)
+					}
+				}
+				if len(digits) >= 4 {
+					t["card_last_four"] = string(digits[len(digits)-4:])
+				}
+			default:
+				stripOrderValue(val)
 			}
 		}
-		if len(digits) >= 4 {
-			m["card_last_four"] = string(digits[len(digits)-4:])
+	case []any:
+		for _, e := range t {
+			stripOrderValue(e)
 		}
 	}
 }

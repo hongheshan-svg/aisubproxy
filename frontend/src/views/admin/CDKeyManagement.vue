@@ -104,6 +104,10 @@
         <p v-if="!configured" class="text-xs" style="color: var(--err)">请先在「卡台配置」填写 Base 与 sk_</p>
         <p v-else-if="!form.funding_confirmed" class="text-xs text-muted">勾选「确认承担兑换资金」后再购买。实付由本账户承担，服务费从卡台余额扣除。</p>
         <div v-if="issueError" class="alert alert-error">{{ issueError }}</div>
+        <p v-if="issueLocked" class="text-xs text-muted">
+          上一次发码结果未知，已锁定为只许原样重试。确认没有这一批码、不想找回时：
+          <el-button link type="danger" size="small" @click="discardLockedIssue">放弃上一次</el-button>
+        </p>
         <div v-if="issueOk" class="alert alert-success">{{ issueOk }}</div>
         <div v-if="recentCodes.length" class="rounded-xl bg-soft p-3 space-y-2 border" style="border-color: var(--good)">
           <div class="flex flex-wrap items-center justify-between gap-2">
@@ -355,7 +359,7 @@ import { useI18n } from 'vue-i18n'
 const { t } = useI18n()
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { authFetch } from '../../lib/api'
-import { IdempotencyKeeper } from '../../lib/idempotency'
+import { IdempotencyLockedError, sharedKeeper } from '../../lib/idempotency'
 import { dialog } from '../../lib/dialog'
 import { copyToClipboard } from '../../lib/clipboard'
 import { isCardAttachPlan } from '../../lib/plan'
@@ -1282,7 +1286,14 @@ async function loadMeta() {
 }
 
 // 发码幂等键：请求内容不变的重试沿用同一个键，服务端缺头会拒绝；明确成功后才换新
-const issueKeys = new IdempotencyKeeper()
+// 模块级单例 + sessionStorage：结果不明的那一批在刷新、重新进入后仍沿用原键，只许原样重试
+const issueKeys = sharedKeeper('cardplatform-issue')
+const issueLocked = ref(issueKeys.isLocked())
+function discardLockedIssue() {
+  issueKeys.discard()
+  issueLocked.value = false
+  issueError.value = ''
+}
 
 async function issue() {
   issueError.value = ''
@@ -1301,11 +1312,30 @@ async function issue() {
       // 卡台会回「付款地区与币种不匹配」——一句完全指不到真因的话。
       payment_country: form.payment_country || '',
     }
-    const r = await authFetch('/api/v1/admin/cardplatform/cdks', {
-      method: 'POST',
-      headers: { 'Idempotency-Key': issueKeys.keyFor(payload) },
-      body: JSON.stringify(payload),
-    })
+    let idemKey: string
+    try {
+      idemKey = issueKeys.keyFor(payload)
+    } catch (e) {
+      if (e instanceof IdempotencyLockedError) {
+        issueLocked.value = true
+        issueError.value = e.message + '（原样 = 与上次相同的档位、数量和地区）'
+        return
+      }
+      throw e
+    }
+    let r: Response
+    try {
+      r = await authFetch('/api/v1/admin/cardplatform/cdks', {
+        method: 'POST',
+        headers: { 'Idempotency-Key': idemKey },
+        body: JSON.stringify(payload),
+      })
+    } catch (e) {
+      issueKeys.markUncertain()
+      issueLocked.value = true
+      issueError.value = '请求没有得到回应（结果可能不明：用相同的档位、数量和地区再点一次购买即可，同一次请求不会重复发码）'
+      return
+    }
     const d = await r.json().catch(() => ({}))
     if (!r.ok) {
       // 找回由服务端做（只认本次请求开始之后创建的码）。这里不再按「档位 + unused」猜：
@@ -1313,6 +1343,8 @@ async function issue() {
       const msg = d.error || d.msg || '发码失败'
       issueError.value = msg
       if (r.status === 0 || r.status >= 500) {
+        issueKeys.markUncertain()
+        issueLocked.value = true
         issueError.value += '（结果可能不明：直接再点一次购买即可，同一次请求不会重复发码）'
       }
       if (String(msg).includes('403') || d.code === 403) {
@@ -1324,10 +1356,18 @@ async function issue() {
     const codes = issued.map(extractFullCode).filter(Boolean)
     if (!codes.length) {
       issueError.value = '卡台返回成功但未包含完整码字段 code。原始响应请查网络面板。'
+      issueKeys.markUncertain()
+      issueLocked.value = true
       recentCodes.value = []
       return
     }
-    if (!d.recovered) issueKeys.done() // 明确成功才换新键；找回的结果不明，沿用旧键重试不会多发
+    if (!d.recovered) {
+      issueKeys.done() // 明确成功才换新键；找回的结果不明，沿用旧键重试不会多发
+      issueLocked.value = false
+    } else {
+      issueKeys.markUncertain()
+      issueLocked.value = true
+    }
     // 浏览器兜底 + 列表以服务器为准
     rememberIssued(issued, form.plan)
     recentCodes.value = codes

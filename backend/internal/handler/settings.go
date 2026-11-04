@@ -65,6 +65,7 @@ func AdminGetSettings(c *gin.Context) {
 		}
 	}
 	out["agent_swap_password_configured"] = agentSwapPasswordConfigured()
+	out["agent_swap_password_weak"] = agentSwapPasswordWeak()
 	out["agent_swap_daily_limit"] = agentSwapDailyLimit()
 	c.JSON(http.StatusOK, out)
 }

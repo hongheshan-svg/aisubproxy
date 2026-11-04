@@ -823,9 +823,7 @@ func TestAgentExchangeLocalCDK(t *testing.T) {
 		if err := setAgentSwapPassword(pw); err != nil {
 			t.Fatal(err)
 		}
-		swapRateMu.Lock()
-		swapRateHits = map[string][]time.Time{}
-		swapRateMu.Unlock()
+		resetLocalRate()
 		return e
 	}
 	exchange := func(e *localEnv, code string) (int, map[string]any) {

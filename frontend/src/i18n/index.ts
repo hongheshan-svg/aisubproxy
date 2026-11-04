@@ -6,7 +6,7 @@ import { pickLocale, readSavedLocale, STORAGE_KEY } from './detect'
 export type AppLocale = 'zh' | 'en'
 
 function detectLocale(): AppLocale {
-  return pickLocale(readSavedLocale(), navigator.language)
+  return pickLocale(readSavedLocale())
 }
 
 const locale = detectLocale()

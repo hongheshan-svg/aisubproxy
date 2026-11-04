@@ -255,6 +255,25 @@ func AdminCardPoolImportCard(c *gin.Context) {
 	})(c)
 }
 
+// AdminCardPoolPreviewCard 只读：导入前按卡 ID 查平台，返回卡信息和可选产品。只有前 6 位与后 4 位卡号，不写库、不审计。
+func AdminCardPoolPreviewCard(c *gin.Context) {
+	poolRoute(func(c *gin.Context, s *cardpool.Service) {
+		var req struct {
+			CardID string `json:"card_id"`
+		}
+		if !bindPoolJSON(c, &req) {
+			return
+		}
+		p, err := s.PreviewCard(c.Request.Context(), req.CardID)
+		if err != nil {
+			poolFail(c, err)
+			return
+		}
+		c.Header("Cache-Control", "no-store")
+		c.JSON(http.StatusOK, p)
+	})(c)
+}
+
 // cardAction 生成「对一张卡做动作」的 POST 处理器；fn 返回的 payload 为空时回 {"ok":true}。
 func cardAction(action string, fn func(c *gin.Context, s *cardpool.Service, id string) (any, error)) gin.HandlerFunc {
 	return poolRoute(func(c *gin.Context, s *cardpool.Service) {

@@ -288,6 +288,9 @@ func AdminPutMarsWallexConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, marsWallexConfigView(c))
 }
 
+// marsWallexAuthHint 是 401/403 的提示：平台对这几种情况都只回 Unauthorized，分不出具体是哪一种。
+const marsWallexAuthHint = "认证被拒（平台对下面几种情况都只返回 Unauthorized，分不出具体是哪一种）：① Developer ID 或 API Token 不对；② 交给平台的公钥和这里的私钥不是同一对（指纹见上方）；③ 服务器出口 IP 不在平台白名单里（见「IP 白名单」一步）。"
+
 func marsWallexHint(me *marswallex.Error) string {
 	switch {
 	case me.Outcome == marswallex.OutcomeNotSent && me.Reason == marswallex.ReasonConfig:
@@ -295,7 +298,7 @@ func marsWallexHint(me *marswallex.Error) string {
 	case me.Outcome == marswallex.OutcomeNotSent && (me.Reason == marswallex.ReasonDNS || me.Reason == marswallex.ReasonDial):
 		return "无法连接 MarsWallex，请检查服务器网络和接口地址"
 	case me.HTTPStatus == http.StatusUnauthorized || me.HTTPStatus == http.StatusForbidden:
-		return "认证或签名被拒：请检查 developerId、apiToken，并确认交给 MarsWallex 的公钥与此处私钥是同一对"
+		return marsWallexAuthHint
 	case me.HTTPStatus == http.StatusNotFound:
 		return "接口地址不对：请检查地址是否包含 /portal/api 前缀"
 	case me.Reason == marswallex.ReasonSignatureMissing || me.Reason == marswallex.ReasonSignatureInvalid:

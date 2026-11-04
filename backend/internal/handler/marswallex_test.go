@@ -387,6 +387,9 @@ func TestMarsWallexTestConnectionSuccess(t *testing.T) {
 	}
 	acc := m["accounts"].([]any)[0].(map[string]any)
 	bal := acc["balances"].([]any)[0].(map[string]any)
+	if acc["account_type"] != "MAIN" {
+		t.Errorf("账户类型 %v", acc["account_type"])
+	}
 	if acc["account_no"] != "2000519969952288769" || bal["available_balance"] != "89246.14" {
 		t.Errorf("accounts %v", m["accounts"])
 	}
@@ -416,7 +419,7 @@ func TestMarsWallexTestConnectionHints(t *testing.T) {
 		t.Errorf("unconfigured: %d %v", w.Code, m)
 	}
 	mwConfigure(t, s.URL+"/portal/api")
-	cases := []struct{ mode, want string }{{"401", "认证或签名被拒"}, {"404", "/portal/api"}, {"nosig", "响应签名验证失败"}}
+	cases := []struct{ mode, want string }{{"401", marsWallexAuthHint}, {"404", "/portal/api"}, {"nosig", "响应签名验证失败"}}
 	for _, c := range cases {
 		mode = c.mode
 		w := mwDo(AdminTestMarsWallex, "POST", "/x", "", nil)
@@ -654,5 +657,18 @@ func TestMarsWallexGenerateKeypairWithoutMasterKey(t *testing.T) {
 	}
 	if n := mwCount(t, c, `SELECT COUNT(*) FROM site_settings WHERE key='marswallex_private_key'`); n != 0 {
 		t.Fatalf("不应写入私钥，行数 %d", n)
+	}
+}
+
+// 401/403 的提示要列出三种可能（平台对它们都只回 Unauthorized），并指向「IP 白名单」一步。
+func TestMarsWallexHintAuthRejected(t *testing.T) {
+	const want = "认证被拒（平台对下面几种情况都只返回 Unauthorized，分不出具体是哪一种）：① Developer ID 或 API Token 不对；② 交给平台的公钥和这里的私钥不是同一对（指纹见上方）；③ 服务器出口 IP 不在平台白名单里（见「IP 白名单」一步）。"
+	if marsWallexAuthHint != want {
+		t.Fatalf("文字不对: %q", marsWallexAuthHint)
+	}
+	for _, st := range []int{401, 403} {
+		if got := marsWallexHint(&marswallex.Error{HTTPStatus: st, Reason: marswallex.ReasonSignatureMissing}); got != want {
+			t.Errorf("%d: %q", st, got)
+		}
 	}
 }

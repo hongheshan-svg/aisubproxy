@@ -168,7 +168,11 @@ func finishDisableOldCode(ctx context.Context, cli *cardplatform.Client, exID, o
 	if err := cli.DisableCDK(ctx, oldID); err != nil {
 		return err
 	}
-	_ = db.UpdateCardplatformCDKStatus(oldID, "disabled")
+	// 卡台已禁用，本地只是列表缓存：写库失败不算禁用失败，但和 E-8 一样记日志（setLocalCDKStatuses 里）并告警（审计 money N-5）
+	if failed := setLocalCDKStatuses([]int64{oldID}, "disabled"); len(failed) > 0 {
+		opsAlertDaily(fmt.Sprintf("agent-swap-local-status-%d", oldID), fmt.Sprintf(
+			"代理换码的旧码 ID %d 已在卡台禁用，但本站列表状态没能同步为已禁用（写库失败，见日志）。卡台侧已生效、旧码不能再兑换；本站缓存的状态仍是旧值，可在后台对这张码再点一次禁用来刷新。", oldID), time.Now())
+	}
 	if exID > 0 {
 		if err := db.CompleteAgentCDKExchangeDisable(exID); err != nil && !errors.Is(err, db.ErrAgentExchangeState) {
 			log.Printf("[agent-exchange] 记录 %d 旧码已禁用但转 done 失败（下一轮维护会再试）: %v", exID, err)

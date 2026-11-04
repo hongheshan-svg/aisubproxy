@@ -93,6 +93,7 @@
 
       <div v-if="invoices" class="card space-y-3">
         <h2 class="text-xl font-semibold text-ink">付款账单（{{ invoices.length }}）</h2>
+        <p v-if="billingNote" class="text-sm text-subtle">{{ billingNote }}</p>
         <p v-if="!invoices.length" class="text-sm text-muted">无付款账单记录。</p>
         <div v-for="inv in invoices" :key="inv.id || inv.number" class="rounded-xl bg-soft p-4 text-sm space-y-2">
           <div class="flex flex-wrap items-center justify-between gap-2">
@@ -117,12 +118,14 @@ import { useI18n } from 'vue-i18n'
 import UserPageHeader from '../../components/UserPageHeader.vue'
 import RedeemModeTabs from '../../components/RedeemModeTabs.vue'
 import SessionHelp from '../../components/SessionHelp.vue'
+import { pickBillingNote } from '../../lib/billingNote'
 const { t } = useI18n({ useScope: 'global' })
 
 
 const route = useRoute()
 const mode = ref<'cdk' | 'session'>('cdk')
 const cdkCode = ref('')
+const billingNote = ref('')
 const tokenInput = ref('')
 const loading = ref(false)
 const error = ref('')
@@ -171,6 +174,7 @@ async function query() {
   summary.value = null
   invoices.value = null
   authSource.value = ''
+  billingNote.value = ''
   loading.value = true
   try {
     const body =
@@ -190,6 +194,7 @@ async function query() {
     summary.value = d.summary || {}
     invoices.value = d.invoices || []
     authSource.value = d.auth_source || ''
+    billingNote.value = pickBillingNote(d)
   } catch (e: any) {
     error.value = e?.message || '网络错误'
   } finally {

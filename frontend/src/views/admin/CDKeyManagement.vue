@@ -380,6 +380,7 @@ async function onProductChange() {
   applyPreselect()
 }
 
+/** 旧版本 sessionStorage 的键，现在只用于升级时清理（见 purgeLegacyRecent）。 */
 const RECENT_KEY = 'cdk_recent_issued_v1'
 /** 旧版本把完整码写入 localStorage 的键。现在不再写入，只在升级时读出一次并删除（见 loadCodeCache） */
 const CODE_CACHE_KEY = 'cdk_full_code_cache_v1'
@@ -1146,33 +1147,20 @@ async function syncFromCardplatform(opts?: { quiet?: boolean; plan?: string; sta
   }
 }
 
+// 本批完整码只留在内存里：刷新页面即失效，不写 sessionStorage（同标签页脚本可读、刷新后仍在）。
+// 刷新后需要的码请到「本站完整码库」取。
 function persistRecent(codes: string[], plan: string, region = '') {
-  const payload = { codes, plan, at: Date.now(), region }
-  try {
-    sessionStorage.setItem(RECENT_KEY, JSON.stringify(payload))
-  } catch {
-    /* ignore quota */
-  }
   recentMeta.value = {
     plan,
-    atLabel: new Date(payload.at).toLocaleString(),
+    atLabel: new Date().toLocaleString(),
     region,
   }
 }
 
-function loadPersistedRecent() {
+/** 旧版本把本批完整码写进 sessionStorage。升级后立即删掉这份残留，不再读回。 */
+function purgeLegacyRecent() {
   try {
-    const raw = sessionStorage.getItem(RECENT_KEY)
-    if (!raw) return
-    const o = JSON.parse(raw)
-    const codes = Array.isArray(o?.codes) ? o.codes.map((x: any) => String(x || '').trim()).filter(Boolean) : []
-    if (!codes.length) return
-    recentCodes.value = codes
-    recentMeta.value = {
-      plan: String(o.plan || '—'),
-      atLabel: o.at ? new Date(o.at).toLocaleString() : '—',
-      region: String(o.region || ''),
-    }
+    sessionStorage.removeItem(RECENT_KEY)
   } catch {
     /* ignore */
   }
@@ -1181,11 +1169,6 @@ function loadPersistedRecent() {
 function clearRecent() {
   recentCodes.value = []
   recentMeta.value = null
-  try {
-    sessionStorage.removeItem(RECENT_KEY)
-  } catch {
-    /* ignore */
-  }
   dialog.toast('已清除本批完整码缓存', 'info')
 }
 
@@ -1445,8 +1428,7 @@ async function refreshAll() {
 onMounted(async () => {
   const reg = loadProviderRegistry()
   loadCodeCache()
-  loadPersistedRecent()
-  if (recentCodes.value.length) issueOpen.value = true
+  purgeLegacyRecent()
   await refreshAll()
   await reg
   applyPreselect()

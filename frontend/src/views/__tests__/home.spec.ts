@@ -113,14 +113,15 @@ describe('首页售后查询', () => {
     expect(text(html)).toContain('售后查询')
   })
 
-  it('已使用：显示打码邮箱和到期时间', async () => {
+  it('已使用：显示打码邮箱和开通时间，不显示到期时间', async () => {
     const html = await render(AfterSaleResult, 'zh', {
       result: { ...base, status: 'used', used: true, plan: 'Plus', account_email: 'a***@x.com', used_at: '2026-11-04T09:22:37Z', expires_at: '2026-12-04T09:22:37Z' },
     })
     const s = text(html)
     expect(s).toContain('a***@x.com')
-    expect(s).toContain('到期时间')
-    expect(s).toContain('2026-12-04 17:22:37')
+    expect(s).toContain('2026-11-04 17:22:37')
+    expect(s).not.toContain('到期时间')
+    expect(s).not.toContain('2026-12-04')
   })
 
   it('已换发：显示新码、复制按钮；新码未使用时有去兑换按钮', async () => {

@@ -42,7 +42,7 @@ describe('afterSaleView', () => {
     expect(v.tone).toBe('info')
   })
 
-  it('used：套餐、开通时间、到期时间、邮箱按顺序出现，时间为北京时间', () => {
+  it('used：套餐、开通时间、邮箱按顺序出现，时间为北京时间；后端给了到期时间也不显示', () => {
     const v = afterSaleView(base({
       status: 'used', used: true, plan: 'ChatGPT Plus', plan_kind: 'subscription',
       used_at: '2026-03-04T05:06:07Z', expires_at: '2026-04-04T05:06:07Z', account_email: 'a***@g***.com', renewal: 'off',
@@ -52,7 +52,6 @@ describe('afterSaleView', () => {
     expect(v.fields).toEqual([
       { labelKey: 'aftersale.field.plan', value: 'ChatGPT Plus' },
       { labelKey: 'aftersale.field.usedAt', value: '2026-03-04 13:06:07' },
-      { labelKey: 'aftersale.field.expiresAt', value: '2026-04-04 13:06:07' },
       { labelKey: 'aftersale.field.email', value: 'a***@g***.com' },
     ])
     expect(v.renewalKey).toBe('aftersale.renewal.off')

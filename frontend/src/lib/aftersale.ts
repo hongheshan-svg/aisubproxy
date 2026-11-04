@@ -70,14 +70,13 @@ export function fmtLookupTime(s?: string): string | undefined {
 }
 
 function usedFields(r: LookupResult): AfterSaleView['fields'] {
-  const credit = r.plan_kind === 'credit'
+  // 到期时间不显示：只有关续费核实成功的新单才有，多数码查不到，显示出来反而让客户以为少了信息。
   const out: AfterSaleView['fields'] = []
   const add = (labelKey: string, value?: string) => {
     if (value) out.push({ labelKey, value })
   }
   add('aftersale.field.plan', r.plan)
   add('aftersale.field.usedAt', fmtLookupTime(r.used_at))
-  if (!credit) add('aftersale.field.expiresAt', fmtLookupTime(r.expires_at))
   add('aftersale.field.email', r.account_email)
   return out
 }

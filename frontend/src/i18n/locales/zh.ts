@@ -317,7 +317,7 @@ export default {
   },
   aftersale: {
     title: '售后查询',
-    sub: '输入卡密，查看是否开通成功、邮箱、到期时间，或换发的新码',
+    sub: '输入卡密，查看是否开通成功、充值邮箱，或换发的新码',
     batchLink: '批量查询',
     newCode: '新码',
     copyNew: '复制新码',
@@ -339,7 +339,7 @@ export default {
       expired: '卡密已过期',
       unknown: '暂时查不到，请稍后再试',
     },
-    field: { plan: '套餐', usedAt: '开通时间', expiresAt: '到期时间', email: '账号邮箱' },
+    field: { plan: '套餐', usedAt: '开通时间', email: '账号邮箱' },
     renewal: { off: '已关闭自动续费，到期不会扣款', closing: '正在关闭自动续费' },
     guide: {
       session_invalid: '账号登录已失效。请重新登录 ChatGPT，按教程重新复制 Session，再兑换',

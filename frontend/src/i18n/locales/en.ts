@@ -317,7 +317,7 @@ export default {
   },
   aftersale: {
     title: 'After-sales lookup',
-    sub: 'Enter a code to see whether it was activated, the account email, expiry, or the replacement code',
+    sub: 'Enter a code to see whether it was activated, the account email, or the replacement code',
     batchLink: 'Batch lookup',
     newCode: 'New code',
     copyNew: 'Copy new code',
@@ -339,7 +339,7 @@ export default {
       expired: 'This code has expired',
       unknown: 'Unable to look this up right now. Please try again later',
     },
-    field: { plan: 'Plan', usedAt: 'Activated at', expiresAt: 'Expires at', email: 'Account email' },
+    field: { plan: 'Plan', usedAt: 'Activated at', email: 'Account email' },
     renewal: { off: 'Auto-renewal is off. You will not be charged when it expires', closing: 'Auto-renewal is being turned off' },
     guide: {
       session_invalid: 'The account login has expired. Sign in to ChatGPT again, copy the session again by following the tutorial, then redeem again',

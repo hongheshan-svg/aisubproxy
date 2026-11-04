@@ -138,7 +138,12 @@ func preflightBinary(bin, wantVersion string) error {
 	if got != normalizeVer(wantVersion) {
 		return fmt.Errorf("新程序自报版本 %s，与发布版本 %s 不一致", got, normalizeVer(wantVersion))
 	}
-	if c, ok := compareVersions(got, lastVersionWithoutCheck); !ok || c <= 0 {
+	c, ok := compareVersions(got, lastVersionWithoutCheck)
+	if !ok {
+		// 不合 semver 的发布版本既不能确认它有 --check，也不能当老程序放行，宁可中止（审计 N-5）
+		return fmt.Errorf("版本号 %s 无法解析，已中止更新", got)
+	}
+	if c <= 0 {
 		log.Printf("[update] v%s 不晚于 v%s，没有 --check，只做 --version 自检", got, lastVersionWithoutCheck)
 		return nil
 	}

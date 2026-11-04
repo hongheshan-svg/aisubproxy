@@ -38,7 +38,9 @@ func Init(cfg *config.DatabaseConfig) error {
 	// WAL 让读不阻塞写；busy_timeout 让并发写等待锁而不是立刻报 database is locked。
 	// 参数写在 DSN 里，对连接池里每一个连接都生效（busy_timeout 是连接级设置）。
 	// _txlock=immediate：事务一开始就拿写锁，避免读后升级写时的 SQLITE_BUSY（busy_timeout 管不了这种死锁）。
-	dsn := dbPath + "?_journal_mode=WAL&_busy_timeout=10000&_synchronous=NORMAL&_txlock=immediate"
+	// _synchronous=FULL：每次提交都等落盘。NORMAL 在掉电、内核崩溃时可能丢最近几笔已提交的事务，
+	// 付款单「已付款」回退成「处理中」后，重启恢复可能再付一次。本站写入量小，FULL 的代价可以接受。
+	dsn := dbPath + "?_journal_mode=WAL&_busy_timeout=10000&_synchronous=FULL&_txlock=immediate"
 	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return err

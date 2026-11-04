@@ -222,7 +222,6 @@ function fundingCardLabel(row: any) {
 }
 
 function cardLabel(row: any) {
-  if (row.card_number) return row.card_number
   if (row.card_last_four) return `•••• ${row.card_last_four}`
   if (row.card_id) return `card#${row.card_id}`
   return '—'

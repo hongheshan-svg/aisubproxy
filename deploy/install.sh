@@ -149,6 +149,8 @@ Restart=on-failure
 RestartSec=3
 # 停止时程序先等在途付款单（最多 3 分钟），多留余量再 SIGKILL
 TimeoutStopSec=240
+# SIGTERM 只发给主进程，不同时杀掉在途单的 Chrome、Xvfb
+KillMode=mixed
 LimitNOFILE=65535
 NoNewPrivileges=true
 

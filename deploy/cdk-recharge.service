@@ -12,6 +12,9 @@ Restart=on-failure
 RestartSec=3
 # 停止服务时程序先等在途付款单进入确认或结束（最多 3 分钟），再关闭 HTTP；这里多留一点余量，到点才 SIGKILL
 TimeoutStopSec=240
+# SIGTERM 只发给主进程：默认的 control-group 会同时发给 Chrome、Xvfb，在途单的浏览器当场被杀，等不到单子走完。
+# 主进程退出后，剩下的子进程再由 systemd 收拾
+KillMode=mixed
 LimitNOFILE=65535
 
 # 不把密钥打进 journal 以外的地方；应用自身避免打印 secret

@@ -73,16 +73,15 @@
   - 确认到期时，最后一次查账号是出错（网络、代理、ChatGPT 报错），错误码记 `verify_unreachable`，说明写「确认超时：一直查不到账号状态（最后一次错误：…），请人工核对是否已开通」。查到「未开通」的照旧是 `verify_timeout`。
   - 查账号出错后，下次检查按 15 秒、30 秒、60 秒推迟，最多 60 秒；ChatGPT 返回 429 并要求等待时按它推迟。确认总时长（10 分钟）不变。
 - **启动付款浏览器限时 90 秒**：Chrome 卡住时按 `browser_failed` 放弃并告警，名额归还。这一步还没取卡，不涉及资金。
-- **熔断只看最近 24 小时**：判断「连续失败」时只看最近 24 小时内结束的单（最多 500 张）。
+- **熔断查询加上条数限制**：熔断查询只取恢复点之后最近 500 张结束的单，判定和以前一样，仍然只有管理员恢复才解除。
 - **Xvfb 启动失败后 5 分钟再试**：以前失败一次就一直用无头模式，现在 5 分钟后再试。退回无头模式时告警「付款浏览器改用无头模式，Cloudflare 挑战可能增多」。
 - **其他超时**：HTTP 服务加了读超时（请求头 10 秒、整个请求 60 秒、空闲连接 120 秒），不限制响应时长；在线更新下载发布包最多 10 分钟，60 秒没有新数据就取消，失败后可以再点更新。
 
 ### 升级注意
 
 - 停止服务最多会等 3 分钟：
-  - 原生部署：`install.sh` 写的 systemd 服务文件已加 `TimeoutStopSec=240`，用 `install.sh` 升级会自动更新。手工装的服务文件请照 `deploy/cdk-recharge.service` 加上这一行，再 `systemctl daemon-reload`。
+  - 原生部署：`install.sh` 写的 systemd 服务文件已加 `TimeoutStopSec=240` 和 `KillMode=mixed`（停止时 SIGTERM 只发给主程序，不会同时杀掉在途单的 Chrome、Xvfb，否则等不到单子走完）。已有部署要重新运行 `install.sh`，或者手动在服务文件的 `[Service]` 段加上这两行（照 `deploy/cdk-recharge.service`），再执行 `systemctl daemon-reload`。
   - Docker 部署：`docker-compose.yml` 已加 `stop_grace_period: 240s`。重新运行 `deploy/docker-deploy.sh` 会下载新的 compose 文件并生效；自己维护 compose 文件的，加上这一行后执行 `docker compose up -d`。
-- 熔断暂停后如果 24 小时都没人恢复，触发暂停的那几单会移出统计，派发会自动恢复。请在收到熔断告警后及时处理。
 - Caddy 的请求体上限写在模板里：`docker-deploy.sh` 带 `--domain` 时会按新模板重新生成 Caddyfile；沿用已有 Caddyfile 的（包括原生部署自己配的 Caddy），请照 `deploy/Caddyfile.docker.tmpl` 或 `deploy/Caddyfile.snippet` 手工加上 `request_body` 那一段。
 - 美国、菲律宾不用填，已内置（升级后自动补上空着的金额）；日本、智利、埃及仍要手填。没填「最低金额」的地区不能真实下单，也不能发码（会提示「套餐 X 在地区 Y 未配置最低金额」）。
 - 最低金额、预期金额、上限都按该地区币种填（PH 填比索），系统不做汇率换算。

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/chromedp/cdproto/dom"
 	"github.com/chromedp/cdproto/runtime"
 )
 
@@ -28,7 +29,15 @@ const (
 	// cfCheckWait 是打开超时后读一次页面、判断是不是 Cloudflare 挑战页的时限。
 	// 这时调用方的时限通常也到了，所以这一步不沿用调用方的时限，只受 cfCheckWait 约束；只读页面，不操作。
 	cfCheckWait = 5 * time.Second
+	// payFocusSettle 是点支付前把焦点移到主页面之后固定等的时间，让页面对 iframe 失焦的异步反应（校验、重算）先跑完。
+	payFocusSettle = 400 * time.Millisecond
 )
+
+// payReadyJS 判断内嵌页的支付按钮能不能点：可用（同 payEnabledJS），而且不在忙（aria-busy 不是 "true"）。
+// 2026-11-04 实测：地址改了，页面重算时按钮同时 disabled、aria-busy="true"。
+const payReadyJS = `function () {
+	return !this.disabled && this.getAttribute('aria-disabled') !== 'true' && this.getAttribute('aria-busy') !== 'true'
+}`
 
 // embeddedAmountRe 从读屏文字里取金额原文和币种代码。币种代码后面不能再连着字母（如 usdt），宁可读不出也不误认。
 // 金额原文里只能有一段数字，见 normalizeEmbeddedAmount。
@@ -60,7 +69,7 @@ const embeddedAmountJS = `(() => {
 const countVisibleJS = `((sel, visible) => Array.from(document.querySelectorAll(sel)).filter(visible).length)`
 
 // uniquePayButtonJS 在一次求值里看本 frame：路径不以 prefix 开头时返回 'left'（已离开结账页，按钮一律不认）；
-// 否则数 sel 命中的可见元素，正好一个且可用时返回它，正好一个但不可用时返回 'disabled'，个数不是 1 时返回个数。
+// 否则数 sel 命中的可见元素，正好一个且可用（enabled，即 payReadyJS）时返回它，正好一个但不可用时返回 'disabled'，个数不是 1 时返回个数。
 // 核对路径、数和取都在同一次求值里，中间页面插不进别的脚本。
 const uniquePayButtonJS = `((prefix, sel, visible, enabled) => {
 	if (!location.pathname.startsWith(prefix)) return 'left'
@@ -182,11 +191,12 @@ const (
 	payButtonLeft       = -2 // 主页面路径已不在 /checkout/ 下
 )
 
-// embeddedPayButton 在主页面找唯一可见、可用的支付按钮，找不到返回 nil。主页面已离开结账页时按钮一律不认。
+// embeddedPayButton 在主页面找唯一可见、可用（payReadyJS：不 disabled、不 aria-busy）的支付按钮，找不到返回 nil。
+// 主页面已离开结账页时按钮一律不认。
 // *n 记下这次看到的可见按钮个数（唯一但不可用时为 1），或 payButtonUnreadable、payButtonLeft。
 func (b *Browser) embeddedPayButton(ctx context.Context, main frameRef, n *int) *elem {
 	*n = payButtonUnreadable
-	expr := fmt.Sprintf("%s(%s, %s, %s, %s)", uniquePayButtonJS, mustJSON(checkoutPrefix), mustJSON(embeddedPayButtonSel), visibleJS, payEnabledJS)
+	expr := fmt.Sprintf("%s(%s, %s, %s, %s)", uniquePayButtonJS, mustJSON(checkoutPrefix), mustJSON(embeddedPayButtonSel), visibleJS, payReadyJS)
 	r, err := b.eval(ctx, main, expr)
 	switch {
 	case err != nil:
@@ -213,6 +223,9 @@ func (b *Browser) embeddedPayButton(ctx context.Context, main frameRef, n *int) 
 	return nil
 }
 
+// errPayNotReady 表示内嵌页的支付按钮唯一但不可点击（disabled、aria-disabled 或 aria-busy）。
+var errPayNotReady = errors.New("支付按钮不可点击（可能有字段未通过页面校验），没有点击")
+
 // embeddedPayButtonErr 说明内嵌页为什么没点支付。n 是最后一次看到的状态（见 embeddedPayButton）。
 func embeddedPayButtonErr(n int) error {
 	switch {
@@ -221,9 +234,94 @@ func embeddedPayButtonErr(n int) error {
 	case n < 0:
 		return errors.New("支付按钮读不出，没有点击")
 	case n == 1:
-		return errors.New("支付按钮不可点击（可能有字段未通过页面校验），没有点击")
+		return errPayNotReady
 	}
 	return fmt.Errorf("支付按钮不唯一（找到 %d 个），没有点击", n)
+}
+
+// waitPayButton 最多等 fieldWait，直到主页面上有唯一可见、可用的支付按钮（embeddedPayButton），看到已离开结账页就不再等。
+// 等不到返回 nil，*n 是最后一次看到的状态。
+func (b *Browser) waitPayButton(ctx context.Context, n *int) (*elem, error) {
+	var btn *elem
+	_, err := b.poll(ctx, fieldWait, func(frames []frameRef) bool {
+		btn = b.embeddedPayButton(ctx, frames[0], n)
+		return btn != nil || *n == payButtonLeft
+	})
+	return btn, err
+}
+
+// readyAfterFocus 把焦点移到主页面的支付按钮上（DOM.focus：只设焦点，不点击、不发按键），固定等 payFocusSettle，
+// 再用 waitPayButton 等按钮重新唯一可用，返回那时的按钮和这段等待（不含固定的 payFocusSettle）用了多久；等不到返回 nil。
+//
+// 不先移焦点就点，按下鼠标那一刻焦点才离开 Stripe 的 iframe：页面要是在 iframe 失焦时校验、重算、把按钮短暂设成不可用，
+// 按钮在松开之前就不可用了，点击丢失，而 submitted 已经置位，这一单只能走确认、回收。先移焦点、等页面反应完，这一下就不会再触发。
+func (b *Browser) readyAfterFocus(ctx context.Context, btn *elem, n *int) (*elem, time.Duration, error) {
+	if err := dom.Focus().WithObjectID(btn.obj).Do(ctx); err != nil {
+		return nil, 0, fmt.Errorf("把焦点移到支付按钮上失败: %w", err)
+	}
+	if err := sleep(ctx, payFocusSettle); err != nil {
+		return nil, 0, err
+	}
+	start := time.Now()
+	btn, err := b.waitPayButton(ctx, n)
+	return btn, time.Since(start), err
+}
+
+// payClickJS 以支付按钮为 this，在同一次求值里看点它之前的最后状态：按钮可点（payReadyJS）、主页面的焦点不在 iframe 上、
+// 主页面可视区里 (x, y) 那一点是按钮自己或它的后代。返回不通过的原因：'busy'、'iframe'、'offpage'（那一点没有元素），
+// 或者别的元素的标签名（小写，iframe 就是 iframe）；全部通过返回空串。
+const payClickJS = `function (x, y) {
+	const ready = ` + payReadyJS + `
+	const doc = this.ownerDocument
+	if (!ready.call(this)) return 'busy'
+	if (doc.activeElement && doc.activeElement.tagName === 'IFRAME') return 'iframe'
+	const hit = doc.elementFromPoint(x, y)
+	if (!hit) return 'offpage'
+	return this.contains(hit) ? '' : hit.tagName.toLowerCase()
+}`
+
+// payClickPoint 是内嵌页点支付前的最后检查（设计 §5.8），Submit 和 PayButtonState 共用，只检查、不点击：
+// 先把按钮滚进视野、等它停稳（landPoint），再用 payClickJS 在同一次求值里查可点、焦点、落点。全部通过才返回中心点坐标，
+// 调用方就点这个坐标，不再重新滚动、求中心；检查和点击之间不再有等待。
+// 按钮不可点返回 errPayNotReady；落点是别的元素返回「落点是 <标签名>，没有点击」；其余原因也以「，没有点击」结尾。
+func (b *Browser) payClickPoint(ctx context.Context, btn *elem) (x, y float64, err error) {
+	if x, y, err = b.landPoint(ctx, []frameRef{btn.frame}, btn); err != nil {
+		return 0, 0, err
+	}
+	var why string
+	if err := callOn(ctx, btn.obj, payClickJS, &why, x, y); err != nil {
+		return 0, 0, err
+	}
+	switch why {
+	case "":
+		return x, y, nil
+	case "busy":
+		return 0, 0, errPayNotReady
+	case "iframe":
+		return 0, 0, errors.New("焦点还在 iframe 里，没有点击")
+	case "offpage":
+		return 0, 0, errors.New("点击落点不在页面上，没有点击")
+	}
+	return 0, 0, fmt.Errorf("落点是 %s，没有点击", why)
+}
+
+// payCheckErr 把 payClickPoint 的错误写成 Submit 的错误：按钮不可点照原样；落点是别的元素写「支付按钮被挡住（落点是 …），没有点击」；
+// 其余（位置还在变、落点不在页面上、焦点还在 iframe 里、读不出位置）写「支付按钮没过落点检查（原因），没有点击」。
+func payCheckErr(err error) error {
+	if errors.Is(err, errPayNotReady) {
+		return err
+	}
+	return fmt.Errorf("支付按钮%s，没有点击", payCheckNote(err))
+}
+
+// payCheckNote 是 payClickPoint 不通过（按钮不可点除外）的短说明，Submit 的错误和试运行的按钮状态共用：
+// 落点是别的元素时是「被挡住（落点是 …）」，其余是「没过落点检查（原因）」。
+func payCheckNote(err error) string {
+	why := landReason(err)
+	if strings.HasPrefix(why, "落点是") {
+		return "被挡住（" + why + "）"
+	}
+	return "没过落点检查（" + why + "）"
 }
 
 // leftCheckout 读主页面的 location.pathname，不再以 /checkout/ 开头时返回 true。

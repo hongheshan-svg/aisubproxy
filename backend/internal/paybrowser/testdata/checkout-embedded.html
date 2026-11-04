@@ -43,7 +43,12 @@
     busy=1          卡片 iframe 回 address-changed 消息（地址里任一字段变了）后，支付按钮 disabled、aria-busy="true"
                     约 1.5 秒，之后恢复可用、aria-busy="false"（仿 2026-11-04 07:23 实测：改了地址，页面重算时按钮短暂忙碌）。
                     卡片 iframe 默认没有地址区，要配 addr=… 才会触发
-    clip=1、fold=1、fold=main、cover=1、busy=1 时，支付按钮收到可信点击，#pay-clicks（hidden）加一
+    busy=blur       卡片 iframe 回 field-blur 消息（里面有元素失焦）后，支付按钮 disabled、aria-busy="true" 约 800ms，之后恢复
+                    （仿「iframe 失焦时页面重算」：点支付那一下按下鼠标，焦点离开 iframe，按钮在松开之前就变成不可用）
+    busy=blur-stuck 卡片 iframe 回 frame-blur 消息（整个 iframe 失去焦点，焦点移到了本页）后，支付按钮 disabled、aria-busy="true"，
+                    再也不恢复。填表时焦点只在 iframe 里换来换去，不会触发
+    clip=1、fold=1、fold=main、cover=1、busy=… 时，支付按钮收到可信点击，#pay-clicks（hidden）加一
+    #main-keys（hidden）总是有，记本页收到的可信 keydown 次数
     linkverify=1    卡片 iframe 回 linkverify-shown 消息（它弹出了 Link 验证框）时，#link-state（hidden）设为 shown
     其余参数原样传给卡片 iframe（amount、currency、nocurrency、noamount、savepay、linksave、terms、linkverify、addr、clip、low，
     见 card-embedded.html）
@@ -110,7 +115,11 @@
     document.getElementById('checkout-form').appendChild(c)
     return c
   }
-  var cover = q.get('cover') === '1', busy = q.get('busy') === '1'
+  var mainKeys = counter('main-keys')
+  document.addEventListener('keydown', function (e) {
+    if (e.isTrusted) mainKeys.value = String(Number(mainKeys.value) + 1)
+  }, true)
+  var cover = q.get('cover') === '1', busy = q.get('busy')
   if (q.get('clip') === '1' || fold === '1' || fold === 'main' || cover || busy) {
     var payClicks = counter('pay-clicks')
     pay.addEventListener('click', function (e) {
@@ -141,17 +150,19 @@
       document.body.appendChild(layer)
     })
   }
-  if (busy) {
+  // busy 对应的消息和忙碌时长（ms，0 表示不再恢复）
+  var busyOn = { '1': ['address-changed', 1500], 'blur': ['field-blur', 800], 'blur-stuck': ['frame-blur', 0] }[busy]
+  if (busyOn) {
     var busyTimer = null
     window.addEventListener('message', function (e) {
-      if (e.source !== cardFrame.contentWindow || !e.data || e.data.type !== 'address-changed') return
+      if (e.source !== cardFrame.contentWindow || !e.data || e.data.type !== busyOn[0]) return
       pay.disabled = true
       pay.setAttribute('aria-busy', 'true')
       clearTimeout(busyTimer)
-      busyTimer = setTimeout(function () {
+      if (busyOn[1]) busyTimer = setTimeout(function () {
         pay.disabled = false
         pay.setAttribute('aria-busy', 'false')
-      }, 1500)
+      }, busyOn[1])
     })
   }
   if (q.get('linkverify') === '1') {

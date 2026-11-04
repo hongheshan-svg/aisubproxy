@@ -2,6 +2,7 @@ package paybrowser
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -10,6 +11,7 @@ import (
 	"unicode"
 
 	"github.com/chromedp/cdproto/cdp"
+	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 	"github.com/chromedp/chromedp/kb"
 )
@@ -22,11 +24,12 @@ const (
 )
 
 var (
-	addressWait       = 15 * time.Second // 地址字段的等待时限：含点手动地址入口后字段出现、字段自己出现、选地址联想后字段展开
-	suggestWait       = 8 * time.Second  // 在街道里键入后等地址联想出现的时限（2026-11-04 实测 4 秒内出现）
-	suggestRetypeWait = 3 * time.Second  // 第一次键入街道后等这么久还没有联想，就清空重打一次（2026-11-04 实测联想库第一次键入时才加载）
-	suggestCloseWait  = 2 * time.Second  // 填完地址后按 Esc 关地址联想下拉，等它收起的时限
-	emailSettle       = time.Second      // 键入邮箱后留给页面反应的时间：可能重绘、重新勾上 Link 或弹 Link 验证
+	addressWait       = 15 * time.Second       // 地址字段的等待时限：含点手动地址入口后字段出现、字段自己出现、选地址联想后字段展开
+	suggestWait       = 8 * time.Second        // 在街道里键入后等地址联想出现的时限（2026-11-04 实测 4 秒内出现）
+	suggestRetypeWait = 3 * time.Second        // 第一次键入街道后等这么久还没有联想，就清空重打一次（2026-11-04 实测联想库第一次键入时才加载）
+	suggestCloseWait  = 2 * time.Second        // 填完地址后按 Esc 关地址联想下拉，等它收起的时限
+	blurSettle        = 500 * time.Millisecond // 内嵌页填完后让 iframe 里的输入框失焦，留给页面反应（改写格式、重算）的时间
+	emailSettle       = time.Second            // 键入邮箱后留给页面反应的时间：可能重绘、重新勾上 Link 或弹 Link 验证
 )
 
 const (
@@ -137,7 +140,46 @@ func (b *Browser) fillForm(ctx context.Context, c Card, bl Billing) error {
 	if err := b.acceptTerms(ctx); err != nil {
 		return err
 	}
+	if b.pageKind() == PageEmbedded {
+		if err := b.blurFrames(ctx); err != nil {
+			return err
+		}
+	}
 	return b.recheckFields(ctx, st.done)
+}
+
+// blurActiveJS 让本 frame 里有焦点的元素失焦，返回失焦了没有。iframe 元素不碰：它里面的 frame 由 blurFrames 逐个处理。
+const blurActiveJS = `(() => {
+	const a = document.activeElement
+	if (!a || a === document.body || a === document.documentElement || a.tagName === 'IFRAME' || !a.blur) return false
+	a.blur()
+	return true
+})()`
+
+// blurFrames 是内嵌页填表的最后一步（在 recheckFields 之前，设计 §5.7）：让各 iframe 里有焦点的输入框失焦，失焦了就等 blurSettle。
+// 只调 blur()，不点击、不发按键。combobox 失焦时自动选中高亮项、改写格式、页面重算金额这类副作用，于是都发生在最后核对和
+// 引擎复核金额之前，能被它们抓住；不然要等点支付时焦点离开 iframe 才发生，那时已经点下去了。读不出的 frame 跳过。
+func (b *Browser) blurFrames(ctx context.Context) error {
+	frames, err := b.frames(ctx)
+	if err != nil {
+		return fmt.Errorf("让输入框失焦失败: %w", err)
+	}
+	blurred := false
+	for _, f := range frames[1:] {
+		r, exc, err := runtime.Evaluate(blurActiveJS).WithContextID(f.ctx).WithReturnByValue(true).Do(ctx)
+		if err != nil {
+			b.forgetWorld(f.id)
+			continue
+		}
+		var ok bool
+		if exc == nil && json.Unmarshal(r.Value, &ok) == nil && ok {
+			blurred = true
+		}
+	}
+	if !blurred {
+		return nil
+	}
+	return sleep(ctx, blurSettle)
 }
 
 // fillHostedAddress 填托管页的账单地址：有值的字段都必填，找不到就报错。
@@ -259,7 +301,7 @@ func (b *Browser) fillEmbeddedAddress(ctx context.Context, st *fillState, bl Bil
 //   - 对街道框用 DOM.focus 设焦点（ensureFocus；不用鼠标点：下拉就在街道下方），按一次 Esc（只按 Esc，绝不按回车），
 //     最多等 suggestCloseWait 看它收起。
 //   - 收起了：报告「手动地址」后面接「；联想下拉已关闭」，再核对一次街道仍是账单街道，不是就报错放弃。
-//   - 关不上（含找不到街道框、设不了焦点）：不报错，报告接「；联想下拉没关上」；点支付前的落点检查（landsOnSelf）会兜住点击。
+//   - 关不上（含找不到街道框、设不了焦点）：不报错，报告接「；联想下拉没关上」；点支付前的落点检查（payClickPoint）会兜住点击。
 func (b *Browser) closeSuggestions(ctx context.Context, line1 string) error {
 	note := func(s string) { b.updateReport(func(r *FillReport) { r.ManualAddress = joinNote(r.ManualAddress, s) }) }
 	frames, err := b.frames(ctx)
@@ -956,29 +998,44 @@ func (b *Browser) PayButtonState(ctx context.Context) string {
 	return state
 }
 
-// embeddedPayButtonState 是内嵌页的 PayButtonState（设计 §5.8）。2026-11-04 07:23 实测：地址改了，页面重算，
-// Fill 刚返回时按钮 disabled、aria-busy，1 秒后才可用；只读一次就会误报「存在但不可点击」。所以和 Submit 用同一个标准
-// （embeddedPayButton：仍在结账页、主页面唯一可见、可用的提交按钮），最多等 fieldWait：
-//   - 等到了，再做点支付前的落点检查（landsOnSelf，只检查、不点击）：通过报「可点击」，不通过报「可点击，但落点被挡住（原因）」；
-//   - 等不到时按最后一次看到的情况报：唯一但不可用「存在但不可点击（等了 N 秒）」，「不唯一（N 个）」「未找到」「读取失败」措辞不变；
-//     看到离开了结账页就不再等，报「页面已离开结账页」。
+// embeddedPayButtonState 是内嵌页的 PayButtonState（设计 §5.8），和 Submit 走同一条路，只检查、绝不点击：
+//   - waitPayButton 最多等 fieldWait，等到仍在结账页、主页面唯一可见、可用（不 disabled、不 aria-busy）的提交按钮；
+//   - readyAfterFocus 把焦点移到主页面（只设焦点）、固定等 payFocusSettle，再最多等 fieldWait 等按钮重新可用；
+//   - payClickPoint 查可点、焦点、落点。
+//
+// 2026-11-04 07:23 实测：地址改了，页面重算，Fill 刚返回时按钮 disabled、aria-busy，1 秒后才可用；只读一次会误报「存在但不可点击」。
+// 结果：
+//   - 全过：「可点击（等了 X 秒）」，X 是两段等按钮可用的时间之和（不含固定的 payFocusSettle），用来看实页会不会在失焦时重算；
+//   - 落点是别的元素：「可点击，但落点被挡住（落点是 …）」；其余没过落点检查：「可点击，但没过落点检查（原因）」；
+//   - 等不到时按最后一次看到的情况报：唯一但不可用「存在但不可点击（等了 N 秒）」（N 是 fieldWait），
+//     「不唯一（N 个）」「未找到」「读取失败」措辞不变；看到已离开结账页报「页面已离开结账页」。
 func (b *Browser) embeddedPayButtonState(ctx context.Context) string {
 	n := payButtonUnreadable
 	state := ""
 	err := b.do(ctx, func(ctx context.Context) error {
-		var btn *elem
-		_, err := b.poll(ctx, fieldWait, func(frames []frameRef) bool {
-			btn = b.embeddedPayButton(ctx, frames[0], &n)
-			return btn != nil || n == payButtonLeft
-		})
+		start := time.Now()
+		btn, err := b.waitPayButton(ctx, &n)
 		if err != nil || btn == nil {
 			return err
 		}
-		if _, _, err := b.landsOnSelf(ctx, btn); err != nil {
-			state = "可点击，但落点被挡住（" + landReason(err) + "）"
+		waited := time.Since(start)
+		btn, after, err := b.readyAfterFocus(ctx, btn, &n)
+		if err != nil || btn == nil {
+			return err
+		}
+		waited += after
+		if _, _, err := b.payClickPoint(ctx, btn); err != nil {
+			switch note := payCheckNote(err); {
+			case errors.Is(err, errPayNotReady):
+				state = "存在但不可点击"
+			case strings.HasPrefix(note, "被挡住"):
+				state = "可点击，但落点" + note
+			default:
+				state = "可点击，但" + note
+			}
 			return nil
 		}
-		state = "可点击"
+		state = fmt.Sprintf("可点击（等了 %.1f 秒）", waited.Seconds())
 		return nil
 	})
 	switch {

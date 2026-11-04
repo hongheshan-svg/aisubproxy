@@ -47,6 +47,8 @@
                      Esc 先于结果到达，结果回来后下拉又打开了）：街道收到可信 input 后约 300ms 才按收到 input 时的值显示或收起联想，
                      期间按 Esc 不会取消这次显示；显示之后再按 Esc 会收起
     addr=suggest-sticky 同 addr=suggest，但联想显示之后按 Esc 收不起来（点一条联想照样收起）
+    addr=suggest-revert 同 addr=suggest-async，另外联想开着、街道 500ms 以上没有可信 input 时按 Esc，街道被清空
+                     （仿按 Esc 撤销输入的 combobox；填街道时紧跟在键入后面的 Esc 不受影响，只有填完关下拉那一下会清空）
     addr=late        卡号框输入满 16 位后出现国家（US、PH）和街道地址；街道收到 input 后才插入姓名框（测「先没有、后出现」）
     clip=1           本页文档不能被脚本滚动（body overflow: clip），超出 iframe 高度的部分看不到也滚不过来：
                      addr=1 时整个地址区（国家、邮编）、addr=suggest 时折叠的城市、州、邮编，都放在 iframe 可视区下沿以下。
@@ -54,10 +56,14 @@
     low=1            配 clip=1：「保存付款信息」、Link 保存、「同意条款」三个勾选框，addr=stripe 的「Enter address manually」，
                      linkverify=1 的「Pay without Link」，都放进 iframe 可视区下沿以下的 #low（同样被裁掉、滚不过来）
     nocvc=1          没有 CVC 框（测必填字段缺失时报错）
+    blurzip=1        邮编框（两种 id 都算）失焦时，5 位数字的值被改写成「值-0000」（测失焦时改写格式）
+  #frame-keys（hidden）记本页收到的可信 keydown 次数（任何元素）。
   结账页发来 collect 消息时回传各字段的值和卡号框收到的真实按键次数（与 card.html 相同的协议）。
-  另外两条发给结账页的消息（结账页的 cover=1、busy=1 用，其余情况结账页不理会）：
-    number-full      卡号框第一次输入满 16 位时发一次
-    address-changed  地址区（#address）里任一字段收到 input 或 change 事件、而且值和上次不同时发（失焦补发的 change 不算）
+  另外几条发给结账页的消息（结账页的 cover=1、busy=… 用，其余情况结账页不理会）：
+    number-full      卡号框第一次输入满 16 位时发一次（cover=1 用）
+    address-changed  地址区（#address）里任一字段收到 input 或 change 事件、而且值和上次不同时发（失焦补发的 change 不算；busy=1 用）
+    field-blur       本页任一元素失焦（focusout）时发（结账页 busy=blur 用）
+    frame-blur       本页整个失去焦点（window 的 blur，焦点移到了结账页上，比如点支付按钮）时发（结账页 busy=blur-stuck 用）
 -->
 <label>Card number <input id="payment-numberInput" name="number" autocomplete="cc-number" inputmode="numeric"></label>
 <label>Expiration date <input id="payment-expiryInput" name="expiry" autocomplete="cc-exp" inputmode="numeric"></label>
@@ -148,6 +154,21 @@
   number.addEventListener('keydown', function (e) {
     if (e.isTrusted && e.key.length === 1) numberKeys++
   })
+  var frameKeys = document.createElement('input')
+  frameKeys.type = 'hidden'
+  frameKeys.id = 'frame-keys'
+  frameKeys.value = '0'
+  document.body.appendChild(frameKeys)
+  document.addEventListener('keydown', function (e) {
+    if (e.isTrusted) frameKeys.value = String(Number(frameKeys.value) + 1)
+  }, true)
+  document.addEventListener('focusout', function (e) {
+    if (q.get('blurzip') === '1' && /postalCodeInput$/.test(e.target.id) && /^\d{5}$/.test(e.target.value)) {
+      e.target.value += '-0000'
+    }
+    parent.postMessage({ type: 'field-blur' }, '*')
+  })
+  window.addEventListener('blur', function () { parent.postMessage({ type: 'frame-blur' }, '*') })
   var numberFull = false
   number.addEventListener('input', function () {
     if (numberFull || number.value.replace(/\D/g, '').length < 16) return
@@ -209,7 +230,7 @@
     })
   }
 
-  if (['suggest', 'suggest-none', 'suggest-stuck', 'suggest-decoy', 'suggest-lazy', 'suggest-async', 'suggest-sticky'].indexOf(addr) >= 0) {
+  if (['suggest', 'suggest-none', 'suggest-stuck', 'suggest-decoy', 'suggest-lazy', 'suggest-async', 'suggest-sticky', 'suggest-revert'].indexOf(addr) >= 0) {
     onFullNumber(function (box) {
       box.innerHTML = countryHTML + nameHTML +
         '<label>Address line 1 <input id="billingAddress-addressLine1Input" name="addressLine1" autocomplete="billing address-line1"' +
@@ -237,15 +258,17 @@
         showList(false)
       }
       var loaded = addr !== 'suggest-lazy'
+      var lastInput = 0 // 街道最近一次收到可信 input 的时刻（suggest-revert 用）
       var loading = null
       line1.addEventListener('input', function (e) {
         if (!e.isTrusted || addr === 'suggest-none') return
+        lastInput = Date.now()
         if (!loaded) {
           clearTimeout(loading)
           loading = setTimeout(function () { loaded = true }, 500)
           return
         }
-        if (addr === 'suggest-async') {
+        if (addr === 'suggest-async' || addr === 'suggest-revert') {
           // 异步结果：按收到 input 时的值，约 300ms 后才显示或收起；这期间的 Esc 不取消它
           var query = line1.value
           setTimeout(function () { showList(query.length >= 3) }, 300)
@@ -254,7 +277,9 @@
         showList(line1.value.length >= 3)
       })
       line1.addEventListener('keydown', function (e) {
-        if (e.key === 'Escape' && addr !== 'suggest-sticky') showList(false)
+        if (e.key !== 'Escape' || addr === 'suggest-sticky') return
+        if (addr === 'suggest-revert' && list.style.display !== 'none' && Date.now() - lastInput >= 500) line1.value = ''
+        showList(false)
       })
       list.addEventListener('click', function (e) {
         var opt = e.target.closest('[role="option"]')

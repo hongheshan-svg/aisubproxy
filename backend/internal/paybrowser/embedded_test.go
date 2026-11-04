@@ -367,8 +367,8 @@ func TestEmbeddedFillWithoutAddress(t *testing.T) {
 			t.Errorf("报告缺少 %q：\n%s", want, lines)
 		}
 	}
-	if st := b.PayButtonState(ctx); st != "可点击" {
-		t.Fatalf("支付按钮状态 = %q，期望可点击", st)
+	if st := b.PayButtonState(ctx); !strings.HasPrefix(st, "可点击（等了 ") {
+		t.Fatalf("支付按钮状态 = %q，期望「可点击（等了 N 秒）」", st)
 	}
 	if n := len(f.payments()); n != 0 {
 		t.Fatalf("只填表不提交：仿造页收到 %d 次提交", n)
@@ -1010,6 +1010,7 @@ func TestEmbeddedPayWithoutLinkOutsideFrame(t *testing.T) {
 // 打开后页面又冒出第二个提交按钮时，按钮状态要报「不唯一」。
 func TestEmbeddedPayButtonStateNotUnique(t *testing.T) {
 	needChrome(t)
+	t.Cleanup(paybrowser.SetFieldWait(time.Second)) // 不唯一时要等满 fieldWait 才下结论，缩短免得白等 10 秒
 	f := newFakeEmbedded(t)
 	b, ctx := openEmbedded(t, f, "rerender=1")
 
@@ -1283,8 +1284,8 @@ func TestEmbeddedPayButtonStateWaitsBusy(t *testing.T) {
 	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
 		t.Fatalf("Fill: %v", err)
 	}
-	if st := b.PayButtonState(ctx); st != "可点击" {
-		t.Fatalf("支付按钮状态 = %q，期望可点击", st)
+	if st := b.PayButtonState(ctx); !strings.HasPrefix(st, "可点击（等了 ") {
+		t.Fatalf("支付按钮状态 = %q，期望「可点击（等了 N 秒）」", st)
 	}
 	if err := b.Submit(ctx); err != nil {
 		t.Fatalf("Submit: %v", err)
@@ -1344,5 +1345,180 @@ func TestEmbeddedPayButtonStateDisabled(t *testing.T) {
 	}
 	if n := len(f.payments()); n != 0 {
 		t.Fatalf("只读按钮状态：仿造页收到 %d 次提交", n)
+	}
+}
+
+// keyCounts 返回主页面（#main-keys）和卡片 iframe（#frame-keys）各自收到的可信 keydown 次数。
+func keyCounts(t *testing.T, ctx context.Context, b *paybrowser.Browser) (main, frame string) {
+	t.Helper()
+	var err error
+	if main, err = paybrowser.FieldValue(ctx, b, "#main-keys"); err != nil {
+		t.Fatalf("读主页面按键次数: %v", err)
+	}
+	if frame, err = paybrowser.FieldValue(ctx, b, "#frame-keys"); err != nil {
+		t.Fatalf("读 iframe 按键次数: %v", err)
+	}
+	return main, frame
+}
+
+// iframe 失焦时页面重算，支付按钮短暂不可用（仿造页 busy=blur：iframe 里有元素失焦，按钮 disabled、aria-busy 约 800ms）。
+// 直接用鼠标点，按下那一刻焦点离开 iframe，按钮在松开之前就变成不可用，点击丢了，可 submitted 已经置位。
+// Fill 末尾先让 iframe 里的输入框失焦，Submit 先把焦点移到主页面、等按钮重新可用，再检查、再点：只点一次，点到了。
+// Submit 期间主页面和 iframe 都没收到任何按键。
+func TestEmbeddedSubmitAfterBlurRecompute(t *testing.T) {
+	needChrome(t)
+	t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "busy=blur")
+
+	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+		t.Fatalf("Fill: %v", err)
+	}
+	mainBefore, frameBefore := keyCounts(t, ctx, b)
+	if err := b.Submit(ctx); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	if !b.LockSubmit() {
+		t.Fatal("点击之后 LockSubmit 必须返回 true")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for len(f.payments()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if n := payClicks(t, ctx, b); n != "1" {
+		t.Fatalf("支付按钮收到 %s 次可信点击，期望 1", n)
+	}
+	if n := len(f.payments()); n != 1 {
+		t.Fatalf("仿造页收到 %d 次提交，期望正好 1 次", n)
+	}
+	if m, fr := keyCounts(t, ctx, b); m != mainBefore || fr != frameBefore {
+		t.Fatalf("Submit 期间收到了按键：主页面 %s→%s，iframe %s→%s", mainBefore, m, frameBefore, fr)
+	}
+}
+
+// 焦点一离开 iframe，支付按钮就一直不可用（仿造页 busy=blur-stuck）：Submit 先把焦点移到主页面，等不到按钮可用就不点，
+// 返回「不可点击……没有点击」，不置位，LockSubmit 证明没点过；0 次点击、0 次提交，也没发任何按键。
+func TestEmbeddedSubmitRefusesWhenBlurDisablesButton(t *testing.T) {
+	needChrome(t)
+	t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+	t.Cleanup(paybrowser.SetFieldWait(time.Second))
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "busy=blur-stuck")
+
+	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+		t.Fatalf("Fill: %v", err)
+	}
+	mainBefore, frameBefore := keyCounts(t, ctx, b)
+	err := b.Submit(ctx)
+	if err == nil || !strings.Contains(err.Error(), "不可点击") || !strings.Contains(err.Error(), "没有点击") {
+		t.Fatalf("Submit = %v，期望含「不可点击」和「没有点击」", err)
+	}
+	if b.LockSubmit() {
+		t.Fatal("按钮一直不可用时没有点击，LockSubmit 应返回 false")
+	}
+	if n := payClicks(t, ctx, b); n != "0" {
+		t.Fatalf("支付按钮收到 %s 次可信点击，期望 0", n)
+	}
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("仿造页收到 %d 次提交，期望 0 次", n)
+	}
+	if m, fr := keyCounts(t, ctx, b); m != mainBefore || fr != frameBefore {
+		t.Fatalf("Submit 期间收到了按键：主页面 %s→%s，iframe %s→%s", mainBefore, m, frameBefore, fr)
+	}
+}
+
+// 输入框失焦时页面改写了格式（仿造页 blurzip=1：邮编失焦后变成「97201-0000」）：Fill 末尾先让它失焦，
+// 改写发生在最后核对之前，被核对抓住，报错放弃，不点支付。
+func TestEmbeddedFillBlurRewritesZip(t *testing.T) {
+	needChrome(t)
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "addr=1&blurzip=1")
+
+	err := b.Fill(ctx, testCard, embeddedBilling)
+	if err == nil || !strings.Contains(err.Error(), "「邮编」填完后被页面改掉了") {
+		t.Fatalf("Fill = %v，期望报「邮编」填完后被页面改掉了", err)
+	}
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("Fill 失败时仿造页收到 %d 次提交", n)
+	}
+}
+
+// 关联想下拉的那一下 Esc 把街道清空了（仿造页 addr=suggest-revert）：关上后核对街道不一致，报错放弃。
+func TestEmbeddedFillCloseSuggestionsReverts(t *testing.T) {
+	needChrome(t)
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "addr=suggest-revert")
+
+	err := b.Fill(ctx, testCard, embeddedBilling)
+	if err == nil || !strings.Contains(err.Error(), "关联想下拉后街道地址被改了，已放弃") {
+		t.Fatalf("Fill = %v，期望报「关联想下拉后街道地址被改了，已放弃」", err)
+	}
+	if lines := strings.Join(b.FillReport().Lines(), "\n"); !strings.Contains(lines, "联想下拉已关闭") {
+		t.Errorf("报告缺少「联想下拉已关闭」：\n%s", lines)
+	}
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("Fill 失败时仿造页收到 %d 次提交", n)
+	}
+}
+
+// 支付按钮一直在动（这里用动画来回平移）：落点检查读两次位置不一样，试运行报「没过落点检查（位置还在变）」，
+// Submit 不点、不置位。原因不是「落点是别的元素」，所以不说「被挡住」。
+func TestEmbeddedSubmitRefusesMovingButton(t *testing.T) {
+	needChrome(t)
+	t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "")
+
+	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+		t.Fatalf("Fill: %v", err)
+	}
+	const js = `document.querySelector('#buttons button[type="submit"]').animate(
+		[{ transform: 'translateX(0px)' }, { transform: 'translateX(200px)' }],
+		{ duration: 1000, iterations: Infinity, direction: 'alternate' })`
+	if err := paybrowser.EvalMain(ctx, b, js); err != nil {
+		t.Fatalf("让支付按钮动起来: %v", err)
+	}
+	if st := b.PayButtonState(ctx); st != "可点击，但没过落点检查（位置还在变）" {
+		t.Fatalf("支付按钮状态 = %q，期望「可点击，但没过落点检查（位置还在变）」", st)
+	}
+	err := b.Submit(ctx)
+	if err == nil || !strings.Contains(err.Error(), "支付按钮没过落点检查（位置还在变），没有点击") {
+		t.Fatalf("Submit = %v，期望「支付按钮没过落点检查（位置还在变），没有点击」", err)
+	}
+	if b.LockSubmit() {
+		t.Fatal("按钮还在动时没有点击，LockSubmit 应返回 false")
+	}
+	time.Sleep(300 * time.Millisecond)
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("仿造页收到 %d 次提交，期望 0 次", n)
+	}
+}
+
+// 支付按钮的中心在主页面可视区外（这里把它固定在左边缘外面一半多），滚也滚不过来：elementFromPoint 读不到元素，
+// Submit 报「没过落点检查（点击落点不在页面上）」，不点、不置位。
+func TestEmbeddedSubmitRefusesOffscreenButton(t *testing.T) {
+	needChrome(t)
+	t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "")
+
+	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+		t.Fatalf("Fill: %v", err)
+	}
+	const js = `document.querySelector('#buttons button[type="submit"]').style.cssText =
+		'position: fixed; left: -150px; top: 10px; width: 200px; height: 40px; margin: 0'`
+	if err := paybrowser.EvalMain(ctx, b, js); err != nil {
+		t.Fatalf("把支付按钮挪到可视区外: %v", err)
+	}
+	err := b.Submit(ctx)
+	if err == nil || !strings.Contains(err.Error(), "支付按钮没过落点检查（点击落点不在页面上），没有点击") {
+		t.Fatalf("Submit = %v，期望「支付按钮没过落点检查（点击落点不在页面上），没有点击」", err)
+	}
+	if b.LockSubmit() {
+		t.Fatal("落点不在页面上时没有点击，LockSubmit 应返回 false")
+	}
+	time.Sleep(300 * time.Millisecond)
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("仿造页收到 %d 次提交，期望 0 次", n)
 	}
 }

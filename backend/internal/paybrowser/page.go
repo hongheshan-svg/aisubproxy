@@ -463,8 +463,9 @@ func (b *Browser) LockSubmit() (clickAttempted bool) {
 }
 
 // Submit 点击主页面上的支付按钮。必须先 Fill 成功；先记下「已提交」再点击，此后再调用返回 ErrAlreadySubmitted 且不点击。
-// 内嵌页只在主页面仍在结账页时点唯一可见、可用的提交按钮，点击前一刻再核对一次，不满足就不点、返回错误（见 embeddedPayButton）；
-// 核对之后、置位之前再看落点（landsOnSelf），按钮被挡住就不点、不置位，通过了就用检查过的坐标点。
+// 内嵌页（设计 §5.8）只在主页面仍在结账页时点唯一可见、可用的提交按钮（见 embeddedPayButton）：找到后先把焦点移到主页面、
+// 等按钮重新可用（readyAfterFocus），点击前一刻再核对一次，最后在同一次脚本里查可点、焦点、落点（payClickPoint），
+// 任何一步不过就不点、不置位、返回错误；全部通过才置位，并点刚检查过的坐标。
 func (b *Browser) Submit(ctx context.Context) error {
 	b.mu.Lock()
 	submitted, filled, locked := b.submitted, b.filled, b.submitLocked
@@ -507,6 +508,16 @@ func (b *Browser) Submit(ctx context.Context) error {
 		if embedded && btn == nil {
 			return embeddedPayButtonErr(n)
 		}
+		if embedded {
+			// 先把焦点移出 Stripe 的 iframe、等页面反应完，再等按钮重新可用：不然按下鼠标那一刻 iframe 才失焦，
+			// 页面要是因此把按钮短暂设成不可用，松开时点击就丢了，而 submitted 已经置位
+			if btn, _, err = b.readyAfterFocus(ctx, btn, &n); err != nil {
+				return fmt.Errorf("%w，没有点击", err)
+			}
+			if btn == nil {
+				return embeddedPayButtonErr(n)
+			}
+		}
 		if btn == nil {
 			if seen {
 				return errors.New("支付按钮一直不可点击（可能有字段未通过页面校验）")
@@ -526,12 +537,12 @@ func (b *Browser) Submit(ctx context.Context) error {
 			if btn = b.embeddedPayButton(ctx, btn.frame, &n); btn == nil {
 				return embeddedPayButtonErr(n)
 			}
-			// 再看落点（设计 §5.8）：按钮中心那一点被别的东西盖住（地址联想下拉、横幅、弹层）就不点，同样不置位。
-			// 置位之后只要点了就绝不再点第二次，点到盖着的东西上，这一单就只能走确认、回收。
-			// 通过了就点刚检查过的这个坐标，不再重新滚动、求中心
-			x, y, lerr := b.landsOnSelf(ctx, btn)
+			// 最后在同一次脚本里查：按钮可点、主页面焦点不在 iframe 上、中心那一点是按钮自己（没被地址联想下拉、横幅、弹层盖住）。
+			// 不过就不点，同样不置位：置位之后只要点了就绝不再点第二次，点到盖着的东西上，这一单就只能走确认、回收。
+			// 通过了就点刚检查过的这个坐标，检查和点击之间不再有等待，也不再重新滚动、求中心
+			x, y, lerr := b.payClickPoint(ctx, btn)
 			if lerr != nil {
-				return fmt.Errorf("支付按钮被挡住（%s），没有点击", landReason(lerr))
+				return payCheckErr(lerr)
 			}
 			pay = func(ctx context.Context, _ *elem) error { return chromedp.MouseClickXY(x, y).Do(ctx) }
 		}

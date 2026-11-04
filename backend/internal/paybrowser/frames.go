@@ -456,7 +456,7 @@ func (b *Browser) scrollAnchor(ctx context.Context, frames []frameRef, e *elem) 
 	return obj.ObjectID, nil
 }
 
-// landPoint 把元素滚进视野、等它停稳，返回它中心点在主页面可视区里的坐标。落点检查 landsInOwnFrame、landsOnSelf 共用。
+// landPoint 把元素滚进视野、等它停稳，返回它中心点在主页面可视区里的坐标。落点检查 landsInOwnFrame 和点支付前的 payClickPoint 共用。
 //   - 先 ScrollIntoViewIfNeeded，读一次中心点。中心点仍在主页面可视区外、或离边缘不足 landEdge 时，
 //     从装着它的顶层 iframe（元素在主页面时就是它自己）往上找滚动容器，用 scrollIntoMainViewJS 滚到让它居中；
 //     真滚动过就等 landScrollSettle 再重新读。
@@ -538,35 +538,6 @@ func (b *Browser) landsInOwnFrame(ctx context.Context, frames []frameRef, e *ele
 	}
 	if !slices.ContainsFunc(subtree(frames, id), func(f frameRef) bool { return f.id == e.frame.id }) {
 		return 0, 0, errors.New("点击落点是别的 iframe，没有点击")
-	}
-	return x, y, nil
-}
-
-// landsOnSelfJS 以主页面上的元素为 this，看主页面可视区里 (x, y) 那一点：是它自己或它的后代时返回空串，
-// 是别的元素时返回那个元素的标签名（小写，iframe 就是 iframe），那一点没有元素（在可视区外）时返回 null。
-const landsOnSelfJS = `function (x, y) {
-	const hit = this.ownerDocument.elementFromPoint(x, y)
-	if (!hit) return null
-	return this.contains(hit) ? '' : hit.tagName.toLowerCase()
-}`
-
-// landsOnSelf 是主页面上元素（内嵌页的支付按钮）的落点检查（设计 §5.8）：同样滚进视野、等停稳（landPoint），
-// 再在主页面用 elementFromPoint 看中心那一点，必须是元素自己或它的后代；是别的东西（地址联想下拉的 iframe、横幅、弹层）就不通过，
-// 错误写「落点是 <标签名>，没有点击」。通过时返回这个坐标，调用方就点它，不再重新滚动、求中心。
-// 只滚动、读位置，不发任何鼠标、键盘事件。只在内嵌页（PageEmbedded）的路径上用。
-func (b *Browser) landsOnSelf(ctx context.Context, e *elem) (x, y float64, err error) {
-	if x, y, err = b.landPoint(ctx, []frameRef{e.frame}, e); err != nil {
-		return 0, 0, err
-	}
-	var hit *string
-	if err := callOn(ctx, e.obj, landsOnSelfJS, &hit, x, y); err != nil {
-		return 0, 0, err
-	}
-	switch {
-	case hit == nil:
-		return 0, 0, errors.New("点击落点不在页面上，没有点击")
-	case *hit != "":
-		return 0, 0, fmt.Errorf("落点是 %s，没有点击", *hit)
 	}
 	return x, y, nil
 }

@@ -93,8 +93,9 @@ const submit = async () => {
     router.push(safeAdminRedirect(route.query.redirect))
   } catch (error) {
     errorMessage.value = t('login.errNetwork')
+  } finally {
+    // 登录失败（密码错、被限流）直接 return 也要复位，否则按钮一直禁用转圈
+    loading.value = false
   }
-
-  loading.value = false
 }
 </script>

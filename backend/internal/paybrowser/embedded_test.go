@@ -1211,6 +1211,75 @@ func TestEmbeddedEnterOTP(t *testing.T) {
 	}
 }
 
+// 验证码格式不对（终审二 Minor-1）：只接受 4–12 位数字或字母。夹着 Tab、空白、换行的验证码逐字键入时，Tab 会把焦点移出验证码框，
+// 之后的空格、回车可能触发别处的按钮——包括主页面的支付按钮。格式不对就报错，一个键都不发，错误里不带验证码。
+// 格式对的（纯数字、数字加字母）照常键入、提交。
+func TestEnterOTPRejectsMalformed(t *testing.T) {
+	t.Run("格式不对都拒绝", func(t *testing.T) {
+		needChrome(t)
+		t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+		f := newFakeEmbedded(t)
+		b, ctx := openEmbedded(t, f, "challenge=1&payclicks=1")
+
+		fillSubmitEmbedded(t, b, ctx)
+		if out, msg, err := b.WaitOutcome(ctx, 15*time.Second); err != nil || out != paybrowser.OutcomeChallenge {
+			t.Fatalf("WaitOutcome = %q, %q, %v，期望 challenge", out, msg, err)
+		}
+		mainKeys, err := paybrowser.FieldValue(ctx, b, "#main-keys")
+		if err != nil {
+			t.Fatalf("读主页面按键次数: %v", err)
+		}
+		for _, otp := range []string{"123\t 456", "12 34", "1234\n", "\n1234", "123", "1234567890123", "12\x0734", "１２３４５６", ""} {
+			err := b.EnterOTP(ctx, otp)
+			if err == nil || !strings.Contains(err.Error(), "验证码") {
+				t.Errorf("EnterOTP(%q) = %v，期望报错", otp, err)
+				continue
+			}
+			if len(otp) >= 2 && strings.Contains(err.Error(), otp) {
+				t.Errorf("EnterOTP(%q) 的错误带了验证码原文: %v", otp, err)
+			}
+		}
+		if v, err := paybrowser.FieldValue(ctx, b, "#acs-code"); err != nil || v != "" {
+			t.Fatalf("验证码框 = %q, %v，格式不对时一个键都不该发", v, err)
+		}
+		if v, _ := paybrowser.FieldValue(ctx, b, "#main-keys"); v != mainKeys {
+			t.Fatalf("主页面收到了按键：%s→%s", mainKeys, v)
+		}
+		if r, _ := paybrowser.FieldValue(ctx, b, "#otp-result"); r != "" {
+			t.Fatalf("3DS 验证结果 = %q，格式不对时不该提交", r)
+		}
+		if n := payClicks(t, ctx, b); n != "1" {
+			t.Fatalf("支付按钮收到 %s 次可信点击，期望只有点支付那 1 次", n)
+		}
+		if err := b.EnterOTP(ctx, "123456"); err != nil {
+			t.Fatalf("EnterOTP(123456): %v", err)
+		}
+		if r := otpResult(t, ctx, b); r != "ok" {
+			t.Fatalf("3DS 验证结果 = %q，期望 ok", r)
+		}
+	})
+	t.Run("数字加字母照常键入", func(t *testing.T) {
+		needChrome(t)
+		t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+		f := newFakeEmbedded(t)
+		b, ctx := openEmbedded(t, f, "challenge=1")
+
+		fillSubmitEmbedded(t, b, ctx)
+		if out, msg, err := b.WaitOutcome(ctx, 15*time.Second); err != nil || out != paybrowser.OutcomeChallenge {
+			t.Fatalf("WaitOutcome = %q, %q, %v，期望 challenge", out, msg, err)
+		}
+		if err := b.EnterOTP(ctx, "AB12CD"); err != nil {
+			t.Fatalf("EnterOTP(AB12CD): %v", err)
+		}
+		if r := otpResult(t, ctx, b); r != "fail" { // 仿造页只认 123456，别的验证码照常提交、判被拒
+			t.Fatalf("3DS 验证结果 = %q，期望 fail（照常提交了）", r)
+		}
+		if v, err := paybrowser.FieldValue(ctx, b, "#acs-code"); err != nil || v != "AB12CD" {
+			t.Fatalf("验证码框 = %q, %v，期望 AB12CD", v, err)
+		}
+	})
+}
+
 // 验证框不是全屏遮罩（嵌在结账 form 里、紧贴支付按钮上方），验证码框和提交按钮在验证框可视区外、滚不过来（仿造页 challenge=inline）：
 // 按坐标点它们会点到主页面的支付按钮——第二次点支付。内嵌页上选中验证码框过落点检查，不过就直接设焦点；
 // 提交按钮的落点不在验证框里就不点、返回错误，也不改按回车。支付按钮只有点支付那一次点击，主页面收不到按键。

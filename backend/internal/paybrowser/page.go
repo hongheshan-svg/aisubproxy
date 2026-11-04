@@ -761,10 +761,13 @@ func truncateMessage(s string) string {
 // 内嵌页（设计 §5.8，终审 I1）：验证框不一定是全屏遮罩，验证码框、提交按钮可能在验证框可视区外，按坐标点会点到主页面——
 // 可能就是第二次点支付。所以选中验证码框用 focusField（过落点检查才用鼠标点，不过就直接设焦点），提交见 submitOTPEmbedded。
 // 托管页不变。
+//
+// 验证码只接受 4–12 位数字或字母（终审二 Minor-1）：验证码是逐字发键的，夹着的 Tab 会把焦点移出验证码框，
+// 之后的空格、回车可能落到别处的按钮上（包括主页面的支付按钮）。格式不对就报错，一个键都不发；错误里不带验证码。
+// 不先去首尾空白：「1234\n」这种也拒，不替人猜。
 func (b *Browser) EnterOTP(ctx context.Context, otp string) error {
-	otp = strings.TrimSpace(otp)
-	if otp == "" {
-		return errors.New("验证码为空")
+	if !otpFormat.MatchString(otp) {
+		return errors.New("验证码格式不对（只接受 4–12 位数字或字母），没有填写")
 	}
 	embedded := b.pageKind() == PageEmbedded
 	return b.do(ctx, func(ctx context.Context) error {
@@ -918,6 +921,9 @@ func (b *Browser) onlyTextInput(ctx context.Context, scope []frameRef) *elem {
 	}
 	return found
 }
+
+// otpFormat 是 EnterOTP 接受的验证码格式。Go 的 $ 在非多行模式下只匹配文本末尾，结尾带换行的不会被放过。
+var otpFormat = regexp.MustCompile(`^[0-9A-Za-z]{4,12}$`)
 
 var shotName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`)
 

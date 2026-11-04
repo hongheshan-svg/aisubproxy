@@ -6,6 +6,13 @@
 
 ## 未发布
 
+### 变更/修复
+
+- **卡台 API Key、Webhook 密钥加密保存**：和 MarsWallex 令牌一样用 `APP_MASTER_KEY` 加密；没配主密钥时，后台保存这两项会报错。
+- **卡台地址只接受 https**：本机回环地址（127.0.0.1、localhost）除外。修改卡台地址时必须同时重新填写 API Key，否则保存失败；卡台请求不再跟随重定向。
+- **站点名称、副标题按字符数限长**（40、80 个字符），超长直接提示，不再截断成乱码；保存失败会返回错误，不再显示成功。
+- **卡台 Webhook 入库脱敏**：原文里的卡号只留前 6 后 4，CVV、有效期不保存。重发的事件优先按 `event_id` 去重；入库失败返回 500，卡台会重试。
+
 ### 新增
 
 - **首页售后查询**：
@@ -144,6 +151,10 @@
 
 ### 升级注意
 
+- 卡台密钥和 Webhook 清洗（启动时自动做，可重复）：
+  - 旧的明文卡台 API Key、Webhook 密钥会加密保存，因此**已保存这两项的部署必须先配置合法的 `APP_MASTER_KEY`，否则服务启动失败并提示原因**（不会留着明文继续运行）。
+  - 已有的 `webhook_events` 原文会被清洗：卡号改成前 6 后 4，CVV、有效期删除。这些字段只用于排查和去重，不影响业务。
+  - 已保存的卡台地址如果是 http（本机回环除外），升级后仍能读到，但下次在后台保存时会被拒绝，请改成 https 并重新填写 API Key。
 - 停止服务最多会等 3 分钟：
   - 原生部署：`install.sh` 写的 systemd 服务文件已加 `TimeoutStopSec=240` 和 `KillMode=mixed`（停止时 SIGTERM 只发给主程序，不会同时杀掉在途单的 Chrome、Xvfb，否则等不到单子走完）。已有部署要重新运行 `install.sh`，或者手动在服务文件的 `[Service]` 段加上这两行（照 `deploy/cdk-recharge.service`），再执行 `systemctl daemon-reload`。
   - Docker 部署：`docker-compose.yml` 已加 `stop_grace_period: 240s`。重新运行 `deploy/docker-deploy.sh` 会下载新的 compose 文件并生效；自己维护 compose 文件的，加上这一行后执行 `docker compose up -d`。

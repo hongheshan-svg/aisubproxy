@@ -38,6 +38,13 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	if err := db.Init(&cfg.Database); err != nil {
 		return nil, err
 	}
+	// 卡台 API Key、webhook 密钥：旧版明文加密迁移；webhook 原文里的卡号、CVV、有效期清洗。失败就不启动，不静默留着明文
+	if err := db.MigrateCardSecrets(); err != nil {
+		return nil, fmt.Errorf("卡台密钥迁移: %w", err)
+	}
+	if err := db.MigrateWebhookPayloads(); err != nil {
+		return nil, fmt.Errorf("webhook 原文清洗: %w", err)
+	}
 	// Telegram 告警：后台配置优先，没配就用环境变量；旧版明文保存的令牌先加密迁移
 	handler.MigrateLegacyTelegramToken()
 	notify.SetSettingsSource(handler.TelegramSettings)

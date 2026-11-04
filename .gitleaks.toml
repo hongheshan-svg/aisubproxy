@@ -33,4 +33,5 @@ regexes = [
   '''^Str0ngPassw0rd-OAH$''',
   '''^S7-Strong-Passw0rd-xyz$''',
   '''^sk_plain_123456$''',
+  '''^Str0ngPassw0rd-S8x$''',
 ]

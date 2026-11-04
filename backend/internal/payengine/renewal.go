@@ -194,6 +194,9 @@ func (s *Service) renewOnce(ctx context.Context, no string, manual bool) (string
 	attempts := o.RenewalAttempts + 1
 	set := map[string]any{"renewal_attempts": attempts, "renewal_checked_at": now, "renewal_next_at": nil}
 	if confirmed {
+		if j.accessUntil != nil {
+			set["access_until"] = j.accessUntil.Unix()
+		}
 		// 关掉了：会话不再需要，立即清空
 		if err := moveRenewal(ctx, no, o.RenewalState, RenewalCancelled, set, true, "info", "已关闭续费并核实：下期不再自动续费，本期权益不受影响"); err != nil {
 			return "", err
@@ -249,14 +252,16 @@ func (s *Service) cancelRenewal(ctx context.Context, j *job) (bool, string) {
 		return false, "单据没有记录账号 ID，无法关闭续费"
 	}
 	if j.o.RenewalAttempts > 0 || j.o.RenewalState == RenewalFailed {
-		if off, _ := s.renewalOff(ctx, gpt, j.sess, accountID); off {
+		if off, _, until := s.renewalOff(ctx, gpt, j.sess, accountID); off {
+			j.accessUntil = until
 			return true, ""
 		}
 	}
 	cancelErr := gpt.CancelRenewal(ctx, j.sess, accountID)
 	// 请求出错也去核实：请求可能已经生效，只是响应没回来
-	off, why := s.renewalOff(ctx, gpt, j.sess, accountID)
+	off, why, until := s.renewalOff(ctx, gpt, j.sess, accountID)
 	if off {
+		j.accessUntil = until
 		return true, ""
 	}
 	if cancelErr != nil {
@@ -266,27 +271,27 @@ func (s *Service) cancelRenewal(ctx context.Context, j *job) (bool, string) {
 }
 
 // renewalOff 核实账号是否已经不再续费。优先读 GET /subscriptions 的 will_renew；没有这个字段（或查询出错）时读 accounts/check 里的 will_renew。
-// 只有明确读到 false 才算关掉；读到 true、读不到都不算。
-func (s *Service) renewalOff(ctx context.Context, gpt ChatGPT, sess chatgpt.Session, accountID string) (bool, string) {
+// 只有明确读到 false 才算关掉；读到 true、读不到都不算。until 只在走订阅接口判定关闭时带出（active_until），走账号接口时为 nil。
+func (s *Service) renewalOff(ctx context.Context, gpt ChatGPT, sess chatgpt.Session, accountID string) (off bool, why string, until *time.Time) {
 	info, err := gpt.SubscriptionStatus(ctx, sess, accountID)
 	if err == nil && info.WillRenew != nil {
 		if !*info.WillRenew {
-			return true, ""
+			return true, "", info.ActiveUntil
 		}
-		return false, "核实时订阅仍会续费（will_renew = true）"
+		return false, "核实时订阅仍会续费（will_renew = true）", nil
 	}
-	why := "核实不了续费状态：订阅接口没有返回 will_renew"
+	why = "核实不了续费状态：订阅接口没有返回 will_renew"
 	if err != nil {
 		why = "核实不了续费状态：订阅接口出错：" + err.Error()
 	}
 	acc, aerr := gpt.Account(ctx, sess)
 	if aerr != nil || acc.WillRenew == nil {
-		return false, why
+		return false, why, nil
 	}
 	if !*acc.WillRenew {
-		return true, ""
+		return true, "", nil // 账号接口没有到期时间
 	}
-	return false, "核实时订阅仍会续费（账号接口 will_renew = true）"
+	return false, "核实时订阅仍会续费（账号接口 will_renew = true）", nil
 }
 
 // sweepSessions 清空保留到点的会话：终态单据结束满 SessionKeep 还留着会话的，一律清空。

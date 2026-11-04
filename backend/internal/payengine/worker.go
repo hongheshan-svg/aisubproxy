@@ -212,6 +212,8 @@ type job struct {
 	// keepSession 为 true 时写终态不清空会话，留给续费协程关闭续费，最长保留 SessionKeep（见 renewal.go）
 	keepSession bool
 
+	accessUntil *time.Time // 关闭续费核实时订阅接口给的权益到期时间，见 cancelRenewal；没给为 nil
+
 	floorMinor int64 // 最低金额，建会话时取自套餐配置；不落库，openPage 判下限用
 }
 

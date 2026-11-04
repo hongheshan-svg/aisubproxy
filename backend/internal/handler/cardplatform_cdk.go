@@ -1022,8 +1022,9 @@ func zovoCardPreflight(c *gin.Context, body map[string]any) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
 	}
-	// 预检成功：把 credential.session 绑到卡密（账单页可凭卡密查）
-	// 即便上游返回非 2xx，只要本地能解析到 session 也尽量落库，方便后续账单查询。
+	// 预检成功：把 credential.session 绑到卡密（账单页可凭卡密查）。
+	// ★只在卡台确认预检通过时写★（审计 F-2）：这份绑定同时是跨服务商互斥的依据，
+	// 伪造的码和会话只要能写进来，就能让别人的邮箱 15 分钟内兑换不了别家的码，而且可以无限续。
 	tok := str(body["redemption_token"])
 	if tok == "" {
 		tok = extractJSONString(raw, "redemption_token", "token")
@@ -1035,18 +1036,57 @@ func zovoCardPreflight(c *gin.Context, body map[string]any) {
 		}
 	}
 	sess := extractCredentialSession(body["credential"])
-	if sess != "" && !cardplatform.IsXPremiumCredential(sess) && !cardplatform.IsGrokCredential(sess) && (code != "" || tok != "") {
-		// 这份副本只用来记账号邮箱；存不下不影响兑换（会话已随预检发给卡台），只是之后凭卡密查不到账单
-		if err := db.BindCDKSession(string(provider.ZovoCard), code, tok, sess); err != nil {
-			log.Printf("[cdk-preflight] bind session failed code=%s tok=%s: %v", shortTok(code), shortTok(tok), err)
-			if errors.Is(err, secretbox.ErrNoMasterKey) || errors.Is(err, secretbox.ErrBadMasterKey) {
-				opsAlertDaily("cdk-session-nokey", "APP_MASTER_KEY 缺失或不合法：兑换预检的用户会话已拒绝保存（不影响兑换），这些卡密之后无法凭卡密查账单。", time.Now())
-			}
+	bindable := sess != "" && !cardplatform.IsXPremiumCredential(sess) && !cardplatform.IsGrokCredential(sess) && (code != "" || tok != "")
+	if !bindable {
+		if st >= 200 && st < 300 {
+			log.Printf("[cdk-preflight] no session to bind (mode may be mailbox) tok=%s", shortTok(tok))
 		}
-	} else if st >= 200 && st < 300 {
-		log.Printf("[cdk-preflight] no session to bind (mode may be mailbox) tok=%s", shortTok(tok))
+	} else if ok, email, why := preflightVerdict(st, raw, sess); !ok {
+		log.Printf("[cdk-preflight] 不写会话绑定 code=%s tok=%s: %s", shortTok(code), shortTok(tok), why)
+	} else if err := db.BindCDKSessionAs(string(provider.ZovoCard), code, tok, sess, email); err != nil {
+		// 这份副本只用来记账号邮箱；存不下不影响兑换（会话已随预检发给卡台），只是之后凭卡密查不到账单
+		log.Printf("[cdk-preflight] bind session failed code=%s tok=%s: %v", shortTok(code), shortTok(tok), err)
+		if errors.Is(err, secretbox.ErrNoMasterKey) || errors.Is(err, secretbox.ErrBadMasterKey) {
+			opsAlertDaily("cdk-session-nokey", "APP_MASTER_KEY 缺失或不合法：兑换预检的用户会话已拒绝保存（不影响兑换），这些卡密之后无法凭卡密查账单。", time.Now())
+		}
 	}
 	proxyPublicJSON(c, st, raw)
+}
+
+// preflightVerdict 判断卡台这次预检是否通过，通过了才能把会话写进绑定；同时给出绑定该记的账号邮箱。
+//   - HTTP 非 2xx、响应不是 JSON 对象、envelope 的 code 不为 0：卡台没有通过预检（码不存在、会话无效等），不写。
+//     没有通过预检就拿不到预检令牌，也就建不了单，跨服务商互斥用不着这份绑定。
+//   - 通过时，邮箱优先用卡台核验过的那个（data.email 等）：会话 JSON 里的 user.email 是用户自己贴的，
+//     可以拿自己的 sessionToken 配上别人的邮箱。卡台没给邮箱时才用会话里写的。
+//
+// 返回 false 时附带原因（不含邮箱、会话），供日志使用。
+func preflightVerdict(status int, raw json.RawMessage, sess string) (ok bool, email, why string) {
+	if status < 200 || status >= 300 {
+		return false, "", fmt.Sprintf("卡台预检未通过（HTTP %d）", status)
+	}
+	var env map[string]any
+	if json.Unmarshal(raw, &env) != nil || env == nil {
+		return false, "", "卡台预检响应不是 JSON 对象"
+	}
+	if code, isNum := env["code"].(float64); isNum && code != 0 {
+		return false, "", fmt.Sprintf("卡台预检未通过（code=%v）", code)
+	}
+	scopes := []map[string]any{env}
+	if data, isMap := env["data"].(map[string]any); isMap {
+		scopes = append([]map[string]any{data}, scopes...)
+	}
+	for _, m := range scopes {
+		for _, k := range []string{"email", "account_email"} {
+			if v, _ := m[k].(string); strings.TrimSpace(v) != "" {
+				verified := strings.TrimSpace(v)
+				if claimed := db.ExtractSessionEmail(sess); claimed != "" && !strings.EqualFold(claimed, verified) {
+					log.Printf("[cdk-preflight] 会话里写的邮箱与卡台核验的不一致，绑定按卡台核验的邮箱记")
+				}
+				return true, verified, ""
+			}
+		}
+	}
+	return true, db.ExtractSessionEmail(sess), ""
 }
 
 // zovoCardRedeem 是 ZovoCard 的兑换：转发卡台。入口、分派和跨服务商互斥在 PublicCDKRedeem。
@@ -1356,17 +1396,18 @@ func extractCredentialSession(cred any) string {
 		if looksLikeBareAccessToken(s) {
 			return ""
 		}
-		// JSON 无 sessionToken 则拒
+		// JSON 无 sessionToken 则拒；以 { 开头却解析不了的也拒（不是会话，存它只会污染绑定）
 		if strings.HasPrefix(s, "{") {
 			var o map[string]any
-			if json.Unmarshal([]byte(s), &o) == nil {
-				st := str(o["sessionToken"])
-				if st == "" {
-					st = str(o["session_token"])
-				}
-				if st == "" {
-					return ""
-				}
+			if json.Unmarshal([]byte(s), &o) != nil {
+				return ""
+			}
+			st := str(o["sessionToken"])
+			if st == "" {
+				st = str(o["session_token"])
+			}
+			if st == "" {
+				return ""
 			}
 		}
 		return s

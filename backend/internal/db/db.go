@@ -869,6 +869,38 @@ func FindCodeByRedemptionToken(redemptionToken string) (string, error) {
 	return code, err
 }
 
+// KnownRedemptionTokens 返回 tokens 里本站有绑定记录（cdk_session_bindings.redemption_token）的那些。
+// 批量查结果用：只有本站兑换预览时写过绑定的上游令牌才转发上游（审计 money N-1）。
+func KnownRedemptionTokens(tokens []string) (map[string]bool, error) {
+	out := make(map[string]bool, len(tokens))
+	args := make([]any, 0, len(tokens))
+	for _, t := range tokens {
+		if t = strings.TrimSpace(t); t != "" {
+			args = append(args, t)
+		}
+	}
+	if len(args) == 0 {
+		return out, nil
+	}
+	if DB == nil {
+		return nil, fmt.Errorf("db not ready")
+	}
+	rows, err := DB.Query(`SELECT DISTINCT redemption_token FROM cdk_session_bindings
+		WHERE redemption_token IN (?`+strings.Repeat(",?", len(args)-1)+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var tok string
+		if err := rows.Scan(&tok); err != nil {
+			return nil, err
+		}
+		out[tok] = true
+	}
+	return out, rows.Err()
+}
+
 func migrateCDKPlanTypes() error {
 	updates := []struct {
 		from string

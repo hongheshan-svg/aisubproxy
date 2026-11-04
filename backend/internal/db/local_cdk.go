@@ -86,7 +86,6 @@ type LocalCDKOrder struct {
 	SubmittedAt  *int64
 	CreatedAt    int64
 	FinishedAt   *int64
-	Kind         string // subscription | credit
 	RenewalState string // 关闭续费的进度，见 payengine
 	AccessUntil  *int64 // 关闭续费核实时 ChatGPT 给的权益到期时间（Unix 秒）
 }
@@ -390,7 +389,7 @@ func LocalCDKSealedCode(ctx context.Context, id int64) (codeHash, sealed string,
 	return codeHash, sealed, err
 }
 
-const localCDKOrderColumns = `order_no, source_ref, state, failure, error_code, account_email, fund_cents, card_id, submitted_at, created_at, finished_at, kind, renewal_state, access_until`
+const localCDKOrderColumns = `order_no, source_ref, state, failure, error_code, account_email, fund_cents, card_id, submitted_at, created_at, finished_at, renewal_state, access_until`
 
 func collectLocalCDKOrders(rows *sql.Rows) ([]LocalCDKOrder, error) {
 	defer rows.Close()
@@ -398,7 +397,7 @@ func collectLocalCDKOrders(rows *sql.Rows) ([]LocalCDKOrder, error) {
 	for rows.Next() {
 		var o LocalCDKOrder
 		var sub, fin, acc sql.NullInt64
-		if err := rows.Scan(&o.OrderNo, &o.SourceRef, &o.State, &o.Failure, &o.ErrorCode, &o.AccountEmail, &o.FundCents, &o.CardID, &sub, &o.CreatedAt, &fin, &o.Kind, &o.RenewalState, &acc); err != nil {
+		if err := rows.Scan(&o.OrderNo, &o.SourceRef, &o.State, &o.Failure, &o.ErrorCode, &o.AccountEmail, &o.FundCents, &o.CardID, &sub, &o.CreatedAt, &fin, &o.RenewalState, &acc); err != nil {
 			return nil, err
 		}
 		if sub.Valid {

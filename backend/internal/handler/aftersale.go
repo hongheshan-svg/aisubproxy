@@ -102,7 +102,8 @@ func sanitizeProviderNote(s string) string {
 }
 
 // factsFor 按码找到服务商，调它的查询能力。注册表不认得的码按找不到（Found=false）。
-// 服务商查询 panic 时恢复成 error；日志只记服务商名和错误类型（panic 记类型和位置），不记错误内容，里面可能有邮箱、令牌。
+// 服务商查询 panic 时恢复成 error，日志只有 safego 记的类型和位置。
+// 出错时日志记服务商名和清洗过的错误文字（邮箱、长令牌、卡号形状的数字换成 ***）；请求取消、超时不算服务商出错，不记。
 func factsFor(ctx context.Context, code, device string) (f afterSaleFacts, err error) {
 	defer safego.Recover("售后查询", func(desc string) {
 		f, err = afterSaleFacts{}, errors.New("售后查询 panic："+desc)
@@ -112,9 +113,10 @@ func factsFor(ctx context.Context, code, device string) (f afterSaleFacts, err e
 		return afterSaleFacts{}, nil
 	}
 	defer func() {
-		if err != nil {
-			log.Printf("[aftersale] 服务商 %s 查询出错：%T", p.Name(), err)
+		if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return
 		}
+		log.Printf("[aftersale] 服务商 %s 查询出错：%s", p.Name(), sanitizeProviderNote(err.Error()))
 	}()
 	if cs, ok := provider.AsCardSupply(p); ok {
 		return cardSupplyFacts(ctx, cs, code)

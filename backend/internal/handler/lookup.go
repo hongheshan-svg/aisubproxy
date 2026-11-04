@@ -287,13 +287,16 @@ func zovoCardFacts(ctx context.Context, code, deviceID string) (afterSaleFacts, 
 		if ex.State == db.AgentExchangeDone {
 			replaced = true
 			f.Status, f.Message, f.Reusable, f.Guide, f.ProviderNote = "replaced", "", false, "", ""
-			// 严格按 upstream_id 取新码：按前缀退回匹配可能把别的客户的完整码给出去
+			// 严格按 upstream_id 取新码：按前缀退回匹配可能把别的客户的完整码给出去。
+			// 取到的码再和换码记录里的新码前缀核对一遍（规范化后比），对不上就当库里没有新码，不给出去。
 			f.ReplacedButUnknown = true
 			if ex.NewUpstreamID > 0 {
 				newCode, cerr := db.CardplatformCDKCodeByUpstreamID(ex.NewUpstreamID)
 				switch {
 				case cerr == nil:
-					f.Replacement, f.ReplacedButUnknown = newCode, false
+					if prefix := provider.NormalizeCode(ex.NewCodePrefix); prefix == "" || strings.HasPrefix(provider.NormalizeCode(newCode), prefix) {
+						f.Replacement, f.ReplacedButUnknown = newCode, false
+					}
 				case !errors.Is(cerr, sql.ErrNoRows):
 					return afterSaleFacts{}, fmt.Errorf("查询新码: %w", cerr)
 				}

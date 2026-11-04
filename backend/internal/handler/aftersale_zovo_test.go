@@ -389,3 +389,41 @@ func TestZovoFactsActiveButPastExpiryIsExpired(t *testing.T) {
 		t.Fatalf("%+v", r)
 	}
 }
+
+// 按 upstream_id 取到的码还要和换码记录里的新码前缀对得上（规范化后比），对不上按「换过码但没有新码」，那张码不出现在响应里。
+func TestZovoFactsReplacementPrefixMustMatch(t *testing.T) {
+	seed := func(t *testing.T, prefix, code string) {
+		t.Helper()
+		dbtest.Open(t)
+		zovoSeedKey(t, cdkSessCode, "disabled")
+		zovoSeedExchange(t, cdkSessCode, db.AgentExchangeDone, 900, prefix)
+		if _, err := db.DB.Exec(`INSERT INTO cardplatform_cdk_codes (upstream_id, code, code_prefix) VALUES (900, ?, '')`, code); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("前缀对不上", func(t *testing.T) {
+		const wrong = "ZC-WRONG-CUSTOMER-0009"
+		seed(t, "ZC-NEWCO", wrong)
+		r := lookupOneCDK(context.Background(), cdkSessCode, "")
+		raw, _ := json.Marshal(r)
+		if r.Status != "replaced" || r.Replacement != nil || !r.ReplacedUnknown || strings.Contains(string(raw), wrong) {
+			t.Fatalf("%s", raw)
+		}
+	})
+	t.Run("大小写、空白不同仍算对得上", func(t *testing.T) {
+		const full = "ZC-NEWCODE-FULL-0002"
+		seed(t, " zc-newco\u200b", " zc-newcode-full-0002 ")
+		r := lookupOneCDK(context.Background(), cdkSessCode, "")
+		if r.Status != "replaced" || r.Replacement == nil || r.Replacement.Code != full || r.ReplacedUnknown {
+			t.Fatalf("%+v %+v", r, r.Replacement)
+		}
+	})
+	t.Run("前缀为空不核对", func(t *testing.T) {
+		const full = "ZC-NEWCODE-FULL-0002"
+		seed(t, "", full)
+		r := lookupOneCDK(context.Background(), cdkSessCode, "")
+		if r.Replacement == nil || r.Replacement.Code != full || r.ReplacedUnknown {
+			t.Fatalf("%+v %+v", r, r.Replacement)
+		}
+	})
+}

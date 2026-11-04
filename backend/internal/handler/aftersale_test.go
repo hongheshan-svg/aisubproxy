@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -498,5 +499,62 @@ func TestAfterSaleBatchIsolatesPanic(t *testing.T) {
 	}
 	if rs[2].CDKCode != "TU-CCC" || rs[2].Status != "unused" {
 		t.Fatalf("第 3 条: %+v", rs[2])
+	}
+}
+
+// 服务商查询出错：日志写服务商名和清洗过的错误文字，邮箱、长令牌换成 ***，不出现原文。
+func TestAfterSaleErrorLogIsSanitized(t *testing.T) {
+	const (
+		email = "alice@example.com"
+		token = "sess_abcdefghijklmnopqrstuvwxyz0123456789"
+	)
+	useFakeUp(t, fakeUp{errs: map[string]error{
+		"TU-ERR": fmt.Errorf("查询绑定: 卡台拒绝 %s 的令牌 %s", email, token),
+	}})
+	logs := cpCaptureLog(t)
+
+	if r := lookupAfterSale(context.Background(), "TU-ERR", ""); r.Status != "unknown" || !r.queryFailed {
+		t.Fatalf("%+v", r)
+	}
+	out := logs.String()
+	if !strings.Contains(out, "[aftersale] 服务商 testup 查询出错：查询绑定: 卡台拒绝 *** 的令牌 ***") {
+		t.Fatalf("日志应带服务商名和清洗后的错误文字: %q", out)
+	}
+	if strings.Contains(out, email) || strings.Contains(out, token) || strings.Contains(out, "abcdefghij") {
+		t.Fatalf("日志不能有邮箱、令牌原文: %q", out)
+	}
+}
+
+// 请求取消、超时是调用方的事，不是服务商出错：不记这一行。
+func TestAfterSaleErrorLogSkipsCanceled(t *testing.T) {
+	useFakeUp(t, fakeUp{errs: map[string]error{
+		"TU-CANCEL":   fmt.Errorf("查询码表: %w", context.Canceled),
+		"TU-DEADLINE": fmt.Errorf("卡台: %w", context.DeadlineExceeded),
+	}})
+	logs := cpCaptureLog(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, code := range []string{"TU-CANCEL", "TU-DEADLINE"} {
+		if r := lookupAfterSale(ctx, code, ""); r.Status != "unknown" || !r.queryFailed {
+			t.Fatalf("%s: %+v", code, r)
+		}
+	}
+	if out := logs.String(); strings.Contains(out, "[aftersale]") {
+		t.Fatalf("取消、超时不应记出错日志: %q", out)
+	}
+}
+
+// panic 路径保持原样：只有 safego 记的类型和位置，没有 [aftersale] 那一行，也不带 panic 的值。
+func TestAfterSalePanicLogUnchanged(t *testing.T) {
+	useFakeUp(t, fakeUp{panics: map[string]bool{"TU-PANIC": true}})
+	logs := cpCaptureLog(t)
+
+	if r := lookupAfterSale(context.Background(), "TU-PANIC", ""); r.Status != "unknown" || !r.queryFailed {
+		t.Fatalf("%+v", r)
+	}
+	out := logs.String()
+	if !strings.Contains(out, "[safego]") || strings.Contains(out, "[aftersale]") || strings.Contains(out, "alice@example.com") {
+		t.Fatalf("panic 只该有 safego 的类型和位置: %q", out)
 	}
 }

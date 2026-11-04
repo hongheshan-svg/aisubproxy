@@ -46,6 +46,7 @@ import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { onMounted, ref } from 'vue'
 import { authFetch } from '../../lib/api'
 import { auditActionLabel, auditDetailLabel } from '../../lib/errors'
+import { fmtAuditTime as formatDate } from '../../lib/auditTime'
 
 interface AuditLog {
   id: number
@@ -90,8 +91,6 @@ const actionClass = (action: string) => {
   }
   return classes[action] || 'pill'
 }
-
-const formatDate = (value: string) => (value ? new Date(value).toLocaleString('zh-CN') : '-')
 
 onMounted(loadLogs)
 </script>

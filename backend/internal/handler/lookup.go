@@ -148,31 +148,18 @@ func normalizeLookupCodes(raw []string) []string {
 	return out
 }
 
-func applyLookupFailure(resp *cdkLookupResult, notes string, reusable bool) {
-	resp.Status = "failed"
-	resp.Used = false
-	resp.CanResubmit = reusable
-	note := strings.TrimSpace(notes)
-	if note != "" {
-		resp.Notes = note
-	}
-	if reusable {
-		resp.Message = "使用失败，卡密已重新激活，可以重新提交"
-	} else {
-		resp.Message = "使用失败，卡密尚未重新激活，请等待处理后再查"
-	}
-	if note != "" {
-		resp.Message = resp.Message + "：" + note
-	}
-}
-
 // lookupOneCDK 查一张码，交给售后查询公共层（见 aftersale.go）。
 func lookupOneCDK(ctx context.Context, code, deviceID string) cdkLookupResult {
 	return lookupAfterSale(ctx, code, deviceID)
 }
 
-// errZovoUnknownKeyStatus：码表里的状态不是已知取值。固定文字，不带原始状态值。
-var errZovoUnknownKeyStatus = errors.New("码表状态无法识别")
+// zovo 查询的两个固定文字错误：不带原始状态值。
+var (
+	// errZovoUnknownKeyStatus：码表里的状态不是已知取值。
+	errZovoUnknownKeyStatus = errors.New("码表状态无法识别")
+	// errZovoRemoteUnavailable：本站库没有这张码的状态、卡台又没给出可用的答案。
+	errZovoRemoteUnavailable = errors.New("卡台暂时查不到")
+)
 
 // zovoCardFacts 是 ZovoCard 的售后查询：本站的码表、换码记录、绑定和卡台订单。
 //
@@ -201,7 +188,7 @@ func zovoCardFacts(ctx context.Context, code, deviceID string) (afterSaleFacts, 
 		case "disabled":
 			f.Status = "disabled"
 		case "expired":
-			f.Status, f.Message = "expired", "卡密已过期"
+			f.Status, f.Message = "expired", ""
 		case "active", "":
 			f.Status = "unused"
 			reusable = true
@@ -209,7 +196,7 @@ func zovoCardFacts(ctx context.Context, code, deviceID string) (afterSaleFacts, 
 			return afterSaleFacts{}, errZovoUnknownKeyStatus
 		}
 		if expiresAt.Valid && expiresAt.Time.Before(time.Now()) && f.Status == "unused" {
-			f.Status, f.Message = "expired", "卡密已过期"
+			f.Status, f.Message = "expired", ""
 			reusable = false
 		}
 		if usedAt.Valid {
@@ -300,10 +287,16 @@ func zovoCardFacts(ctx context.Context, code, deviceID string) (afterSaleFacts, 
 		if ex.State == db.AgentExchangeDone {
 			replaced = true
 			f.Status, f.Message, f.Reusable, f.Guide, f.ProviderNote = "replaced", "", false, "", ""
-			if newCode, ok := db.LookupCardplatformCDKCode(ex.NewUpstreamID, ex.NewCodePrefix); ok {
-				f.Replacement = newCode
-			} else {
-				f.ReplacedButUnknown = true
+			// 严格按 upstream_id 取新码：按前缀退回匹配可能把别的客户的完整码给出去
+			f.ReplacedButUnknown = true
+			if ex.NewUpstreamID > 0 {
+				newCode, cerr := db.CardplatformCDKCodeByUpstreamID(ex.NewUpstreamID)
+				switch {
+				case cerr == nil:
+					f.Replacement, f.ReplacedButUnknown = newCode, false
+				case !errors.Is(cerr, sql.ErrNoRows):
+					return afterSaleFacts{}, fmt.Errorf("查询新码: %w", cerr)
+				}
 			}
 		}
 	case !errors.Is(err, sql.ErrNoRows):
@@ -342,6 +335,9 @@ func zovoCardFacts(ctx context.Context, code, deviceID string) (afterSaleFacts, 
 				if email != "" {
 					f.AccountEmail = email
 				}
+				if orderStatus == "" && !localKnown {
+					return afterSaleFacts{}, errZovoRemoteUnavailable
+				}
 				switch os := strings.ToLower(orderStatus); {
 				case os == "completed" || os == "success" || os == "done" || os == "paid":
 					clearSessionAfterCompleted(code, tok)
@@ -369,11 +365,11 @@ func zovoCardFacts(ctx context.Context, code, deviceID string) (afterSaleFacts, 
 	if f.Status == "used" {
 		f.Reusable = false
 	}
+	if f.Status != "failed" { // 失败的指引和原文只属于失败；后来变成已完成等状态时不能留着
+		f.Guide, f.ProviderNote = "", ""
+	}
 	return f, nil
 }
-
-// errZovoRemoteUnavailable：本站库没有这张码的状态、卡台又查不到。固定文字。
-var errZovoRemoteUnavailable = errors.New("卡台暂时查不到")
 
 // zovoMarkFailed 记下兑换失败：原文放 ProviderNote（公共层清洗），指引按能否重新提交给。
 func zovoMarkFailed(f *afterSaleFacts, notes string, reusable bool) {

@@ -383,3 +383,18 @@ func TestGetAgentExchangeByOldHash(t *testing.T) {
 		t.Fatalf("%+v", e)
 	}
 }
+
+func TestCardplatformCDKCodeByUpstreamID(t *testing.T) {
+	dbtest.Open(t)
+	if _, err := db.DB.Exec(`INSERT INTO cardplatform_cdk_codes (upstream_id, code, code_prefix) VALUES (7, 'ZC-FULL-7', 'ZC-FU')`); err != nil {
+		t.Fatal(err)
+	}
+	code, err := db.CardplatformCDKCodeByUpstreamID(7)
+	if err != nil || code != "ZC-FULL-7" {
+		t.Fatalf("%q %v", code, err)
+	}
+	// 同前缀但 upstream_id 不同：严格函数不能退回前缀匹配
+	if _, err := db.CardplatformCDKCodeByUpstreamID(8); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("没有该 upstream_id 应返回 sql.ErrNoRows: %v", err)
+	}
+}

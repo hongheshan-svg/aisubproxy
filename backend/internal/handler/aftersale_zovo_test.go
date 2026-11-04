@@ -272,3 +272,120 @@ func TestZovoFactsStatusMapping(t *testing.T) {
 		})
 	}
 }
+
+func TestZovoFactsFailedThenCompletedClearsFailure(t *testing.T) {
+	dbtest.Open(t)
+	dbtest.SetMasterKey(t)
+	u := newCDKUpstream(t)
+	zovoSetResult(u, "completed", "", 0)
+	zovoSeedKey(t, cdkSessCode, "active")
+	zovoSeedTask(t, cdkSessCode, "failed", "", "Session 无效，请重新获取")
+	if err := db.BindCDKSession("zovocard", cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
+		t.Fatal(err)
+	}
+	r := lookupOneCDK(context.Background(), cdkSessCode, "")
+	if r.Status != "used" || r.CanResubmit || r.Guide != "" || r.ProviderNote != "" || r.Notes != "" {
+		t.Fatalf("已完成不该带失败的指引和原文: %+v", r)
+	}
+}
+
+func TestZovoFactsReplacementIsStrictByUpstreamID(t *testing.T) {
+	const other = "ZC-NEWCO-OTHER-CUSTOMER-9"
+	t.Run("同前缀的别人的码不能给出去", func(t *testing.T) {
+		dbtest.Open(t)
+		zovoSeedKey(t, cdkSessCode, "disabled")
+		zovoSeedExchange(t, cdkSessCode, db.AgentExchangeDone, 900, "ZC-NEWCO")
+		if _, err := db.DB.Exec(`INSERT INTO cardplatform_cdk_codes (upstream_id, code, code_prefix) VALUES (555, ?, 'ZC-NEWCO')`, other); err != nil {
+			t.Fatal(err)
+		}
+		r := lookupOneCDK(context.Background(), cdkSessCode, "")
+		raw, _ := json.Marshal(r)
+		if r.Status != "replaced" || r.Replacement != nil || !r.ReplacedUnknown || strings.Contains(string(raw), other) {
+			t.Fatalf("%s", raw)
+		}
+	})
+	t.Run("NewUpstreamID 为 0", func(t *testing.T) {
+		dbtest.Open(t)
+		zovoSeedKey(t, cdkSessCode, "disabled")
+		zovoSeedExchange(t, cdkSessCode, db.AgentExchangeDone, 0, "ZC-NEWCO")
+		if _, err := db.DB.Exec(`INSERT INTO cardplatform_cdk_codes (upstream_id, code, code_prefix) VALUES (555, ?, 'ZC-NEWCO')`, other); err != nil {
+			t.Fatal(err)
+		}
+		r := lookupOneCDK(context.Background(), cdkSessCode, "")
+		raw, _ := json.Marshal(r)
+		if r.Status != "replaced" || r.Replacement != nil || !r.ReplacedUnknown || strings.Contains(string(raw), other) {
+			t.Fatalf("%s", raw)
+		}
+	})
+}
+
+func TestZovoFactsRemoteEmptyStatusIsError(t *testing.T) {
+	dbtest.Open(t)
+	dbtest.SetMasterKey(t)
+	u := newCDKUpstream(t)
+	zovoSetResult(u, "", "", 0)
+	if err := db.BindCDKSession("zovocard", cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
+		t.Fatal(err)
+	}
+	f, err := zovoCardFacts(context.Background(), cdkSessCode, "")
+	if err == nil || f.Found {
+		t.Fatalf("卡台没给出订单状态、本站又没有状态，应是 error: %+v %v", f, err)
+	}
+}
+
+func TestZovoFactsBindingErrorIsError(t *testing.T) {
+	dbtest.Open(t)
+	zovoSeedKey(t, cdkSessCode, "active")
+	if _, err := db.DB.Exec(`ALTER TABLE cdk_session_bindings RENAME TO cdk_session_bindings_gone`); err != nil {
+		t.Fatal(err)
+	}
+	r := lookupOneCDK(context.Background(), cdkSessCode, "")
+	if r.Status != "unknown" || r.Message != afterSaleUnknownText || !r.queryFailed {
+		t.Fatalf("%+v", r)
+	}
+}
+
+func TestZovoFactsExchangeUnknownStateIsNotReplacement(t *testing.T) {
+	dbtest.Open(t)
+	zovoSeedKey(t, cdkSessCode, "active")
+	id, err := db.ReserveAgentCDKExchange(db.AgentExchangeReservation{
+		OldHash: db.HashCDKCode(provider.NormalizeCode(cdkSessCode)), OldPrefix: "ZC-OLD", Plan: "plus", PasswordFP: "fp",
+	}, 20, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.MarkAgentCDKExchangeUnknown(id, "超时"); err != nil {
+		t.Fatal(err)
+	}
+	r := lookupOneCDK(context.Background(), cdkSessCode, "")
+	if r.Status != "unused" || r.Replacement != nil || r.ReplacedUnknown {
+		t.Fatalf("%+v", r)
+	}
+}
+
+func TestZovoFactsUsedAtIsRFC3339UTC(t *testing.T) {
+	dbtest.Open(t)
+	zovoSeedKey(t, cdkSessCode, "used")
+	if _, err := db.DB.Exec(`UPDATE cd_keys SET used_at = '2026-03-04 05:06:07' WHERE code = ?`, cdkSessCode); err != nil {
+		t.Fatal(err)
+	}
+	r := lookupOneCDK(context.Background(), cdkSessCode, "")
+	if r.UsedAt == nil || *r.UsedAt != "2026-03-04T05:06:07Z" {
+		t.Fatalf("%v", r.UsedAt)
+	}
+	if _, err := time.Parse(time.RFC3339, *r.UsedAt); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestZovoFactsActiveButPastExpiryIsExpired(t *testing.T) {
+	dbtest.Open(t)
+	zovoSeedKey(t, cdkSessCode, "active")
+	if _, err := db.DB.Exec(`UPDATE cd_keys SET expires_at = '2020-01-01 00:00:00' WHERE code = ?`, cdkSessCode); err != nil {
+		t.Fatal(err)
+	}
+	r := lookupOneCDK(context.Background(), cdkSessCode, "")
+	if r.Status != "expired" || r.Message != "卡密已过期" {
+		t.Fatalf("%+v", r)
+	}
+}

@@ -70,6 +70,7 @@ var afterSaleDefaultMessages = map[string]string{
 	"processing":  "卡密兑换处理中",
 	"used":        "卡密使用成功",
 	"disabled":    "卡密已禁用",
+	"expired":     "卡密已过期",
 	"replaced":    afterSaleReplacedText,
 	"unsupported": afterSaleUnsupportedText,
 }

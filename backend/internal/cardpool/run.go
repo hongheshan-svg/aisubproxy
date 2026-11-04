@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log"
 	"time"
+
+	"github.com/tuzi/cdk-recharge-system/internal/safego"
 )
 
 const (
@@ -32,10 +34,10 @@ func (s *Service) Kick() {
 // 各步骤出错只记日志、不中断循环；取不到 MarsWallex 客户端（未配置）时，本轮跳过需要调接口的步骤。
 func (s *Service) Start(ctx context.Context) {
 	s.loops.Add(4)
-	go s.runLoop(ctx, maintainInterval, nil, s.maintainRound)
-	go s.runLoop(ctx, replenishInterval, s.kickReplenishCh, s.replenishRound)
-	go s.runLoop(ctx, eventScanInterval, s.kickEvents, s.eventsRound)
-	go s.runLoop(ctx, backfillInterval, nil, s.backfillRound)
+	safego.Go("卡池维护循环", func() { s.runLoop(ctx, "卡池维护", maintainInterval, nil, s.maintainRound) })
+	safego.Go("补卡循环", func() { s.runLoop(ctx, "补卡", replenishInterval, s.kickReplenishCh, s.replenishRound) })
+	safego.Go("Webhook 事件循环", func() { s.runLoop(ctx, "Webhook 事件处理", eventScanInterval, s.kickEvents, s.eventsRound) })
+	safego.Go("交易补拉循环", func() { s.runLoop(ctx, "交易补拉", backfillInterval, nil, s.backfillRound) })
 	s.Kick()
 }
 
@@ -43,7 +45,8 @@ func (s *Service) Start(ctx context.Context) {
 func (s *Service) Wait() { s.loops.Wait() }
 
 // runLoop 在定时器到点或收到通知时执行一轮 round，直到 ctx 结束。kick 为 nil 时只按定时器执行。
-func (s *Service) runLoop(ctx context.Context, every time.Duration, kick <-chan struct{}, round func(context.Context, *loopLog)) {
+// 每一轮单独兜住 panic（记日志、告警，name 是告警里的任务名）：一轮出错，下一轮照常，循环本身不退出。
+func (s *Service) runLoop(ctx context.Context, name string, every time.Duration, kick <-chan struct{}, round func(context.Context, *loopLog)) {
 	defer s.loops.Done()
 	ticker := time.NewTicker(every)
 	defer ticker.Stop()
@@ -58,7 +61,7 @@ func (s *Service) runLoop(ctx context.Context, every time.Duration, kick <-chan 
 		if ctx.Err() != nil {
 			return
 		}
-		round(ctx, lg)
+		safego.Run(name, func() { round(ctx, lg) })
 	}
 }
 

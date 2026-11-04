@@ -16,6 +16,7 @@ import (
 
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/provider"
+	"github.com/tuzi/cdk-recharge-system/internal/safego"
 )
 
 // cardHeadSource 是可选能力：能从服务商读取卡头（卡产品）。没实现的服务商在后台手动维护卡头。
@@ -138,20 +139,11 @@ func syncAllCardHeads(ctx context.Context) {
 }
 
 // StartCardHeadSync 启动后台卡头同步：启动 1 分钟后一次，之后每 30 分钟一次。
+// 每一轮单独兜住 panic：一轮出错，下一轮照常。
 func StartCardHeadSync(ctx context.Context) {
-	go func() {
-		t := time.NewTimer(cardHeadSyncDelay)
-		defer t.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-t.C:
-				syncAllCardHeads(ctx)
-				t.Reset(cardHeadSyncEvery)
-			}
-		}
-	}()
+	safego.Go("卡头同步循环", func() {
+		safego.Loop(ctx, "卡头同步", cardHeadSyncDelay, cardHeadSyncEvery, syncAllCardHeads)
+	})
 }
 
 // ---------- 后台接口 ----------

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/url"
 	"strings"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/bogdanfinn/tls-client/profiles"
 
 	"github.com/tuzi/cdk-recharge-system/internal/gptcheck"
+	"github.com/tuzi/cdk-recharge-system/internal/safego"
 )
 
 const (
@@ -71,7 +73,18 @@ func New(proxyURL string) (*Client, error) {
 	return &Client{BaseURL: defaultBaseURL, http: h, jar: jar, deviceID: newDeviceID()}, nil
 }
 
-func (c *Client) do(ctx context.Context, method, path string, headers map[string]string, cookies []Cookie, body []byte) ([]byte, error) {
+// ErrInternal 表示请求过程中 HTTP 库内部出错（panic，或返回了空响应），不是 ChatGPT 的回应，不能当作账号状态的证据。
+var ErrInternal = errors.New("ChatGPT 请求内部错误")
+
+// do 发一次请求。tls-client 在异常响应上可能 panic：这里自己兜住转成 ErrInternal（不开它的 WithCatchPanics，
+// 那样 Do 会返回 (nil, nil)，后面照样空指针）。panic 的值可能带请求里的会话，日志只记类型和位置。
+func (c *Client) do(ctx context.Context, method, path string, headers map[string]string, cookies []Cookie, body []byte) (out []byte, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[chatgpt] 请求内部错误（panic），已兜住：%s", safego.Describe(r))
+			out, err = nil, ErrInternal
+		}
+	}()
 	var rd io.Reader
 	if body != nil {
 		rd = bytes.NewReader(body)
@@ -99,6 +112,9 @@ func (c *Client) do(ctx context.Context, method, path string, headers map[string
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("请求 ChatGPT 失败: %w", err)
+	}
+	if resp == nil || resp.Body == nil {
+		return nil, ErrInternal
 	}
 	defer resp.Body.Close()
 	if scoped {

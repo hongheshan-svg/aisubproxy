@@ -21,6 +21,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
+	"github.com/tuzi/cdk-recharge-system/internal/safego"
 )
 
 // 一键更新状态（进程内；重启后重置为 idle，版本由 VERSION 体现）
@@ -423,7 +424,7 @@ func runSeamlessUpdate(target, username string) {
 	pruneBackups(updDir, maxUpdateBackups)
 
 	// 延迟 re-exec，让状态接口还能被读一次
-	go func() {
+	safego.Go("在线更新重载", func() {
 		time.Sleep(400 * time.Millisecond)
 		// 优先同进程 re-exec（PID 不变，systemd 无感，亚秒恢复）。容器里 PID 1 也不变，容器不用重启
 		if err := reexecFn(binDst, env); err != nil {
@@ -438,7 +439,7 @@ func runSeamlessUpdate(target, username string) {
 			// 若仍失败，标记 failed（进程若还活着）
 			failUpdate("重载失败: " + err.Error() + "（已尝试 systemctl restart）")
 		}
-	}()
+	})
 }
 
 func failUpdate(msg string) {

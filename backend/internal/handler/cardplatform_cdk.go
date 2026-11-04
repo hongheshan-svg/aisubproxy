@@ -18,6 +18,7 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/provider"
+	"github.com/tuzi/cdk-recharge-system/internal/safego"
 	"github.com/tuzi/cdk-recharge-system/internal/secretbox"
 )
 
@@ -513,7 +514,7 @@ func refreshStoredCDKMetadata(ctx context.Context, ids []int64) map[int64]cardpl
 	for _, id := range ids {
 		id := id
 		wg.Add(1)
-		go func() {
+		safego.Go("刷新上游卡密信息", func() {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
@@ -532,12 +533,12 @@ func refreshStoredCDKMetadata(ctx context.Context, ids []int64) map[int64]cardpl
 					return
 				}
 			}
-		}()
+		})
 	}
-	go func() {
+	safego.Go("等待刷新上游卡密信息", func() {
 		wg.Wait()
 		close(ch)
-	}()
+	})
 	for p := range ch {
 		out[p.ID] = p
 	}
@@ -1074,7 +1075,7 @@ func zovoCardResult(c *gin.Context, token string) {
 			if isCompletedOrderStatus(publicResultStatus(payload)) {
 				clearSessionAfterCompleted("", token)
 			}
-			go observeFromPublicResult(context.Background(), payload, cdkCode)
+			safego.Go("观察卡健康（结果查询）", func() { observeFromPublicResult(context.Background(), payload, cdkCode) })
 		}
 	}
 	proxyPublicJSON(c, st, raw)
@@ -1114,7 +1115,8 @@ func zovoCardResultByCode(c *gin.Context, code string) {
 	// 卡健康观察（webhook 未配时靠轮询学）。传副本：下面还要往 payload 写 invoice_url，
 	// 同一个 map 并发读写会让进程直接崩溃（fatal error: concurrent map read and map write）
 	if st >= 200 && st < 300 {
-		go observeFromPublicResult(context.Background(), maps.Clone(payload), bind.CDKCode)
+		snapshot, code := maps.Clone(payload), bind.CDKCode
+		safego.Go("观察卡健康（按码查结果）", func() { observeFromPublicResult(context.Background(), snapshot, code) })
 	}
 
 	orderStatus := publicResultStatus(payload)

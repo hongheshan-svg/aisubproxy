@@ -15,6 +15,7 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/cardpool"
 	"github.com/tuzi/cdk-recharge-system/internal/chatgpt"
 	"github.com/tuzi/cdk-recharge-system/internal/paybrowser"
+	"github.com/tuzi/cdk-recharge-system/internal/safego"
 )
 
 const (
@@ -98,7 +99,7 @@ func (s *Service) verifyLoop(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		s.verifyDue(ctx)
+		safego.Run("付款确认", func() { s.verifyDue(ctx) }) // 每一轮单独兜住；单张单的 panic 见 verifyOne
 	}
 }
 
@@ -124,8 +125,37 @@ func (s *Service) verifyDue(ctx context.Context) {
 		if !recovered && isDeclinedOutcome(list[i].PageOutcome) {
 			continue
 		}
-		s.verifyOrder(ctx, &list[i])
+		s.verifyOne(ctx, &list[i])
 	}
+}
+
+// verifyOne 检查一张确认中的单据。检查中 panic 时这张单转人工（recoverVerify），下一轮就不会再拿到它反复出错。
+func (s *Service) verifyOne(ctx context.Context, o *Order) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.recoverVerify(ctx, o.OrderNo, r)
+		}
+	}()
+	s.verifyOrder(ctx, o)
+}
+
+// recoverVerify 处理确认时 panic 的单据：重读单据，还在确认中就走转人工的老路径（释放租约、告警），错误码 internal_error。
+// 不能当成「未开通」：查账号的结果不知道。panic 的值可能带会话等，只记类型和位置。收尾再出错只记日志，下一轮再转。
+func (s *Service) recoverVerify(ctx context.Context, no string, r any) {
+	desc := safego.Describe(r)
+	defer safego.RecoverNoAlert("付款单 " + no + " 确认时内部错误后的收尾")
+	log.Printf("[payengine] 单据 %s 确认时内部错误（panic）：%s", no, desc)
+	if ctx.Err() != nil {
+		return
+	}
+	o, err := getOrder(ctx, no)
+	if err != nil || o.State != StateVerifying {
+		if err != nil {
+			log.Printf("[payengine] 单据 %s 确认时内部错误后重读失败，下一轮再试: %v", no, err)
+		}
+		return
+	}
+	s.verifyEscalate(ctx, &job{o: o}, "internal_error", "确认时内部错误，请人工核对账号是否已开通")
 }
 
 // adoptSubmitted 接管已提交、但没有工作协程在处理的单据：settle 连续转确认失败后它们停在 submitted / requires_3ds，
@@ -610,7 +640,7 @@ func scrubRecoveryError(err error) string {
 // cleanLoop 启动时清理一次截图，之后截图每天一次、浏览器残留每小时一次（残留的首次清理在 Start 里同步做）。
 func (s *Service) cleanLoop(ctx context.Context) {
 	defer s.loops.Done()
-	s.cleanShots()
+	safego.Run("清理付款截图", s.cleanShots)
 	shots := time.NewTicker(shotCleanEvery)
 	defer shots.Stop()
 	profiles := time.NewTicker(profileCleanEvery)
@@ -620,9 +650,9 @@ func (s *Service) cleanLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-shots.C:
-			s.cleanShots()
+			safego.Run("清理付款截图", s.cleanShots)
 		case <-profiles.C:
-			s.cleanProfiles()
+			safego.Run("清理浏览器残留", s.cleanProfiles)
 		}
 	}
 }

@@ -196,6 +196,8 @@ type fakeChatGPT struct {
 	checkout                            chatgpt.Checkout
 	// accountFn 非 nil 时优先于 account / accountErr，n 为第几次调用 Account（从 1 起）。
 	accountFn func(n int) (chatgpt.Account, error)
+	// accountSess 非 nil 时优先于 accountFn，能按会话（例如邮箱）区分单据。
+	accountSess func(s chatgpt.Session, n int) (chatgpt.Account, error)
 
 	// 关闭续费：cancelFn、subStatusFn 非 nil 时按第 n 次调用取值；未设置时取消成功、核实为不再续费。
 	cancelFn    func(n int) error
@@ -263,6 +265,9 @@ func (g *fakeChatGPT) Refresh(_ context.Context, s *chatgpt.Session) error {
 
 func (g *fakeChatGPT) Account(_ context.Context, s chatgpt.Session) (chatgpt.Account, error) {
 	g.hit("Account", s.AccessToken)
+	if g.accountSess != nil {
+		return g.accountSess(s, g.count("Account"))
+	}
 	if g.accountFn != nil {
 		return g.accountFn(g.count("Account"))
 	}

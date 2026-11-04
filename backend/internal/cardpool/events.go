@@ -12,6 +12,7 @@ import (
 
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/marswallex"
+	"github.com/tuzi/cdk-recharge-system/internal/safego"
 )
 
 const (
@@ -108,12 +109,61 @@ func (s *Service) processEventsOnce(ctx context.Context) (int, error) {
 		if err := ctx.Err(); err != nil {
 			return n, err
 		}
-		if err := s.processEvent(ctx, handler, &list[i]); err != nil {
+		if err := s.processEventSafe(ctx, handler, &list[i]); err != nil {
 			return n, err
 		}
 		n++
 	}
 	return n, nil
+}
+
+// processEventSafe 同 processEvent，处理时 panic 的那一条标成处理失败、停止自动重放（见 panicEvent），同一轮的其他事件照常处理。
+func (s *Service) processEventSafe(ctx context.Context, handler func(context.Context, *queuedEvent, *marswallex.WebhookEvent) (string, error), e *queuedEvent) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = s.panicEvent(ctx, e, safego.Describe(r))
+		}
+	}()
+	return s.processEvent(ctx, handler, e)
+}
+
+// panicEvent 记录处理时 panic 的事件：直接记满失败次数，不再自动重放，否则每一轮都会再 panic 一次；
+// 原文里的验证码随之抹掉，告警请人工查看后「重新处理」。desc 只有 panic 的类型和位置，不带 panic 的值。
+func (s *Service) panicEvent(ctx context.Context, e *queuedEvent, desc string) error {
+	ev := decodeQuietly(e.payload)
+	msg := "处理时内部错误（panic）：" + desc
+	ok, err := s.markEventFailed(ctx, e, ev, msg, eventMaxAttempts)
+	if err != nil {
+		return err
+	}
+	topic := eventTopic(ev)
+	log.Printf("[cardpool] Webhook 事件 #%d（%s）%s，已停止重试", e.id, topic, msg)
+	if ok {
+		s.alert(fmt.Sprintf("event:%d", e.id), fmt.Sprintf("MarsWallex Webhook 事件 #%d（%s）%s，已停止重试，"+
+			"请在后台查看后「重新处理」。", e.id, topic, msg))
+	}
+	return nil
+}
+
+// decodeQuietly 解析事件原文，解析失败或解析时 panic 都返回 nil。
+func decodeQuietly(payload string) (ev *marswallex.WebhookEvent) {
+	defer func() {
+		if recover() != nil {
+			ev = nil
+		}
+	}()
+	ev, err := marswallex.DecodeWebhookPayload([]byte(payload))
+	if err != nil {
+		return nil
+	}
+	return ev
+}
+
+func eventTopic(ev *marswallex.WebhookEvent) string {
+	if ev == nil {
+		return "无法解析"
+	}
+	return ev.Topic
 }
 
 // processEvent 处理一条事件并记录结果。
@@ -196,6 +246,21 @@ func (s *Service) finishEvent(ctx context.Context, e *queuedEvent, ev *marswalle
 // 满 10 次后停止重试、抹掉原文里的验证码并告警（key event:<id>）。
 func (s *Service) failEvent(ctx context.Context, e *queuedEvent, ev *marswallex.WebhookEvent, msg string) error {
 	attempts := e.attempts + 1
+	ok, err := s.markEventFailed(ctx, e, ev, msg, attempts)
+	if err != nil {
+		return err
+	}
+	log.Printf("[cardpool] Webhook 事件 #%d（%s）处理失败（第 %d 次）: %s", e.id, eventTopic(ev), attempts, msg)
+	if ok && attempts >= eventMaxAttempts {
+		s.alert(fmt.Sprintf("event:%d", e.id), fmt.Sprintf("MarsWallex Webhook 事件 #%d（%s）连续处理失败 %d 次，已停止重试，"+
+			"请在后台查看后「重新处理」。最后错误：%s", e.id, eventTopic(ev), attempts, truncate(msg, 200)))
+	}
+	return nil
+}
+
+// markEventFailed 把事件的失败次数记成 attempts、写下错误和下次重试时间；满 10 次就停止重试，并抹掉原文里的验证码。
+// 返回是否真的写进去了：处理期间被「重新处理」重置过计数的不覆盖。ev 为 nil（原文无法解析）时也尽力抹一次验证码。
+func (s *Service) markEventFailed(ctx context.Context, e *queuedEvent, ev *marswallex.WebhookEvent, msg string, attempts int) (bool, error) {
 	now := s.now().Unix()
 	stop := attempts >= eventMaxAttempts
 	var payload string
@@ -218,14 +283,10 @@ func (s *Service) failEvent(ctx context.Context, e *queuedEvent, ev *marswallex.
 	res, err := db.DB.ExecContext(context.WithoutCancel(ctx), `UPDATE marswallex_webhook_events SET `+set+`
 		WHERE id = ? AND processed_at IS NULL AND process_attempts = ?`, args...)
 	if err != nil {
-		return err
+		return false, err
 	}
-	log.Printf("[cardpool] Webhook 事件 #%d（%s）处理失败（第 %d 次）: %s", e.id, ev.Topic, attempts, msg)
-	if n, _ := res.RowsAffected(); n == 1 && stop {
-		s.alert(fmt.Sprintf("event:%d", e.id), fmt.Sprintf("MarsWallex Webhook 事件 #%d（%s）连续处理失败 %d 次，已停止重试，"+
-			"请在后台查看后「重新处理」。最后错误：%s", e.id, ev.Topic, attempts, truncate(msg, 200)))
-	}
-	return nil
+	n, _ := res.RowsAffected()
+	return n == 1, nil
 }
 
 // Reprocess 重置事件的处理状态（清空 processed_at、process_error、process_note、next_attempt_at，attempts 归零），

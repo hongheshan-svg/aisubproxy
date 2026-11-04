@@ -937,9 +937,10 @@ func (b *Browser) shotChallenge(ctx context.Context) ([]byte, error) {
 		if err != nil {
 			return err
 		}
-		// 内容四边形是相对可视区域的坐标，截图裁剪区要的是页面坐标
-		x, y := math.Round(x0+vp.PageX), math.Round(y0+vp.PageY)
-		clip := &page.Viewport{X: x, Y: y, Width: math.Round(x1 + vp.PageX - x), Height: math.Round(y1 + vp.PageY - y), Scale: 1}
+		clip, err := challengeClip(x0, y0, x1, y1, vp)
+		if err != nil {
+			return err
+		}
 		buf, err = page.CaptureScreenshot().WithFormat(page.CaptureScreenshotFormatPng).WithFromSurface(true).WithClip(clip).Do(ctx)
 		return err
 	})
@@ -947,6 +948,16 @@ func (b *Browser) shotChallenge(ctx context.Context) ([]byte, error) {
 		return nil, fmt.Errorf("截取 3DS 验证框失败: %w", err)
 	}
 	return buf, nil
+}
+
+// challengeClip 把验证框相对可视区域的坐标换成截图裁剪区要的页面坐标。浏览器没给可视区域（vp 为 nil）时返回错误：
+// 这一步在点过支付之后，空指针 panic 会让整个进程退出；截图失败只记警告。
+func challengeClip(x0, y0, x1, y1 float64, vp *page.VisualViewport) (*page.Viewport, error) {
+	if vp == nil {
+		return nil, errors.New("浏览器没有返回可视区域位置")
+	}
+	x, y := math.Round(x0+vp.PageX), math.Round(y0+vp.PageY)
+	return &page.Viewport{X: x, Y: y, Width: math.Round(x1 + vp.PageX - x), Height: math.Round(y1 + vp.PageY - y), Scale: 1}, nil
 }
 
 func digitsOf(s string) string {

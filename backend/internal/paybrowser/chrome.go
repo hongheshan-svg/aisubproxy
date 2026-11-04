@@ -20,6 +20,8 @@ import (
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
+
+	"github.com/tuzi/cdk-recharge-system/internal/safego"
 )
 
 // InstallHint 是 systemd 部署找不到或启动不了 Chrome 时给管理员的安装命令。
@@ -218,11 +220,14 @@ func Launch(ctx context.Context, o LaunchOptions) (*Browser, error) {
 
 	// 首次 Run 才真正拉起 Chrome，不能给它挂会取消的上下文（取消会杀掉浏览器），所以另起协程等待。
 	started := make(chan error, 1)
-	go func() { started <- chromedp.Run(tabCtx) }()
+	go func() {
+		defer safego.Recover("启动 Chrome", func(string) { started <- errors.New("启动 Chrome 时内部错误") })
+		started <- chromedp.Run(tabCtx)
+	}()
 	select {
 	case err = <-started:
 	case <-ctx.Done():
-		go b.closeAfterStart(started, abort)
+		safego.Go("关闭启动中的 Chrome", func() { b.closeAfterStart(started, abort) })
 		return nil, fmt.Errorf("启动 Chrome 失败: %w", ctx.Err())
 	}
 	if err != nil {
@@ -234,18 +239,28 @@ func Launch(ctx context.Context, o LaunchOptions) (*Browser, error) {
 
 	// 让页面始终认为自己有焦点：Xvfb 下没有窗口管理器，窗口可能拿不到系统焦点，
 	// 那样 document.hasFocus() 为假，键入与焦点事件都不正常。
-	if err := b.run(ctx, emulation.SetFocusEmulationEnabled(true)); err != nil {
+	if err := b.runInit(ctx, emulation.SetFocusEmulationEnabled(true)); err != nil {
 		b.Close()
 		return nil, fmt.Errorf("启动 Chrome 失败: %w", err)
 	}
 	if auth != nil {
 		chromedp.ListenTarget(tabCtx, b.answerProxyAuth(auth))
-		if err := b.run(ctx, fetch.Enable().WithHandleAuthRequests(true)); err != nil {
+		if err := b.runInit(ctx, fetch.Enable().WithHandleAuthRequests(true)); err != nil {
 			b.Close()
 			return nil, fmt.Errorf("启用代理认证失败: %w", err)
 		}
 	}
 	return b, nil
+}
+
+// initCallTimeout 是启动后两个初始化 CDP 调用各自的时限：Chrome 活着但不响应时不能一直挂着。
+const initCallTimeout = 15 * time.Second
+
+// runInit 执行一个启动时的初始化调用，最多等 initCallTimeout。
+func (b *Browser) runInit(ctx context.Context, action chromedp.Action) error {
+	ictx, cancel := context.WithTimeout(ctx, initCallTimeout)
+	defer cancel()
+	return b.run(ictx, action)
 }
 
 // answerDialog 自动回答页面弹出的 JS 对话框：不关掉它，页面脚本就停在那里，之后的 CDP 调用都不返回。
@@ -256,7 +271,7 @@ func (b *Browser) answerDialog(ev any) {
 	if ev, ok := ev.(*page.EventJavascriptDialogOpening); ok {
 		accept := ev.Type == page.DialogTypeAlert || ev.Type == page.DialogTypeBeforeunload
 		log.Printf("[paybrowser] 自动回答页面对话框，类型 %s，接受 %v", ev.Type, accept)
-		go b.runQuiet(page.HandleJavaScriptDialog(accept))
+		safego.Go("回答页面对话框", func() { b.runQuiet(page.HandleJavaScriptDialog(accept)) })
 	}
 }
 

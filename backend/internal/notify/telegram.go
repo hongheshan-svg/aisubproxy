@@ -14,6 +14,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/tuzi/cdk-recharge-system/internal/safego"
 )
 
 // 配置来源：后台配置优先，没配就用环境变量。
@@ -116,6 +118,7 @@ func SendText(text string) {
 		return
 	}
 	go func() {
+		defer safego.RecoverNoAlert("发送 Telegram 告警") // 只记日志：告警出错不能再触发告警
 		ctx, cancel := context.WithTimeout(context.Background(), sendTimeout)
 		defer cancel()
 		if err := Send(ctx, cfg, text); err != nil {

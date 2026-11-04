@@ -19,6 +19,7 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/payengine"
 	"github.com/tuzi/cdk-recharge-system/internal/plansync"
 	"github.com/tuzi/cdk-recharge-system/internal/provider"
+	"github.com/tuzi/cdk-recharge-system/internal/safego"
 )
 
 type Server struct {
@@ -34,6 +35,8 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	// Telegram 告警：后台配置优先，没配就用环境变量；旧版明文保存的令牌先加密迁移
 	handler.MigrateLegacyTelegramToken()
 	notify.SetSettingsSource(handler.TelegramSettings)
+	// 后台协程 panic 被兜住后的告警、没有自己告警通道的模块（如付款浏览器）的告警，都走这里发到 Telegram
+	safego.SetAlert(alertSender("system", notify.SendText))
 
 	// 生产模式、或已配置动钱上游密钥时，强制要求安全的 JWT secret，避免 token 被伪造后调用动钱接口
 	upstream, err := upstreamKeysConfigured()
@@ -99,6 +102,7 @@ var alertLabels = map[string]string{
 	"payengine": "付款",
 	"cardpool":  "卡池",
 	"cdk":       "CDK",
+	"system":    "系统",
 }
 
 // alertSender 包装模块告警：先写日志（前缀标明模块；Telegram 未配置时 SendText 静默返回，告警不能因此丢失），

@@ -8,6 +8,8 @@ import (
 
 	"github.com/chromedp/cdproto/fetch"
 	"github.com/chromedp/chromedp"
+
+	"github.com/tuzi/cdk-recharge-system/internal/safego"
 )
 
 // parseProxy 把代理地址拆成 --proxy-server 用的 scheme://host:port 与账号密码。
@@ -77,9 +79,9 @@ func (b *Browser) answerProxyAuth(a *proxyAuth) func(any) {
 	return func(ev any) {
 		switch ev := ev.(type) {
 		case *fetch.EventRequestPaused:
-			go b.runQuiet(fetch.ContinueRequest(ev.RequestID))
+			safego.Go("代理放行请求", func() { b.runQuiet(fetch.ContinueRequest(ev.RequestID)) })
 		case *fetch.EventAuthRequired:
-			go b.runQuiet(fetch.ContinueWithAuth(ev.RequestID, a.response(ev)))
+			safego.Go("代理认证应答", func() { b.runQuiet(fetch.ContinueWithAuth(ev.RequestID, a.response(ev))) })
 		}
 	}
 }

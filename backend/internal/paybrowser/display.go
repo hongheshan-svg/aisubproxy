@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"sync"
 	"time"
+
+	"github.com/tuzi/cdk-recharge-system/internal/safego"
 )
 
 const (
@@ -56,7 +58,10 @@ func startXvfb() bool {
 		return false
 	}
 	exited := make(chan struct{})
-	go func() { _ = cmd.Wait(); close(exited) }()
+	safego.Go("等待 Xvfb 退出", func() {
+		defer close(exited)
+		_ = cmd.Wait()
+	})
 	deadline := time.After(xvfbWait)
 	tick := time.NewTicker(100 * time.Millisecond)
 	defer tick.Stop()

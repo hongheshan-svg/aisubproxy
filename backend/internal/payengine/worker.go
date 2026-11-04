@@ -17,6 +17,7 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/cardpool"
 	"github.com/tuzi/cdk-recharge-system/internal/chatgpt"
 	"github.com/tuzi/cdk-recharge-system/internal/paybrowser"
+	"github.com/tuzi/cdk-recharge-system/internal/safego"
 )
 
 const (
@@ -40,10 +41,10 @@ func (s *Service) Start(ctx context.Context) {
 	s.cleanProfiles() // 第一次派发之前先扫一遍，之后由清理协程每小时一次
 	s.tryRecover(ctx)
 	s.loops.Add(4)
-	go s.loop(ctx)
-	go s.verifyLoop(ctx)
-	go s.cleanLoop(ctx)
-	go s.renewalLoop(ctx)
+	safego.Go("付款派发循环", func() { s.loop(ctx) })
+	safego.Go("付款确认循环", func() { s.verifyLoop(ctx) })
+	safego.Go("付款清理循环", func() { s.cleanLoop(ctx) })
+	safego.Go("关闭续费循环", func() { s.renewalLoop(ctx) })
 	s.Kick()
 }
 
@@ -64,10 +65,13 @@ func (s *Service) loop(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if !s.recovered.Load() && !s.tryRecover(ctx) {
-			continue
-		}
-		s.dispatch(ctx)
+		// 每一轮单独兜住 panic：一轮出错，下一轮照常派发
+		safego.Run("付款派发", func() {
+			if !s.recovered.Load() && !s.tryRecover(ctx) {
+				return
+			}
+			s.dispatch(ctx)
+		})
 	}
 }
 
@@ -102,20 +106,84 @@ func (s *Service) dispatch(ctx context.Context) {
 		s.running[o.OrderNo] = true
 		s.mu.Unlock()
 		s.loops.Add(1)
-		go s.handle(ctx, &o)
+		safego.Go("付款单处理", func() { s.handle(ctx, &o) })
 	}
 }
 
 // handle 处理一张单据并归还名额；领取成功的单据处理完后踢醒工作协程，让排队的单据接上。
+// 处理中 panic 时由 recoverJob 按结算规则收尾；名额在 defer 里归还，panic 也不会占着不放。
 func (s *Service) handle(ctx context.Context, o *Order) {
 	defer s.loops.Done()
-	claimed := s.process(ctx, o)
-	s.mu.Lock()
-	delete(s.running, o.OrderNo)
-	s.mu.Unlock()
-	if claimed {
-		s.Kick()
+	j := &job{o: o}
+	kick := false
+	defer func() {
+		if r := recover(); r != nil {
+			s.recoverJob(ctx, j, r)
+			kick = true
+		}
+		s.mu.Lock()
+		delete(s.running, o.OrderNo)
+		s.mu.Unlock()
+		if kick {
+			s.Kick()
+		}
+	}()
+	kick = s.process(ctx, j)
+}
+
+// recoverJob 收尾处理中 panic 的单据（见 settlePanic），最后关浏览器。panic 的值可能带卡号、会话，只记类型和位置。
+// 收尾本身再出错只记日志：单据留在中间状态，由确认协程（已提交的）或周期扫描（提交前的，见 sweepStale）接管。
+func (s *Service) recoverJob(ctx context.Context, j *job, r any) {
+	desc := safego.Describe(r)
+	defer closeBrowserQuietly(j)
+	defer safego.RecoverNoAlert("付款单 " + j.o.OrderNo + " 内部错误后的收尾")
+	log.Printf("[payengine] 单据 %s 在 %s 时内部错误（panic）：%s", j.o.OrderNo, j.o.State, desc)
+	if ctx.Err() == nil {
+		s.opts.Alert(fmt.Sprintf("付款单 %s 在 %s 时内部错误（panic）：%s。已按规则收尾：写过提交时间或不能证明没点支付的转确认，其余按提交前放弃。", j.o.OrderNo, j.o.State, desc))
 	}
+	s.settlePanic(ctx, j)
+}
+
+// closeBrowserQuietly 关浏览器，关的时候 panic 只记日志。
+func closeBrowserQuietly(j *job) {
+	defer safego.RecoverNoAlert("关闭付款浏览器")
+	j.closeBrowser()
+}
+
+// settlePanic 按结算规则收尾 panic 的单据：写过 submitted_at，或者浏览器不能证明没点过支付（LockSubmit），一律转确认；
+// 否则按提交前放弃处理，记 internal_error。服务停止时不收尾，单据与租约都留给重启恢复。
+func (s *Service) settlePanic(ctx context.Context, j *job) {
+	if ctx.Err() != nil {
+		log.Printf("[payengine] 单据 %s 在 %s 时服务停止，留待重启后处理", j.o.OrderNo, j.o.State)
+		return
+	}
+	if s.mayHaveClicked(ctx, j) {
+		s.toVerify(ctx, j, "内部错误，点击结果不明")
+		return
+	}
+	s.abandon(ctx, j, &stepFailure{code: "internal_error", msg: "内部错误，已放弃（没有点支付）"})
+}
+
+// mayHaveClicked 判断 panic 的单据是不是可能已经点过支付：内存或库里有 submitted_at 就算；
+// 都没有时，开着浏览器的要 LockSubmit 返回 false 才能证明没点过（试运行单打开页面时就锁定了提交，付款流程也拒绝试运行单）。
+// 读库失败时以内存为准：submitted_at 写库成功后立刻记到内存里，两者之间没有别的调用。
+func (s *Service) mayHaveClicked(ctx context.Context, j *job) (clicked bool) {
+	if j.o.SubmittedAt != nil {
+		return true
+	}
+	if fresh, err := getOrder(ctx, j.o.OrderNo); err == nil && fresh.SubmittedAt != nil {
+		j.o.SubmittedAt = fresh.SubmittedAt
+		return true
+	}
+	if j.browser == nil || j.o.DryRun {
+		return false
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			clicked = true // LockSubmit 自己出错：证明不了没点过
+		}
+	}()
+	return j.browser.LockSubmit()
 }
 
 // job 是处理中的一张单据及其运行期资源。
@@ -300,17 +368,16 @@ func (s *Service) shot(ctx context.Context, j *job, step string, scope paybrowse
 }
 
 // process 领取并处理一张排队单据；未能领取（状态已变或写库失败）返回 false。
-func (s *Service) process(ctx context.Context, o *Order) bool {
-	j := &job{o: o}
+// 浏览器不用 defer 关：panic 时 settlePanic 还要问它有没有点过支付，由 recoverJob 最后关。
+func (s *Service) process(ctx context.Context, j *job) bool {
 	if err := s.advance(ctx, j, StateChecking, "检查账号", nil); err != nil {
 		if !errors.Is(err, ErrStateChanged) && ctx.Err() == nil && !errors.Is(err, context.Canceled) {
-			log.Printf("[payengine] 单据 %s 领取失败: %v", o.OrderNo, err)
+			log.Printf("[payengine] 单据 %s 领取失败: %v", j.o.OrderNo, err)
 		}
 		return false
 	}
-	defer j.closeBrowser()
-
 	s.settle(ctx, j, s.run(ctx, j))
+	j.closeBrowser()
 	return true
 }
 
@@ -329,22 +396,28 @@ func (s *Service) settle(ctx context.Context, j *job, err error) {
 	case errors.As(err, &notClicked):
 		s.abandonNotClicked(ctx, j, notClicked)
 	case j.o.SubmittedAt != nil:
-		msg := truncate(j.scrub(err.Error()), errorMessageLimit)
-		log.Printf("[payengine] 单据 %s 提交后在 %s 时出错，转确认: %s", j.o.OrderNo, j.o.State, msg)
-		s.event(ctx, j, "warn", "提交后出错："+msg, "")
-		if verr := s.beginVerify(ctx, j, paybrowser.OutcomeUnknown, msg, "页面结果不明，确认是否开通"); verr != nil {
-			detail := j.scrub(verr.Error())
-			log.Printf("[payengine] 单据 %s 转确认失败，等确认协程接管: %s", j.o.OrderNo, detail)
-			if ctx.Err() == nil {
-				s.opts.Alert(fmt.Sprintf("付款单 %s 已提交，但转确认连续失败，等确认协程接管：%s", j.o.OrderNo, detail))
-			}
-		}
+		s.toVerify(ctx, j, err.Error())
 	case errors.As(err, &f):
 		s.abandon(ctx, j, f)
 	default:
 		msg := j.scrub(err.Error())
 		log.Printf("[payengine] 单据 %s 在 %s 时中断: %s", j.o.OrderNo, j.o.State, msg)
 		s.abandon(ctx, j, &stepFailure{code: "internal_error", msg: "内部错误：" + msg})
+	}
+}
+
+// toVerify 把可能已经点过支付的单转确认，页面结果按不明处理；text 是出错说明（这里先脱敏）。
+// 转不过去就告警：已提交的单由确认协程接管（adoptSubmitted）。
+func (s *Service) toVerify(ctx context.Context, j *job, text string) {
+	msg := truncate(j.scrub(text), errorMessageLimit)
+	log.Printf("[payengine] 单据 %s 提交后在 %s 时出错，转确认: %s", j.o.OrderNo, j.o.State, msg)
+	s.event(ctx, j, "warn", "提交后出错："+msg, "")
+	if verr := s.beginVerify(ctx, j, paybrowser.OutcomeUnknown, msg, "页面结果不明，确认是否开通"); verr != nil {
+		detail := j.scrub(verr.Error())
+		log.Printf("[payengine] 单据 %s 转确认失败，等确认协程接管: %s", j.o.OrderNo, detail)
+		if ctx.Err() == nil {
+			s.opts.Alert(fmt.Sprintf("付款单 %s 已提交，但转确认连续失败，等确认协程接管：%s", j.o.OrderNo, detail))
+		}
 	}
 }
 

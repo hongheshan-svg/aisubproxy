@@ -11,6 +11,7 @@ import (
 
 	"github.com/tuzi/cdk-recharge-system/internal/chatgpt"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
+	"github.com/tuzi/cdk-recharge-system/internal/safego"
 )
 
 // 开通成功后关闭续费（设计 2026-11-03 §3）。
@@ -50,8 +51,10 @@ func (s *Service) renewalLoop(ctx context.Context) {
 			return
 		}
 		// 先清到点的会话，再关续费：停机超过保留时限后重启，不能拿超期的会话再去调用一次
-		s.sweepSessions(ctx)
-		s.renewalDue(ctx)
+		safego.Run("关闭续费", func() {
+			s.sweepSessions(ctx)
+			s.renewalDue(ctx)
+		})
 	}
 }
 
@@ -68,11 +71,38 @@ func (s *Service) renewalDue(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if _, err := s.renewOnce(ctx, list[i].OrderNo, false); err != nil && ctx.Err() == nil &&
-			!errors.Is(err, errRenewalBusy) && !errors.Is(err, ErrStateChanged) {
-			log.Printf("[payengine] 单据 %s 关闭续费出错，下一轮再试: %v", list[i].OrderNo, err)
-		}
+		s.renewOne(ctx, list[i].OrderNo)
 	}
+}
+
+// renewOne 自动关闭一张单的续费。关闭时 panic：续费记 failed 并告警（recoverRenewal），下一轮就不会再拿到它反复出错。
+func (s *Service) renewOne(ctx context.Context, no string) {
+	defer func() {
+		if r := recover(); r != nil {
+			s.recoverRenewal(ctx, no, r)
+		}
+	}()
+	if _, err := s.renewOnce(ctx, no, false); err != nil && ctx.Err() == nil &&
+		!errors.Is(err, errRenewalBusy) && !errors.Is(err, ErrStateChanged) {
+		log.Printf("[payengine] 单据 %s 关闭续费出错，下一轮再试: %v", no, err)
+	}
+}
+
+// recoverRenewal 处理关闭续费时 panic 的单：续费从 pending 转 failed，停止自动重试，告警请人工重试或让用户自己关。
+// 单据仍是成功，会话照常留到 SessionKeep 给手动重试。panic 的值可能带会话，只记类型和位置。
+func (s *Service) recoverRenewal(ctx context.Context, no string, r any) {
+	desc := safego.Describe(r)
+	defer safego.RecoverNoAlert("付款单 " + no + " 关闭续费时内部错误后的收尾")
+	log.Printf("[payengine] 单据 %s 关闭续费时内部错误（panic）：%s", no, desc)
+	if ctx.Err() != nil {
+		return
+	}
+	const msg = "关闭续费时内部错误，已停止自动重试"
+	if err := moveRenewal(ctx, no, RenewalPending, RenewalFailed, map[string]any{"renewal_next_at": nil}, false, "error", msg); err != nil {
+		log.Printf("[payengine] 单据 %s 关闭续费时内部错误，记失败也没成功，下一轮再试: %v", no, err)
+		return
+	}
+	s.opts.Alert(fmt.Sprintf("付款单 %s 开通成功，但%s。单据仍是成功；请在 1 小时内到后台点「重试关闭续费」，或让用户自行在 ChatGPT 设置里关闭续费。", no, msg))
 }
 
 // errRenewalBusy 表示这张单正在关闭续费（续费协程和手动重试不同时做）。

@@ -314,6 +314,7 @@ export default {
   aftersale: {
     state: {
       unused: 'This code has not been used yet',
+      failed: 'Activation failed',
       failed_restored: 'Activation did not succeed, and the code has been restored',
       failed_manual: 'Sent for manual review. Please do not submit again',
       processing: 'Being processed. Please do not submit again',

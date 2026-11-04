@@ -108,7 +108,7 @@ export function afterSaleView(r: LookupResult): AfterSaleView {
       view.tone = 'ok'
       view.titleKey = r.plan_kind === 'credit' ? 'aftersale.state.credit_used' : 'aftersale.state.used'
       view.fields = usedFields(r)
-      if (r.renewal === 'off' || r.renewal === 'closing') view.renewalKey = `aftersale.renewal.${r.renewal}`
+      if (r.plan_kind !== 'credit' && (r.renewal === 'off' || r.renewal === 'closing')) view.renewalKey = `aftersale.renewal.${r.renewal}`
       break
     }
     case 'replaced':

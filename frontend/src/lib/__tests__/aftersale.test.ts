@@ -153,4 +153,20 @@ describe('afterSaleView', () => {
   it('provider_note 原样带出', () => {
     expect(afterSaleView(base({ status: 'failed', provider_note: 'card ***' })).note).toBe('card ***')
   })
+
+  it('failed 且 can_resubmit 但没有 guide：仍是码已恢复，可重新提交，不给 guideKey', () => {
+    const v = afterSaleView(base({ status: 'failed', can_resubmit: true }))
+    expect(v.titleKey).toBe('aftersale.state.failed_restored')
+    expect(v.actions).toEqual(['resubmit'])
+    expect(v.guideKey).toBeUndefined()
+  })
+
+  it('点数码不给 renewalKey', () => {
+    const v = afterSaleView(base({ status: 'used', used: true, plan_kind: 'credit', renewal: 'off' }))
+    expect(v.renewalKey).toBeUndefined()
+  })
+
+  it('processing 带 guide 时照给 guideKey', () => {
+    expect(afterSaleView(base({ status: 'processing', guide: 'manual_review' })).guideKey).toBe('aftersale.guide.manual_review')
+  })
 })

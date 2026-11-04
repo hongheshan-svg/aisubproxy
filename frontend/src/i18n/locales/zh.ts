@@ -314,6 +314,7 @@ export default {
   aftersale: {
     state: {
       unused: '这张卡密还没用过',
+      failed: '开通失败',
       failed_restored: '这次没有开通成功，卡密已恢复',
       failed_manual: '已转人工核对，请勿重复提交',
       processing: '正在处理中，请勿重复提交',

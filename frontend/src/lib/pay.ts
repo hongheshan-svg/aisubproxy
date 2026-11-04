@@ -225,3 +225,16 @@ export function proxyTestText(r: ProxyTestResult): { tone: 'ok' | 'warn' | 'err'
   const name = COUNTRY_NAME[loc] ? `（${COUNTRY_NAME[loc]}）` : ''
   return { tone: 'ok', text: `出口 IP ${r.ip}，OpenAI 识别为 ${loc}${name}，耗时 ${r.latency_ms ?? 0} ms` }
 }
+
+/**
+ * 人工定论的确认文案。定论为失败时多一句提醒（审计 D-3）：
+ * 系统判定「是否已付款」的逻辑不变，定论失败的码会变成已失败；
+ * 如果确认这笔其实没有扣款，应当禁用这张码后重新发码给用户。
+ */
+export const RESOLVE_FAILED_HINT = '如果确认这笔没有扣款，请禁用这张码后重新发码给用户。'
+
+export function resolveConfirmText(result: 'succeeded' | 'failed'): string {
+  const label = result === 'succeeded' ? '成功' : '失败'
+  const base = `确认把本单标记为${label}？只改本单结果，不会触发任何付款。`
+  return result === 'failed' ? `${base}${RESOLVE_FAILED_HINT}` : base
+}

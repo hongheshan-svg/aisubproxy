@@ -1321,8 +1321,8 @@ async function issue() {
     }
     const d = await r.json().catch(() => ({}))
     if (!r.ok) {
-      // 找回由服务端做（只认本次请求开始之后创建的码）。这里不再按「档位 + unused」猜：
-      // 那样会把别处发的码当成这一批。结果不明时直接再点一次购买，沿用同一个幂等键，卡台不会重复发码。
+      // 不再从卡台列表按时间窗或「档位 + unused」找回（会把别处发的码当成这一批）。
+      // 结果不明时直接再点一次购买，沿用同一个幂等键，卡台会原样重放，不会重复发码。
       const msg = d.error || d.msg || '发码失败'
       issueError.value = msg
       if (r.status === 0 || r.status >= 500) {
@@ -1344,13 +1344,8 @@ async function issue() {
       recentCodes.value = []
       return
     }
-    if (!d.recovered) {
-      issueKeys.done() // 明确成功才换新键；找回的结果不明，沿用旧键重试不会多发
-      issueLocked.value = false
-    } else {
-      issueKeys.markUncertain()
-      issueLocked.value = true
-    }
+    issueKeys.done() // 明确成功才换新键
+    issueLocked.value = false
     // 浏览器兜底 + 列表以服务器为准
     rememberIssued(issued, form.plan)
     recentCodes.value = codes
@@ -1366,11 +1361,8 @@ async function issue() {
       okMsg += ` · 服务器已存 ${storedN}`
       if (storeFail > 0) okMsg += `（${storeFail} 条落库失败）`
     }
-    if (d.recovered) {
-      okMsg = d.msg || `已从卡台找回 ${codes.length} 张完整码`
-    }
     issueOk.value = okMsg
-    dialog.toast(issueOk.value, shortOnes.length || storeFail || d.recovered ? 'warn' : 'ok')
+    dialog.toast(issueOk.value, shortOnes.length || storeFail ? 'warn' : 'ok')
     // 发码成功后自动尝试复制全部，减少漏拷
     await copyAll(false)
     form.funding_confirmed = false

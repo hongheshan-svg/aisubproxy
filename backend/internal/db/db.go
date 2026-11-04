@@ -12,6 +12,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -35,6 +36,42 @@ func ResolvePath() string {
 		return p
 	}
 	return "../data/cdk_recharge.db"
+}
+
+// InitialAdminPasswordFileName 是随机初始管理员密码的文件名，放在数据库文件所在目录。
+const InitialAdminPasswordFileName = "initial-admin-password.txt"
+
+// InitialAdminPasswordPath 是随机初始管理员密码文件的位置：和数据库文件同一目录。
+func InitialAdminPasswordPath() string {
+	return filepath.Join(filepath.Dir(ResolvePath()), InitialAdminPasswordFileName)
+}
+
+// RemoveInitialAdminPasswordFile 删掉随机初始密码文件（第一次改密成功后调用）。文件不存在不算错；
+// 其他错误只记一行日志，不带文件内容。
+func RemoveInitialAdminPasswordFile() {
+	path := InitialAdminPasswordPath()
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		log.Printf("删除初始管理员密码文件失败（%s）: %v", path, err)
+	}
+}
+
+// writeInitialAdminPasswordFile 把随机初始密码写进 0600 文件。已存在的文件（可能是 0644）覆盖后也改回 0600。
+// 错误信息不带密码。
+func writeInitialAdminPasswordFile(path, username, password string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		return err
+	}
+	content := fmt.Sprintf("用户名: %s\n初始密码: %s\n登录后台并修改密码后，这个文件会被自动删除；也可以手动删除。\n", username, password)
+	_, werr := f.WriteString(content)
+	cerr := f.Close()
+	if werr != nil {
+		return werr
+	}
+	if cerr != nil {
+		return cerr
+	}
+	return os.Chmod(path, 0o600)
 }
 
 func Init(cfg *config.DatabaseConfig) error {
@@ -737,20 +774,26 @@ func ensureDefaultAdmin() error {
 	if err != nil {
 		return err
 	}
+	// 随机密码不进日志（CodeQL go/clear-text-logging）：先写 0600 文件再建号，写不了就拒绝启动。
+	pwPath := InitialAdminPasswordPath()
+	if generated {
+		if err := writeInitialAdminPasswordFile(pwPath, username, password); err != nil {
+			return fmt.Errorf("无法写入初始管理员密码文件 %s: %v。请设置环境变量 ADMIN_PASSWORD 指定初始密码，或改用安装向导 INSTALL_MODE=wizard", pwPath, err)
+		}
+	}
 	if _, err := DB.Exec(`
 		INSERT INTO admin_users (username, password_hash, display_name, is_active, updated_at)
 		VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP)
 	`, username, hash, "System Admin"); err != nil {
+		if generated {
+			_ = os.Remove(pwPath)
+		}
 		return err
 	}
 	_ = MarkInstalled(username)
 
 	if generated {
-		log.Printf("============================================================")
-		log.Printf("✓ 已创建管理员账号: %s", username)
-		log.Printf("  初始随机密码（仅此一次显示，请立即登录修改）: %s", password)
-		log.Printf("  也可通过环境变量 ADMIN_PASSWORD 指定初始密码。")
-		log.Printf("============================================================")
+		log.Printf("已创建管理员账号 %s，初始随机密码已写入 %s（权限 0600），请立即登录修改密码，改密成功后该文件会自动删除", username, pwPath)
 	} else {
 		log.Printf("✓ 已用 ADMIN_PASSWORD 创建管理员账号: %s", username)
 	}

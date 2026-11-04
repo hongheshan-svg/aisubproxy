@@ -221,6 +221,8 @@ func AdminChangePassword(c *gin.Context) {
 	}
 
 	auditAdmin(c, "change_password", "")
+	// 改密成功：随机初始密码文件（如有）已经没用，删掉
+	db.RemoveInitialAdminPasswordFile()
 	// 版本号已加一，包括本机在内的所有旧会话都已作废；顺手清掉本机 cookie
 	clearAuthCookies(c)
 	c.JSON(http.StatusOK, gin.H{"message": "密码已修改，请用新密码重新登录"})

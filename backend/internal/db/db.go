@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"strings"
@@ -444,17 +445,34 @@ func UpgradeAdminHash(username, newHash string) {
 	}
 }
 
+// randomPassword 生成管理员初始密码和安装令牌。crypto/rand 读不出来时直接 panic：
+// 宁可启动失败，也不能退回一个可预测的口令（Go 1.24 起 crypto/rand 本身也不会返回错误）。
 func randomPassword(n int) string {
+	p, err := randomPasswordFrom(rand.Reader, n)
+	if err != nil {
+		panic(fmt.Sprintf("生成随机口令失败: %v", err))
+	}
+	return p
+}
+
+// randomPasswordFrom 用拒绝采样从字母表里取 n 个字符：只用小于 224（56 的最大整数倍）的字节，
+// 每个字符等概率。原来直接取模，256 % 56 = 32，前 32 个字符的概率高出 25%（审计 A-17）。
+func randomPasswordFrom(src io.Reader, n int) (string, error) {
 	const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789"
+	const limit = 256 - 256%len(alphabet)
+	out := make([]byte, 0, n)
 	buf := make([]byte, n)
-	if _, err := rand.Read(buf); err != nil {
-		return "Chg-Me-" + legacySHA256(fmt.Sprintf("%d", time.Now().UnixNano()))[:12]
+	for len(out) < n {
+		if _, err := io.ReadFull(src, buf); err != nil {
+			return "", err
+		}
+		for _, b := range buf {
+			if int(b) < limit && len(out) < n {
+				out = append(out, alphabet[int(b)%len(alphabet)])
+			}
+		}
 	}
-	out := make([]byte, n)
-	for i, b := range buf {
-		out[i] = alphabet[int(b)%len(alphabet)]
-	}
-	return string(out)
+	return string(out), nil
 }
 
 // InstallMode: wizard（推荐，等 Web 安装）| auto（启动时建管理员，兼容旧行为）

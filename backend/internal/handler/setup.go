@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync"
 	"time"
 	"unicode"
 
@@ -21,48 +20,12 @@ const (
 	setupLockWindow  = time.Hour
 )
 
-var (
-	setupMu       sync.Mutex
-	setupAttempts = map[string]*loginAttempt{}
-)
+// 安装接口的失败计数用和登录同一种有上限的限流表（setupLimiter，见 ratelimit.go），按来源 IP 计。
+func setupAllowed(ip string) (bool, time.Duration) { return setupLimiter.allowed(ip) }
 
-func setupAllowed(ip string) (bool, time.Duration) {
-	setupMu.Lock()
-	defer setupMu.Unlock()
-	a := setupAttempts[ip]
-	if a == nil {
-		return true, 0
-	}
-	now := time.Now()
-	if now.Before(a.lockedUntil) {
-		return false, time.Until(a.lockedUntil)
-	}
-	if !a.lockedUntil.IsZero() && now.After(a.lockedUntil) {
-		delete(setupAttempts, ip)
-	}
-	return true, 0
-}
+func setupFailed(ip string) { setupLimiter.failed(ip) }
 
-func setupFailed(ip string) {
-	setupMu.Lock()
-	defer setupMu.Unlock()
-	now := time.Now()
-	a := setupAttempts[ip]
-	if a == nil || now.Sub(a.windowStart) > setupLockWindow {
-		a = &loginAttempt{windowStart: now}
-		setupAttempts[ip] = a
-	}
-	a.failures++
-	if a.failures >= setupMaxAttempts {
-		a.lockedUntil = now.Add(setupLockWindow)
-	}
-}
-
-func setupSucceeded(ip string) {
-	setupMu.Lock()
-	defer setupMu.Unlock()
-	delete(setupAttempts, ip)
-}
+func setupSucceeded(ip string) { setupLimiter.succeeded(ip) }
 
 // SetupStatus GET /api/v1/setup/status — 仅返回是否已安装，不泄露细节。
 func SetupStatus(c *gin.Context) {

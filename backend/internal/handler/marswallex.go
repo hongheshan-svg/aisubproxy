@@ -203,11 +203,14 @@ func AdminPutMarsWallexConfig(c *gin.Context) {
 		}
 	}
 	setPlat := req.PlatformPublicKey != nil && strings.TrimSpace(*req.PlatformPublicKey) != ""
+	var platPEMNorm string // 统一存成 PKIX PEM：平台后台给的是纯 Base64，别处复制来的格式也不一
 	if setPlat {
-		if _, err := marswallex.ParsePublicKey(*req.PlatformPublicKey); err != nil {
+		k, err := marswallex.ParsePublicKey(*req.PlatformPublicKey)
+		if err != nil {
 			bad("平台公钥无法解析：" + err.Error())
 			return
 		}
+		platPEMNorm = marswallex.PublicKeyPEM(k)
 	}
 	if setToken || setPriv {
 		if _, err := secretbox.LoadKey(); err != nil {
@@ -258,7 +261,7 @@ func AdminPutMarsWallexConfig(c *gin.Context) {
 		changed = append(changed, "private_key")
 	}
 	if setPlat {
-		if err := db.SetSetting(db.SettingMarsWallexPlatformPublicKey, strings.TrimSpace(*req.PlatformPublicKey)); err != nil {
+		if err := db.SetSetting(db.SettingMarsWallexPlatformPublicKey, platPEMNorm); err != nil {
 			fail("platform_public_key", err)
 			return
 		}

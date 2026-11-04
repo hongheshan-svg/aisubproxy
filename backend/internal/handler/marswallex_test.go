@@ -116,6 +116,31 @@ func mwCount(t *testing.T, c *sql.DB, q string) int {
 	return n
 }
 
+// MarsWallex 后台给的平台公钥是没有首尾行的一串 Base64：要能保存，并统一存成 PEM、指纹与原公钥一致。
+func TestMarsWallexPutConfigAcceptsBareBase64PlatformKey(t *testing.T) {
+	c := mwSetup(t)
+	_, plat := mwKeys(t)
+	der, err := x509.MarshalPKIXPublicKey(&plat.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := json.Marshal(map[string]string{"developer_id": "dev-1", "platform_public_key": base64.StdEncoding.EncodeToString(der) + "  "})
+	w := mwPut(t, string(req))
+	if w.Code != 200 {
+		t.Fatalf("PUT %d %s", w.Code, w.Body.String())
+	}
+	if m := mwJSON(t, w); m["platform_public_key_fingerprint"] != marswallex.Fingerprint(&plat.PublicKey) || m["developer_id"] != "dev-1" {
+		t.Errorf("view %v", m)
+	}
+	var stored string
+	if err := c.QueryRow(`SELECT value FROM site_settings WHERE key=?`, db.SettingMarsWallexPlatformPublicKey).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != marswallex.PublicKeyPEM(&plat.PublicKey) {
+		t.Errorf("应存成 PEM，实际 %q", stored)
+	}
+}
+
 func TestMarsWallexPutConfigStoresEncryptedAndMasksOnRead(t *testing.T) {
 	c := mwSetup(t)
 	our, plat := mwKeys(t)

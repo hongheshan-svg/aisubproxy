@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   CODE_STATUS_LABELS, LEDGER_KIND_LABELS, orderPreview, validQuantity, beijingRange,
   codesQuery, exportBody, EXPORT_MAX, ledgerQuery, defaultLedgerRange, ymdBeijing,
-  isDefiniteOrderFailure, orderFailureKind, orderLockState, orderRetry, orderKeeper,
+  isDefiniteOrderFailure, keepPendingOnRateLimit, orderFailureKind, orderLockState, orderRetry, orderKeeper,
 } from '../agentViews'
 
 describe('agentViews', () => {
@@ -61,6 +61,18 @@ describe('agentViews', () => {
     expect(orderFailureKind(503, 'busy')).toBe('unknown')
     expect(orderFailureKind(0, '')).toBe('unknown')
     expect(isDefiniteOrderFailure('rate_limited')).toBe(false)
+  })
+  it('429：首次提交不锁定，结果未知后的重试仍锁定且请求号不变', () => {
+    const body = { product_code: 'a', quantity: 2, note: '' }
+    const k = orderKeeper.keyFor(body)
+    // 首次提交遇 429
+    expect(keepPendingOnRateLimit(false)).toBe(false)
+    expect(orderLockState({ busy: false, confirming: false, hasPending: keepPendingOnRateLimit(false) }).inputsDisabled).toBe(false)
+    // 结果未知后原样重试遇 429
+    expect(keepPendingOnRateLimit(true)).toBe(true)
+    expect(orderLockState({ busy: false, confirming: false, hasPending: keepPendingOnRateLimit(true) })).toEqual({ inputsDisabled: true, unknown: true })
+    expect(orderKeeper.keyFor(body)).toBe(k)
+    orderKeeper.done()
   })
   it('orderLockState：结果未知时锁定', () => {
     expect(orderLockState({ busy: false, confirming: false, hasPending: false })).toEqual({ inputsDisabled: false, unknown: false })

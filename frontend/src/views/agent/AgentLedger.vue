@@ -7,6 +7,7 @@
       <button class="btn-primary" type="button" @click="search">查询</button>
       <a v-if="exportHref && inputValid" class="btn-ghost" :href="exportHref" download>导出 CSV</a>
       <button v-else type="button" class="btn-ghost" disabled>导出 CSV</button>
+      <span class="text-xs opacity-70">导出的是上次查询的日期范围</span>
     </div>
     <p v-if="err" class="text-sm text-red-500" role="alert">{{ err }}</p>
     <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">

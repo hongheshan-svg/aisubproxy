@@ -62,7 +62,7 @@ import { computed, onMounted, ref } from 'vue'
 import { agentApi, agentErrorText } from '../../lib/agentApi'
 import { fmtUsd } from '../../lib/agentMoney'
 import { codesTxt, downloadText } from '../../lib/agentExport'
-import { orderFailureKind, NOTE_MAX, orderKeeper as keeper, orderLockState, orderPreview, orderRetry, validQuantity, type PendingOrder } from '../../lib/agentViews'
+import { keepPendingOnRateLimit, orderFailureKind, NOTE_MAX, orderKeeper as keeper, orderLockState, orderPreview, orderRetry, validQuantity, type PendingOrder } from '../../lib/agentViews'
 import { copyToClipboard } from '../../lib/clipboard'
 
 const products = ref<any[]>([])
@@ -113,6 +113,7 @@ function abandon() {
 
 async function submit() {
   if (busy.value) return
+  const wasRetry = !!pending.value
   let p = pending.value
   if (!p) {
     if (!product.value || !qty.value) return
@@ -135,7 +136,8 @@ async function submit() {
       else fail(agentErrorText(r.data, r.status))
     } else if (orderFailureKind(r.status, r.data?.error || '') === 'rate_limited') {
       // 限流时后端没处理订单：保留请求号，不锁表单
-      setPending(null); fail(agentErrorText(r.data, r.status))
+      if (!keepPendingOnRateLimit(wasRetry)) setPending(null)
+      fail(wasRetry ? '操作太频繁，请稍后再原样重试' : agentErrorText(r.data, r.status))
     } else {
       // 503、未知错误：结果未知，保留请求号并锁定
       fail(agentErrorText(r.data, r.status))

@@ -42,6 +42,11 @@ export function orderFailureKind(status: number, code: string): 'definite' | 'ra
   return 'unknown'
 }
 
+/** 限流（429）后是否保留待重试内容：首次提交（之前没有结果未知的订单）不保留；对结果未知订单的原样重试遇到 429 必须保留并继续锁定。 */
+export function keepPendingOnRateLimit(wasRetry: boolean): boolean {
+  return wasRetry
+}
+
 /** 下单页的锁定状态：请求中、确认框打开、有待重试的未知结果时，输入都禁用；有待重试且没在请求才算「结果未知」。 */
 export function orderLockState(s: { busy: boolean; confirming: boolean; hasPending: boolean }) {
   return { inputsDisabled: s.busy || s.confirming || s.hasPending, unknown: s.hasPending && !s.busy }

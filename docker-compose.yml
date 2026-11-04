@@ -4,6 +4,8 @@ services:
     image: ghcr.io/hongheshan-svg/aisubproxy:${CDK_VERSION:-latest}
     container_name: cdk-recharge
     restart: unless-stopped
+    # 停止时程序先等在途付款单进入确认或结束（最多 3 分钟），再关闭 HTTP；docker 默认 10 秒就 SIGKILL，这里放宽
+    stop_grace_period: 240s
     # Chrome 带沙箱运行需要创建用户命名空间，Docker 默认 seccomp 不放行 clone、unshare。
     # 这份配置 = Docker 默认配置 + 放行这两个调用；不用 unconfined，也不加 SYS_ADMIN。
     security_opt:

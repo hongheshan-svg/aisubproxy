@@ -138,6 +138,7 @@ type Service struct {
 	loops   sync.WaitGroup // 工作协程与各单据协程
 	mu      sync.Mutex
 	running map[string]bool // 正在处理的单号
+	holds   int             // 暂停派发的次数（停止服务、在线更新重载前排空在途单），大于 0 时不派发新单；受 mu 保护
 	// verifyErrs 记各单上次写入时间线的确认错误（单号 → 来源 → 脱敏后的文本），文本没变就不再写。
 	// 只在内存里，重启后多写一条可以接受；单据定论时删除。
 	verifyErrs map[string]map[string]string

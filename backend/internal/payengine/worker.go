@@ -82,7 +82,7 @@ func (s *Service) dispatch(ctx context.Context) {
 	}
 	limit := LoadConcurrency()
 	s.mu.Lock()
-	full := len(s.running) >= limit
+	full := len(s.running) >= limit || s.dispatchHeld()
 	s.mu.Unlock()
 	if full {
 		return
@@ -95,7 +95,8 @@ func (s *Service) dispatch(ctx context.Context) {
 	for i := range queued {
 		o := queued[i]
 		s.mu.Lock()
-		if len(s.running) >= limit {
+		// 暂停派发在名额表的锁里再判断一次：Drain 返回之后不会再有新单开始处理
+		if len(s.running) >= limit || s.dispatchHeld() {
 			s.mu.Unlock()
 			return
 		}

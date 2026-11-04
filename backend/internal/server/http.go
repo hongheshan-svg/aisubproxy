@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"html"
 	"log"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tuzi/cdk-recharge-system/internal/cardpool"
@@ -25,6 +27,10 @@ import (
 type Server struct {
 	engine *gin.Engine
 	cfg    *config.Config
+	pay    drainer // 付款引擎：停止服务时先排空在途单
+
+	mu   sync.Mutex
+	http *http.Server // Serve 开始后才有
 }
 
 func New(ctx context.Context, cfg *config.Config) (*Server, error) {
@@ -95,6 +101,7 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	return &Server{
 		engine: engine,
 		cfg:    cfg,
+		pay:    pay,
 	}, nil
 }
 

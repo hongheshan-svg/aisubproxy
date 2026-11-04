@@ -147,6 +147,8 @@ EnvironmentFile=-$INSTALL_DIR/app.env
 ExecStart=$INSTALL_DIR/cdk-recharge
 Restart=on-failure
 RestartSec=3
+# 停止时程序先等在途付款单（最多 3 分钟），多留余量再 SIGKILL
+TimeoutStopSec=240
 LimitNOFILE=65535
 NoNewPrivileges=true
 

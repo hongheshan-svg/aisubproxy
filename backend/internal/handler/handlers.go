@@ -14,7 +14,6 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/auth"
 	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
-	"github.com/tuzi/cdk-recharge-system/internal/notify"
 )
 
 func parseLimit(raw string, fallback int) int {
@@ -32,11 +31,6 @@ func parseLimit(raw string, fallback int) int {
 	}
 
 	return value
-}
-
-// ConfirmTaskRequest request for confirming a task
-type ConfirmTaskRequest struct {
-	TaskID string `json:"task_id" binding:"required"`
 }
 
 type AdminLoginRequest struct {
@@ -258,77 +252,6 @@ func ListAuditLogs(c *gin.Context) {
 		logs = append(logs, item)
 	}
 	c.JSON(http.StatusOK, gin.H{"logs": logs})
-}
-
-// ConfirmRechargeTask confirms and submits a recharge task
-func ConfirmRechargeTask(c *gin.Context) {
-	var req ConfirmTaskRequest
-	if err := c.BindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
-		return
-	}
-	req.TaskID = strings.TrimSpace(req.TaskID)
-
-	// Get task info
-	var cdkCode string
-	var sessionJSON sql.NullString
-	err := db.DB.QueryRow(`
-		SELECT cdk_code, session_json FROM recharge_tasks WHERE task_id = ? AND task_status = 'pending'
-	`, req.TaskID).Scan(&cdkCode, &sessionJSON)
-
-	if err == sql.ErrNoRows {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Task not found or already confirmed"})
-		return
-	}
-
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "System error"})
-		return
-	}
-
-	// Begin transaction
-	tx, err := db.DB.Begin()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to start transaction"})
-		return
-	}
-	defer tx.Rollback()
-
-	// Update task status to submitted
-	_, err = tx.Exec(`
-		UPDATE recharge_tasks
-		SET task_status = 'submitted', updated_at = CURRENT_TIMESTAMP
-		WHERE task_id = ?
-	`, req.TaskID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update task"})
-		return
-	}
-
-	// Mark CDK as used
-	_, err = tx.Exec(`
-		UPDATE cd_keys
-		SET status = 'used', used_at = CURRENT_TIMESTAMP
-		WHERE code = ?
-	`, cdkCode)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to mark CDK"})
-		return
-	}
-
-	if err = tx.Commit(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to commit"})
-		return
-	}
-
-	// 订单成交：CDK 已使用 + session 已提交 → 推送 Telegram 通知（异步，不阻塞响应）
-	notify.NotifyNewOrder(req.TaskID, cdkCode, sessionJSON.String)
-
-	c.JSON(http.StatusOK, gin.H{
-		"task_id": req.TaskID,
-		"status":  "submitted",
-		"message": "充值申请已提交，请等待处理",
-	})
 }
 
 // ===== Billing Tool APIs =====

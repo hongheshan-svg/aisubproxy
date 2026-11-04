@@ -85,6 +85,14 @@ func CORSMiddleware() gin.HandlerFunc {
 	}
 }
 
+// 鉴权失败统一带的错误码（审计 B-5）：前端只凭这几个码（或对应的固定文案）判断本站登录失效，
+// 其他 401/403 当业务结果原样显示，不踢人。改这里要同步 frontend/src/lib/session.ts。
+const (
+	authErrUnauthorized  = "unauthorized"
+	authErrCSRF          = "csrf_failed"
+	authErrAdminRequired = "admin_required"
+)
+
 func isUnsafeMethod(method string) bool {
 	switch method {
 	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
@@ -101,7 +109,7 @@ func JWTAuthMiddleware() gin.HandlerFunc {
 		if authHeader := c.GetHeader("Authorization"); authHeader != "" {
 			parts := strings.Split(authHeader, " ")
 			if len(parts) != 2 || parts[0] != "Bearer" {
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid authorization header"})
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid authorization header", "error_code": authErrUnauthorized})
 				c.Abort()
 				return
 			}
@@ -110,7 +118,7 @@ func JWTAuthMiddleware() gin.HandlerFunc {
 			tokenStr = ck
 			fromCookie = true
 		} else {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Missing authorization"})
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Missing authorization", "error_code": authErrUnauthorized})
 			c.Abort()
 			return
 		}
@@ -123,7 +131,7 @@ func JWTAuthMiddleware() gin.HandlerFunc {
 			return []byte(auth.JWTSecret()), nil
 		})
 		if err != nil || !token.Valid {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token"})
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token", "error_code": authErrUnauthorized})
 			c.Abort()
 			return
 		}
@@ -132,7 +140,7 @@ func JWTAuthMiddleware() gin.HandlerFunc {
 		// SQLite 本地主键查询，代价可以接受。
 		version, active, err := db.AdminTokenState(claims.UserID)
 		if errors.Is(err, sql.ErrNoRows) || (err == nil && (!active || version != claims.TokenVersion)) {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token"})
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token", "error_code": authErrUnauthorized})
 			c.Abort()
 			return
 		}
@@ -149,7 +157,7 @@ func JWTAuthMiddleware() gin.HandlerFunc {
 			csrfCookie, _ := c.Cookie("csrf_token")
 			if csrfHeader == "" || csrfCookie == "" ||
 				subtle.ConstantTimeCompare([]byte(csrfHeader), []byte(csrfCookie)) != 1 {
-				c.JSON(http.StatusForbidden, gin.H{"error": "CSRF 校验失败"})
+				c.JSON(http.StatusForbidden, gin.H{"error": "CSRF 校验失败", "error_code": authErrCSRF})
 				c.Abort()
 				return
 			}
@@ -169,7 +177,7 @@ func AdminAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		isAdmin, ok := c.Get("is_admin")
 		if !ok || isAdmin != true {
-			c.JSON(http.StatusForbidden, gin.H{"error": "Admin access required"})
+			c.JSON(http.StatusForbidden, gin.H{"error": "Admin access required", "error_code": authErrAdminRequired})
 			c.Abort()
 			return
 		}

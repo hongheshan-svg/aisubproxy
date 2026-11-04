@@ -39,11 +39,19 @@ export type SessionProbe =
   | { kind: 'dead' }
   | { kind: 'unreachable' }
 
-/** 问服务端当前 cookie 是不是有效的管理员会话：401、403 算失效；网络错误、5xx、回包不全算问不到。 */
+const ME_URL = '/api/v1/auth/admin/me'
+
+/**
+ * 问服务端当前 cookie 是不是有效的管理员会话：鉴权中间件回的 401/403 算失效；
+ * 网络错误、5xx、反代自己回的 401/403（不是本站鉴权的错误码）、回包不全都算问不到。
+ */
 export async function probeAdminSession(fetchImpl: typeof fetch = fetch): Promise<SessionProbe> {
   try {
-    const r = await fetchImpl('/api/v1/auth/admin/me', { credentials: 'include' })
-    if (r.status === 401 || r.status === 403) return { kind: 'dead' }
+    const r = await fetchImpl(ME_URL, { credentials: 'include' })
+    if (r.status === 401 || r.status === 403) {
+      const body = await r.json().catch(() => null)
+      return isLocalSessionAuthFailure(ME_URL, r.status, body) ? { kind: 'dead' } : { kind: 'unreachable' }
+    }
     if (!r.ok) return { kind: 'unreachable' }
     const d: any = await r.json()
     const auth = pickAuth(d?.username, d?.name, d?.expires_at)
@@ -66,4 +74,30 @@ export function clearSetupLeftovers(storage: Pick<Storage, 'removeItem'> | undef
       /* ignore */
     }
   }
+}
+
+// 后端鉴权中间件（server/middleware.go）失败时回的错误码和固定文案。只有这些才算本站登录失效。
+const AUTH_FAILURE_CODES = ['unauthorized', 'csrf_failed', 'admin_required']
+const AUTH_FAILURE_TEXTS = [
+  'missing authorization',
+  'invalid authorization header',
+  'invalid or expired token',
+  'csrf 校验失败',
+  'admin access required',
+]
+
+/**
+ * 是否把 401/403 当成本站登录失效（会清本地登录态、跳登录页）。
+ * 只认鉴权中间件的错误码或固定文案；其余 401/403 是业务结果（改密时旧密码错、在线更新未开启等），
+ * 原样交给页面显示（审计 B-5）。卡台上游 Key 无效、网络探测失败也可能是 401/403，绝不能踢出会话。
+ */
+export function isLocalSessionAuthFailure(url: string, status: number, body: any): boolean {
+  if (status !== 401 && status !== 403) return false
+  if (/\/api\/v1\/admin\/cardplatform\//i.test(url)) return false
+  if (/\/api\/v1\/admin\/network\//i.test(url)) return false
+
+  const code = String(body?.error_code || '').toLowerCase()
+  if (AUTH_FAILURE_CODES.includes(code)) return true
+  const err = String(body?.error || '').trim().toLowerCase()
+  return AUTH_FAILURE_TEXTS.includes(err)
 }

@@ -17,14 +17,17 @@ const store = vi.hoisted(() => {
 import { useAuthStore } from '../../stores/auth'
 import { authFetch } from '../api'
 import {
-  AUTH_STORAGE_KEY, LEGACY_SETUP_KEYS, clearSetupLeftovers, parseStoredAuth, probeAdminSession, type SessionProbe,
+  AUTH_STORAGE_KEY, LEGACY_SETUP_KEYS, clearSetupLeftovers, isLocalSessionAuthFailure, parseStoredAuth, probeAdminSession,
+  type SessionProbe,
 } from '../session'
 
 const future = () => new Date(Date.now() + 3600_000).toISOString()
 const past = () => new Date(Date.now() - 1000).toISOString()
 
-function resp(status: number, body: unknown) {
-  return { ok: status >= 200 && status < 300, status, json: async () => body } as unknown as Response
+function resp(status: number, body: unknown): Response {
+  const r: any = { ok: status >= 200 && status < 300, status, json: async () => body }
+  r.clone = () => r
+  return r as Response
 }
 
 beforeEach(() => {
@@ -127,6 +130,10 @@ describe('probeAdminSession', () => {
     expect(await probeAdminSession((async () => resp(401, { error: 'Invalid or expired token' })) as any)).toEqual({ kind: 'dead' })
     expect(await probeAdminSession((async () => resp(403, { error: 'Admin access required' })) as any)).toEqual({ kind: 'dead' })
   })
+  it('反代自己回的 403（不是本站鉴权错误）算问不到，不清本地登录态', async () => {
+    const html = { ok: false, status: 403, json: async () => { throw new Error('not json') } } as unknown as Response
+    expect(await probeAdminSession((async () => html) as any)).toEqual({ kind: 'unreachable' })
+  })
   it('网络错误、5xx 算问不到', async () => {
     expect(await probeAdminSession((async () => { throw new Error('offline') }) as any)).toEqual({ kind: 'unreachable' })
     expect(await probeAdminSession((async () => resp(502, {})) as any)).toEqual({ kind: 'unreachable' })
@@ -172,5 +179,55 @@ describe('安装向导不在浏览器存储里留明文密码（B-4）', () => {
         expect(src, rel).not.toMatch(new RegExp(`(setItem|getItem)\\(\\s*['"]${k}['"]`))
       }
     }
+  })
+})
+
+describe('isLocalSessionAuthFailure（B-5）：只有鉴权中间件的失败才算登录失效', () => {
+  const admin = '/api/v1/admin/settings'
+  it('鉴权中间件的错误码和固定文案算失效', () => {
+    expect(isLocalSessionAuthFailure(admin, 401, { error: 'whatever', error_code: 'unauthorized' })).toBe(true)
+    expect(isLocalSessionAuthFailure(admin, 403, { error: 'CSRF 校验失败', error_code: 'csrf_failed' })).toBe(true)
+    expect(isLocalSessionAuthFailure(admin, 403, { error: 'Admin access required', error_code: 'admin_required' })).toBe(true)
+    for (const error of ['Missing authorization', 'Invalid authorization header', 'Invalid or expired token', 'CSRF 校验失败', 'Admin access required']) {
+      expect(isLocalSessionAuthFailure(admin, 401, { error }), error).toBe(true)
+    }
+  })
+  it('业务性的 401/403 不算失效', () => {
+    expect(isLocalSessionAuthFailure('/api/v1/admin/system/update', 403, { error: 'UPDATE_ENABLED=0，未开启一键更新' })).toBe(false)
+    expect(isLocalSessionAuthFailure('/api/v1/auth/admin/change-password', 401, { error: '旧密码不正确' })).toBe(false)
+    expect(isLocalSessionAuthFailure(admin, 403, null)).toBe(false)
+  })
+  it('卡台上游、网络探测的 401/403 不算失效', () => {
+    expect(isLocalSessionAuthFailure('/api/v1/admin/cardplatform/cdks', 401, { error: 'Invalid or expired token' })).toBe(false)
+    expect(isLocalSessionAuthFailure('/api/v1/admin/network/probe', 403, { error_code: 'unauthorized' })).toBe(false)
+  })
+  it('其他状态码不算', () => {
+    expect(isLocalSessionAuthFailure(admin, 500, { error_code: 'unauthorized' })).toBe(false)
+  })
+})
+
+describe('authFetch 遇到业务性 403 不登出（B-5）', () => {
+  it('改密时旧密码错（401）不会把管理员踢出去', async () => {
+    const auth = useAuthStore()
+    auth.save({ username: 'admin', name: 'A', expiresAt: future() })
+    vi.stubGlobal('fetch', vi.fn(async () => resp(401, { error: '旧密码不正确' })))
+    try {
+      const r = await authFetch('/api/v1/auth/admin/change-password', { method: 'POST', body: '{}' })
+      expect(r.status).toBe(401)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+    expect(auth.isLoggedIn).toBe(true)
+  })
+  it('会话失效（401 unauthorized）照常登出', async () => {
+    const auth = useAuthStore()
+    auth.save({ username: 'admin', name: 'A', expiresAt: future() })
+    vi.stubGlobal('fetch', vi.fn(async () => resp(401, { error: 'Invalid or expired token', error_code: 'unauthorized' })))
+    try {
+      await authFetch('/api/v1/admin/settings')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+    expect(auth.isLoggedIn).toBe(false)
   })
 })

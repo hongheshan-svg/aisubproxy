@@ -1,8 +1,10 @@
 import { useAuthStore } from '../stores/auth'
+import { isLocalSessionAuthFailure } from './session'
 
 const UNSAFE_METHODS = ['POST', 'PUT', 'PATCH', 'DELETE']
 
 function getCookie(name: string): string {
+  if (typeof document === 'undefined') return ''
   const match = document.cookie.match(new RegExp('(?:^|; )' + name.replace(/([.$?*|{}()[\]\\/+^])/g, '\\$1') + '=([^;]*)'))
   return match ? decodeURIComponent(match[1]) : ''
 }
@@ -15,47 +17,6 @@ function requestUrl(input: RequestInfo | URL): string {
   } catch {
     return ''
   }
-}
-
-/**
- * 是否应把 401/403 当成「本站登录失效」。
- * 卡台上游 Key 无效/未配置时后端可能透传 401/403，绝不能踢出 admin 会话。
- */
-function isLocalSessionAuthFailure(url: string, status: number, body: any): boolean {
-  if (status !== 401 && status !== 403) return false
-
-  // 上游卡台 / 网络探测：业务失败，不是 CDK 登录失效
-  if (/\/api\/v1\/admin\/cardplatform\//i.test(url)) return false
-  if (/\/api\/v1\/admin\/network\//i.test(url)) return false
-
-  const err = String(body?.error || body?.msg || body?.message || '').toLowerCase()
-  const code = String(body?.error_code || body?.code || '').toLowerCase()
-
-  // 明确卡台/上游错误码
-  if (
-    code.includes('cardplatform')
-    || code.includes('api_key')
-    || err.includes('api key')
-    || err.includes('openapi')
-    || err.includes('卡台')
-    || err.includes('spacexcard') || err.includes('zovocard') || err.includes('zovocard.com')
-  ) {
-    return false
-  }
-
-  // 本站鉴权常见文案
-  if (
-    err.includes('missing authorization')
-    || err.includes('invalid or expired token')
-    || err.includes('invalid authorization')
-    || err.includes('csrf')
-    || code === 'unauthorized'
-  ) {
-    return true
-  }
-
-  // 默认：仅对「非卡台」的 401/403 踢登录；403 CSRF 也算会话保护
-  return true
 }
 
 export const authFetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
@@ -92,7 +53,7 @@ export const authFetch = async (input: RequestInfo | URL, init: RequestInit = {}
     }
     if (isLocalSessionAuthFailure(url, response.status, body)) {
       authStore.logout()
-      if (window.location.pathname.startsWith('/ops')) {
+      if (typeof window !== 'undefined' && window.location.pathname.startsWith('/ops')) {
         window.location.href = '/ops/login'
       }
     }

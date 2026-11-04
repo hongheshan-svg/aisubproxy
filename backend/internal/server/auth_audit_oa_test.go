@@ -426,3 +426,30 @@ func TestOAForwardedProtoTrustedOnlyFromProxies(t *testing.T) {
 		t.Error("没有可信反代时，客户端自带 X-Forwarded-Proto 不应让 cookie 带 Secure")
 	}
 }
+
+// B-5：鉴权中间件的失败带固定的 error_code，前端只凭它（或固定文案）判断登录失效，业务性 401/403 不再踢人。
+func TestOAAuthFailuresCarryErrorCode(t *testing.T) {
+	r := oaRouter(t)
+	oaCreateAdmin(t, "oa_code")
+	cs := oaLogin(t, r, "198.51.100.60", "oa_code", oaPassword)
+	check := func(name string, w *httptest.ResponseRecorder, status int, code string) {
+		t.Helper()
+		if w.Code != status || oaJSON(t, w)["error_code"] != code {
+			t.Errorf("%s：想要 %d/%s，实际 %d %s", name, status, code, w.Code, w.Body.String())
+		}
+	}
+	check("无凭证", oaDo(r, oaReq{method: "GET", path: "/api/v1/admin/settings"}), 401, "unauthorized")
+	check("坏 Authorization 头", oaDo(r, oaReq{method: "GET", path: "/api/v1/admin/settings", header: map[string]string{"Authorization": "Basic x"}}), 401, "unauthorized")
+	check("坏令牌", oaDo(r, oaReq{method: "GET", path: "/api/v1/admin/settings", header: map[string]string{"Authorization": "Bearer x.y.z"}}), 401, "unauthorized")
+	check("缺 CSRF", oaDo(r, oaReq{method: "POST", path: "/api/v1/auth/admin/logout", cookies: cs}), 403, "csrf_failed")
+	// 业务性 401（改密时旧密码错）不带这个错误码
+	w := oaDo(r, oaReq{method: "POST", path: "/api/v1/auth/admin/change-password", cookies: cs, header: oaCSRF(cs),
+		body: `{"old_password":"Wr0ngPassword-x","new_password":"An0therStr0ngPass"}`})
+	if w.Code != http.StatusUnauthorized || oaJSON(t, w)["error_code"] != nil {
+		t.Errorf("旧密码错应是不带 error_code 的 401：%d %s", w.Code, w.Body.String())
+	}
+	if _, err := db.DB.Exec(`UPDATE admin_users SET token_version = token_version + 1`); err != nil {
+		t.Fatal(err)
+	}
+	check("令牌已作废", oaDo(r, oaReq{method: "GET", path: "/api/v1/admin/settings", cookies: cs}), 401, "unauthorized")
+}

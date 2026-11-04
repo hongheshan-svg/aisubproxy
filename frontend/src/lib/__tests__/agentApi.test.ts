@@ -72,6 +72,11 @@ describe('agentErrorText 补充', () => {
     expect(agentErrorText({ error: 'unauthorized' })).toBe('登录已失效，请重新登录')
     expect(agentErrorText({ error: 'csrf_invalid' })).toBe('页面已过期，请刷新后重试')
   })
+  it('LookupGuard 旧格式：429 用 rate_limited 文案，其他状态直接显示文本', () => {
+    expect(agentErrorText({ error: '请求过于频繁，请稍后再试' }, 429)).toBe('操作太频繁，请稍后再试')
+    expect(agentErrorText({ error: '请求体过大' }, 413)).toBe('请求体过大')
+    expect(agentErrorText({ error: 'whatever_unknown' }, 500)).toBe('操作失败，请稍后再试')
+  })
   it('余额不足无论有没有 message 都用 shortfall_cents', () => {
     expect(agentErrorText({ error: 'insufficient_balance', message: 'insufficient', shortfall_cents: 250 })).toBe('余额不足，还差 $2.50')
   })

@@ -1,13 +1,9 @@
-import { defineComponent, h } from 'vue'
 import { createRouter, createWebHistory, RouteRecordRaw } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { agentGuardDecision } from '../lib/agentSession'
 
 // 管理端入口故意不用 /admin，降低扫路径风险。API 仍为 /api/v1/admin/*（服务端鉴权）。
 const OPS_BASE = '/ops'
-
-// 任务 10 会换成真实页面；在此之前先占位
-const AgentPlaceholder = defineComponent({ render: () => h('div', '页面建设中') })
 
 const routes: RouteRecordRaw[] = [
   {
@@ -120,13 +116,13 @@ const routes: RouteRecordRaw[] = [
     component: () => import('../layouts/AgentLayout.vue'),
     meta: { requiresAgent: true },
     children: [
-      { path: '', name: 'AgentHome', component: AgentPlaceholder },
-      { path: 'order', name: 'AgentOrder', component: AgentPlaceholder },
-      { path: 'codes', name: 'AgentCodes', component: AgentPlaceholder },
-      { path: 'orders', name: 'AgentOrders', component: AgentPlaceholder },
-      { path: 'orders/:id', name: 'AgentOrderDetail', component: AgentPlaceholder },
-      { path: 'ledger', name: 'AgentLedger', component: AgentPlaceholder },
-      { path: 'account', name: 'AgentAccount', component: AgentPlaceholder },
+      { path: '', name: 'AgentHome', component: () => import('../views/agent/AgentOverview.vue') },
+      { path: 'order', name: 'AgentOrder', component: () => import('../views/agent/AgentOrder.vue') },
+      { path: 'codes', name: 'AgentCodes', component: () => import('../views/agent/AgentCodes.vue') },
+      { path: 'orders', name: 'AgentOrders', component: () => import('../views/agent/AgentOrders.vue') },
+      { path: 'orders/:id', name: 'AgentOrderDetail', component: () => import('../views/agent/AgentOrderDetail.vue') },
+      { path: 'ledger', name: 'AgentLedger', component: () => import('../views/agent/AgentLedger.vue') },
+      { path: 'account', name: 'AgentAccount', component: () => import('../views/agent/AgentAccount.vue') },
     ],
   },
   {

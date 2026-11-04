@@ -68,7 +68,7 @@ export const AGENT_ERROR_TEXT: Record<string, string> = {
 
 const FALLBACK = '操作失败，请稍后再试'
 
-export function agentErrorText(data: any): string {
+export function agentErrorText(data: any, status?: number): string {
   const code = data && typeof data.error === 'string' ? data.error : ''
   // 余额不足固定用 shortfall_cents 拼，不看 message
   if (code === 'insufficient_balance') {
@@ -76,7 +76,11 @@ export function agentErrorText(data: any): string {
     return Number.isFinite(s) && s > 0 ? `余额不足，还差 ${fmtUsd(s)}` : AGENT_ERROR_TEXT[code]
   }
   if (data && typeof data.message === 'string' && data.message) return data.message
-  return AGENT_ERROR_TEXT[code] || FALLBACK
+  if (AGENT_ERROR_TEXT[code]) return AGENT_ERROR_TEXT[code]
+  // LookupGuard 旧格式 {"error":"<中文文本>"}：429 用 rate_limited 文案，其他状态直接显示这段文本
+  if (code && !/^[a-z0-9_]+$/.test(code)) return status === 429 ? AGENT_ERROR_TEXT.rate_limited : code
+  if (status === 429) return AGENT_ERROR_TEXT.rate_limited
+  return FALLBACK
 }
 
 /** 登录后的跳转目标：只接受 /agent 开头的站内路径，其余一律回 /agent（防开放跳转）。 */

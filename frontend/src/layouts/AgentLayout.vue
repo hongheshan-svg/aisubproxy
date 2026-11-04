@@ -42,6 +42,7 @@ function isActive(n: Nav) {
 }
 
 function toLogin() {
+  resetAgentSession()
   router.replace({ path: '/agent/login', query: { redirect: route.fullPath } })
 }
 

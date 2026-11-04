@@ -233,7 +233,8 @@ func setupRoutes(r *gin.Engine) {
 		auth := api.Group("/auth")
 		{
 			auth.POST("/admin/login", handler.AdminLogin)
-			auth.POST("/admin/logout", handler.AdminLogout)
+			// 登出也要有效会话，cookie 会话还要过 CSRF：第三方页面不能随意把管理员登出（审计 A-13）
+			auth.POST("/admin/logout", JWTAuthMiddleware(), handler.AdminLogout)
 			auth.GET("/admin/me", JWTAuthMiddleware(), handler.AdminMe)
 			auth.POST("/admin/change-password", JWTAuthMiddleware(), AdminAuthMiddleware(), handler.AdminChangePassword)
 		}

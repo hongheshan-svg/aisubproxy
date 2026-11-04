@@ -265,3 +265,30 @@ func TestOADisabledOrDeletedAdminTokenRejected(t *testing.T) {
 		t.Fatalf("账号删除后应 401，实际 %d", me.Code)
 	}
 }
+
+// A-13：登出要求有效会话；cookie 会话还要带 CSRF 头，第三方页面不能随意把管理员登出。
+func TestOALogoutRequiresSessionAndCSRF(t *testing.T) {
+	r := oaRouter(t)
+	oaCreateAdmin(t, "oa_logout")
+	cs := oaLogin(t, r, "198.51.100.6", "oa_logout", oaPassword)
+
+	if w := oaDo(r, oaReq{method: "POST", path: "/api/v1/auth/admin/logout"}); w.Code != http.StatusUnauthorized {
+		t.Errorf("无会话登出应 401，实际 %d", w.Code)
+	}
+	w := oaDo(r, oaReq{method: "POST", path: "/api/v1/auth/admin/logout", cookies: cs})
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("缺 CSRF 头的登出应 403，实际 %d", w.Code)
+	}
+	if c := oaCookie(w.Result().Cookies(), "auth_token"); c != nil {
+		t.Fatalf("被拒的登出不应动 cookie：%+v", c)
+	}
+	w = oaDo(r, oaReq{method: "POST", path: "/api/v1/auth/admin/logout", cookies: cs, header: oaCSRF(cs)})
+	if w.Code != http.StatusOK {
+		t.Fatalf("带 CSRF 头的登出应 200，实际 %d：%s", w.Code, w.Body.String())
+	}
+	for _, name := range []string{"auth_token", "csrf_token"} {
+		if c := oaCookie(w.Result().Cookies(), name); c == nil || c.MaxAge >= 0 {
+			t.Errorf("登出应清掉 %s：%+v", name, c)
+		}
+	}
+}

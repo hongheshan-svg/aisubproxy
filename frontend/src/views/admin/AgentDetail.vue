@@ -1,0 +1,406 @@
+<template>
+  <div class="space-y-4" data-page="agent-detail">
+    <div class="flex flex-wrap items-center gap-3">
+      <router-link to="/ops/agents" class="underline text-sm">← 代理商</router-link>
+      <h1 class="text-xl font-semibold">{{ agent ? agent.username : '代理商详情' }}</h1>
+      <el-tag v-if="agent" size="small" :type="agent.status === 'active' ? 'success' : 'info'">{{ agent.status === 'active' ? '启用' : '已停用' }}</el-tag>
+    </div>
+    <p v-if="err" class="text-sm text-red-500" role="alert">{{ err }}</p>
+
+    <section v-if="agent" class="card p-4 space-y-3">
+      <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-sm">
+        <div><div class="opacity-70">余额</div><div class="font-semibold text-lg">{{ fmtUsd(agent.balance_cents) }}</div></div>
+        <div><div class="opacity-70">名称</div><div>{{ agent.display_name || '—' }}</div></div>
+        <div><div class="opacity-70">价格等级</div><div>{{ agent.tier_name }}</div></div>
+        <div><div class="opacity-70">码数</div><div>{{ agent.code_count }}</div></div>
+        <div><div class="opacity-70">两步验证</div><div>{{ agent.totp_bound ? '已绑定' : '未绑定' }}</div></div>
+        <div><div class="opacity-70">下次登录须改密码</div><div>{{ agent.must_change_password ? '是' : '否' }}</div></div>
+        <div><div class="opacity-70">最近登录</div><div>{{ agent.last_login_at ? fmtBeijing(agent.last_login_at) : '从未' }}</div></div>
+        <div><div class="opacity-70">创建时间</div><div>{{ fmtBeijing(agent.created_at) }}</div></div>
+        <div class="sm:col-span-2 lg:col-span-4"><div class="opacity-70">备注</div><div class="break-all">{{ agent.note || '—' }}</div></div>
+      </div>
+      <div class="flex flex-wrap gap-2">
+        <el-button type="primary" @click="openAdjust">调账</el-button>
+        <el-button @click="openEdit">编辑资料</el-button>
+        <el-button @click="resetPassword">重置密码</el-button>
+        <el-button @click="resetTotp">重置两步验证</el-button>
+        <el-button v-if="agent.status === 'active'" type="danger" plain :loading="busy" @click="toggle(false)">停用</el-button>
+        <el-button v-else type="success" plain :loading="busy" @click="toggle(true)">启用</el-button>
+      </div>
+    </section>
+
+    <section v-if="agent" class="card p-4 space-y-3">
+      <div class="flex flex-wrap gap-2 text-sm">
+        <button v-for="t in TABS" :key="t.key" type="button" :class="tab === t.key ? 'btn-primary' : 'btn-ghost'" @click="tab = t.key">{{ t.label }}</button>
+      </div>
+
+      <!-- 流水 -->
+      <div v-if="tab === 'ledger'" class="space-y-3">
+        <div class="flex flex-wrap items-end gap-3">
+          <label class="block"><span class="block text-sm mb-1">开始日期</span><input v-model="from" type="date" class="input" /></label>
+          <label class="block"><span class="block text-sm mb-1">结束日期</span><input v-model="to" type="date" class="input" /></label>
+          <button class="btn-primary" type="button" @click="searchLedger">查询</button>
+          <button class="btn-ghost" type="button" :disabled="!snapRange" @click="exportLedger">导出 CSV（上次查询的范围）</button>
+        </div>
+        <p v-if="ledgerErr" class="text-sm text-red-500" role="alert">{{ ledgerErr }}</p>
+        <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 text-sm">
+          <div class="card p-3"><div class="opacity-70">期初</div><b>{{ fmtUsd(summary.opening_cents) }}</b></div>
+          <div class="card p-3"><div class="opacity-70">收入</div><b>{{ fmtUsd(summary.income_cents) }}</b></div>
+          <div class="card p-3"><div class="opacity-70">支出</div><b>{{ fmtUsd(summary.expense_cents) }}</b></div>
+          <div class="card p-3"><div class="opacity-70">期末</div><b>{{ fmtUsd(summary.closing_cents) }}</b></div>
+        </div>
+        <el-table :data="ledger" size="small" stripe empty-text="没有流水">
+          <el-table-column label="时间" width="160"><template #default="{ row }">{{ fmtBeijing(row.created_at) }}</template></el-table-column>
+          <el-table-column label="类型" width="80"><template #default="{ row }">{{ LEDGER_KIND_LABELS[row.kind] || row.kind }}</template></el-table-column>
+          <el-table-column label="金额" width="110"><template #default="{ row }">{{ fmtUsd(row.amount_cents) }}</template></el-table-column>
+          <el-table-column label="变动后余额" width="120"><template #default="{ row }">{{ fmtUsd(row.balance_after_cents) }}</template></el-table-column>
+          <el-table-column label="订单" width="80"><template #default="{ row }">{{ row.order_id ? '#' + row.order_id : '' }}</template></el-table-column>
+          <el-table-column prop="operator" label="操作人" width="110" show-overflow-tooltip />
+          <el-table-column prop="ext_ref" label="外部单号" min-width="110" show-overflow-tooltip />
+          <el-table-column prop="note" label="备注" min-width="140" show-overflow-tooltip />
+        </el-table>
+        <div class="flex justify-end"><el-pagination v-model:current-page="ledgerPage" :page-size="PAGE" :total="ledgerTotal" layout="total, prev, pager, next" size="small" @current-change="loadLedger" /></div>
+      </div>
+
+      <!-- 订单 -->
+      <div v-if="tab === 'orders'" class="space-y-3">
+        <p v-if="ordersErr" class="text-sm text-red-500" role="alert">{{ ordersErr }}</p>
+        <el-table :data="orders" size="small" stripe empty-text="没有订单">
+          <el-table-column prop="id" label="订单" width="80" />
+          <el-table-column label="时间" width="160"><template #default="{ row }">{{ fmtBeijing(row.created_at) }}</template></el-table-column>
+          <el-table-column prop="product_name" label="商品" min-width="140" show-overflow-tooltip />
+          <el-table-column prop="quantity" label="数量" width="70" />
+          <el-table-column label="单价" width="100"><template #default="{ row }">{{ fmtUsd(row.unit_price_cents) }}</template></el-table-column>
+          <el-table-column label="合计" width="110"><template #default="{ row }">{{ fmtUsd(row.total_cents) }}</template></el-table-column>
+          <el-table-column prop="note" label="备注" min-width="120" show-overflow-tooltip />
+        </el-table>
+        <div class="flex justify-end"><el-pagination v-model:current-page="ordersPage" :page-size="PAGE" :total="ordersTotal" layout="total, prev, pager, next" size="small" @current-change="loadOrders" /></div>
+      </div>
+
+      <!-- 覆盖价 -->
+      <div v-if="tab === 'overrides'" class="space-y-3">
+        <p class="text-sm opacity-70">给这个代理商单独定价，优先于所属等级的价格；留空或填 0 表示取消覆盖，回到等级价。</p>
+        <p v-if="overridesErr" class="text-sm text-red-500" role="alert">{{ overridesErr }}</p>
+        <el-table :data="overrides" size="small" stripe empty-text="没有商品">
+          <el-table-column prop="name" label="商品" min-width="160" show-overflow-tooltip />
+          <el-table-column prop="product_code" label="编码" min-width="140" class-name="mono" />
+          <el-table-column label="等级价" width="110"><template #default="{ row }">{{ row.tier_price_cents ? fmtUsd(row.tier_price_cents) : '不卖' }}</template></el-table-column>
+          <el-table-column label="覆盖价（美元）" width="170">
+            <template #default="{ row }"><el-input v-model="overrideEdit[String(row.product_id)]" size="small" placeholder="不覆盖" /></template>
+          </el-table-column>
+        </el-table>
+        <el-button type="primary" :loading="savingOverrides" @click="saveOverrides">保存覆盖价</el-button>
+      </div>
+
+      <!-- 本站码 -->
+      <div v-if="tab === 'codes'" class="space-y-3">
+        <p v-if="codesErr" class="text-sm text-red-500" role="alert">{{ codesErr }}</p>
+        <el-table :data="codes" size="small" stripe empty-text="没有码">
+          <el-table-column prop="id" label="ID" width="70" />
+          <el-table-column label="码前缀" min-width="130"><template #default="{ row }"><span class="mono">{{ row.code_prefix }}…</span></template></el-table-column>
+          <el-table-column label="套餐 / 地区" min-width="130"><template #default="{ row }">{{ row.plan }} / {{ row.region }}</template></el-table-column>
+          <el-table-column label="状态" min-width="150"><template #default="{ row }">{{ localCdkStatusText(row.status, row.status_reason) }}</template></el-table-column>
+          <el-table-column prop="note" label="备注" min-width="120" show-overflow-tooltip />
+          <el-table-column label="时间" width="160"><template #default="{ row }">{{ fmtCdkTime(row.created_at) }}</template></el-table-column>
+        </el-table>
+        <div class="flex justify-end"><el-pagination v-model:current-page="codesPage" :page-size="PAGE" :total="codesTotal" layout="total, prev, pager, next" size="small" @current-change="loadCodes" /></div>
+      </div>
+    </section>
+
+    <!-- 编辑资料 -->
+    <el-dialog v-model="editOpen" title="编辑资料" width="min(480px, 96vw)" append-to-body :close-on-click-modal="false">
+      <div class="space-y-3">
+        <label class="block text-sm"><span class="block mb-1">名称</span><el-input v-model="editForm.display_name" maxlength="100" /></label>
+        <label class="block text-sm"><span class="block mb-1">价格等级</span>
+          <el-select v-model="editForm.tier_id" class="w-full"><el-option v-for="t in tiers" :key="t.id" :label="t.name" :value="t.id" /></el-select>
+        </label>
+        <label class="block text-sm"><span class="block mb-1">备注</span><el-input v-model="editForm.note" maxlength="200" /></label>
+        <p v-if="editErr" class="text-sm text-red-500" role="alert">{{ editErr }}</p>
+      </div>
+      <template #footer>
+        <el-button @click="editOpen = false">取消</el-button>
+        <el-button type="primary" :loading="saving" @click="saveEdit">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 调账 -->
+    <el-dialog v-model="adjustOpen" title="调账" width="min(480px, 96vw)" append-to-body :close-on-click-modal="false" :close-on-press-escape="false" :before-close="beforeCloseAdjust">
+      <div class="space-y-3" data-testid="adjust-dialog">
+        <p class="text-sm">当前余额 <b>{{ agent ? fmtUsd(agent.balance_cents) : '' }}</b>。正数充值，负数扣款，不能扣成负数；每笔调账都会记入流水和审计。</p>
+        <label class="block text-sm"><span class="block mb-1">金额（美元，可带负号）</span><el-input v-model="adjAmount" :disabled="adjLocked || adjBusy" placeholder="例如 100 或 -20.5" /></label>
+        <label class="block text-sm"><span class="block mb-1">原因（必填）</span><el-input v-model="adjNote" :disabled="adjLocked || adjBusy" maxlength="200" /></label>
+        <p v-if="adjMsg" class="text-sm" :class="adjLocked ? 'text-amber-600' : 'text-red-500'" role="alert">{{ adjMsg }}</p>
+      </div>
+      <template #footer>
+        <el-button v-if="adjLocked" type="danger" plain @click="abandonAdjust">放弃这次调账</el-button>
+        <el-button v-else @click="closeAdjust">取消</el-button>
+        <el-button type="primary" :loading="adjBusy" :disabled="adjBusy" @click="submitAdjust">{{ adjLocked ? '原样重试' : '确认调账' }}</el-button>
+      </template>
+    </el-dialog>
+
+    <AgentPasswordDialog :password="newPassword" :username="agent?.username" title="新密码" @close="newPassword = ''" />
+  </div>
+</template>
+
+<script setup lang="ts">
+import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
+import AgentPasswordDialog from './components/AgentPasswordDialog.vue'
+import { adminApi, centsToUsd, localCdkStatusText } from '../../lib/provider'
+import { authFetch } from '../../lib/api'
+import { adminErrorText, classifyAdjust, overrideChanges } from '../../lib/agentAdmin'
+import { fmtUsd, parseSignedUsd } from '../../lib/agentMoney'
+import { beijingRange, defaultLedgerRange, ledgerQuery, LEDGER_KIND_LABELS } from '../../lib/agentViews'
+import { IdempotencyKeeper } from '../../lib/idempotency'
+import { fmtBeijing } from '../../lib/mwwebhook'
+import { dialog } from '../../lib/dialog'
+
+const PAGE = 20
+
+function downloadBlob(name: string, blob: Blob) {
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = name
+  a.style.display = 'none'
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+const TABS = [
+  { key: 'ledger', label: '余额流水' }, { key: 'orders', label: '订单' },
+  { key: 'overrides', label: '覆盖价' }, { key: 'codes', label: '本站码' },
+]
+const route = useRoute()
+const id = computed(() => Number(route.params.id))
+const agent = ref<any>(null)
+const tiers = ref<any[]>([])
+const err = ref('')
+const busy = ref(false)
+const tab = ref('ledger')
+
+function fmtCdkTime(v: unknown) {
+  return typeof v === 'number' ? fmtBeijing(v) : v ? String(v) : '—'
+}
+
+async function loadAgent() {
+  const r = await adminApi<any>(`/agents/${id.value}`)
+  if (!r.ok) { err.value = '读取失败：' + adminErrorText(r.data, r.status); return }
+  err.value = ''
+  agent.value = r.data.agent
+}
+
+// ---------- 流水 ----------
+const def = defaultLedgerRange(Math.floor(Date.now() / 1000))
+const from = ref(def.from)
+const to = ref(def.to)
+const snap = ref({ from: def.from, to: def.to })
+const snapRange = computed(() => beijingRange(snap.value.from, snap.value.to))
+const ledger = ref<any[]>([])
+const ledgerTotal = ref(0)
+const ledgerPage = ref(1)
+const ledgerErr = ref('')
+const summary = ref({ opening_cents: 0, closing_cents: 0, income_cents: 0, expense_cents: 0 })
+
+function searchLedger() {
+  if (!beijingRange(from.value, to.value)) { ledgerErr.value = '日期范围不正确'; return }
+  snap.value = { from: from.value, to: to.value }
+  ledgerPage.value = 1
+  loadLedger()
+}
+async function loadLedger() {
+  const rg = snapRange.value
+  if (!rg) { ledgerErr.value = '日期范围不正确'; return }
+  const r = await adminApi<any>(`/agents/${id.value}/ledger?${ledgerQuery(rg.from, rg.to)}&page=${ledgerPage.value}&page_size=${PAGE}`)
+  if (!r.ok) { ledgerErr.value = adminErrorText(r.data, r.status); return }
+  ledgerErr.value = ''
+  ledger.value = r.data.items || []
+  ledgerTotal.value = r.data.total || 0
+  if (r.data.summary) summary.value = r.data.summary
+}
+async function exportLedger() {
+  const rg = snapRange.value
+  if (!rg) return
+  try {
+    const res = await authFetch(`/api/v1/admin/agents/${id.value}/ledger/export?${ledgerQuery(rg.from, rg.to)}`)
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}))
+      dialog.toast(adminErrorText(d, res.status), 'err')
+      return
+    }
+    // 直接用字节建文件，保留后端写的 BOM
+    downloadBlob(`agent-${id.value}-ledger.csv`, new Blob([await res.arrayBuffer()], { type: 'text/csv;charset=utf-8' }))
+  } catch { dialog.toast('网络异常，请稍后再试', 'err') }
+}
+
+// ---------- 订单 ----------
+const orders = ref<any[]>([])
+const ordersTotal = ref(0)
+const ordersPage = ref(1)
+const ordersErr = ref('')
+async function loadOrders() {
+  const r = await adminApi<any>(`/agents/${id.value}/orders?page=${ordersPage.value}&page_size=${PAGE}`)
+  if (!r.ok) { ordersErr.value = adminErrorText(r.data, r.status); return }
+  ordersErr.value = ''
+  orders.value = r.data.items || []
+  ordersTotal.value = r.data.total || 0
+}
+
+// ---------- 覆盖价 ----------
+const overrides = ref<any[]>([])
+const overrideEdit = reactive<Record<string, string>>({})
+const overridesErr = ref('')
+const savingOverrides = ref(false)
+function fillOverrides(items: any[]) {
+  overrides.value = items
+  for (const k of Object.keys(overrideEdit)) delete overrideEdit[k]
+  for (const o of items) overrideEdit[String(o.product_id)] = o.override_price_cents ? centsToUsd(o.override_price_cents) : ''
+}
+async function loadOverrides() {
+  const r = await adminApi<any>(`/agents/${id.value}/overrides`)
+  if (!r.ok) { overridesErr.value = adminErrorText(r.data, r.status); return }
+  overridesErr.value = ''
+  fillOverrides(r.data.items || [])
+}
+async function saveOverrides() {
+  const orig = overrides.value.map((o) => ({ product_id: o.product_id, price_cents: o.override_price_cents || 0 }))
+  const { cells, errors } = overrideChanges(orig, { ...overrideEdit })
+  if (errors.length) { overridesErr.value = errors.join('；'); return }
+  if (!cells.length) { dialog.toast('没有改动', 'info'); return }
+  savingOverrides.value = true
+  const r = await adminApi<any>(`/agents/${id.value}/overrides`, 'PUT', { cells })
+  savingOverrides.value = false
+  if (!r.ok) { overridesErr.value = adminErrorText(r.data, r.status); return }
+  overridesErr.value = ''
+  fillOverrides(r.data.items || [])
+  dialog.toast('覆盖价已保存')
+}
+
+// ---------- 本站码 ----------
+const codes = ref<any[]>([])
+const codesTotal = ref(0)
+const codesPage = ref(1)
+const codesErr = ref('')
+async function loadCodes() {
+  const r = await adminApi<any>(`/cdks?agent_id=${id.value}&page=${codesPage.value}&page_size=${PAGE}`)
+  if (!r.ok) { codesErr.value = adminErrorText(r.data, r.status); return }
+  codesErr.value = ''
+  codes.value = r.data.list || []
+  codesTotal.value = r.data.total || 0
+}
+
+const loaders: Record<string, () => Promise<void>> = { ledger: loadLedger, orders: loadOrders, overrides: loadOverrides, codes: loadCodes }
+watch(tab, (t) => { loaders[t]?.() })
+
+// ---------- 编辑、启停、重置 ----------
+const editOpen = ref(false)
+const saving = ref(false)
+const editErr = ref('')
+const editForm = reactive({ display_name: '', tier_id: 0, note: '' })
+function openEdit() {
+  Object.assign(editForm, { display_name: agent.value.display_name, tier_id: agent.value.tier_id, note: agent.value.note })
+  editErr.value = ''
+  editOpen.value = true
+}
+async function saveEdit() {
+  saving.value = true
+  const r = await adminApi<any>(`/agents/${id.value}`, 'PUT', { display_name: editForm.display_name.trim(), tier_id: editForm.tier_id, note: editForm.note.trim() })
+  saving.value = false
+  if (!r.ok) { editErr.value = adminErrorText(r.data, r.status); return }
+  agent.value = r.data.agent
+  editOpen.value = false
+  dialog.toast('已保存')
+}
+async function toggle(enable: boolean) {
+  const ok = await dialog.confirm(enable ? '启用这个代理商？' : '停用后这个代理商的登录会话立即失效，不能再下单。确认停用？', { title: enable ? '启用' : '停用', okText: enable ? '启用' : '停用', danger: !enable })
+  if (!ok) return
+  busy.value = true
+  const r = await adminApi<any>(`/agents/${id.value}/${enable ? 'enable' : 'disable'}`, 'POST')
+  busy.value = false
+  if (!r.ok) { dialog.toast(adminErrorText(r.data, r.status), 'err'); return }
+  agent.value = r.data.agent
+  dialog.toast(enable ? '已启用' : '已停用')
+}
+const newPassword = ref('')
+async function resetPassword() {
+  const ok = await dialog.confirm('重置后旧密码立即失效，代理商下次登录必须用新密码并改密码。确认重置？', { title: '重置密码', okText: '重置', danger: true })
+  if (!ok) return
+  const r = await adminApi<any>(`/agents/${id.value}/reset-password`, 'POST')
+  if (!r.ok) { dialog.toast(adminErrorText(r.data, r.status), 'err'); return }
+  newPassword.value = String(r.data.password || '')
+  loadAgent()
+}
+async function resetTotp() {
+  const ok = await dialog.confirm('重置后代理商下次登录需要重新扫码绑定两步验证。确认重置？', { title: '重置两步验证', okText: '重置', danger: true })
+  if (!ok) return
+  const r = await adminApi<any>(`/agents/${id.value}/reset-totp`, 'POST')
+  if (!r.ok) { dialog.toast(adminErrorText(r.data, r.status), 'err'); return }
+  dialog.toast('已重置')
+  loadAgent()
+}
+
+// ---------- 调账 ----------
+const keeper = new IdempotencyKeeper()
+const adjustOpen = ref(false)
+const adjAmount = ref('')
+const adjNote = ref('')
+const adjBusy = ref(false)
+const adjLocked = ref(false) // 结果未知：锁定金额和原因，只能原样重试或放弃
+const adjMsg = ref('')
+
+function openAdjust() {
+  adjAmount.value = ''
+  adjNote.value = ''
+  adjMsg.value = ''
+  adjLocked.value = false
+  keeper.done()
+  adjustOpen.value = true
+}
+function closeAdjust() { adjustOpen.value = false }
+async function abandonAdjust() {
+  const ok = await dialog.confirm('这次调账可能已经入账。放弃后不会再重试，请先到「余额流水」确认有没有这笔记录，再决定是否重新调账。确认放弃？', { title: '放弃这次调账', okText: '放弃', danger: true })
+  if (!ok) return
+  keeper.done()
+  adjLocked.value = false
+  adjMsg.value = ''
+  adjustOpen.value = false
+  loadAgent()
+  loadLedger()
+}
+function beforeCloseAdjust(done: () => void) {
+  if (adjLocked.value) { dialog.toast('结果未知，请先原样重试或放弃这次调账', 'warn'); return }
+  done()
+}
+async function submitAdjust() {
+  if (adjBusy.value) return
+  const p = parseSignedUsd(adjAmount.value)
+  if (!p.ok) { adjMsg.value = p.error; return }
+  const note = adjNote.value.trim()
+  if (!note) { adjMsg.value = '请填写原因'; return }
+  adjBusy.value = true
+  adjMsg.value = ''
+  try {
+    const key = keeper.keyFor({ agent_id: id.value, amount_cents: p.cents, note })
+    const r = await adminApi<any>(`/agents/${id.value}/adjust`, 'POST', { amount_cents: p.cents, note }, { 'Idempotency-Key': key })
+    const o = classifyAdjust(r.status, r.data)
+    if (o.clearKey) keeper.done()
+    if (o.kind === 'unknown') { adjLocked.value = true; adjMsg.value = o.message; return }
+    adjLocked.value = false
+    if (o.kind === 'failed') { adjMsg.value = o.message; return }
+    dialog.toast(o.message, o.kind === 'replayed' ? 'info' : 'ok', o.kind === 'replayed' ? 6000 : 2800)
+    adjustOpen.value = false
+    loadAgent()
+    if (tab.value === 'ledger') loadLedger()
+  } finally {
+    adjBusy.value = false
+  }
+}
+
+onMounted(async () => {
+  loadAgent()
+  loadLedger()
+  const t = await adminApi<any>('/agent-tiers')
+  if (t.ok) tiers.value = t.data.items || []
+})
+</script>

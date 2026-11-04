@@ -64,6 +64,12 @@ export const AGENT_ERROR_TEXT: Record<string, string> = {
   unauthorized: '登录已失效，请重新登录',
   csrf_invalid: '页面已过期，请刷新后重试',
   price_changed: '价格已变化，请刷新后重新下单',
+  totp_bound: '已绑定两步验证，请直接登录',
+  internal: '系统出错，请稍后再试',
+  not_found: '内容不存在',
+  invalid_request: '请求参数不正确',
+  export_too_large: '一次最多导出 10000 张，请缩小筛选范围',
+  range_too_large: '日期范围不能超过 366 天',
 }
 
 const FALLBACK = '操作失败，请稍后再试'

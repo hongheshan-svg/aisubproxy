@@ -87,6 +87,10 @@
             <el-option v-for="(label, k) in STATUS_OPTIONS" :key="k" :label="label" :value="k" />
           </el-select>
           <el-input v-model="fPlan" clearable placeholder="套餐，如 plus" class="!w-[140px]" @keyup.enter="reload" @clear="reload" />
+          <el-select v-model="fAgent" clearable placeholder="代理商" class="!w-[150px]" data-field="agent" @change="reload">
+            <el-option label="后台发的码" value="0" />
+            <el-option v-for="a in agentOptions" :key="a.id" :label="a.username" :value="String(a.id)" />
+          </el-select>
           <el-button :loading="loading" @click="reload">刷新</el-button>
         </div>
       </div>
@@ -127,6 +131,12 @@
           </template>
         </el-table-column>
         <el-table-column label="注资" width="90"><template #default="{ row }">{{ row.fund_cents ? centsToUsd(row.fund_cents) + ' 美元' : '—' }}</template></el-table-column>
+        <el-table-column label="代理商" width="110">
+          <template #default="{ row }">
+            <router-link v-if="row.agent_id" :to="`/ops/agents/${row.agent_id}`" class="underline">{{ row.agent_username || '#' + row.agent_id }}</router-link>
+            <span v-else class="text-muted">—</span>
+          </template>
+        </el-table-column>
         <el-table-column prop="note" label="备注" min-width="120" show-overflow-tooltip />
         <el-table-column label="时间" min-width="150"><template #default="{ row }">{{ fmtTime(row.created_at) }}</template></el-table-column>
         <el-table-column label="操作" width="90">
@@ -376,6 +386,8 @@ const loading = ref(false)
 const listError = ref('')
 const fStatus = ref('')
 const fPlan = ref('')
+const fAgent = ref('')
+const agentOptions = ref<{ id: number; username: string }[]>([])
 const busyId = ref(0)
 let seq = 0
 
@@ -392,6 +404,7 @@ async function load() {
   const q = new URLSearchParams({ page: String(page.value), page_size: String(PAGE_SIZE), provider: props.provider })
   if (fStatus.value) q.set('status', fStatus.value)
   if (fPlan.value.trim()) q.set('plan', fPlan.value.trim())
+  if (fAgent.value !== '' && fAgent.value != null) q.set('agent_id', fAgent.value)
   const r = await adminApi<any>('/cdks?' + q.toString())
   if (my !== seq) return
   loading.value = false
@@ -425,7 +438,12 @@ async function enableOne(row: LocalCdkRow) {
   load()
 }
 
-onMounted(() => { loadReadiness(); load() })
+// 代理商下拉：读取失败不影响码列表，只是少了筛选项
+async function loadAgentOptions() {
+  const r = await adminApi<any>('/agents')
+  if (r.ok) agentOptions.value = (r.data.items || []).map((a: any) => ({ id: a.id, username: a.username }))
+}
+onMounted(() => { loadReadiness(); load(); loadAgentOptions() })
 // 仅服务端渲染（单元测试）会触发：让测试里渲染出的面板带上就绪数据。浏览器里不会执行。
 onServerPrefetch(loadReadiness)
 </script>

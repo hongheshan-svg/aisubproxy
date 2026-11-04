@@ -99,3 +99,15 @@ describe('safeAgentRedirect', () => {
     expect(safeAgentRedirect(null)).toBe('/agent')
   })
 })
+
+describe('agentErrorText 通用编号（P17）', () => {
+  it('补全通用编号文案', () => {
+    expect(agentErrorText({ error: 'totp_bound' })).toBe('已绑定两步验证，请直接登录')
+    expect(agentErrorText({ error: 'internal' })).toBe('系统出错，请稍后再试')
+    expect(agentErrorText({ error: 'busy' })).toBe('系统繁忙，请稍后重试')
+    expect(agentErrorText({ error: 'not_found' })).toBe('内容不存在')
+    expect(agentErrorText({ error: 'invalid_request' })).toBe('请求参数不正确')
+    expect(agentErrorText({ error: 'export_too_large' })).toBe('一次最多导出 10000 张，请缩小筛选范围')
+    expect(agentErrorText({ error: 'range_too_large' })).toBe('日期范围不能超过 366 天')
+  })
+})

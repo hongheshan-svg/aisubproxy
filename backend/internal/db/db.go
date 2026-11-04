@@ -649,6 +649,9 @@ func ensureDefaultAdmin() error {
 	if password == "" {
 		password = randomPassword(16)
 		generated = true
+	} else if IsWeakPassword(password) || strings.EqualFold(password, username) {
+		// 和安装向导同样的强度要求（审计 A-12）。拒绝启动，错误信息里不带口令本身。
+		return fmt.Errorf("ADMIN_PASSWORD 太弱：至少 12 位、不能是常见弱口令、不能和用户名相同。请换成强口令，或删掉 ADMIN_PASSWORD 改用安装向导 /ops/setup")
 	}
 
 	hash, err := HashAdminPassword(password)

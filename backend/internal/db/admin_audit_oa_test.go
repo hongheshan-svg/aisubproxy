@@ -3,6 +3,7 @@ package db_test
 import (
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/tuzi/cdk-recharge-system/internal/db"
@@ -79,5 +80,41 @@ func TestOAMigrateAdminTokenVersionOnLegacyDB(t *testing.T) {
 	}
 	if _, _, err := db.AdminTokenState(id + 100); err == nil {
 		t.Fatal("不存在的账号应返回错误")
+	}
+}
+
+// A-12：用 ADMIN_PASSWORD 建号时和安装向导一样拒绝弱口令（拒绝启动），强口令照常建号；已有管理员时不检查。
+func TestOAAdminPasswordEnvRejectsWeak(t *testing.T) {
+	t.Setenv("SETUP_BOOTSTRAP_TOKEN", "")
+	for _, tc := range []struct {
+		name, mode, user, pass string
+		wantErr                bool
+	}{
+		{"auto 历史默认口令", "auto", "", "admin123456", true},
+		{"auto 太短", "auto", "", "Sh0rt", true},
+		{"wizard 显式弱口令", "", "", "password123", true},
+		{"和用户名相同", "auto", "operator_admin", "OPERATOR_ADMIN", true},
+		{"强口令", "auto", "", "Str0ngPassw0rd-OA", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			oaOpenFileDB(t)
+			t.Setenv("INSTALL_MODE", tc.mode)
+			t.Setenv("ADMIN_USERNAME", tc.user)
+			t.Setenv("ADMIN_PASSWORD", tc.pass)
+			err := db.Migrate()
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err=%v，wantErr=%v", err, tc.wantErr)
+			}
+			if tc.wantErr {
+				if strings.Contains(err.Error(), tc.pass) {
+					t.Fatalf("错误信息不应带出口令：%v", err)
+				}
+				if db.AdminCount() != 0 {
+					t.Fatal("弱口令不应建号")
+				}
+			} else if db.AdminCount() != 1 {
+				t.Fatal("强口令应建号")
+			}
+		})
 	}
 }

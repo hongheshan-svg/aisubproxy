@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -67,6 +68,27 @@ func bindAuthJSON(c *gin.Context, obj any, badRequest string) bool {
 	return true
 }
 
+// verifyAdminPassword 是登录、安装自检用的密码校验，测试可替换。
+var verifyAdminPassword = db.VerifyAdminPassword
+
+var (
+	dummyHashOnce sync.Once
+	dummyHash     string
+)
+
+// dummyAdminHash 是用户名不存在时拿来比对的假 bcrypt 哈希（和真哈希同样的代价），只算一次。
+func dummyAdminHash() string {
+	dummyHashOnce.Do(func() {
+		h, err := db.HashAdminPassword(newCSRFToken())
+		if err != nil {
+			log.Printf("生成登录用假哈希失败: %v", err)
+			return
+		}
+		dummyHash = h
+	})
+	return dummyHash
+}
+
 type AdminLoginRequest struct {
 	Username string `json:"username" binding:"required"`
 	Password string `json:"password" binding:"required"`
@@ -101,24 +123,24 @@ func AdminLogin(c *gin.Context) {
 		FROM admin_users
 		WHERE username = ?
 	`, strings.TrimSpace(req.Username)).Scan(&userID, &username, &passwordHash, &displayName, &isActive, &tokenVersion)
-	if err == sql.ErrNoRows {
-		loginFailed(rateKey)
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户名或密码错误"})
-		return
-	}
-	if err != nil {
+	if err != nil && err != sql.ErrNoRows {
 		log.Printf("admin login lookup error: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "系统错误"})
 		return
 	}
-	if isActive != 1 {
-		c.JSON(http.StatusForbidden, gin.H{"error": "账号已被禁用"})
-		return
+	// 用户名不存在、账号禁用、密码错误三种情况：都跑一次 bcrypt（不存在的用户比一个固定的假哈希），
+	// 都计一次失败，都回同一个 401。响应内容和耗时都不暴露用户名是否存在（审计 A-8）。
+	known := err == nil
+	if !known {
+		passwordHash = dummyAdminHash()
 	}
-	// 密码两侧空白常因复制粘贴产生，校验时 Trim；入库仍按原样（生成口令无空白）
+	// 密码两侧空白常因复制粘贴产生，校验时 Trim
 	plain := strings.TrimSpace(req.Password)
-	ok, upgradedHash := db.VerifyAdminPassword(passwordHash, plain)
-	if !ok {
+	ok, upgradedHash := verifyAdminPassword(passwordHash, plain)
+	if !known || !ok || isActive != 1 {
+		if known && ok {
+			log.Printf("admin login: 账号 %s 已禁用，按登录失败处理", username)
+		}
 		loginFailed(rateKey)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户名或密码错误"})
 		return

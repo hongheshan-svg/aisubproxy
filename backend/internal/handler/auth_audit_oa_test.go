@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/db/dbtest"
 )
 
@@ -121,5 +122,98 @@ func TestOAAuthLimitersHaveCaps(t *testing.T) {
 		if l.maxKeys <= 0 || l.maxKeys > 100000 {
 			t.Errorf("%s 限流表上限不合理：%d", name, l.maxKeys)
 		}
+	}
+}
+
+func oaHCreateAdmin(t *testing.T, username string) {
+	t.Helper()
+	if err := db.CreateAdminUser(username, oaHPassword, ""); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// oaHCountVerify 把密码校验换成计数的包装，返回调用次数的指针。
+func oaHCountVerify(t *testing.T) *int {
+	t.Helper()
+	n := 0
+	orig := verifyAdminPassword
+	verifyAdminPassword = func(stored, plain string) (bool, string) {
+		n++
+		return orig(stored, plain)
+	}
+	t.Cleanup(func() { verifyAdminPassword = orig })
+	return &n
+}
+
+func oaHLogin(r http.Handler, username, password string) *httptest.ResponseRecorder {
+	return oaHPost(r, "/login", fmt.Sprintf(`{"username":%q,"password":%q}`, username, password), nil)
+}
+
+// A-8：用户名不存在、账号禁用、密码错误三种情况响应一样（401、同一句话），都跑一次 bcrypt，都计失败。
+func TestOALoginDoesNotRevealUsername(t *testing.T) {
+	r := oaHEngine(t)
+	oaHCreateAdmin(t, "oa_enum")
+	calls := oaHCountVerify(t)
+
+	type result struct {
+		code int
+		body string
+	}
+	got := map[string]result{}
+	for name, req := range map[string][2]string{
+		"不存在": {"oa_nobody", oaHPassword},
+		"密码错": {"oa_enum", "Wr0ngPassword-x"},
+	} {
+		*calls = 0
+		w := oaHLogin(r, req[0], req[1])
+		got[name] = result{w.Code, w.Body.String()}
+		if *calls != 1 {
+			t.Errorf("%s：应跑一次密码校验（耗时一致），实际 %d 次", name, *calls)
+		}
+	}
+	if _, err := db.DB.Exec(`UPDATE admin_users SET is_active = 0 WHERE username = 'oa_enum'`); err != nil {
+		t.Fatal(err)
+	}
+	*calls = 0
+	w := oaHLogin(r, "oa_enum", oaHPassword)
+	got["已禁用"] = result{w.Code, w.Body.String()}
+	if *calls != 1 {
+		t.Errorf("已禁用：应跑一次密码校验，实际 %d 次", *calls)
+	}
+	want := got["密码错"]
+	if want.code != http.StatusUnauthorized || !strings.Contains(want.body, "用户名或密码错误") {
+		t.Fatalf("密码错应 401 用户名或密码错误：%+v", want)
+	}
+	for name, g := range got {
+		if g != want {
+			t.Errorf("%s 的响应和密码错不一样：%+v vs %+v", name, g, want)
+		}
+	}
+	// 禁用账号的失败也计数：再 4 次就锁定（同一 IP+用户名）
+	for i := 0; i < 4; i++ {
+		oaHLogin(r, "oa_enum", oaHPassword)
+	}
+	if w := oaHLogin(r, "oa_enum", oaHPassword); w.Code != http.StatusTooManyRequests {
+		t.Fatalf("禁用账号连续失败也应被锁定，实际 %d", w.Code)
+	}
+}
+
+// A-22：同一 IP+用户名失败 5 次后锁定，锁定期间正确密码也 429；成功登录清零计数。
+func TestOALoginLockout(t *testing.T) {
+	r := oaHEngine(t)
+	oaHCreateAdmin(t, "oa_lock")
+	for i := 0; i < 4; i++ {
+		if w := oaHLogin(r, "oa_lock", "Wr0ngPassword-x"); w.Code != http.StatusUnauthorized {
+			t.Fatalf("第 %d 次错密码应 401，实际 %d", i+1, w.Code)
+		}
+	}
+	if w := oaHLogin(r, "oa_lock", oaHPassword); w.Code != http.StatusOK {
+		t.Fatalf("锁定前正确密码应 200，实际 %d", w.Code)
+	}
+	for i := 0; i < 5; i++ {
+		oaHLogin(r, "oa_lock", "Wr0ngPassword-x")
+	}
+	if w := oaHLogin(r, "oa_lock", oaHPassword); w.Code != http.StatusTooManyRequests {
+		t.Fatalf("锁定期间正确密码也应 429，实际 %d", w.Code)
 	}
 }

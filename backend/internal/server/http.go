@@ -38,6 +38,11 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	if err := db.Init(&cfg.Database); err != nil {
 		return nil, err
 	}
+	// 拒绝启动的检查（ADMIN_PASSWORD、明文卡台密钥要有主密钥、JWT_SECRET、服务商适配器）：只读，
+	// 在改数据之前做；命令行 --check 跑的是同一个函数（在线更新换版本前的预检）
+	if err := startupChecks(cfg.Server.Mode); err != nil {
+		return nil, err
+	}
 	// 卡台 API Key、webhook 密钥：旧版明文加密迁移；webhook 原文里的卡号、CVV、有效期清洗。失败就不启动，不静默留着明文
 	if err := db.MigrateCardSecrets(); err != nil {
 		return nil, fmt.Errorf("卡台密钥迁移: %w", err)
@@ -50,15 +55,6 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	notify.SetSettingsSource(handler.TelegramSettings)
 	// 后台协程 panic 被兜住后的告警、没有自己告警通道的模块（如付款浏览器）的告警，都走这里发到 Telegram
 	safego.SetAlert(alertSender("system", notify.SendText))
-
-	// 生产模式、或已配置动钱上游密钥时，强制要求安全的 JWT secret，避免 token 被伪造后调用动钱接口
-	upstream, err := upstreamKeysConfigured()
-	if err != nil {
-		return nil, err
-	}
-	if err := enforceJWTSecret(cfg.Server.Mode, upstream); err != nil {
-		return nil, err
-	}
 
 	engine := newEngine()
 
@@ -79,10 +75,6 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	handler.SetCardPool(pool)
 	pools, err := payPools(pool)
 	if err != nil {
-		return nil, err
-	}
-	// 每家注册了的服务商都要接上 handler 层的适配器，否则它的码会被分派过来却没人接
-	if err := handler.CheckProviderAdapters(); err != nil {
 		return nil, err
 	}
 	pay := payengine.New(payengine.Options{Pools: pools, Alert: alertSender("payengine", notify.SendText)})

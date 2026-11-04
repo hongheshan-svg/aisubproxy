@@ -146,7 +146,8 @@ func syncDirectCardProducts(ctx context.Context, cli *cardplatform.Client) (int,
 			Enabled:     p.Usable,
 			SuspendedAt: suspendedAt,
 		}
-		if err := db.UpsertCardProduct(cp); err != nil {
+		// 新接口不返回卡组织、地区、BIN 头等字段，只更新它给出的字段（C-6）
+		if err := db.UpsertDirectCardProduct(cp); err != nil {
 			log.Printf("[plan-sync] upsert direct product %s: %v", code, err)
 			continue
 		}

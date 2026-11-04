@@ -36,10 +36,10 @@
             </tbody>
           </table>
         </div>
-        <div v-if="cursor > 0 || loadingMore" class="border-t border-line p-3 text-center">
+        <div v-if="cursor > 0 || loadingMore" class="p-3 text-center" style="border-top: 1px solid var(--brd)">
           <button class="btn-secondary" :disabled="loadingMore" @click="loadMore">{{ loadingMore ? '加载中...' : '加载更多' }}</button>
         </div>
-        <div v-else-if="logs.length > 0 && !loading" class="border-t border-line p-3 text-center text-xs text-muted">已显示全部 {{ logs.length }} 条</div>
+        <div v-else-if="logs.length > 0 && !loading" class="p-3 text-center text-xs text-muted" style="border-top: 1px solid var(--brd)">已显示全部 {{ logs.length }} 条</div>
       </div>
     </div>
   </div>

@@ -6,7 +6,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/tuzi/cdk-recharge-system/internal/secretbox"
 )
@@ -38,11 +37,6 @@ func OpenReadOnly(path string) (*sql.DB, error) {
 		return nil, fmt.Errorf("只读打开数据库 %s 失败: %w", abs, err)
 	}
 	return conn, nil
-}
-
-// legacyPlainCardSecret 判断卡台密钥的库内值是不是升级前遗留的明文（非空、不是 v1: 密文）。
-func legacyPlainCardSecret(raw string) bool {
-	return strings.TrimSpace(raw) != "" && !strings.HasPrefix(raw, sealedPrefix)
 }
 
 // CheckCardSecretsMigratable 只读判断启动时的卡台密钥加密迁移（MigrateCardSecrets）能不能做：

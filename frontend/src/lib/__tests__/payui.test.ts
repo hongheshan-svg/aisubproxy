@@ -42,6 +42,12 @@ describe('展示映射', () => {
     expect(payErrorText('internal_error')).toContain('没点支付')
     expect(payErrorText('internal_error')).toContain('人工核对')
   })
+  it('plan_unavailable、checkout_url_untrusted 说明与后端现在的用法一致', () => {
+    // plan_unavailable 也用于「未配置最低金额」等金额没配好，不只是账号问题
+    expect(payErrorText('plan_unavailable')).toBe('套餐在该地区不可用（未启用或金额未配置）')
+    // checkout_url_untrusted 也用于「点数单只支持托管支付页」「路径不对、带查询串」，不只是域名
+    expect(payErrorText('checkout_url_untrusted')).toBe('支付链接不可信（域名或格式不对），已放弃（没有注资）')
+  })
   it('熔断原因优先用后端文案', () => {
     expect(breakerReason({ reason: 'submit_failures', reason_text: '连续 3 单' })).toBe('连续 3 单')
     expect(breakerReason({ reason: 'fill_failures', reason_text: '' })).toContain('填表')

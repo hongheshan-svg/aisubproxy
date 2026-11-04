@@ -525,13 +525,11 @@
     </el-dialog>
 
     <!-- 卡号弹窗：关闭即清空 -->
-    <el-dialog v-model="sensitiveOpen" title="完整卡号" width="440px" destroy-on-close :close-on-click-modal="false" @closed="clearSensitive">
+    <el-dialog v-model="sensitiveOpen" title="卡号（已打码）" width="440px" destroy-on-close :close-on-click-modal="false" @closed="clearSensitive">
       <el-descriptions v-if="sensitive" :column="1" border size="small">
-        <el-descriptions-item label="卡号"><span class="mono">{{ sensitive.card_no }}</span></el-descriptions-item>
-        <el-descriptions-item label="CVV2"><span class="mono">{{ sensitive.cvv2 }}</span></el-descriptions-item>
-        <el-descriptions-item label="有效期"><span class="mono">{{ sensitive.expiry_date }}</span></el-descriptions-item>
+        <el-descriptions-item label="卡号"><span class="mono">{{ sensitive.cardNoMasked }}</span></el-descriptions-item>
       </el-descriptions>
-      <p class="text-xs text-subtle mt-2">关闭窗口后不再保留，请勿截图外传。</p>
+      <p class="text-xs text-subtle mt-2">只显示前 6 位和后 4 位；完整卡号和 CVV2 不在后台显示。</p>
       <template #footer><el-button type="primary" @click="sensitiveOpen = false">关闭</el-button></template>
     </el-dialog>
 
@@ -564,6 +562,7 @@ import {
 import {
   canFreeze, canUnfreeze, importProductOptions, importSweepWarning, previewMatchesInput, releaseConfirmText, releaseDoneText, sensitiveNote, usedStateNote,
 } from '../../lib/mwcardtext'
+import { toSensitiveView, type SensitiveView } from '../../lib/cardpool-sensitive'
 import { dialog } from '../../lib/dialog'
 import { useAuthStore } from '../../stores/auth'
 
@@ -820,7 +819,7 @@ async function fundCard(row: Card) {
 }
 
 // 敏感信息：只存在内存里，关闭弹窗即清空；不写日志、不进存储。
-const sensitive = ref<{ card_no: string; cvv2: string; expiry_date: string } | null>(null)
+const sensitive = ref<SensitiveView | null>(null)
 const sensitiveOpen = ref(false)
 const otp = ref<{ otp: string; merchant_name: string; amount: string; currency: string; received_at: string } | null>(null)
 const otpOpen = ref(false)
@@ -834,13 +833,13 @@ function clearOtp() {
 
 async function viewSensitive(row: Card) {
   const note = sensitiveNote(row.pool_state, policy.value)
-  const ok = await dialog.confirm(`将显示卡 ${row.card_id}（后四位 ${row.last4}）的完整卡号和 CVV2，此操作会被记录。${note}继续？`, {
+  const ok = await dialog.confirm(`将显示卡 ${row.card_id}（后四位 ${row.last4}）的打码卡号（前 6 后 4），此操作会被记录。${note}继续？`, {
     title: '查看卡号', okText: '查看',
   })
   if (!ok) return
   const r = await api(`/cards/${encodeURIComponent(row.card_id)}/sensitive`, 'POST')
   if (!r.ok) return dialog.toast(errText(r, '获取卡号失败'), 'err')
-  sensitive.value = { card_no: r.data.card_no, cvv2: r.data.cvv2, expiry_date: r.data.expiry_date }
+  sensitive.value = toSensitiveView(r.data)
   sensitiveOpen.value = true
   loadCards()
 }

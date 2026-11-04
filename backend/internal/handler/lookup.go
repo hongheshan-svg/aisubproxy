@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -48,9 +47,6 @@ func LookupCDKStatus(c *gin.Context) {
 		return
 	}
 
-	if _, local := provider.CardSupplyForCode(code); local && !localRateCheck(c, localRateQuery) {
-		return
-	}
 	resp := lookupOneCDK(c.Request.Context(), code, deviceFrom(c))
 	if resp.Status == "unknown" {
 		c.JSON(http.StatusNotFound, gin.H{
@@ -86,12 +82,6 @@ func LookupCDKStatusBatch(c *gin.Context) {
 			"error": "一次最多查询 " + strconv.Itoa(lookupBatchMax) + " 张卡密",
 			"max":   lookupBatchMax,
 		})
-		return
-	}
-
-	// 只有批次里有本地码才计入限流：纯上游码的批量查询行为不变
-	if slices.ContainsFunc(codes, func(code string) bool { _, local := provider.CardSupplyForCode(code); return local }) &&
-		!localRateCheck(c, localRateQuery) {
 		return
 	}
 

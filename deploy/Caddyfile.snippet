@@ -11,6 +11,13 @@ gptcdk.ai, www.gptcdk.ai {
     handle @blocked_sensitive {
         respond 404
     }
+    # 公开兑换、查询接口的请求体上限：后端还限 256 KB，这里是第二道防线。
+    # 只管这两组路径：后台上传持卡人证件照要几 MB，不能全站一刀切
+    @public_api path /api/v1/public/* /api/v1/lookup/*
+    request_body @public_api {
+        max_size 512KB
+    }
+
     # 全部反代到 CDK（SPA 由 Go WEB_DIR 托管）
     reverse_proxy 127.0.0.1:9080 {
         header_up X-Real-IP {client_ip}

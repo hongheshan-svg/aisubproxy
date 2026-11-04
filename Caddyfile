@@ -8,6 +8,13 @@
         respond 404
     }
 
+    # 公开兑换、查询接口的请求体上限：后端还限 256 KB，这里是第二道防线。
+    # 只管这两组路径：后台上传持卡人证件照要几 MB，不能全站一刀切
+    @public_api path /api/v1/public/* /api/v1/lookup/*
+    request_body @public_api {
+        max_size 512KB
+    }
+
     reverse_proxy cdk:8080 {
         header_up X-Real-IP {client_ip}
         header_up X-Forwarded-Proto {scheme}

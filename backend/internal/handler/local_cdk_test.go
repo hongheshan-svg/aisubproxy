@@ -1202,7 +1202,7 @@ func TestLocalCDKLookup(t *testing.T) {
 	}
 }
 
-// 公开接口限流：MW 分支有，ZovoCard 分支不受影响。
+// 公开接口限流：在按码分派之前，MW 分支和 ZovoCard 分支都算（Task 12 F1 起上游型服务商也覆盖）。
 func TestLocalCDKRateLimit(t *testing.T) {
 	e := newLocalEnv(t)
 	e.seedRealPayment()
@@ -1228,8 +1228,8 @@ func TestLocalCDKRateLimit(t *testing.T) {
 	if localRateLimits[localRateQuery] < 3600/3*5 {
 		t.Fatal("结果接口的额度要够 3 秒一次、同时轮询多张码")
 	}
-	// ZovoCard 码不走这个限流
-	if w := e.do("POST", "/public/cdk/preview", `{"code":"ZC-FAKE-0001"}`); w.Code != http.StatusOK {
+	// ZovoCard 码同样受这个限流
+	if w := e.do("POST", "/public/cdk/preview", `{"code":"ZC-FAKE-0001"}`); w.Code != http.StatusTooManyRequests {
 		t.Fatalf("%d", w.Code)
 	}
 }

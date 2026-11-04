@@ -89,6 +89,7 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	// CDK 链路后台维护：清理到期或已完成订单的用户会话
 	handler.SetOpsAlert(alertSender("cdk", notify.SendText))
 	handler.StartOpsMaintenance(ctx)
+	handler.StartLocalRateSweep(ctx)
 	handler.StartCardHeadSync(ctx)
 
 	return &Server{
@@ -237,11 +238,14 @@ func setupRoutes(r *gin.Engine) {
 			setup.POST("/bootstrap", handler.SetupBootstrap)
 		}
 
+		// 公开接口（/public、/lookup）：先按 IP 限流，再读请求体（上限 256 KB），见 handler.PublicGuard
+		public := api.Group("/public", handler.PublicGuard())
+
 		// 公开站点配置（品牌/皮肤，无密钥）
-		api.GET("/public/site", handler.PublicSiteConfig)
+		public.GET("/site", handler.PublicSiteConfig)
 
 		// 卡台 CDK 公开兑换 BFF + 实时服务费展示
-		pubCDK := api.Group("/public/cdk")
+		pubCDK := public.Group("/cdk")
 		{
 			pubCDK.GET("/plans", handler.PublicCDKPlans)
 			pubCDK.POST("/preview", handler.PublicCDKPreview)
@@ -256,7 +260,7 @@ func setupRoutes(r *gin.Engine) {
 		}
 
 		// 卡密状态查询：是否已用 + 充值邮箱（不返回 token）
-		lookup := api.Group("/lookup")
+		lookup := api.Group("/lookup", handler.LookupGuard())
 		{
 			lookup.GET("/cdk", handler.LookupCDKStatus)
 			lookup.POST("/cdk/batch", handler.LookupCDKStatusBatch)
@@ -270,7 +274,7 @@ func setupRoutes(r *gin.Engine) {
 		api.POST("/webhooks/marswallex", handler.MarsWallexWebhook)
 
 		// 账单：粘贴 session 查 ChatGPT 订阅 + hosted_invoice（小助手同款）
-		api.POST("/public/billing/check", handler.SessionBillingCheck)
+		public.POST("/billing/check", handler.SessionBillingCheck)
 		api.POST("/billing/check", handler.SessionBillingCheck)
 
 		// Stats routes

@@ -28,6 +28,9 @@ const (
 	renewalAutoRetries = 3
 	defaultRenewalTick = 15 * time.Second
 	defaultSessionKeep = time.Hour
+	// reviewSessionKeep 是待人工单的会话最长保留时间（审计 D-2 后续）：管理员再怎么拖，30 天后也清掉，
+	// 不让用户会话在库里无限期留着。到点后定论成功会记 skipped 并告警，由用户自己去关续费。
+	reviewSessionKeep = 30 * 24 * time.Hour
 )
 
 // renewalRetryDelays 是第 n 次自动尝试失败后到下一次的间隔（n 从 1 起）。
@@ -300,6 +303,7 @@ func (s *Service) renewalOff(ctx context.Context, gpt ChatGPT, sess chatgpt.Sess
 // 人工定论过的单从定论时刻算，待人工的单不清（定论之前不知道要不要关续费）。
 // 续费还在待处理的单转 failed 并告警：关闭续费到点还没结论，只能让用户自己关。
 func (s *Service) sweepSessions(ctx context.Context) {
+	s.sweepReviewSessions(ctx)
 	cutoff := s.now().Add(-s.t.SessionKeep).Unix()
 	list, err := expiredSessions(ctx, cutoff)
 	if err != nil {
@@ -330,6 +334,53 @@ func (s *Service) sweepSessions(ctx context.Context) {
 		if err := clearExpiredSession(ctx, o.OrderNo, cutoff); err != nil && ctx.Err() == nil {
 			log.Printf("[payengine] 单据 %s 清空会话失败: %v", o.OrderNo, err)
 		}
+	}
+}
+
+// sweepReviewSessions 清掉待人工满 reviewSessionKeep（30 天）的单据的会话，单据本身仍待人工。
+// 每张单只记一行日志（单号，不含会话和邮箱），再追加一条时间线事件。已人工定论的单不在这里处理，仍按 SessionKeep 从定论时刻计时。
+func (s *Service) sweepReviewSessions(ctx context.Context) {
+	cutoff := s.now().Add(-reviewSessionKeep).Unix()
+	rows, err := db.DB.QueryContext(ctx, `SELECT order_no FROM pay_orders
+		WHERE state = ? AND session_sealed != '' AND resolved_at IS NULL AND COALESCE(finished_at, created_at) <= ? ORDER BY id`,
+		StateNeedsReview, cutoff)
+	if err != nil {
+		if ctx.Err() == nil {
+			log.Printf("[payengine] 读取待人工超期的会话失败: %v", err)
+		}
+		return
+	}
+	var nos []string
+	for rows.Next() {
+		var no string
+		if rows.Scan(&no) == nil {
+			nos = append(nos, no)
+		}
+	}
+	rows.Close()
+	for _, no := range nos {
+		if ctx.Err() != nil {
+			return
+		}
+		now := time.Now().UTC().Unix()
+		tx, err := db.DB.BeginTx(ctx, nil)
+		if err != nil {
+			continue
+		}
+		res, err := tx.ExecContext(ctx, `UPDATE pay_orders SET session_sealed = '', updated_at = ?
+			WHERE order_no = ? AND state = ? AND session_sealed != '' AND resolved_at IS NULL AND COALESCE(finished_at, created_at) <= ?`,
+			now, no, StateNeedsReview, cutoff)
+		if err == nil {
+			if n, _ := res.RowsAffected(); n > 0 {
+				_, err = tx.ExecContext(ctx, `INSERT INTO pay_order_events (order_no, at, state, level, message)
+					VALUES (?, ?, ?, 'info', ?)`, no, now, StateNeedsReview, "待人工已满 30 天，会话已清空；之后定论成功将无法自动关闭续费")
+				if err == nil && tx.Commit() == nil {
+					log.Printf("[payengine] 单据 %s 待人工已满 30 天，已清空会话", no)
+				}
+				continue
+			}
+		}
+		tx.Rollback()
 	}
 }
 

@@ -142,10 +142,13 @@ func SetupBootstrap(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "setup failed"})
 		return
 	}
-	if ok, _ := db.VerifyAdminPassword(storedHash, password); !ok {
+	if ok, _ := verifyAdminPassword(storedHash, password); !ok {
 		log.Printf("setup bootstrap: password self-check failed for %s", username)
-		_, _ = db.DB.Exec(`DELETE FROM admin_users WHERE id = ?`, userID)
-		_, _ = db.DB.Exec(`DELETE FROM site_settings WHERE key IN ('install_completed_at','setup_token_hash')`)
+		// 回滚时保留这次用的安装令牌，不用重启就能重试（原来连令牌一起删，重启前装不了）
+		if err := db.RollbackAdminBootstrap(userID, token); err != nil {
+			log.Printf("setup bootstrap: rollback failed: %v", err)
+		}
+		db.WriteAudit(username, "install_rollback", "password self-check failed", ip)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "password self-check failed, please retry"})
 		return
 	}

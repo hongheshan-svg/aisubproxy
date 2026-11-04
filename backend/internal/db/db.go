@@ -542,6 +542,30 @@ func VerifySetupToken(plain string) bool {
 	return subtle.ConstantTimeCompare([]byte(got), []byte(stored)) == 1
 }
 
+// RollbackAdminBootstrap 撤销一次没通过自检的安装：删掉刚建的管理员和安装完成标记，
+// 并把安装令牌恢复成这次用的那个（CreateAdminUser 已把它删了），管理员不用重启就能用同一个令牌重试（审计 A-11）。
+func RollbackAdminBootstrap(userID int64, setupToken string) error {
+	tx, err := DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`DELETE FROM admin_users WHERE id = ?`, userID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM site_settings WHERE key = 'install_completed_at'`); err != nil {
+		return err
+	}
+	sum := sha256.Sum256([]byte(setupToken))
+	if _, err := tx.Exec(`
+		INSERT INTO site_settings (key, value, updated_at) VALUES ('setup_token_hash', ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+	`, hex.EncodeToString(sum[:])); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // MarkInstalled 写安装完成标记并作废 setup token。
 func MarkInstalled(username string) error {
 	if err := SetSetting("install_completed_at", time.Now().UTC().Format(time.RFC3339)); err != nil {

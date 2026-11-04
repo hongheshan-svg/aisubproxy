@@ -217,3 +217,60 @@ func TestOALoginLockout(t *testing.T) {
 		t.Fatalf("锁定期间正确密码也应 429，实际 %d", w.Code)
 	}
 }
+
+const oaHSetupToken = "oa-h-setup-token-0123456789"
+
+// A-11：安装自检失败回滚后，同一个安装令牌仍可用，不用重启就能重试。
+func TestOASetupRollbackKeepsToken(t *testing.T) {
+	t.Setenv("SETUP_BOOTSTRAP_TOKEN", oaHSetupToken)
+	t.Setenv("INSTALL_MODE", "")
+	t.Setenv("ADMIN_PASSWORD", "")
+	t.Setenv("SETUP_ALLOW_CIDRS", "")
+	r := oaHEngine(t)
+	hdr := map[string]string{"X-Setup-Token": oaHSetupToken}
+
+	orig := verifyAdminPassword
+	verifyAdminPassword = func(string, string) (bool, string) { return false, "" }
+	w := oaHPost(r, "/bootstrap", `{"mode":"generate","username":"oa_rb"}`, hdr)
+	verifyAdminPassword = orig
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("自检失败应 500，实际 %d：%s", w.Code, w.Body.String())
+	}
+	if db.IsInstalled() {
+		t.Fatal("回滚后应仍是未安装")
+	}
+	if !db.VerifySetupToken(oaHSetupToken) {
+		t.Fatal("回滚后原安装令牌应仍可用")
+	}
+	w = oaHPost(r, "/bootstrap", `{"mode":"generate","username":"oa_rb"}`, hdr)
+	if w.Code != http.StatusOK {
+		t.Fatalf("回滚后用同一令牌重试应 200，实际 %d：%s", w.Code, w.Body.String())
+	}
+	if db.VerifySetupToken(oaHSetupToken) {
+		t.Fatal("安装成功后令牌应作废")
+	}
+}
+
+// A-22：已安装再调 bootstrap 一律 410；错令牌 401 并计失败，5 次后 429。
+func TestOASetupBootstrapGuards(t *testing.T) {
+	t.Setenv("SETUP_BOOTSTRAP_TOKEN", oaHSetupToken)
+	t.Setenv("INSTALL_MODE", "")
+	t.Setenv("ADMIN_PASSWORD", "")
+	t.Setenv("SETUP_ALLOW_CIDRS", "")
+	r := oaHEngine(t)
+	for i := 0; i < 5; i++ {
+		if w := oaHPost(r, "/bootstrap", `{"mode":"generate"}`, map[string]string{"X-Setup-Token": "wrong"}); w.Code != http.StatusUnauthorized {
+			t.Fatalf("第 %d 次错令牌应 401，实际 %d", i+1, w.Code)
+		}
+	}
+	if w := oaHPost(r, "/bootstrap", `{"mode":"generate"}`, map[string]string{"X-Setup-Token": oaHSetupToken}); w.Code != http.StatusTooManyRequests {
+		t.Fatalf("错 5 次后应 429，实际 %d", w.Code)
+	}
+	setupLimiter.reset()
+	if w := oaHPost(r, "/bootstrap", `{"mode":"generate","username":"oa_guard"}`, map[string]string{"X-Setup-Token": oaHSetupToken}); w.Code != http.StatusOK {
+		t.Fatalf("安装应 200，实际 %d：%s", w.Code, w.Body.String())
+	}
+	if w := oaHPost(r, "/bootstrap", `{"mode":"generate"}`, map[string]string{"X-Setup-Token": oaHSetupToken}); w.Code != http.StatusGone {
+		t.Fatalf("已安装再调应 410，实际 %d", w.Code)
+	}
+}

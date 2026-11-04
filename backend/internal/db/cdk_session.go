@@ -163,7 +163,10 @@ func BindCDKSessionAs(provider, cdkCode, redemptionToken, sessionPayload, accoun
 		INSERT INTO cdk_session_bindings (cdk_code, session_payload, redemption_token, account_email_sealed, session_bound_at, provider, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 	`, "RT:"+tok, sealed, tok, email, now, provider)
-	return err
+	if err != nil {
+		return err
+	}
+	return recordRedemptionToken("RT:"+tok, tok)
 }
 
 // GetSessionByCDK 凭卡密取绑定 session 的原文；没有绑定或已清空时返回空串。解不开（主密钥缺失或已更换）时返回错误。

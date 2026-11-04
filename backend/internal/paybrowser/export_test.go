@@ -52,12 +52,15 @@ func ScanBeforeClick(ctx context.Context, b *Browser) (map[string]bool, error) {
 	return got, err
 }
 
-// ShortenFillWaits 把地址字段、地址联想、重打街道前的等待时限都缩短到 address（重打前的等待不变长），返回恢复函数。
-// 用来测「一直等不到」的情形，免得每个用例等满 15 秒、8 秒、3 秒。
+// ShortenFillWaits 把地址字段、地址联想、重打街道前、关联想下拉的等待时限都缩短到 address
+// （重打前、关下拉的等待不变长），返回恢复函数。用来测「一直等不到」的情形，免得每个用例等满 15 秒、8 秒、3 秒、2 秒。
 func ShortenFillWaits(address time.Duration) (restore func()) {
-	oldAddress, oldSuggest, oldRetype := addressWait, suggestWait, suggestRetypeWait
-	addressWait, suggestWait, suggestRetypeWait = address, address, min(address, suggestRetypeWait)
-	return func() { addressWait, suggestWait, suggestRetypeWait = oldAddress, oldSuggest, oldRetype }
+	oldAddress, oldSuggest, oldRetype, oldClose := addressWait, suggestWait, suggestRetypeWait, suggestCloseWait
+	addressWait, suggestWait = address, address
+	suggestRetypeWait, suggestCloseWait = min(address, suggestRetypeWait), min(address, suggestCloseWait)
+	return func() {
+		addressWait, suggestWait, suggestRetypeWait, suggestCloseWait = oldAddress, oldSuggest, oldRetype, oldClose
+	}
 }
 
 // SetDeclineSettle 设置判到被拒后再看的时长，返回恢复函数。多数用例不关心它，TestMain 统一缩短。
@@ -152,6 +155,26 @@ func FieldChecked(ctx context.Context, b *Browser, sel string) (bool, error) {
 	var v bool
 	err := callOnFirst(ctx, b, sel, `function () { return !!this.checked }`, &v)
 	return v, err
+}
+
+// VisibleCount 数主页面和各级可见 iframe 里 sel 命中的可见元素，返回合计。用来核对填表后还有没有可见的联想选项。
+func VisibleCount(ctx context.Context, b *Browser, sel string) (int, error) {
+	total := 0
+	err := b.do(ctx, func(ctx context.Context) error {
+		frames, err := b.frames(ctx)
+		if err != nil {
+			return err
+		}
+		for _, f := range frames {
+			n, err := b.countVisible(ctx, f, sel)
+			if err != nil {
+				return err
+			}
+			total += n
+		}
+		return nil
+	})
+	return total, err
 }
 
 // ClickOption 在各 frame 里找 sel 命中的第一个可见元素，用点地址联想的 clickOption 点它。

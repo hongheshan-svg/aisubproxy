@@ -10,6 +10,8 @@ import (
 	"unicode"
 
 	"github.com/chromedp/cdproto/cdp"
+	"github.com/chromedp/chromedp"
+	"github.com/chromedp/chromedp/kb"
 )
 
 const (
@@ -23,6 +25,7 @@ var (
 	addressWait       = 15 * time.Second // 地址字段的等待时限：含点手动地址入口后字段出现、字段自己出现、选地址联想后字段展开
 	suggestWait       = 8 * time.Second  // 在街道里键入后等地址联想出现的时限（2026-11-04 实测 4 秒内出现）
 	suggestRetypeWait = 3 * time.Second  // 第一次键入街道后等这么久还没有联想，就清空重打一次（2026-11-04 实测联想库第一次键入时才加载）
+	suggestCloseWait  = 2 * time.Second  // 填完地址后按 Esc 关地址联想下拉，等它收起的时限
 	emailSettle       = time.Second      // 键入邮箱后留给页面反应的时间：可能重绘、重新勾上 Link 或弹 Link 验证
 )
 
@@ -176,7 +179,8 @@ func (b *Browser) fillHostedAddress(ctx context.Context, st *fillState, bl Billi
 //   - DOM 里没有：记进 FillReport.Absent，不报错。最后再查一遍，填表期间又出现了就报错放弃，不静默漏填。
 //
 // 顺序：国家排第一（改国家会重绘其余地址字段），选完后先试一次点手动地址入口，再填姓名；
-// 然后在需要时选地址联想展开，再填街道、城市、州、邮编，用账单地址自己的值覆盖联想填的值。
+// 然后在需要时选地址联想展开，再填街道、城市、州、邮编，用账单地址自己的值覆盖联想填的值；
+// 末尾补查之后关掉还开着的地址联想下拉（closeSuggestions）。
 // 地址字段要等卡号填完才出现，所以只有第一个要找的字段最多等 addressWait，之后每个只看当下有没有。
 // 值为空的字段同 fillOne 一样跳过，不找也不记。
 func (b *Browser) fillEmbeddedAddress(ctx context.Context, st *fillState, bl Billing) error {
@@ -243,7 +247,80 @@ func (b *Browser) fillEmbeddedAddress(ctx context.Context, st *fillState, bl Bil
 			return err
 		}
 	}
-	return b.checkAbsent(ctx, absent)
+	if err := b.checkAbsent(ctx, absent); err != nil {
+		return err
+	}
+	return b.closeSuggestions(ctx, bl.Line1)
+}
+
+// closeSuggestions 填完内嵌页的地址后关掉还开着的地址联想下拉（设计 §5.7）。2026-11-04 07:23 实测：覆盖街道时的键入触发了联想请求，
+// Esc 先于异步结果到达，结果回来后下拉又打开了，盖在城市、州、邮编那一片上，20 秒后还开着。
+//   - 开着（suggestionsOpen）才动手；没开着什么都不做，报告也不加字。
+//   - 对街道框用 DOM.focus 设焦点（ensureFocus；不用鼠标点：下拉就在街道下方），按一次 Esc（只按 Esc，绝不按回车），
+//     最多等 suggestCloseWait 看它收起。
+//   - 收起了：报告「手动地址」后面接「；联想下拉已关闭」，再核对一次街道仍是账单街道，不是就报错放弃。
+//   - 关不上（含找不到街道框、设不了焦点）：不报错，报告接「；联想下拉没关上」；点支付前的落点检查（landsOnSelf）会兜住点击。
+func (b *Browser) closeSuggestions(ctx context.Context, line1 string) error {
+	note := func(s string) { b.updateReport(func(r *FillReport) { r.ManualAddress = joinNote(r.ManualAddress, s) }) }
+	frames, err := b.frames(ctx)
+	if err != nil {
+		return fmt.Errorf("检查地址联想下拉失败: %w", err)
+	}
+	street := b.find(ctx, frames, Sel.Line1, false)
+	if !b.suggestionsOpen(ctx, frames, street) {
+		return nil
+	}
+	if street == nil {
+		note("联想下拉没关上")
+		return nil
+	}
+	if _, err := ensureFocus(ctx, street); err != nil {
+		note("联想下拉没关上")
+		return nil
+	}
+	if err := chromedp.KeyEvent(kb.Escape).Do(ctx); err != nil {
+		return fmt.Errorf("关地址联想下拉失败: %w", err)
+	}
+	// poll 没成功的那一轮会释放对象句柄，每轮重新找街道框；成功的那一轮不释放，下面核对就用它
+	closed, err := b.poll(ctx, suggestCloseWait, func(frames []frameRef) bool {
+		street = b.find(ctx, frames, Sel.Line1, false)
+		return !b.suggestionsOpen(ctx, frames, street)
+	})
+	if err != nil {
+		return err
+	}
+	if !closed {
+		note("联想下拉没关上")
+		return nil
+	}
+	note("联想下拉已关闭")
+	if strings.TrimSpace(line1) == "" {
+		return nil
+	}
+	if street == nil {
+		b.noteFieldStatus("街道地址", "填完后不见了")
+		return errors.New("关联想下拉后找不到「街道地址」输入框，已放弃")
+	}
+	ok, err := fieldHolds(ctx, street, field{"街道地址", Sel.Line1, line1, kindText})
+	if err != nil {
+		return fmt.Errorf("核对「街道地址」失败: %w", err)
+	}
+	if !ok {
+		b.noteFieldStatus("街道地址", "核对不一致")
+		return errors.New("关联想下拉后街道地址被改了，已放弃")
+	}
+	return nil
+}
+
+// suggestionsOpen 判断地址联想下拉是否开着：任一 iframe（不含主页面）里有可见的联想选项，或者街道框 aria-expanded="true"。
+// 2026-11-04 实测：下拉在主页面下单独的 iframe 里，地址 iframe 里也有一份选项；街道框是 combobox。street 可为 nil。
+func (b *Browser) suggestionsOpen(ctx context.Context, frames []frameRef, street *elem) bool {
+	if b.find(ctx, frames[1:], suggestionSels, false) != nil {
+		return true
+	}
+	var expanded bool
+	return street != nil &&
+		callOn(ctx, street.obj, `function () { return this.getAttribute('aria-expanded') === 'true' }`, &expanded) == nil && expanded
 }
 
 // foldedWithoutEntry 返回城市、州/省、邮编里有值、DOM 里有却不可见（折叠着）的字段，前提是页面上没有手动地址入口、也没点过：
@@ -848,28 +925,18 @@ func fieldHolds(ctx context.Context, e *elem, f field) (bool, error) {
 }
 
 // PayButtonState 只读地描述支付按钮当前的状态，绝不点击。试运行用它把按钮状态写进时间线。
-// 内嵌页的支付按钮只能按个数认（见 embedded.go）：主页面可见的提交按钮多于一个时报「不唯一（N 个）」。
+// 托管页只读一次；内嵌页见 embeddedPayButtonState。
 func (b *Browser) PayButtonState(ctx context.Context) string {
-	embedded := b.pageKind() == PageEmbedded
+	if b.pageKind() == PageEmbedded {
+		return b.embeddedPayButtonState(ctx)
+	}
 	state := "未找到"
 	err := b.do(ctx, func(ctx context.Context) error {
 		frames, err := b.frames(ctx)
 		if err != nil {
 			return err
 		}
-		sels := Sel.PayButton
-		if embedded {
-			n, err := b.countVisible(ctx, frames[0], embeddedPayButtonSel)
-			if err != nil {
-				return err
-			}
-			if n > 1 {
-				state = fmt.Sprintf("不唯一（%d 个）", n)
-				return nil
-			}
-			sels = []string{embeddedPayButtonSel}
-		}
-		e := b.find(ctx, frames[:1], sels, false)
+		e := b.find(ctx, frames[:1], Sel.PayButton, false)
 		if e == nil {
 			return nil
 		}
@@ -887,4 +954,44 @@ func (b *Browser) PayButtonState(ctx context.Context) string {
 		return "读取失败"
 	}
 	return state
+}
+
+// embeddedPayButtonState 是内嵌页的 PayButtonState（设计 §5.8）。2026-11-04 07:23 实测：地址改了，页面重算，
+// Fill 刚返回时按钮 disabled、aria-busy，1 秒后才可用；只读一次就会误报「存在但不可点击」。所以和 Submit 用同一个标准
+// （embeddedPayButton：仍在结账页、主页面唯一可见、可用的提交按钮），最多等 fieldWait：
+//   - 等到了，再做点支付前的落点检查（landsOnSelf，只检查、不点击）：通过报「可点击」，不通过报「可点击，但落点被挡住（原因）」；
+//   - 等不到时按最后一次看到的情况报：唯一但不可用「存在但不可点击（等了 N 秒）」，「不唯一（N 个）」「未找到」「读取失败」措辞不变；
+//     看到离开了结账页就不再等，报「页面已离开结账页」。
+func (b *Browser) embeddedPayButtonState(ctx context.Context) string {
+	n := payButtonUnreadable
+	state := ""
+	err := b.do(ctx, func(ctx context.Context) error {
+		var btn *elem
+		_, err := b.poll(ctx, fieldWait, func(frames []frameRef) bool {
+			btn = b.embeddedPayButton(ctx, frames[0], &n)
+			return btn != nil || n == payButtonLeft
+		})
+		if err != nil || btn == nil {
+			return err
+		}
+		if _, _, err := b.landsOnSelf(ctx, btn); err != nil {
+			state = "可点击，但落点被挡住（" + landReason(err) + "）"
+			return nil
+		}
+		state = "可点击"
+		return nil
+	})
+	switch {
+	case state != "":
+		return state
+	case err != nil || n == payButtonUnreadable:
+		return "读取失败"
+	case n == payButtonLeft:
+		return leftCheckoutMsg
+	case n == 1:
+		return fmt.Sprintf("存在但不可点击（等了 %g 秒）", fieldWait.Seconds())
+	case n > 1:
+		return fmt.Sprintf("不唯一（%d 个）", n)
+	}
+	return "未找到"
 }

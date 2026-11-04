@@ -585,6 +585,53 @@ func TestEmbeddedFillSuggestionLazy(t *testing.T) {
 	}
 }
 
+// 实页（2026-11-04 07:23、07:34）：覆盖街道时的键入触发了联想请求，Esc 先于异步结果到达，结果回来后下拉又打开了，
+// 盖住城市、州、邮编那一片，Fill 返回 20 秒后还开着（仿造页 addr=suggest-async）。填完地址要把它关掉：
+// Fill 返回后哪个 frame 里都没有可见的联想选项，街道仍是账单街道，报告在「手动地址」后面记下「联想下拉已关闭」。
+func TestEmbeddedFillClosesSuggestions(t *testing.T) {
+	needChrome(t)
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "addr=suggest-async")
+
+	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+		t.Fatalf("Fill: %v", err)
+	}
+	time.Sleep(500 * time.Millisecond) // 等过仿造页联想的 300ms 延迟：关上之后不能又被还没回来的结果打开
+	if n, err := paybrowser.VisibleCount(ctx, b, `[role="option"]`); err != nil || n != 0 {
+		t.Fatalf("Fill 返回后可见的联想选项 = %d, %v，期望 0", n, err)
+	}
+	lines := strings.Join(b.FillReport().Lines(), "\n")
+	if !strings.Contains(lines, "手动地址：已选地址联想：第 1 个 iframe 的选项") || !strings.Contains(lines, "联想下拉已关闭") {
+		t.Errorf("报告缺少「手动地址：已选地址联想：第 1 个 iframe 的选项」或「联想下拉已关闭」：\n%s", lines)
+	}
+	if got, err := paybrowser.FieldValue(ctx, b, "#billingAddress-addressLine1Input"); err != nil || got != "1 Main St" {
+		t.Fatalf("页面上街道 = %q, %v，期望 1 Main St", got, err)
+	}
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("只填表不提交：仿造页收到 %d 次提交", n)
+	}
+}
+
+// 联想下拉按 Esc 关不掉（仿造页 addr=suggest-sticky）：不报错，Fill 照常成功，报告记下「联想下拉没关上」，
+// 由点支付前的落点检查兜住点击。
+func TestEmbeddedFillSuggestionsStayOpen(t *testing.T) {
+	needChrome(t)
+	t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "addr=suggest-sticky")
+
+	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+		t.Fatalf("Fill: %v", err)
+	}
+	lines := strings.Join(b.FillReport().Lines(), "\n")
+	if !strings.Contains(lines, "联想下拉没关上") {
+		t.Errorf("报告缺少「联想下拉没关上」：\n%s", lines)
+	}
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("只填表不提交：仿造页收到 %d 次提交", n)
+	}
+}
+
 // payClicks 返回 clip=1 时主页面支付按钮收到的可信点击次数。
 func payClicks(t *testing.T, ctx context.Context, b *paybrowser.Browser) string {
 	t.Helper()
@@ -1184,5 +1231,118 @@ func TestEmbeddedSubmitRefusesAfterLeavingCheckout(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	if n := len(f.payments()); n != 0 {
 		t.Fatalf("离开结账页时仿造页收到 %d 次提交，期望 0 次", n)
+	}
+}
+
+// coverClicks 返回 cover=1 时盖住支付按钮的那一层收到的可信点击（误点）次数。先调 payClicks，它已经等过点击落地。
+func coverClicks(t *testing.T, ctx context.Context, b *paybrowser.Browser) string {
+	t.Helper()
+	v, err := paybrowser.FieldValue(ctx, b, "#cover-clicks")
+	if err != nil {
+		t.Fatalf("读误点次数: %v", err)
+	}
+	return v
+}
+
+// 填完卡后有东西盖住支付按钮（仿造页 cover=1：透明的 position:fixed 层；实页上可能是地址联想下拉、横幅、弹层）：
+// 点支付前看落点，落点不是按钮自己就不点，返回「支付按钮被挡住」，不置位，LockSubmit 证明没点过；按钮和盖着的层都没收到点击。
+func TestEmbeddedSubmitRefusesCoveredButton(t *testing.T) {
+	needChrome(t)
+	t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "cover=1")
+
+	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+		t.Fatalf("Fill: %v", err)
+	}
+	err := b.Submit(ctx)
+	if err == nil || !strings.Contains(err.Error(), "支付按钮被挡住（落点是 div），没有点击") {
+		t.Fatalf("Submit = %v，期望「支付按钮被挡住（落点是 div），没有点击」", err)
+	}
+	if b.LockSubmit() {
+		t.Fatal("支付按钮被挡住时没有点击，LockSubmit 应返回 false")
+	}
+	if n := payClicks(t, ctx, b); n != "0" {
+		t.Fatalf("支付按钮收到 %s 次点击，期望 0", n)
+	}
+	if n := coverClicks(t, ctx, b); n != "0" {
+		t.Fatalf("盖住按钮的层收到 %s 次误点，期望 0", n)
+	}
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("支付按钮被挡住时仿造页收到 %d 次提交，期望 0 次", n)
+	}
+}
+
+// 地址改了之后页面重算，支付按钮短暂 disabled、aria-busy（2026-11-04 07:23 实测约 1 秒；仿造页 busy=1 约 1.5 秒）：
+// 试运行报按钮状态前和 Submit 一样等它可点，报「可点击」，不误报「存在但不可点击」。之后 Submit 照常只点一次。
+func TestEmbeddedPayButtonStateWaitsBusy(t *testing.T) {
+	needChrome(t)
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "busy=1&addr=1")
+
+	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+		t.Fatalf("Fill: %v", err)
+	}
+	if st := b.PayButtonState(ctx); st != "可点击" {
+		t.Fatalf("支付按钮状态 = %q，期望可点击", st)
+	}
+	if err := b.Submit(ctx); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for len(f.payments()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if n := payClicks(t, ctx, b); n != "1" {
+		t.Fatalf("支付按钮收到 %s 次点击，期望 1", n)
+	}
+	if n := len(f.payments()); n != 1 {
+		t.Fatalf("仿造页收到 %d 次提交，期望正好 1 次", n)
+	}
+}
+
+// 试运行时支付按钮被挡住（仿造页 cover=1）：按钮唯一、可用，但落点不是它自己，报「可点击，但落点被挡住（原因）」。只检查，不点击。
+func TestEmbeddedPayButtonStateReportsCovered(t *testing.T) {
+	needChrome(t)
+	t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "cover=1")
+
+	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+		t.Fatalf("Fill: %v", err)
+	}
+	if st := b.PayButtonState(ctx); st != "可点击，但落点被挡住（落点是 div）" {
+		t.Fatalf("支付按钮状态 = %q，期望「可点击，但落点被挡住（落点是 div）」", st)
+	}
+	if n := payClicks(t, ctx, b); n != "0" {
+		t.Fatalf("支付按钮收到 %s 次点击，期望 0", n)
+	}
+	if n := coverClicks(t, ctx, b); n != "0" {
+		t.Fatalf("盖住按钮的层收到 %s 次误点，期望 0", n)
+	}
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("只读按钮状态：仿造页收到 %d 次提交", n)
+	}
+}
+
+// 支付按钮一直不可用：试运行等满 fieldWait 后报「存在但不可点击（等了 N 秒）」。
+func TestEmbeddedPayButtonStateDisabled(t *testing.T) {
+	needChrome(t)
+	t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+	t.Cleanup(paybrowser.SetFieldWait(time.Second))
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "")
+
+	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+		t.Fatalf("Fill: %v", err)
+	}
+	if err := paybrowser.EvalMain(ctx, b, `document.querySelector('#buttons button[type="submit"]').disabled = true`); err != nil {
+		t.Fatalf("禁用支付按钮: %v", err)
+	}
+	if st := b.PayButtonState(ctx); st != "存在但不可点击（等了 1 秒）" {
+		t.Fatalf("支付按钮状态 = %q，期望「存在但不可点击（等了 1 秒）」", st)
+	}
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("只读按钮状态：仿造页收到 %d 次提交", n)
 	}
 }

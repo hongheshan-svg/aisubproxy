@@ -463,7 +463,8 @@ func (b *Browser) LockSubmit() (clickAttempted bool) {
 }
 
 // Submit 点击主页面上的支付按钮。必须先 Fill 成功；先记下「已提交」再点击，此后再调用返回 ErrAlreadySubmitted 且不点击。
-// 内嵌页只在主页面仍在结账页时点唯一可见、可用的提交按钮，点击前一刻再核对一次，不满足就不点、返回错误（见 embeddedPayButton）。
+// 内嵌页只在主页面仍在结账页时点唯一可见、可用的提交按钮，点击前一刻再核对一次，不满足就不点、返回错误（见 embeddedPayButton）；
+// 核对之后、置位之前再看落点（landsOnSelf），按钮被挡住就不点、不置位，通过了就用检查过的坐标点。
 func (b *Browser) Submit(ctx context.Context) error {
 	b.mu.Lock()
 	submitted, filled, locked := b.submitted, b.filled, b.submitLocked
@@ -513,6 +514,7 @@ func (b *Browser) Submit(ctx context.Context) error {
 			return errors.New("找不到支付按钮")
 		}
 		before := b.scanBeforeClick(ctx)
+		pay := click
 		if embedded {
 			if b.beforeRecheck != nil {
 				if err := b.beforeRecheck(ctx); err != nil {
@@ -524,6 +526,14 @@ func (b *Browser) Submit(ctx context.Context) error {
 			if btn = b.embeddedPayButton(ctx, btn.frame, &n); btn == nil {
 				return embeddedPayButtonErr(n)
 			}
+			// 再看落点（设计 §5.8）：按钮中心那一点被别的东西盖住（地址联想下拉、横幅、弹层）就不点，同样不置位。
+			// 置位之后只要点了就绝不再点第二次，点到盖着的东西上，这一单就只能走确认、回收。
+			// 通过了就点刚检查过的这个坐标，不再重新滚动、求中心
+			x, y, lerr := b.landsOnSelf(ctx, btn)
+			if lerr != nil {
+				return fmt.Errorf("支付按钮被挡住（%s），没有点击", landReason(lerr))
+			}
+			pay = func(ctx context.Context, _ *elem) error { return chromedp.MouseClickXY(x, y).Do(ctx) }
 		}
 		// 先记下已提交再点击：点击中途出错也绝不再点第二次。从这里开始，任何错误都不能当成「没点击」（见 LockSubmit）
 		b.mu.Lock()
@@ -538,7 +548,6 @@ func (b *Browser) Submit(ctx context.Context) error {
 		b.submitted = true
 		b.beforeClick = before
 		b.mu.Unlock()
-		pay := click
 		if b.clickPay != nil {
 			pay = b.clickPay
 		}

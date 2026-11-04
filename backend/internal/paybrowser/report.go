@@ -28,7 +28,7 @@ type FieldCheck struct {
 // FillReport 是一次 Fill 的结果，用来在真实付款前核实页面结构。不含卡号、邮箱等任何值。
 type FillReport struct {
 	Fields        []FieldCheck
-	ManualAddress string   // 怎么展开折叠的地址字段：未点击、手动地址入口已点击几次；内嵌页上是已选或已点（未展开）地址联想、点的是第几个 iframe 里的选项，或地址联想没有出现；重打过街道时注明
+	ManualAddress string   // 怎么展开折叠的地址字段：未点击、手动地址入口已点击几次；内嵌页上是已选或已点（未展开）地址联想、点的是第几个 iframe 里的选项，或地址联想没有出现；重打过街道时注明；填完时联想下拉开着的，注明关闭了没有
 	LinkVerify    string   // Link 内嵌验证框（「Confirm it’s you」）的处理结果，没出现时为空
 	LinkSave      string   // Link 保存勾选框的处理结果
 	Email         string   // 邮箱框的处理结果

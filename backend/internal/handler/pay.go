@@ -52,7 +52,7 @@ const (
 
 var (
 	payOrderNoRe  = regexp.MustCompile(`^PO\d{12}[0-9a-f]{8}$`)
-	payShotNameRe = regexp.MustCompile(`^\d{2}-[a-z0-9_]+\.png$`)
+	payShotNameRe = regexp.MustCompile(`^\d{2}-[a-z0-9_-]+\.png$`)
 )
 
 // payFail 把引擎错误映射成 HTTP 响应。Resolve 的状态冲突同时满足 ErrBadRequest 与 ErrStateChanged，

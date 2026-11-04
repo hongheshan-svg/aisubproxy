@@ -70,6 +70,13 @@ var webhookDropKeys = map[string]bool{
 
 var webhookPANKeys = map[string]bool{"card_number": true, "cardnumber": true, "pan": true}
 
+// SensitiveCardFieldDrop 判断字段名是不是要整项去掉的卡敏感字段（CVV、有效期），不区分大小写。
+// webhook 入库脱敏和后台订单透传剔除共用这一份规则。
+func SensitiveCardFieldDrop(key string) bool { return webhookDropKeys[strings.ToLower(key)] }
+
+// SensitiveCardFieldPAN 判断字段名是不是卡号字段（card_number / cardnumber / pan），不区分大小写。
+func SensitiveCardFieldPAN(key string) bool { return webhookPANKeys[strings.ToLower(key)] }
+
 var panDigitsRe = regexp.MustCompile(`\d{13,19}`)
 
 // maskPAN 卡号最多保留前 6 后 4；已含 * 的视为已打码；太短的只留后 4。

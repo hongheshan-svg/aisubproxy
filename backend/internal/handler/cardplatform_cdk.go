@@ -935,11 +935,10 @@ func stripOrderValue(v any) {
 	switch t := v.(type) {
 	case map[string]any:
 		for k, val := range t {
-			lk := strings.ToLower(k)
 			switch {
-			case orderDropKeys[lk]:
+			case db.SensitiveCardFieldDrop(k):
 				delete(t, k)
-			case lk == "card_number" || lk == "cardnumber" || lk == "pan":
+			case db.SensitiveCardFieldPAN(k):
 				delete(t, k)
 				if strAny(t["card_last_four"]) != "" {
 					continue
@@ -962,13 +961,6 @@ func stripOrderValue(v any) {
 			stripOrderValue(e)
 		}
 	}
-}
-
-var orderDropKeys = map[string]bool{
-	"cvv": true, "cvv2": true, "cvc": true, "cvc2": true, "security_code": true,
-	"expire": true, "expiry": true, "expiry_date": true, "expire_date": true,
-	"expiration": true, "expiration_date": true,
-	"exp_month": true, "exp_year": true, "expire_month": true, "expire_year": true,
 }
 
 func cdkLifecycleLabel(cdkStatus, orderStatus, feeStatus string) string {

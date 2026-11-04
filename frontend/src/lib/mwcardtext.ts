@@ -13,12 +13,22 @@ export function cancelWhen(days: number): string {
 /** 接在「清零、冻结，」后面：并在 N 天后注销 / 并立即注销。 */
 const andCancel = (days: number) => (days > 0 ? `并在 ${cancelWhen(days)}` : `并${cancelWhen(days)}`)
 
-interface LeaseLike { use_count: number; lease_sensitive?: boolean }
+interface LeaseLike { use_count: number; lease_sensitive?: boolean; retire_reason?: string }
 
-/** 释放后这张卡会不会用满：取过卡号则 use_count + 1 与上限比，没取过则用 use_count。策略没加载时返回 null。 */
+/**
+ * 释放后这张卡会不会转「已用」：与后端一致，退役原因非空，或取过卡号则 use_count + 1（没取过则 use_count）达到上限。
+ * 策略没加载时，只有退役原因能下结论，其余返回 null。
+ */
 export function releaseWillBeUsedUp(c: LeaseLike, p: UsePolicy | null | undefined): boolean | null {
+  if (c.retire_reason) return true
   if (!p) return null
   return c.use_count + (c.lease_sensitive ? 1 : 0) >= p.max_uses_per_card
+}
+
+/** 转「已用」的原因与后果：退役优先说明原因。策略没加载时注销时间写「按策略注销」。 */
+function usedUpFate(c: LeaseLike, p: UsePolicy | null | undefined): string {
+  const lead = c.retire_reason ? `已退役（原因 ${c.retire_reason}）` : '已用满'
+  return `${lead}，将清零、冻结，${p ? andCancel(p.cancel_after_days) : '并按策略注销'}`
 }
 
 /** 释放确认框的文字。 */
@@ -27,7 +37,7 @@ export function releaseConfirmText(c: LeaseLike & { card_id: string; last4: stri
   const used = releaseWillBeUsedUp(c, p)
   let fate: string
   if (used === null) fate = '卡的去向取决于使用次数是否达到上限（策略未加载，无法预判）'
-  else if (used) fate = `已用满，将清零、冻结，${andCancel(p!.cancel_after_days)}`
+  else if (used) fate = usedUpFate(c, p)
   else fate = '余额清零后回到可用'
   return `确认释放卡 ${c.card_id}（后四位 ${c.last4}）？${taken}，释放后：${fate}。`
 }
@@ -36,7 +46,7 @@ export function releaseConfirmText(c: LeaseLike & { card_id: string; last4: stri
 export function releaseDoneText(c: LeaseLike, p: UsePolicy | null | undefined): string {
   const used = releaseWillBeUsedUp(c, p)
   if (used === null) return '已释放'
-  return used ? `已释放，卡已用满，将清零、冻结，${andCancel(p!.cancel_after_days)}` : '已释放，卡会清零后回到可用'
+  return used ? `已释放，卡${usedUpFate(c, p)}` : '已释放，卡会清零后回到可用'
 }
 
 /** 「查看卡号」确认框里的说明。租用中的卡写明用满后的后果。 */
@@ -63,3 +73,19 @@ export function importSweepWarning(availableCents: number): string {
 /** 冻结、解冻按钮只按平台状态显示。 */
 export const canFreeze = (platformStatus: string) => platformStatus === 'ACTIVE'
 export const canUnfreeze = (platformStatus: string) => platformStatus === 'REVOKED'
+
+/** 导入弹窗的产品下拉：列出全部产品，查询得到的候选排在前面（带 matched 标记），其余顺序不变。 */
+export function importProductOptions<T extends { product_id: string }>(
+  products: T[],
+  candidates: string[] | undefined,
+): (T & { matched: boolean })[] {
+  const set = new Set(candidates || [])
+  const tag = (p: T, matched: boolean) => ({ ...p, matched })
+  return [...products.filter((p) => set.has(p.product_id)).map((p) => tag(p, true)), ...products.filter((p) => !set.has(p.product_id)).map((p) => tag(p, false))]
+}
+
+/** 查询结果是否仍对应输入框里的卡 ID（查询在途时改了卡 ID，旧结果就作废）。 */
+export function previewMatchesInput(previewCardId: string | undefined, input: string): boolean {
+  const id = input.trim()
+  return !!previewCardId && id !== '' && previewCardId === id
+}

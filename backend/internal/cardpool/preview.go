@@ -3,6 +3,7 @@ package cardpool
 import (
 	"context"
 	"errors"
+	"regexp"
 	"strings"
 
 	"github.com/tuzi/cdk-recharge-system/internal/marswallex"
@@ -39,11 +40,11 @@ func (s *Service) PreviewCard(ctx context.Context, cardID string) (*CardPreview,
 	}
 	d, err := c.GetCard(ctx, cardID)
 	if err != nil {
-		return nil, err
+		return nil, redactPAN(err)
 	}
 	products, err := c.ListCardProducts(ctx)
 	if err != nil {
-		return nil, err
+		return nil, redactPAN(err)
 	}
 	avail, err := parseBalance(d.AvailableBalance)
 	if err != nil {
@@ -68,7 +69,20 @@ func (s *Service) PreviewCard(ctx context.Context, cardID string) (*CardPreview,
 	}, nil
 }
 
-// panParts 只取卡号开头连续 6 位数字、结尾连续 4 位数字（忽略空格与连字符）；不够就给空串。
+var longDigits = regexp.MustCompile(`\d(?:[ -]?\d){11,}`)
+
+// redactPAN 去掉平台错误说明里夹带的长数字串（可能是完整卡号），其余字段原样保留，错误类型不变。
+func redactPAN(err error) error {
+	var me *marswallex.Error
+	if errors.As(err, &me) {
+		cp := *me
+		cp.Message = longDigits.ReplaceAllString(me.Message, "****")
+		return &cp
+	}
+	return err
+}
+
+// panParts 取卡号开头连续 6 位数字作前 6 位（忽略空格与连字符）；后 4 位直接用导入时存库的 lastDigits4，保证预览与导入后一致。
 func panParts(cardNo string) (first6, last4 string) {
 	clean := strings.NewReplacer(" ", "", "-", "").Replace(strings.TrimSpace(cardNo))
 	i := 0
@@ -78,14 +92,7 @@ func panParts(cardNo string) (first6, last4 string) {
 	if i >= 6 {
 		first6 = clean[:6]
 	}
-	j := len(clean)
-	for j > 0 && isDigit(clean[j-1]) {
-		j--
-	}
-	if len(clean)-j >= 4 {
-		last4 = clean[len(clean)-4:]
-	}
-	return first6, last4
+	return first6, lastDigits4(cardNo)
 }
 
 func isDigit(b byte) bool { return b >= '0' && b <= '9' }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  canFreeze, canUnfreeze, cancelWhen, importSweepWarning, releaseConfirmText, releaseDoneText, releaseWillBeUsedUp, sensitiveNote, usedStateNote,
+  canFreeze, canUnfreeze, importProductOptions, previewMatchesInput, cancelWhen, importSweepWarning, releaseConfirmText, releaseDoneText, releaseWillBeUsedUp, sensitiveNote, usedStateNote,
 } from '../mwcardtext'
 
 const policy = { max_uses_per_card: 3, cancel_after_days: 7 }
@@ -88,5 +88,34 @@ describe('mwcardtext lib', () => {
     expect(canUnfreeze('REVOKED')).toBe(true)
     expect(canUnfreeze('ACTIVE')).toBe(false)
     expect(canUnfreeze('CANCELED')).toBe(false)
+  })
+
+  it('退役原因非空时按用满处理（后端：retire_reason <> \'\' 或用满都转 used）', () => {
+    const c = { card_id: 'c1', last4: '1234', use_count: 0, lease_sensitive: false, retire_reason: '健康度' }
+    expect(releaseWillBeUsedUp(c, policy)).toBe(true)
+    expect(releaseWillBeUsedUp(c, null)).toBe(true)
+    expect(releaseWillBeUsedUp({ ...c, retire_reason: '' }, policy)).toBe(false)
+    const t = releaseConfirmText(c, policy)
+    expect(t).toContain('已退役（原因 健康度），将清零、冻结，并在 7 天后注销')
+    expect(t).not.toContain('回到可用')
+    expect(releaseConfirmText(c, { ...policy, cancel_after_days: 0 })).toContain('已退役（原因 健康度），将清零、冻结，并立即注销')
+    expect(releaseDoneText(c, policy)).toBe('已释放，卡已退役（原因 健康度），将清零、冻结，并在 7 天后注销')
+    expect(releaseDoneText(c, null)).toContain('已退役（原因 健康度），将清零、冻结')
+  })
+
+  it('importProductOptions: 列出全部产品，候选排前面并标「（匹配）」，原有顺序保持', () => {
+    const ps = [{ product_id: 'a' }, { product_id: 'b' }, { product_id: 'c' }, { product_id: 'd' }]
+    const out = importProductOptions(ps, ['c', 'a'])
+    expect(out.map((o) => o.product_id)).toEqual(['a', 'c', 'b', 'd'])
+    expect(out.map((o) => o.matched)).toEqual([true, true, false, false])
+    expect(importProductOptions(ps, []).map((o) => o.product_id)).toEqual(['a', 'b', 'c', 'd'])
+    expect(importProductOptions(ps, undefined).every((o) => !o.matched)).toBe(true)
+  })
+
+  it('previewMatchesInput: 查询结果只在卡 ID 输入仍是查询时的那个才有效', () => {
+    expect(previewMatchesInput('c1', ' c1 ')).toBe(true)
+    expect(previewMatchesInput('c1', 'c2')).toBe(false)
+    expect(previewMatchesInput('c1', '')).toBe(false)
+    expect(previewMatchesInput(undefined, 'c1')).toBe(false)
   })
 })

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  ACCOUNT_TYPE_LABEL, WEBHOOK_UNREACHABLE_HINT, accountTypeLabel, outcomeLabel, showTestReason, toOneLineBase64, webhookUnreachable,
+  ACCOUNT_TYPE_LABEL, envProxyWarning, WEBHOOK_UNREACHABLE_HINT, accountTypeLabel, outcomeLabel, showTestReason, toOneLineBase64, webhookUnreachable,
 } from '../mwconfig'
 
 describe('mwconfig lib', () => {
@@ -75,5 +75,13 @@ describe('mwconfig lib', () => {
     it('提示文字原样', () => {
       expect(WEBHOOK_UNREACHABLE_HINT).toBe('这个地址 MarsWallex 访问不到。请用公网域名、通过 HTTPS 打开后台，再复制这里的地址；没有域名可以用 <IP 改横杠>.sslip.io。')
     })
+  })
+
+  it('envProxyWarning: 有环境代理才提示，文字原样', () => {
+    expect(envProxyWarning('')).toBe('')
+    expect(envProxyWarning(undefined)).toBe('')
+    expect(envProxyWarning('proxy.example:8080')).toBe(
+      '服务器设置了环境代理（proxy.example:8080），访问 MarsWallex 会经过它，白名单要填这个代理的出口 IP，上面两行不是平台看到的地址。',
+    )
   })
 })

@@ -414,7 +414,7 @@
         </div>
         <el-form-item label="产品">
           <el-select v-model="importForm.product_id" filterable style="width: 100%">
-            <el-option v-for="p in importProducts" :key="p.product_id" :label="productLabel(p.product_id)" :value="p.product_id" />
+            <el-option v-for="p in importProducts" :key="p.product_id" :label="productLabel(p.product_id) + (p.matched ? '（匹配）' : '')" :value="p.product_id" />
           </el-select>
         </el-form-item>
         <el-form-item label="持卡人（可选）">
@@ -562,7 +562,7 @@ import {
   orderStateText, orderToast, withoutSelection, type CardholderFormValue,
 } from '../../lib/cardpool'
 import {
-  canFreeze, canUnfreeze, importSweepWarning, releaseConfirmText, releaseDoneText, sensitiveNote, usedStateNote,
+  canFreeze, canUnfreeze, importProductOptions, importSweepWarning, previewMatchesInput, releaseConfirmText, releaseDoneText, sensitiveNote, usedStateNote,
 } from '../../lib/mwcardtext'
 import { dialog } from '../../lib/dialog'
 import { useAuthStore } from '../../stores/auth'
@@ -923,12 +923,8 @@ interface CardPreview {
 }
 const preview = ref<CardPreview | null>(null)
 const previewing = ref(false)
-// 查询之后只列出候选产品；没有候选（或候选不在已加载的产品里）时列出全部
-const importProducts = computed(() => {
-  const ids = preview.value?.candidates || []
-  const list = products.value.filter((p) => ids.includes(p.product_id))
-  return list.length ? list : products.value
-})
+// 列出全部产品，查询得到的候选排前面并标「（匹配）」
+const importProducts = computed(() => importProductOptions(products.value, preview.value?.candidates))
 function resetPreview() {
   preview.value = null
   importForm.product_id = ''
@@ -939,6 +935,8 @@ async function queryImportCard() {
   previewing.value = true
   try {
     const r = await api<CardPreview>('/cards/preview', 'POST', { card_id: id })
+    // 查询在途时改了卡 ID：旧结果作废，不写入 preview 和产品
+    if (importForm.card_id.trim() !== id) return
     if (!r.ok) {
       preview.value = null
       return dialog.toast(errText(r, '查询失败'), 'err')
@@ -957,13 +955,17 @@ async function openImportCard() {
 }
 async function submitImportCard() {
   if (!importForm.card_id.trim() || !importForm.product_id) return dialog.toast('请填写 card_id 并选择产品', 'warn')
-  if (!preview.value || preview.value.already_in_pool) return
-  const warn = importSweepWarning(preview.value.available_cents)
+  const pv = preview.value // 确认框期间输入可能被改，先取下来
+  if (!pv || !previewMatchesInput(pv.card_id, importForm.card_id)) {
+    return dialog.toast('卡 ID 已改动，请重新查询', 'warn')
+  }
+  if (pv.already_in_pool) return
+  const warn = importSweepWarning(pv.available_cents)
   if (warn && !(await dialog.confirm(warn, { title: '导入卡', okText: '导入' }))) return
   importing.value = true
   try {
     const r = await api('/cards/import', 'POST', {
-      card_id: importForm.card_id.trim(), product_id: importForm.product_id, card_holder_id: importForm.card_holder_id,
+      card_id: pv.card_id, product_id: importForm.product_id, card_holder_id: importForm.card_holder_id,
     })
     if (!r.ok) return dialog.toast(errText(r, '导入失败'), 'err')
     dialog.toast('已导入', 'ok')

@@ -112,3 +112,13 @@ func TestPreviewCard(t *testing.T) {
 		t.Fatalf("空卡 ID: %v", err)
 	}
 }
+
+// 预览的后 4 位必须与导入时存的（lastDigits4）一致，卡号带空格、横线、字母时也一样。
+func TestPANPartsLast4MatchesLastDigits4(t *testing.T) {
+	for _, in := range []string{"4288 2012 3456 7890", "4288-2012-3456-7890", "4288201234567890", "4111********1234", "4288 2012 3456 789X", "12 3", ""} {
+		_, l4 := panParts(in)
+		if l4 != lastDigits4(in) {
+			t.Errorf("%q: 预览后 4 位 %q，导入存 %q", in, l4, lastDigits4(in))
+		}
+	}
+}

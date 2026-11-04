@@ -69,3 +69,9 @@ export function webhookUnreachable(url: string | undefined | null): boolean {
   const host = u.hostname.toLowerCase()
   return host === 'localhost' || privateIPv4(host) || privateIPv6(host)
 }
+
+/** 服务器设置了环境代理（HTTPS_PROXY 等）时的提示；host 为空表示没有。 */
+export function envProxyWarning(host: string | undefined | null): string {
+  if (!host) return ''
+  return `服务器设置了环境代理（${host}），访问 MarsWallex 会经过它，白名单要填这个代理的出口 IP，上面两行不是平台看到的地址。`
+}

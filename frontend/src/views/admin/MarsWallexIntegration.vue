@@ -125,6 +125,7 @@
           IPv6：<code v-if="egress.ipv6" class="mono">{{ egress.ipv6 }}</code>
           <span v-else class="text-warn">{{ egress.ipv6_error || '未检测到' }}</span>
         </div>
+        <div v-if="egress.env_proxy_host" class="text-xs text-warn" role="alert">{{ envProxyWarning(egress.env_proxy_host) }}</div>
         <div v-if="egress.platform_host" class="text-xs text-subtle">
           平台地址 <code class="mono">{{ egress.platform_host }}</code> {{ egress.platform_has_ipv6 ? '有' : '没有' }} IPv6 记录
         </div>
@@ -215,7 +216,7 @@ import { authFetch } from '../../lib/api'
 import { dialog } from '../../lib/dialog'
 import { WEBHOOK_HINT, lastWebhookText, showWebhookHint } from '../../lib/mwwebhook'
 import {
-  WEBHOOK_UNREACHABLE_HINT, accountTypeLabel, outcomeLabel, showTestReason, toOneLineBase64, webhookUnreachable,
+  WEBHOOK_UNREACHABLE_HINT, accountTypeLabel, envProxyWarning, outcomeLabel, showTestReason, toOneLineBase64, webhookUnreachable,
 } from '../../lib/mwconfig'
 
 interface Preset { id: string; label: string; url: string }
@@ -239,7 +240,7 @@ interface Balance { currency: string; available_balance: string; freeze_balance:
 interface Account { account_no: string; account_name: string; account_type?: string; balances?: Balance[] }
 interface Egress {
   ipv4: string; ipv6: string; ipv4_error: string; ipv6_error: string
-  platform_host: string; platform_has_ipv6: boolean
+  platform_host: string; platform_has_ipv6: boolean; env_proxy_host?: string
 }
 interface TestResult {
   outcome: string

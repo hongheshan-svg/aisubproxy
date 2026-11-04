@@ -1,16 +1,12 @@
 import { createI18n } from 'vue-i18n'
 import zh from './locales/zh'
 import en from './locales/en'
+import { pickLocale, readSavedLocale, STORAGE_KEY } from './detect'
 
 export type AppLocale = 'zh' | 'en'
 
-const STORAGE_KEY = 'locale'
-
 function detectLocale(): AppLocale {
-  const saved = localStorage.getItem(STORAGE_KEY)
-  if (saved === 'zh' || saved === 'en') return saved
-  // 跟随浏览器：非中文默认英文
-  return navigator.language && navigator.language.toLowerCase().startsWith('zh') ? 'zh' : 'zh'
+  return pickLocale(readSavedLocale(), navigator.language)
 }
 
 const locale = detectLocale()

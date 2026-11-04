@@ -84,12 +84,11 @@ const submit = async () => {
       return
     }
 
-    // 认证靠 HttpOnly cookie；本地只存展示用元数据
+    // 认证靠 HttpOnly cookie；本地只存展示用元数据（登录接口也不再返回令牌）
     authStore.save({
       username: data.username,
       name: data.name,
       expiresAt: data.expires_at,
-      token: data.token,
     })
 
     const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/ops'

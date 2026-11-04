@@ -201,7 +201,6 @@ func SetupBootstrap(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"username":   username,
 		"password":   password,
-		"token":      sess["token"],
 		"name":       sess["name"],
 		"expires_at": sess["expires_at"],
 		"csrf_token": sess["csrf_token"],

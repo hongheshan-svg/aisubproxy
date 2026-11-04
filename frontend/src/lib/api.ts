@@ -63,10 +63,7 @@ export const authFetch = async (input: RequestInfo | URL, init: RequestInit = {}
   const headers = new Headers(init.headers || {})
   const url = requestUrl(input)
 
-  // 兼容旧会话：localStorage 里若还有 token 就带 Bearer 头；新会话走 HttpOnly cookie
-  if (authStore.token) {
-    headers.set('Authorization', `Bearer ${authStore.token}`)
-  }
+  // 认证只靠 HttpOnly cookie（credentials: 'include'），不带 Authorization 头：令牌不经过前端 JS
 
   // 基于 cookie 的写操作需要 CSRF 双提交：把可读的 csrf_token cookie 放进请求头
   const method = (init.method || 'GET').toUpperCase()

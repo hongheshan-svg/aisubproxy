@@ -180,7 +180,6 @@ async function bootstrap(m: 'generate' | 'manual') {
         username: d.username,
         name: d.name || d.username,
         expiresAt: d.expires_at,
-        token: d.token,
       })
     }
     // 暂存到 session，登录页也可预填（兜底）

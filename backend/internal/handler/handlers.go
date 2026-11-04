@@ -44,13 +44,6 @@ type AdminLoginRequest struct {
 	Password string `json:"password" binding:"required"`
 }
 
-type AdminLoginResponse struct {
-	Token     string `json:"token"`
-	Username  string `json:"username"`
-	Name      string `json:"name"`
-	ExpiresAt string `json:"expires_at"`
-}
-
 // ===== Recharge Portal APIs =====
 
 func AdminLogin(c *gin.Context) {
@@ -121,6 +114,8 @@ func AdminLogin(c *gin.Context) {
 }
 
 // issueAdminSession 签发 JWT + HttpOnly cookie，供登录与安装向导共用。
+// 令牌只放在 HttpOnly cookie 里，不进响应 JSON：前端 JS 拿不到，XSS 偷不走（审计 A-1）。
+// 脚本和命令行仍可用 Authorization: Bearer，令牌另行签发，不经浏览器。
 func issueAdminSession(c *gin.Context, userID int64, username, displayName string) (gin.H, error) {
 	expiration := time.Now().Add(24 * time.Hour)
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, auth.CustomClaims{
@@ -143,7 +138,6 @@ func issueAdminSession(c *gin.Context, userID int64, username, displayName strin
 	csrf := newCSRFToken()
 	setAuthCookies(c, signedToken, csrf, int(time.Until(expiration).Seconds()))
 	return gin.H{
-		"token":      signedToken,
 		"username":   username,
 		"name":       displayName,
 		"expires_at": expiration.Format(time.RFC3339),
@@ -157,15 +151,28 @@ func AdminLogout(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "已退出登录"})
 }
 
+// AdminMe 返回当前会话的管理员信息。前端刷新页面后靠它确认登录态、恢复用户名和到期时间。
 func AdminMe(c *gin.Context) {
 	userID, _ := c.Get("user_id")
 	username, _ := c.Get("username")
 	isAdmin, _ := c.Get("is_admin")
+	expiresAt, _ := c.Get("token_expires_at")
+
+	name, _ := username.(string)
+	if id, ok := userID.(int64); ok {
+		var display sql.NullString
+		if err := db.DB.QueryRow(`SELECT display_name FROM admin_users WHERE id = ?`, id).Scan(&display); err == nil &&
+			strings.TrimSpace(display.String) != "" {
+			name = display.String
+		}
+	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"user_id":  userID,
-		"username": username,
-		"is_admin": isAdmin,
+		"user_id":    userID,
+		"username":   username,
+		"name":       name,
+		"is_admin":   isAdmin,
+		"expires_at": expiresAt,
 	})
 }
 

@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
@@ -138,6 +139,9 @@ func JWTAuthMiddleware() gin.HandlerFunc {
 		c.Set("user_id", claims.UserID)
 		c.Set("is_admin", claims.IsAdmin)
 		c.Set("username", claims.Username)
+		if claims.ExpiresAt != nil {
+			c.Set("token_expires_at", claims.ExpiresAt.Time.Format(time.RFC3339))
+		}
 		c.Next()
 	}
 }

@@ -1,0 +1,209 @@
+package server
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/gin-gonic/gin"
+	"github.com/tuzi/cdk-recharge-system/internal/db"
+	"github.com/tuzi/cdk-recharge-system/internal/db/dbtest"
+)
+
+// 本文件是审计 OA 组（鉴权与会话）的接口级测试：走真实路由表和中间件，内存库。
+// 登录限流表是 handler 包里的全局状态，这里每个测试用不同的来源 IP，互不影响。
+
+const oaPassword = "Str0ngPassw0rd-OA"
+
+// oaRouter 用内存库和真实路由表搭一个测试服务。
+func oaRouter(t *testing.T) *gin.Engine {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	t.Setenv("WEB_DIR", "")
+	dbtest.Open(t)
+	r := gin.New()
+	setupRoutes(r)
+	return r
+}
+
+func oaCreateAdmin(t *testing.T, username string) {
+	t.Helper()
+	if err := db.CreateAdminUser(username, oaPassword, ""); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type oaReq struct {
+	method, path, body string
+	cookies            []*http.Cookie
+	header             map[string]string
+	ip                 string
+}
+
+func oaDo(r http.Handler, q oaReq) *httptest.ResponseRecorder {
+	var body io.Reader
+	if q.body != "" {
+		body = strings.NewReader(q.body)
+	}
+	req := httptest.NewRequest(q.method, q.path, body)
+	if q.body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if q.ip != "" {
+		req.RemoteAddr = q.ip + ":40000"
+	}
+	for k, v := range q.header {
+		req.Header.Set(k, v)
+	}
+	for _, c := range q.cookies {
+		req.AddCookie(c)
+	}
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+func oaLoginBody(username, password string) string {
+	return fmt.Sprintf(`{"username":%q,"password":%q}`, username, password)
+}
+
+// oaLogin 登录成功并返回下发的 cookie（auth_token、csrf_token）。
+func oaLogin(t *testing.T, r http.Handler, ip, username, password string) []*http.Cookie {
+	t.Helper()
+	w := oaDo(r, oaReq{method: "POST", path: "/api/v1/auth/admin/login", body: oaLoginBody(username, password), ip: ip})
+	if w.Code != http.StatusOK {
+		t.Fatalf("登录应 200，实际 %d：%s", w.Code, w.Body.String())
+	}
+	return w.Result().Cookies()
+}
+
+func oaCookie(cs []*http.Cookie, name string) *http.Cookie {
+	for _, c := range cs {
+		if c.Name == name {
+			return c
+		}
+	}
+	return nil
+}
+
+// oaCSRF 取 csrf_token cookie 放进请求头，模拟前端的双提交。
+func oaCSRF(cs []*http.Cookie) map[string]string {
+	if c := oaCookie(cs, "csrf_token"); c != nil {
+		return map[string]string{"X-CSRF-Token": c.Value}
+	}
+	return nil
+}
+
+func oaJSON(t *testing.T, w *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &m); err != nil {
+		t.Fatalf("响应不是 JSON：%v；%s", err, w.Body.String())
+	}
+	return m
+}
+
+// A-1：登录响应不再把 JWT 放进 JSON，只靠 HttpOnly cookie；cookie 属性和 CSRF 双提交值一并钉住（A-22）。
+func TestOALoginResponseHasNoToken(t *testing.T) {
+	r := oaRouter(t)
+	oaCreateAdmin(t, "oa_login")
+	w := oaDo(r, oaReq{method: "POST", path: "/api/v1/auth/admin/login", body: oaLoginBody("oa_login", oaPassword), ip: "198.51.100.1"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("登录应 200，实际 %d：%s", w.Code, w.Body.String())
+	}
+	body := oaJSON(t, w)
+	if _, ok := body["token"]; ok {
+		t.Fatalf("登录响应不应含 token：%s", w.Body.String())
+	}
+	for _, k := range []string{"username", "name", "expires_at", "csrf_token"} {
+		if s, _ := body[k].(string); s == "" {
+			t.Errorf("登录响应缺 %s：%s", k, w.Body.String())
+		}
+	}
+	cs := w.Result().Cookies()
+	at := oaCookie(cs, "auth_token")
+	if at == nil || at.Value == "" || !at.HttpOnly || at.Path != "/" || at.SameSite != http.SameSiteLaxMode || at.MaxAge <= 0 {
+		t.Fatalf("auth_token cookie 属性不对：%+v", at)
+	}
+	ct := oaCookie(cs, "csrf_token")
+	if ct == nil || ct.Value == "" || ct.HttpOnly || ct.Value != body["csrf_token"] {
+		t.Fatalf("csrf_token cookie 应可被前端读取且与响应一致：%+v", ct)
+	}
+	// 直连 HTTP、没有可信反代：不带 Secure
+	if at.Secure || ct.Secure {
+		t.Fatalf("纯 HTTP 请求不应下发 Secure cookie")
+	}
+	// 拿 cookie 能访问 /me，并带上显示名和到期时间（前端刷新后靠它恢复登录态）
+	me := oaDo(r, oaReq{method: "GET", path: "/api/v1/auth/admin/me", cookies: cs})
+	if me.Code != http.StatusOK {
+		t.Fatalf("/me 应 200，实际 %d：%s", me.Code, me.Body.String())
+	}
+	mb := oaJSON(t, me)
+	if mb["username"] != "oa_login" || mb["name"] == "" || mb["expires_at"] == "" || mb["expires_at"] == nil {
+		t.Fatalf("/me 回包不全：%s", me.Body.String())
+	}
+}
+
+// A-22：cookie 认证的写操作缺 CSRF 头或头与 cookie 不一致一律 403；读操作不需要。
+func TestOACookieWritesRequireCSRF(t *testing.T) {
+	r := oaRouter(t)
+	oaCreateAdmin(t, "oa_csrf")
+	cs := oaLogin(t, r, "198.51.100.2", "oa_csrf", oaPassword)
+	body := `{"old_password":"x","new_password":"y"}`
+	for name, hdr := range map[string]map[string]string{
+		"缺头":  nil,
+		"不一致": {"X-CSRF-Token": "not-the-cookie"},
+	} {
+		w := oaDo(r, oaReq{method: "POST", path: "/api/v1/auth/admin/change-password", body: body, cookies: cs, header: hdr})
+		if w.Code != http.StatusForbidden {
+			t.Errorf("%s：应 403，实际 %d：%s", name, w.Code, w.Body.String())
+		}
+	}
+	if w := oaDo(r, oaReq{method: "GET", path: "/api/v1/auth/admin/me", cookies: cs}); w.Code != http.StatusOK {
+		t.Fatalf("读操作不需要 CSRF 头，实际 %d", w.Code)
+	}
+}
+
+const oaSetupToken = "oa-setup-token-0123456789"
+
+// oaFreshRouter 是未安装的新库：安装令牌用固定值，方便测试带上。
+func oaFreshRouter(t *testing.T) *gin.Engine {
+	t.Helper()
+	t.Setenv("SETUP_BOOTSTRAP_TOKEN", oaSetupToken)
+	t.Setenv("INSTALL_MODE", "")
+	t.Setenv("ADMIN_PASSWORD", "")
+	t.Setenv("SETUP_ALLOW_CIDRS", "")
+	return oaRouter(t)
+}
+
+func oaBootstrap(r http.Handler, ip, token, body string) *httptest.ResponseRecorder {
+	h := map[string]string{}
+	if token != "" {
+		h["X-Setup-Token"] = token
+	}
+	return oaDo(r, oaReq{method: "POST", path: "/api/v1/setup/bootstrap", body: body, ip: ip, header: h})
+}
+
+// A-1：安装向导自动登录也只靠 cookie，响应里不带 JWT。
+func TestOASetupResponseHasNoToken(t *testing.T) {
+	r := oaFreshRouter(t)
+	w := oaBootstrap(r, "198.51.100.10", oaSetupToken, `{"mode":"generate","username":"oa_setup"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("安装应 200，实际 %d：%s", w.Code, w.Body.String())
+	}
+	body := oaJSON(t, w)
+	if _, ok := body["token"]; ok {
+		t.Fatalf("安装响应不应含 token：%s", w.Body.String())
+	}
+	cs := w.Result().Cookies()
+	if c := oaCookie(cs, "auth_token"); c == nil || !c.HttpOnly {
+		t.Fatalf("安装成功应下发 HttpOnly auth_token：%+v", c)
+	}
+	if me := oaDo(r, oaReq{method: "GET", path: "/api/v1/auth/admin/me", cookies: cs}); me.Code != http.StatusOK {
+		t.Fatalf("安装后的 cookie 应能访问 /me，实际 %d", me.Code)
+	}
+}

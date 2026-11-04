@@ -368,6 +368,8 @@ func (s *Service) ListBy(ctx context.Context, f OrderFilter, page, size int) ([]
 // 标记失败时按有没有提交过区分：提交过（submitted_at 非空）记 declined，绝不记成 not_submitted；
 // 没提交过的（例如重启时已经取卡、但所属服务商没有卡池而转人工的单）记 not_submitted，保留原错误码。会话随之清空。
 // 标记成功时，真实开通单还要关闭续费：会话还在就交给续费协程（pending），会话已清空记 skipped 并告警。
+// 定论时刻记在 resolved_at：定论成功的单的会话从这一刻起再留 SessionKeep（见 sweepSessions），
+// 待人工期间会话不清（审计 D-2），定论时离转待人工已满 1 小时也不会被清理抢先记成 failed（审计 D-9）。
 func (s *Service) Resolve(ctx context.Context, no, result, note, by string) error {
 	note, by = strings.TrimSpace(note), strings.TrimSpace(by)
 	if result != StateSucceeded && result != StateFailed {
@@ -385,7 +387,7 @@ func (s *Service) Resolve(ctx context.Context, no, result, note, by string) erro
 	if err != nil {
 		return err
 	}
-	set := map[string]any{"resolved_by": by, "resolve_note": note}
+	set := map[string]any{"resolved_by": by, "resolve_note": note, "resolved_at": s.now().Unix()}
 	label, mode := "成功", moveStep
 	renewalSkipped := false
 	switch result {

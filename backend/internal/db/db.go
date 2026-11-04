@@ -274,7 +274,13 @@ func createTables() error {
 
 	for _, query := range queries {
 		if _, err := DB.Exec(query); err != nil {
-			log.Printf("警告: 创建表时出错 (可能已存在): %v", err)
+			// 语句都带 IF NOT EXISTS，正常不会失败；失败多半是磁盘满、库文件损坏或表结构不对，
+			// 带病启动只会在后面以更难懂的方式出错，这里直接终止（审计 A-16）。
+			if strings.Contains(err.Error(), "already exists") {
+				log.Printf("创建表时提示已存在，跳过: %v", err)
+				continue
+			}
+			return fmt.Errorf("建表失败（%s）: %w", ddlHead(query), err)
 		}
 	}
 
@@ -325,6 +331,15 @@ func createTables() error {
 		return fmt.Errorf("migrate local cdks: %w", err)
 	}
 	return nil
+}
+
+// ddlHead 把建表语句压成一行、截前 80 个字符，放进错误信息里指明是哪一条。
+func ddlHead(q string) string {
+	h := strings.Join(strings.Fields(q), " ")
+	if r := []rune(h); len(r) > 80 {
+		h = string(r[:80]) + "…"
+	}
+	return h
 }
 
 // Migrate 是 createTables 的导出入口，供测试在内存库上建表。

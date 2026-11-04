@@ -118,3 +118,18 @@ func TestOAAdminPasswordEnvRejectsWeak(t *testing.T) {
 		})
 	}
 }
+
+// A-16：建表、建索引失败（这里用一张缺列的旧表让建索引失败）要终止启动，不能只打警告继续跑。
+func TestOACreateTablesFailsFast(t *testing.T) {
+	c := oaOpenFileDB(t)
+	if _, err := c.Exec(`CREATE TABLE card_fail_events (id INTEGER PRIMARY KEY, card_id INTEGER NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	err := db.Migrate()
+	if err == nil {
+		t.Fatal("建索引失败时 Migrate 应返回错误")
+	}
+	if !strings.Contains(err.Error(), "idx_card_fail_card") {
+		t.Fatalf("错误里应指明是哪条语句：%v", err)
+	}
+}

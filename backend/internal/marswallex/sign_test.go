@@ -178,17 +178,17 @@ func TestParsePublicKeyLenientFormats(t *testing.T) {
 		return strings.Join(lines[1:len(lines)-1], "\n")
 	}
 	ok := map[string]string{
-		"纯 Base64 PKIX 一行":       b64(pkix),
-		"纯 Base64 PKIX 带换行":      body(pub8),
-		"纯 Base64 PKCS#1":         b64(pkcs1),
-		"带引号的纯 Base64":           `"` + b64(pkix) + `"`,
-		"标题写 RSA 内容是 PKIX":       strings.Replace(strings.Replace(pub8, "BEGIN PUBLIC", "BEGIN RSA PUBLIC", 1), "END PUBLIC", "END RSA PUBLIC", 1),
-		"标题写 PUBLIC 内容是 PKCS#1":   strings.Replace(strings.Replace(pub1, "BEGIN RSA PUBLIC", "BEGIN PUBLIC", 1), "END RSA PUBLIC", "END PUBLIC", 1),
-		"整段一行":                    "-----BEGIN PUBLIC KEY-----" + b64(pkix) + "-----END PUBLIC KEY-----",
-		"字面 \\n":                  strings.ReplaceAll(strings.TrimSpace(pub8), "\n", `\n`),
-		"正文里夹空格":                  strings.Replace(pub8, "\n", "\n  ", 3),
-		"证书 PEM":                  string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})),
-		"纯 Base64 证书":             b64(certDER),
+		"纯 Base64 PKIX 一行":      b64(pkix),
+		"纯 Base64 PKIX 带换行":     body(pub8),
+		"纯 Base64 PKCS#1":       b64(pkcs1),
+		"带引号的纯 Base64":          `"` + b64(pkix) + `"`,
+		"标题写 RSA 内容是 PKIX":      strings.Replace(strings.Replace(pub8, "BEGIN PUBLIC", "BEGIN RSA PUBLIC", 1), "END PUBLIC", "END RSA PUBLIC", 1),
+		"标题写 PUBLIC 内容是 PKCS#1": strings.Replace(strings.Replace(pub1, "BEGIN RSA PUBLIC", "BEGIN PUBLIC", 1), "END RSA PUBLIC", "END PUBLIC", 1),
+		"整段一行":                  "-----BEGIN PUBLIC KEY-----" + b64(pkix) + "-----END PUBLIC KEY-----",
+		"字面 \\n":                strings.ReplaceAll(strings.TrimSpace(pub8), "\n", `\n`),
+		"正文里夹空格":                strings.Replace(pub8, "\n", "\n  ", 3),
+		"证书 PEM":                string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})),
+		"纯 Base64 证书":           b64(certDER),
 	}
 	for name, in := range ok {
 		k, err := ParsePublicKey(in)
@@ -197,8 +197,8 @@ func TestParsePublicKeyLenientFormats(t *testing.T) {
 		}
 	}
 	bad := map[string]string{
-		"空":            "  ",
-		"乱码":           "garbage!!",
+		"空":             "  ",
+		"乱码":            "garbage!!",
 		"私钥 PKCS#8 PEM": p8,
 		"私钥 PKCS#1 PEM": p1,
 		"纯 Base64 私钥":   body(p8),

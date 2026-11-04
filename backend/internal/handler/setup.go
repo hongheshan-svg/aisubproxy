@@ -74,8 +74,7 @@ func SetupBootstrap(c *gin.Context) {
 	}
 
 	var req setupBootstrapRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+	if !bindAuthJSON(c, &req, "invalid request") {
 		return
 	}
 	mode := strings.ToLower(strings.TrimSpace(req.Mode))

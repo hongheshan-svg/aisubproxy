@@ -292,3 +292,44 @@ func TestOALogoutRequiresSessionAndCSRF(t *testing.T) {
 		}
 	}
 }
+
+// A-5：登录、改密、安装接口的请求体有上限，超大请求体 413，不把整个字符串读进内存。
+func TestOAAuthEndpointsLimitBodySize(t *testing.T) {
+	r := oaFreshRouter(t)
+	huge := strings.Repeat("a", 300<<10)
+
+	w := oaDo(r, oaReq{method: "POST", path: "/api/v1/auth/admin/login", body: oaLoginBody(huge, "x"), ip: "198.51.100.20"})
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("超大登录体应 413，实际 %d", w.Code)
+	}
+	w = oaBootstrap(r, "198.51.100.21", oaSetupToken, fmt.Sprintf(`{"mode":"manual","username":"oa_big","password":%q}`, huge))
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("超大安装体应 413，实际 %d", w.Code)
+	}
+	// 上面被拒，库仍未安装；正常装好后再测改密
+	w = oaBootstrap(r, "198.51.100.21", oaSetupToken, `{"mode":"generate","username":"oa_big"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("安装应 200，实际 %d：%s", w.Code, w.Body.String())
+	}
+	cs := w.Result().Cookies()
+	w = oaDo(r, oaReq{method: "POST", path: "/api/v1/auth/admin/change-password", cookies: cs, header: oaCSRF(cs),
+		body: fmt.Sprintf(`{"old_password":"x","new_password":%q}`, huge)})
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("超大改密体应 413，实际 %d", w.Code)
+	}
+	// 不带 Content-Length（分块上传）也一样：边读边数，超限即停
+	req := httptest.NewRequest("POST", "/api/v1/auth/admin/login", strings.NewReader(oaLoginBody(huge, "x")))
+	req.ContentLength = -1
+	req.RemoteAddr = "198.51.100.23:40000"
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("未知长度的超大登录体应 413，实际 %d", rec.Code)
+	}
+	// 正常大小的坏请求仍是 400
+	w = oaDo(r, oaReq{method: "POST", path: "/api/v1/auth/admin/login", body: `{"username":`, ip: "198.51.100.22"})
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("坏 JSON 应 400，实际 %d", w.Code)
+	}
+}

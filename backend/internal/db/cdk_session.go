@@ -141,7 +141,10 @@ func BindCDKSessionAs(provider, cdkCode, redemptionToken, sessionPayload, accoun
 				redemption_token = COALESCE(NULLIF(excluded.redemption_token,''), cdk_session_bindings.redemption_token),
 				updated_at = CURRENT_TIMESTAMP
 		`, code, sealed, tok, email, now, provider)
-		return err
+		if err != nil {
+			return err
+		}
+		return recordRedemptionToken(code, tok)
 	}
 	// 仅有 token：更新已绑定行
 	res, err := DB.Exec(`

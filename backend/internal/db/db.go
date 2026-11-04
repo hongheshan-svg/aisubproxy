@@ -55,10 +55,14 @@ func RemoveInitialAdminPasswordFile() {
 	}
 }
 
-// writeInitialAdminPasswordFile 把随机初始密码写进 0600 文件。已存在的文件（可能是 0644）覆盖后也改回 0600。
+// writeInitialAdminPasswordFile 把随机初始密码写进新建的 0600 文件。已有的同名文件或符号链接先删掉再用 O_EXCL 新建：
+// 不复用旧文件（否则密码会先以旧权限落盘），也不跟随符号链接（O_EXCL 遇到已存在的路径包括链接直接失败）。
 // 错误信息不带密码。
 func writeInitialAdminPasswordFile(path, username, password string) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err
 	}

@@ -40,6 +40,8 @@ type cdkUpstream struct {
 	srv          *httptest.Server
 	mu           sync.Mutex
 	resultStatus string
+	resultEmail  string // 非空时结果里带 account_email
+	resultCode   int    // 非 0 时结果接口回这个 HTTP 状态码
 	preflights   []string
 	results      int
 }
@@ -64,9 +66,16 @@ func newCDKUpstream(t *testing.T) *cdkUpstream {
 			w.Write([]byte(`{"ok":true,"preflight_token":"pf-1"}`))
 		case "/api/v1/cdk/result":
 			u.mu.Lock()
-			st := u.resultStatus
+			st, em, code := u.resultStatus, u.resultEmail, u.resultCode
 			u.results++
 			u.mu.Unlock()
+			if code != 0 {
+				w.WriteHeader(code)
+			}
+			if em != "" {
+				w.Write([]byte(`{"status":"` + st + `","account_email":"` + em + `","order":{"status":"` + st + `"}}`))
+				return
+			}
 			w.Write([]byte(`{"status":"` + st + `","order":{"status":"` + st + `"}}`))
 		default:
 			w.WriteHeader(404)

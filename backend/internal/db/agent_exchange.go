@@ -299,6 +299,12 @@ func GetAgentExchange(id int64) (AgentExchange, error) {
 	return e, err
 }
 
+// GetAgentExchangeByOldHash 按旧码哈希取换码记录。old_code_hash 有唯一索引（uq_agent_ex_old_hash），同一张旧码最多一条。
+// 没有记录时返回 sql.ErrNoRows。
+func GetAgentExchangeByOldHash(codeHash string) (AgentExchange, error) {
+	return scanAgentExchange(DB.QueryRow(`SELECT `+agentExchangeColumns+` FROM agent_cdk_exchanges WHERE old_code_hash = ?`, codeHash))
+}
+
 // ListAgentExchanges 按状态列出换码记录，最新的在前；state 为空时列出全部。
 func ListAgentExchanges(state string, limit int) ([]AgentExchange, error) {
 	if limit <= 0 || limit > 500 {

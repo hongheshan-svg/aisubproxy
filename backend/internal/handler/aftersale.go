@@ -238,34 +238,3 @@ func followAfterSaleChain(ctx context.Context, start, next, device string) *look
 	}
 	return last
 }
-
-// factsFromLegacy 把旧的查询结果转成 facts。过渡用：Task 4、5 换成各自的 facts 实现之后删掉。
-func factsFromLegacy(r cdkLookupResult) afterSaleFacts {
-	if r.Status == "" || r.Status == "unknown" {
-		return afterSaleFacts{Message: r.Message}
-	}
-	f := afterSaleFacts{
-		Found:        true,
-		Status:       r.Status,
-		Reusable:     r.CanResubmit,
-		Plan:         r.Plan,
-		AccountEmail: r.AccountEmail,
-		ProviderNote: r.Notes,
-		Message:      r.Message,
-	}
-	if r.UsedAt != nil {
-		f.UsedAt = parseLegacyLookupTime(*r.UsedAt)
-	}
-	return f
-}
-
-// parseLegacyLookupTime 认旧查询给的两种时间写法：本站码的 RFC3339，ZovoCard 的「2006-01-02 15:04:05」。
-// 后者按 UTC 解析：mattn/go-sqlite3 读出不带时区的时间就是 UTC，旧代码直接格式化了它。
-func parseLegacyLookupTime(s string) *time.Time {
-	for _, layout := range []string{time.RFC3339, "2006-01-02 15:04:05"} {
-		if t, err := time.ParseInLocation(layout, strings.TrimSpace(s), time.UTC); err == nil {
-			return &t
-		}
-	}
-	return nil
-}

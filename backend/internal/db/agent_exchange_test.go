@@ -359,3 +359,27 @@ func TestMigrateAgentExchangesRollsBackOnFailure(t *testing.T) {
 		t.Fatalf("重跑后: rows=%d archived=%d", rowsLeft, archived)
 	}
 }
+
+func TestGetAgentExchangeByOldHash(t *testing.T) {
+	dbtest.Open(t)
+	if _, err := db.GetAgentExchangeByOldHash("nope"); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("没有记录应返回 sql.ErrNoRows: %v", err)
+	}
+	id, err := db.ReserveAgentCDKExchange(reservation("h-old", "fp"), 20, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.FinishAgentCDKExchange(id, 900, "ZC-NEW"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.CompleteAgentCDKExchangeDisable(id); err != nil {
+		t.Fatal(err)
+	}
+	e, err := db.GetAgentExchangeByOldHash("h-old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e.ID != id || e.State != db.AgentExchangeDone || e.NewUpstreamID != 900 || e.NewCodePrefix != "ZC-NEW" {
+		t.Fatalf("%+v", e)
+	}
+}

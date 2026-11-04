@@ -4,7 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"log"
+	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
+	"github.com/tuzi/cdk-recharge-system/internal/provider"
 	"github.com/tuzi/cdk-recharge-system/internal/safego"
 )
 
@@ -169,60 +171,65 @@ func lookupOneCDK(ctx context.Context, code, deviceID string) cdkLookupResult {
 	return lookupAfterSale(ctx, code, deviceID)
 }
 
-// zovoCardLookup 是 ZovoCard 的卡密查询：本站的码表、绑定和卡台订单。
-func zovoCardLookup(ctx context.Context, code, deviceID string) cdkLookupResult {
-	resp := cdkLookupResult{CDKCode: code, Status: "unknown", Message: "未找到该卡密记录"}
-	redeemOK := false
+// errZovoUnknownKeyStatus：码表里的状态不是已知取值。固定文字，不带原始状态值。
+var errZovoUnknownKeyStatus = errors.New("码表状态无法识别")
+
+// zovoCardFacts 是 ZovoCard 的售后查询：本站的码表、换码记录、绑定和卡台订单。
+//
+// 出错和找不到分开：本站库（cd_keys、cardplatform_cdk_codes、recharge_tasks、agent_cdk_exchanges、绑定）读出错
+// （不是 sql.ErrNoRows）就返回 error；卡台 Result 失败时，本站库已能确定状态就照旧用本站数据，
+// 本站库什么都没有、只能靠卡台回答时才返回 error。三处都没有这张码返回 Found=false。
+// 邮箱原样给公共层打码；Message 只在公共层没有默认文字的状态（expired）上给。
+func zovoCardFacts(ctx context.Context, code, deviceID string) (afterSaleFacts, error) {
+	var f afterSaleFacts // Status 为空表示本站库还没能确定状态
 	reusable := false
+	redeemOK := false
+	norm := provider.NormalizeCode(code)
 
 	var planType, keyStatus string
 	var usedAt, expiresAt sql.NullTime
-	err := db.DB.QueryRow(`
+	err := db.DB.QueryRowContext(ctx, `
 		SELECT COALESCE(plan_type,''), COALESCE(status,''), used_at, expires_at
 		FROM cd_keys WHERE upper(trim(code)) = upper(trim(?))
 	`, code).Scan(&planType, &keyStatus, &usedAt, &expiresAt)
-	if err == nil {
-		resp.Plan = planType
+	switch {
+	case err == nil:
+		f.Plan = planType
 		switch strings.ToLower(keyStatus) {
 		case "used":
-			resp.Status, resp.Used = "used", true
-			resp.Message = "卡密使用成功"
-			reusable = false
+			f.Status = "used"
 		case "disabled":
-			resp.Status, resp.Used = "disabled", false
-			resp.Message = "卡密已禁用"
+			f.Status = "disabled"
 		case "expired":
-			resp.Status, resp.Used = "expired", false
-			resp.Message = "卡密已过期"
+			f.Status, f.Message = "expired", "卡密已过期"
 		case "active", "":
-			resp.Status, resp.Used = "unused", false
-			resp.Message = "卡密未使用"
+			f.Status = "unused"
 			reusable = true
 		default:
-			resp.Status = strings.ToLower(keyStatus)
-			resp.Message = "卡密状态：" + keyStatus
+			return afterSaleFacts{}, errZovoUnknownKeyStatus
 		}
-		if expiresAt.Valid && expiresAt.Time.Before(time.Now()) && resp.Status == "unused" {
-			resp.Status, resp.Message = "expired", "卡密已过期"
+		if expiresAt.Valid && expiresAt.Time.Before(time.Now()) && f.Status == "unused" {
+			f.Status, f.Message = "expired", "卡密已过期"
 			reusable = false
 		}
 		if usedAt.Valid {
-			s := usedAt.Time.Format("2006-01-02 15:04:05")
-			resp.UsedAt = &s
+			t := usedAt.Time.UTC()
+			f.UsedAt = &t
 		}
-	} else if err != sql.ErrNoRows {
-		log.Printf("[lookup-cdk] cd_keys: %v", err)
+	case !errors.Is(err, sql.ErrNoRows):
+		return afterSaleFacts{}, fmt.Errorf("查询码表: %w", err)
 	}
 
 	var cpStatus, cpPlan string
-	err = db.DB.QueryRow(`
+	err = db.DB.QueryRowContext(ctx, `
 		SELECT COALESCE(status,''), COALESCE(plan,'')
 		FROM cardplatform_cdk_codes WHERE upper(trim(code)) = upper(trim(?))
 		ORDER BY created_at DESC LIMIT 1
 	`, code).Scan(&cpStatus, &cpPlan)
-	if err == nil {
-		if resp.Plan == "" {
-			resp.Plan = cpPlan
+	switch {
+	case err == nil:
+		if f.Plan == "" {
+			f.Plan = cpPlan
 		}
 		st := strings.ToLower(strings.TrimSpace(cpStatus))
 		if st == "" {
@@ -230,126 +237,153 @@ func zovoCardLookup(ctx context.Context, code, deviceID string) cdkLookupResult 
 		}
 		switch st {
 		case "used", "redeemed", "consumed":
-			resp.Status, resp.Used = "used", true
-			resp.Message = "卡密使用成功"
+			f.Status, f.Message = "used", ""
 			reusable = false
 		case "disabled":
-			if resp.Status != "used" {
-				resp.Status, resp.Used = "disabled", false
-				resp.Message = "卡密已禁用"
+			if f.Status != "used" {
+				f.Status, f.Message = "disabled", ""
 			}
 			reusable = false
 		case "unused", "active":
-			if resp.Status == "unknown" {
-				resp.Status, resp.Used = "unused", false
-				resp.Message = "卡密未使用"
+			if f.Status == "" {
+				f.Status = "unused"
 			}
-			if resp.Status == "unused" {
+			if f.Status == "unused" {
 				reusable = true
 			}
 		}
+	case !errors.Is(err, sql.ErrNoRows):
+		return afterSaleFacts{}, fmt.Errorf("查询卡台码: %w", err)
 	}
 
 	var taskStatus string
 	var accountEmail, taskNotes sql.NullString
 	var taskCompleted sql.NullTime
-	err = db.DB.QueryRow(`
+	err = db.DB.QueryRowContext(ctx, `
 		SELECT COALESCE(task_status,''), account_email, completed_at, COALESCE(notes,'')
 		FROM recharge_tasks
 		WHERE upper(trim(cdk_code)) = upper(trim(?))
 		ORDER BY created_at DESC LIMIT 1
 	`, code).Scan(&taskStatus, &accountEmail, &taskCompleted, &taskNotes)
-	if err == nil {
+	switch {
+	case err == nil:
 		if accountEmail.Valid && strings.TrimSpace(accountEmail.String) != "" {
-			resp.AccountEmail = strings.TrimSpace(accountEmail.String)
+			f.AccountEmail = strings.TrimSpace(accountEmail.String)
 		}
-		ts := strings.ToLower(taskStatus)
-		switch ts {
+		switch strings.ToLower(taskStatus) {
 		case "completed", "success", "done":
 			redeemOK = true
-			resp.Status, resp.Used = "used", true
-			resp.Message = "卡密使用成功"
+			f.Status, f.Message = "used", ""
 			reusable = false
 			if taskCompleted.Valid {
-				s := taskCompleted.Time.Format("2006-01-02 15:04:05")
-				resp.UsedAt = &s
+				t := taskCompleted.Time.UTC()
+				f.UsedAt = &t
 			}
 		case "pending", "submitted", "running", "queued", "processing":
-			if !redeemOK && resp.Status != "used" {
-				resp.Status, resp.Used = "processing", false
-				resp.Message = "卡密兑换处理中"
+			if !redeemOK && f.Status != "used" {
+				f.Status, f.Message = "processing", ""
 			}
 		case "failed", "declined", "cancelled":
 			if !redeemOK {
-				note := ""
-				if taskNotes.Valid {
-					note = taskNotes.String
+				zovoMarkFailed(&f, taskNotes.String, reusable)
+			}
+		}
+	case !errors.Is(err, sql.ErrNoRows):
+		return afterSaleFacts{}, fmt.Errorf("查询兑换任务: %w", err)
+	}
+
+	// 换码：只认 done。pending / unknown / disabling 时新码可能还没发出，或旧码还能用，状态照常判断。
+	replaced := false
+	ex, err := db.GetAgentExchangeByOldHash(db.HashCDKCode(norm))
+	switch {
+	case err == nil:
+		if ex.State == db.AgentExchangeDone {
+			replaced = true
+			f.Status, f.Message, f.Reusable, f.Guide, f.ProviderNote = "replaced", "", false, "", ""
+			if newCode, ok := db.LookupCardplatformCDKCode(ex.NewUpstreamID, ex.NewCodePrefix); ok {
+				f.Replacement = newCode
+			} else {
+				f.ReplacedButUnknown = true
+			}
+		}
+	case !errors.Is(err, sql.ErrNoRows):
+		return afterSaleFacts{}, fmt.Errorf("查询换码记录: %w", err)
+	}
+
+	bind, err := db.GetBindingByCDK(code)
+	if err != nil {
+		return afterSaleFacts{}, fmt.Errorf("查询绑定: %w", err)
+	}
+	if bind != nil {
+		if f.AccountEmail == "" {
+			f.AccountEmail = bind.AccountEmail
+		}
+		if tok := strings.TrimSpace(bind.RedemptionToken); tok != "" && !replaced {
+			localKnown := f.Status != ""
+			st, raw, rerr := cardplatform.NewFromSettings().Result(ctx, tok, deviceID)
+			var payload map[string]any
+			if rerr != nil || st < 200 || st >= 300 || len(raw) == 0 || json.Unmarshal(raw, &payload) != nil || payload == nil {
+				if !localKnown {
+					return afterSaleFacts{}, errZovoRemoteUnavailable
 				}
-				applyLookupFailure(&resp, note, reusable)
+			} else {
+				orderStatus := strAny(payload["status"])
+				if orderStatus == "" {
+					if order, ok := payload["order"].(map[string]any); ok {
+						orderStatus = strAny(order["status"])
+					}
+				}
+				email := strAny(payload["account_email"])
+				if email == "" {
+					if order, ok := payload["order"].(map[string]any); ok {
+						email = strAny(order["account_email"])
+					}
+				}
+				if email != "" {
+					f.AccountEmail = email
+				}
+				switch os := strings.ToLower(orderStatus); {
+				case os == "completed" || os == "success" || os == "done" || os == "paid":
+					clearSessionAfterCompleted(code, tok)
+					f.Status, f.Reusable, f.Message = "used", false, ""
+				case os == "failed" || os == "declined" || os == "cancelled":
+					if !redeemOK {
+						zovoMarkFailed(&f, "", reusable)
+					}
+				case os != "":
+					if !redeemOK && f.Status != "used" && f.Status != "failed" {
+						f.Status, f.Message = "processing", ""
+					}
+				}
 			}
 		}
 	}
 
-	if bind, berr := db.GetBindingByCDK(code); berr == nil && bind != nil {
-		if resp.AccountEmail == "" {
-			resp.AccountEmail = bind.AccountEmail
-		}
-		if tok := strings.TrimSpace(bind.RedemptionToken); tok != "" {
-			cli := cardplatform.NewFromSettings()
-			st, raw, rerr := cli.Result(ctx, tok, deviceID)
-			if rerr == nil && st >= 200 && st < 300 && len(raw) > 0 {
-				var payload map[string]any
-				if json.Unmarshal(raw, &payload) == nil && payload != nil {
-					orderStatus := strAny(payload["status"])
-					if orderStatus == "" {
-						if order, ok := payload["order"].(map[string]any); ok {
-							orderStatus = strAny(order["status"])
-						}
-					}
-					email := strAny(payload["account_email"])
-					if email == "" {
-						if order, ok := payload["order"].(map[string]any); ok {
-							email = strAny(order["account_email"])
-						}
-					}
-					if email != "" {
-						resp.AccountEmail = email
-					}
-					os := strings.ToLower(orderStatus)
-					switch {
-					case os == "completed" || os == "success" || os == "done" || os == "paid":
-						clearSessionAfterCompleted(code, tok)
-						resp.Status, resp.Used = "used", true
-						resp.CanResubmit = false
-						resp.Message = "卡密使用成功"
-					case os == "failed" || os == "declined" || os == "cancelled":
-						if !redeemOK {
-							applyLookupFailure(&resp, "", reusable)
-						}
-					case os != "":
-						if !redeemOK && resp.Status != "used" && resp.Status != "failed" {
-							resp.Status, resp.Used = "processing", false
-							resp.Message = "卡密兑换处理中"
-						}
-					}
-				}
-			}
-		}
+	if f.AccountEmail != "" && f.Status == "unused" && !f.Reusable {
+		f.Status, f.Message = "used", ""
 	}
+	if f.Status == "" {
+		return afterSaleFacts{}, nil
+	}
+	f.Found = true
+	if f.Status == "used" {
+		f.Reusable = false
+	}
+	return f, nil
+}
 
-	if resp.AccountEmail != "" && resp.Status == "unused" && !resp.CanResubmit {
-		resp.Status, resp.Used = "used", true
-		resp.Message = "卡密使用成功"
+// errZovoRemoteUnavailable：本站库没有这张码的状态、卡台又查不到。固定文字。
+var errZovoRemoteUnavailable = errors.New("卡台暂时查不到")
+
+// zovoMarkFailed 记下兑换失败：原文放 ProviderNote（公共层清洗），指引按能否重新提交给。
+func zovoMarkFailed(f *afterSaleFacts, notes string, reusable bool) {
+	f.Status, f.Reusable, f.Message = "failed", reusable, ""
+	if n := strings.TrimSpace(notes); n != "" {
+		f.ProviderNote = n
 	}
-	if resp.Status == "used" {
-		resp.Used = true
-		resp.CanResubmit = false
-		if resp.Message == "" || resp.Message == "未找到该卡密记录" {
-			resp.Message = "卡密使用成功"
-		}
+	if reusable {
+		f.Guide = "provider_retry"
+	} else {
+		f.Guide = "provider_wait"
 	}
-	if resp.Status == "unknown" {
-		resp.Message = "未找到该卡密。请确认输入完整卡密。"
-	}
-	return resp
 }

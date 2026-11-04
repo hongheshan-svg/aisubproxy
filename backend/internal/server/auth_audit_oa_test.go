@@ -358,3 +358,16 @@ func TestOAPasswordWhitespaceConsistent(t *testing.T) {
 	}
 	oaLogin(t, r, "198.51.100.32", "oa_trim", strings.TrimSpace(newSpaced))
 }
+
+// A-10：安装令牌只认请求头，不再从查询串取（查询串会进访问日志、浏览器历史）；访问日志也遮掉 setup_token。
+func TestOASetupTokenOnlyFromHeader(t *testing.T) {
+	r := oaFreshRouter(t)
+	w := oaDo(r, oaReq{method: "POST", path: "/api/v1/setup/bootstrap?setup_token=" + oaSetupToken,
+		body: `{"mode":"generate","username":"oa_query"}`, ip: "198.51.100.40"})
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("只带查询串令牌应 401，实际 %d：%s", w.Code, w.Body.String())
+	}
+	if got := redactQuery("/api/v1/setup/bootstrap?setup_token=" + oaSetupToken + "&x=1"); strings.Contains(got, oaSetupToken) {
+		t.Fatalf("访问日志应遮掉 setup_token：%s", got)
+	}
+}

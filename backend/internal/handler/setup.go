@@ -63,10 +63,8 @@ func SetupBootstrap(c *gin.Context) {
 		return
 	}
 
+	// 只认请求头：查询串会进访问日志、浏览器历史和反代日志（审计 A-10）
 	token := strings.TrimSpace(c.GetHeader("X-Setup-Token"))
-	if token == "" {
-		token = strings.TrimSpace(c.Query("setup_token"))
-	}
 	if !db.VerifySetupToken(token) {
 		setupFailed(ip)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid setup token"})

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -55,7 +56,7 @@ func cardSelectionRulesPayload() (gin.H, error) {
 func AdminGetCardSelectionRules(c *gin.Context) {
 	payload, err := cardSelectionRulesPayload()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		selectionInternalError(c, "读取选卡规则", "读取选卡规则失败，请稍后重试", err)
 		return
 	}
 	c.JSON(http.StatusOK, payload)
@@ -84,7 +85,7 @@ func AdminPutCardSelectionRules(c *gin.Context) {
 		body.Rules[i].SortOrder = i + 1
 	}
 	if err := db.SetCardSelectionRules(body.Rules); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		selectionInternalError(c, "保存选卡规则", "保存选卡规则失败，请稍后重试", err)
 		return
 	}
 	auditAdmin(c, "update_card_selection_rules", fmt.Sprintf("count=%d", len(body.Rules)))
@@ -94,7 +95,7 @@ func AdminPutCardSelectionRules(c *gin.Context) {
 	}
 	payload, err := cardSelectionRulesPayload()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		selectionInternalError(c, "读取选卡规则", "读取选卡规则失败，请稍后重试", err)
 		return
 	}
 	payload["cardplatform_ok"] = syncNote == ""
@@ -109,7 +110,7 @@ func AdminPutCardSelectionRules(c *gin.Context) {
 func AdminGetPlanStatus(c *gin.Context) {
 	statuses, err := db.GetPlanStatusCache()
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		selectionInternalError(c, "读取套餐状态", "读取套餐状态失败，请稍后重试", err)
 		return
 	}
 	products, _ := db.GetCardProducts()
@@ -205,7 +206,7 @@ func AdminPutSiteRedeemPolicy(c *gin.Context) {
 		return
 	}
 	if err := saveSiteRedeemPolicy(p); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		selectionInternalError(c, "保存站点策略", "保存站点策略失败，请稍后重试", err)
 		return
 	}
 	auditAdmin(c, "update_site_redeem_policy", fmt.Sprintf("enabled=%v no_switch=%v product=%s", p.Enabled, p.NoAutoCardSwitch, p.ProductCode))
@@ -223,4 +224,10 @@ func AdminPutSiteRedeemPolicy(c *gin.Context) {
 		"cardplatform_err": syncNote,
 		"note":             "保存后会把选卡优先级同步到卡台所有者规则（strict_select）。未启动的卡头会被跳过。",
 	})
+}
+
+// selectionInternalError 把数据库等内部错误映射成固定文案返回，原始错误只写日志（C-10）。
+func selectionInternalError(c *gin.Context, op, msg string, err error) {
+	log.Printf("card-selection %s: %v", op, err)
+	c.JSON(http.StatusInternalServerError, gin.H{"error": msg})
 }

@@ -38,6 +38,7 @@
 import { reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
+import { clearSetupLeftovers } from '../../lib/session'
 import ThemeToggle from '../../components/ThemeToggle.vue'
 import zh from '../../i18n/locales/zh'
 
@@ -49,18 +50,15 @@ const route = useRoute()
 const authStore = useAuthStore()
 
 const form = reactive({
-  username: sessionStorage.getItem('post_setup_user') || '',
-  password: sessionStorage.getItem('post_setup_pass') || '',
+  username: '',
+  password: '',
 })
 
 const loading = ref(false)
 const errorMessage = ref('')
 
-// 安装向导写过临时凭据时预填一次后清掉，避免长期留在 sessionStorage
-if (form.username || form.password) {
-  sessionStorage.removeItem('post_setup_user')
-  sessionStorage.removeItem('post_setup_pass')
-}
+// 旧版本安装向导往 sessionStorage 写过明文密码，进登录页时清掉（审计 B-4）
+clearSetupLeftovers(typeof sessionStorage === 'undefined' ? undefined : sessionStorage)
 
 const submit = async () => {
   loading.value = true

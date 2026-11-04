@@ -94,10 +94,9 @@
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
+import { clearSetupLeftovers } from '../../lib/session'
 
-const router = useRouter()
 const authStore = useAuthStore()
 
 const installed = ref(false)
@@ -182,9 +181,6 @@ async function bootstrap(m: 'generate' | 'manual') {
         expiresAt: d.expires_at,
       })
     }
-    // 暂存到 session，登录页也可预填（兜底）
-    sessionStorage.setItem('post_setup_user', d.username || '')
-    sessionStorage.setItem('post_setup_pass', d.password || '')
   } catch (e: any) {
     error.value = e?.message || '网络错误'
   } finally {
@@ -203,6 +199,10 @@ async function copyCreds() {
 }
 
 function enterOps() {
-  router.push('/ops')
+  // 安装已自动登录，不需要把密码留给登录页预填；顺手清掉旧版本留下的（审计 B-4）
+  clearSetupLeftovers(sessionStorage)
+  resultPass.value = ''
+  // 整页跳转：路由守卫在本页加载时缓存了「未安装」，用 router.push 会被送回安装页
+  window.location.assign('/ops')
 }
 </script>

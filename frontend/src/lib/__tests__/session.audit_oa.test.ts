@@ -1,5 +1,6 @@
 // 审计 OA 组（鉴权与会话）：后台登录态只靠 HttpOnly cookie + CSRF 头，浏览器存储里不放令牌；
 // 是否已登录以服务端 /auth/admin/me 为准。本机没有 DOM 环境，localStorage 用内存假实现。
+import { readFileSync } from 'node:fs'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 
@@ -15,7 +16,9 @@ const store = vi.hoisted(() => {
 
 import { useAuthStore } from '../../stores/auth'
 import { authFetch } from '../api'
-import { AUTH_STORAGE_KEY, parseStoredAuth, probeAdminSession, type SessionProbe } from '../session'
+import {
+  AUTH_STORAGE_KEY, LEGACY_SETUP_KEYS, clearSetupLeftovers, parseStoredAuth, probeAdminSession, type SessionProbe,
+} from '../session'
 
 const future = () => new Date(Date.now() + 3600_000).toISOString()
 const past = () => new Date(Date.now() - 1000).toISOString()
@@ -149,5 +152,25 @@ describe('authFetch', () => {
     }
     expect(seen).toHaveLength(1)
     expect(seen[0].has('Authorization')).toBe(false)
+  })
+})
+
+describe('安装向导不在浏览器存储里留明文密码（B-4）', () => {
+  it('clearSetupLeftovers 清掉旧版本写过的用户名和密码', () => {
+    const data: Record<string, string> = { post_setup_user: 'admin', post_setup_pass: 'Secret123456', other: 'keep' }
+    clearSetupLeftovers({ removeItem: (k: string) => { delete data[k] } })
+    expect(data).toEqual({ other: 'keep' })
+  })
+  it('没有存储（隐私模式抛错、SSR）时不报错', () => {
+    expect(() => clearSetupLeftovers(undefined)).not.toThrow()
+    expect(() => clearSetupLeftovers({ removeItem: () => { throw new Error('denied') } })).not.toThrow()
+  })
+  it('安装页、登录页源码不再写入或读取这些键', () => {
+    for (const rel of ['../../views/admin/SetupView.vue', '../../views/auth/LoginView.vue']) {
+      const src = readFileSync(new URL(rel, import.meta.url), 'utf8')
+      for (const k of LEGACY_SETUP_KEYS) {
+        expect(src, rel).not.toMatch(new RegExp(`(setItem|getItem)\\(\\s*['"]${k}['"]`))
+      }
+    }
   })
 })

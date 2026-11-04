@@ -158,6 +158,8 @@
             <p class="text-xs text-muted">{{ t('batch.mailboxRecognized', { n: parsedMailboxes.length }) }}</p>
           </div>
 
+          <p v-if="pollNotice" class="text-xs text-err" role="alert">{{ pollNotice }}</p>
+
           <div v-if="verifying" class="text-sm text-muted text-center py-4">
             {{ t('batch.verifyingKeys') }}
           </div>
@@ -337,13 +339,13 @@ import { useI18n } from 'vue-i18n'
 import UserPageHeader from '../../components/UserPageHeader.vue'
 import RedeemModeTabs from '../../components/RedeemModeTabs.vue'
 import ExcelImportBlock from '../../components/ExcelImportBlock.vue'
+import { chunkTokens, nextPollPlan, parsePollResponse } from '../../lib/batch-poll'
 import SessionHelp from '../../components/SessionHelp.vue'
 import { isGrokCredential } from '../../lib/grok'
 import { isClaudePreview } from '../../lib/claude'
 import {
   AUTO_SUBMIT_CONCURRENCY,
   BATCH_MAX_KEYS,
-  BATCH_POLL_INTERVAL_MS,
   VERIFY_CONCURRENCY,
   accessTokenFromSession,
   checkSessionForCdk,
@@ -424,8 +426,11 @@ const mailboxFileRef = ref<HTMLInputElement | null>(null)
 const lastFilledItemId = ref<string | null>(null)
 
 const pollTargets = ref<Record<string, { token: string; terminal: boolean }>>({})
-let pollTimer: ReturnType<typeof setInterval> | null = null
+let pollTimer: ReturnType<typeof setTimeout> | null = null
 let pollInFlight = false
+let pollBackoffMs = 0
+// 轮询被限流（429）时显示的提示，恢复后清掉
+const pollNotice = ref('')
 
 const parsedCdks = computed(() => parseCdks(cdkText.value))
 const parsedMailboxes = computed(() => parseMailboxLines(mailboxText.value))
@@ -526,81 +531,99 @@ function planLabelOf(data: any): string {
 }
 
 function stopAllPolls() {
-  if (pollTimer) clearInterval(pollTimer)
+  if (pollTimer) clearTimeout(pollTimer)
   pollTimer = null
   pollInFlight = false
+  pollBackoffMs = 0
+  pollNotice.value = ''
   pollTargets.value = {}
 }
 
+/** 按在途条目数、是否被限流，决定下一轮什么时候查。全部到终态就停。 */
+function schedulePoll(delayMs: number) {
+  if (pollTimer) clearTimeout(pollTimer)
+  pollTimer = setTimeout(() => void pollBatch(), delayMs)
+}
+
+function applyPollResult(id: string, target: { token: string; terminal: boolean }, status: number, data: any) {
+  // 单个令牌查不到（404 等）或上游暂时出错：保持原状，下一轮再查
+  if (status < 200 || status >= 300) return
+  const order = data?.order || data?.data?.order || data?.data || data || {}
+  const st = String(order.status || data?.status || data?.data?.status || '')
+  const message = String(order.message || order.user_message || data?.message || data?.user_message || '')
+  const email = String(order.account_email || order.email || '').trim()
+  const cardLastFour = extractCardLastFour(order)
+  const meta: Partial<BatchItem> = {}
+  if (email) meta.email = email
+  if (cardLastFour) meta.cardLastFour = cardLastFour
+  if (isSuccessStatus(st)) {
+    updateItem(id, { ...meta, status: 'success', progressMsg: message || '开通完成', error: '' })
+    pollTargets.value[id] = { ...target, terminal: true }
+  } else if (isFailStatus(st)) {
+    updateItem(id, { ...meta, status: 'failed', progressMsg: message || '兑换失败', error: message || '失败' })
+    pollTargets.value[id] = { ...target, terminal: true }
+  } else {
+    updateItem(id, { ...meta, status: 'processing', progressMsg: message || (st ? `处理中 · ${st}` : '处理中…'), error: '' })
+  }
+}
+
 async function pollBatch() {
+  pollTimer = null
   if (pollInFlight) return
   const entries = Object.entries(pollTargets.value).filter(([, v]) => !v.terminal)
   if (!entries.length) {
-    if (pollTimer) {
-      clearInterval(pollTimer)
-      pollTimer = null
-    }
+    pollNotice.value = ''
+    pollBackoffMs = 0
     return
   }
   pollInFlight = true
+  let rateLimited = false
+  let failed = false
   try {
-    await Promise.all(
-      entries.map(async ([id, target]) => {
-        try {
-          const { r, data } = await api(
-            '/api/v1/public/cdk/result?token=' + encodeURIComponent(target.token),
-          )
-          if (!r.ok) return
-          const order = data?.order || data?.data?.order || data?.data || data || {}
-          const st = String(order.status || data?.status || data?.data?.status || '')
-          const message = String(
-            order.message || order.user_message || data?.message || data?.user_message || '',
-          )
-          const email = String(order.account_email || order.email || '').trim()
-          const cardLastFour = extractCardLastFour(order)
-          const meta: Partial<BatchItem> = {}
-          if (email) meta.email = email
-          if (cardLastFour) meta.cardLastFour = cardLastFour
-          if (isSuccessStatus(st)) {
-            updateItem(id, {
-              ...meta,
-              status: 'success',
-              progressMsg: message || '开通完成',
-              error: '',
-            })
-            pollTargets.value[id] = { ...target, terminal: true }
-          } else if (isFailStatus(st)) {
-            updateItem(id, {
-              ...meta,
-              status: 'failed',
-              progressMsg: message || '兑换失败',
-              error: message || '失败',
-            })
-            pollTargets.value[id] = { ...target, terminal: true }
-          } else {
-            updateItem(id, {
-              ...meta,
-              status: 'processing',
-              progressMsg: message || (st ? `处理中 · ${st}` : '处理中…'),
-              error: '',
-            })
-          }
-        } catch {
-          /* transient */
-        }
-      }),
-    )
+    // 所有在途令牌合并成一次请求（最多 100 个一组），后端只算一次查询限流
+    for (const group of chunkTokens(entries)) {
+      let outcome
+      try {
+        const { r, data } = await api('/api/v1/lookup/cdk/results', {
+          method: 'POST',
+          body: JSON.stringify({ tokens: group.map(([, v]) => v.token) }),
+        })
+        outcome = parsePollResponse(r.status, data)
+      } catch {
+        outcome = parsePollResponse(0, null)
+      }
+      if (outcome.rateLimited) {
+        rateLimited = true
+        break
+      }
+      if (outcome.failed) {
+        failed = true
+        continue
+      }
+      const byToken = new Map(outcome.items.map((it) => [it.token, it]))
+      for (const [id, target] of group) {
+        const it = byToken.get(target.token)
+        if (it) applyPollResult(id, target, it.status, it.data)
+      }
+    }
   } finally {
     pollInFlight = false
   }
+  const remaining = Object.values(pollTargets.value).filter((v) => !v.terminal).length
+  if (!remaining) {
+    pollNotice.value = ''
+    pollBackoffMs = 0
+    return
+  }
+  const plan = nextPollPlan({ rateLimited, failed }, remaining, pollBackoffMs)
+  pollBackoffMs = plan.backoffMs
+  pollNotice.value = plan.notice
+  schedulePoll(plan.delayMs)
 }
 
 function startPoll(id: string, token: string) {
   pollTargets.value = { ...pollTargets.value, [id]: { token, terminal: false } }
-  if (!pollTimer) {
-    void pollBatch()
-    pollTimer = setInterval(() => void pollBatch(), BATCH_POLL_INTERVAL_MS)
-  }
+  if (!pollTimer && !pollInFlight) void pollBatch()
 }
 
 function fillCredentialFromPool(excelIdx: number) {

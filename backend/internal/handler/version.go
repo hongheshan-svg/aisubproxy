@@ -210,35 +210,11 @@ func fetchGitHubLatest(repo string) (latest, releaseURL, tagsURL, source string,
 	return
 }
 
-// 简单 semver 比较：a < b 时认为远程更新。非数字段按字典序。
+// isRemoteNewer 远程版本是否比本机新。统一用 runtime_handoff.go 的 compareVersions：带预发布的（1.6.0-rc1）低于同号正式版，
+// 所以 rc 不会被当成可更新的新版本；任何一方解析不了就当没有新版本。
 func isRemoteNewer(current, latest string) bool {
-	c := normalizeVer(current)
-	l := normalizeVer(latest)
-	if c == "" || l == "" || c == l {
-		return false
-	}
-	cp := strings.Split(c, ".")
-	lp := strings.Split(l, ".")
-	n := len(cp)
-	if len(lp) > n {
-		n = len(lp)
-	}
-	for i := 0; i < n; i++ {
-		var cv, lv int
-		if i < len(cp) {
-			cv = atoiLeading(cp[i])
-		}
-		if i < len(lp) {
-			lv = atoiLeading(lp[i])
-		}
-		if lv > cv {
-			return true
-		}
-		if lv < cv {
-			return false
-		}
-	}
-	return false
+	cmp, ok := compareVersions(current, latest)
+	return ok && cmp < 0
 }
 
 func normalizeVer(v string) string {
@@ -249,17 +225,6 @@ func normalizeVer(v string) string {
 		v = v[:i]
 	}
 	return v
-}
-
-func atoiLeading(s string) int {
-	n := 0
-	for _, ch := range s {
-		if ch < '0' || ch > '9' {
-			break
-		}
-		n = n*10 + int(ch-'0')
-	}
-	return n
 }
 
 // maxReleaseNotesRunes 为后台显示的更新说明上限，超出部分截断并提示去 Release 页面看。

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tuzi/cdk-recharge-system/internal/cardpool"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/marswallex"
 	"github.com/tuzi/cdk-recharge-system/internal/secretbox"
@@ -113,6 +114,19 @@ func marsWallexSetting(key string) string {
 	return v
 }
 
+// marsWallexLastWebhookAt 返回最近一次收到 Webhook 的时间（Unix 秒）；一条都没收到、或读取失败（只记日志）时为 nil。
+func marsWallexLastWebhookAt(c *gin.Context) any {
+	at, ok, err := cardpool.LastWebhookAt(c.Request.Context())
+	if err != nil {
+		log.Printf("marswallex config: read last webhook time failed: %v", err)
+		return nil
+	}
+	if !ok {
+		return nil
+	}
+	return at.Unix()
+}
+
 func marsWallexConfigView(c *gin.Context) gin.H {
 	baseURL := marsWallexSetting(db.SettingMarsWallexBaseURL)
 	devID := marsWallexSetting(db.SettingMarsWallexDeveloperID)
@@ -134,6 +148,7 @@ func marsWallexConfigView(c *gin.Context) gin.H {
 		"master_key_ready":                true,
 		"master_key_error":                "",
 		"webhook_url":                     marsWallexWebhookURL(c),
+		"last_webhook_at":                 marsWallexLastWebhookAt(c),
 	}
 	if _, err := secretbox.LoadKey(); err != nil {
 		view["master_key_ready"] = false

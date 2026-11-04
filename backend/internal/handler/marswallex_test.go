@@ -557,6 +557,29 @@ func TestMarsWallexListWebhookEvents(t *testing.T) {
 	}
 }
 
+// 配置接口带 last_webhook_at：最近一次收到 Webhook 的时间（Unix 秒），一条都没收到时为 null。
+func TestMarsWallexGetConfigLastWebhookAt(t *testing.T) {
+	c := mwSetup(t)
+	m := mwJSON(t, mwDo(AdminGetMarsWallexConfig, "GET", "/x", "", nil))
+	if v, ok := m["last_webhook_at"]; !ok || v != nil {
+		t.Fatalf("没收到过 Webhook 时 last_webhook_at 应为 null: present=%v value=%v", ok, v)
+	}
+	newest := time.Date(2026, 11, 3, 8, 30, 0, 0, time.UTC)
+	for i, at := range []time.Time{newest.Add(-time.Hour), newest, newest.Add(-48 * time.Hour)} {
+		id := "w" + strconv.Itoa(i)
+		if _, err := db.InsertMarsWallexWebhookEvent(id, "T", `{}`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Exec(`UPDATE marswallex_webhook_events SET received_at = ? WHERE message_id = ?`, at.Format("2006-01-02 15:04:05"), id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m = mwJSON(t, mwDo(AdminGetMarsWallexConfig, "GET", "/x", "", nil))
+	if v, ok := m["last_webhook_at"].(float64); !ok || int64(v) != newest.Unix() {
+		t.Fatalf("last_webhook_at = %v，期望 %d", m["last_webhook_at"], newest.Unix())
+	}
+}
+
 func mwGenKeypair(body string) *httptest.ResponseRecorder {
 	return mwDo(AdminGenerateMarsWallexKeypair, "POST", "/x", body, nil)
 }

@@ -138,6 +138,10 @@
         <el-button :disabled="!cfg?.webhook_url" @click="copyText(cfg?.webhook_url || '')">复制</el-button>
       </div>
       <p class="text-xs text-subtle">在 MarsWallex 开发者平台配置此地址</p>
+      <div v-if="cfg" class="space-y-1">
+        <p class="text-sm text-muted">最近一次收到 Webhook：{{ lastWebhookText(cfg.last_webhook_at) }}</p>
+        <p v-if="showWebhookHint(cfg.last_webhook_at, nowSec())" class="text-xs text-warn">{{ WEBHOOK_HINT }}</p>
+      </div>
       <div class="flex items-center justify-between">
         <div class="text-sm text-muted">最近事件</div>
         <el-button size="small" :loading="loadingEvents" @click="loadEvents">刷新</el-button>
@@ -176,6 +180,7 @@ import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { authFetch } from '../../lib/api'
 import { dialog } from '../../lib/dialog'
+import { WEBHOOK_HINT, lastWebhookText, showWebhookHint } from '../../lib/mwwebhook'
 
 interface Preset { id: string; label: string; url: string }
 interface Config {
@@ -192,6 +197,7 @@ interface Config {
   master_key_error: string
   private_key_error?: string
   webhook_url: string
+  last_webhook_at?: number | null // 最近一次收到 Webhook 的时间（Unix 秒），没收到过为 null
 }
 interface Balance { currency: string; available_balance: string; freeze_balance: string }
 interface Account { account_no: string; account_name: string; balances?: Balance[] }
@@ -225,6 +231,8 @@ const result = ref<TestResult | null>(null)
 const events = ref<WebhookEvent[]>([])
 const loadingEvents = ref(false)
 const reprocessingId = ref<number | string | null>(null)
+
+const nowSec = () => Math.floor(Date.now() / 1000)
 
 // 主密钥未就绪时只禁用、不提交密钥字段（API Token、私钥）；其余配置照常保存。
 const masterKeyReady = computed(() => !!cfg.value?.master_key_ready)

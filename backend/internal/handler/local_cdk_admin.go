@@ -418,7 +418,15 @@ func AdminEnableLocalCDK(c *gin.Context) {
 	if !ok {
 		return
 	}
-	changed, err := db.EnableLocalCDK(c.Request.Context(), id, time.Now())
+	ctx := c.Request.Context()
+	// 已结束的码（consumed/failed）不能启用，和禁用侧一致；派生状态不变时启用没有实际意义（E-10）
+	if row, err := db.GetLocalCDK(ctx, id); err == nil {
+		if v, err := db.LocalCDKViewOf(ctx, row); err == nil && (v.Status == db.LocalCDKConsumed || v.Status == db.LocalCDKFailed) {
+			c.JSON(http.StatusConflict, gin.H{"error": "该码已结束，不能启用", "status": v.Status})
+			return
+		}
+	}
+	changed, err := db.EnableLocalCDK(ctx, id, time.Now())
 	switch {
 	case errors.Is(err, db.ErrLocalCDKNotFound):
 		c.JSON(http.StatusNotFound, gin.H{"error": "记录不存在"})

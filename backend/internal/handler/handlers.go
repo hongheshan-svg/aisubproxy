@@ -233,14 +233,31 @@ func auditAdmin(c *gin.Context, action, detail string) {
 	db.WriteAudit(username, action, detail, c.ClientIP())
 }
 
-// ListAuditLogs 返回最近的管理员操作审计日志。
+// ListAuditLogs 返回管理员操作审计日志，按 id 倒序。
+// before_id > 0 时只返回 id 小于它的记录（游标分页）；多取一条用来判断后面还有没有，has_more 为 true 时
+// 用返回的 next_before_id 继续翻。
 func ListAuditLogs(c *gin.Context) {
 	limit := parseLimit(c.Query("limit"), 200)
-	rows, err := db.DB.Query(`
+	var beforeID int64
+	if raw := strings.TrimSpace(c.Query("before_id")); raw != "" {
+		v, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || v <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "before_id 不合法"})
+			return
+		}
+		beforeID = v
+	}
+	query := `
 		SELECT id, COALESCE(username,''), COALESCE(action,''), COALESCE(detail,''), COALESCE(ip,''), COALESCE(created_at,'')
-		FROM admin_audit_logs
-		ORDER BY id DESC LIMIT ?
-	`, limit)
+		FROM admin_audit_logs`
+	args := []any{}
+	if beforeID > 0 {
+		query += ` WHERE id < ?`
+		args = append(args, beforeID)
+	}
+	query += ` ORDER BY id DESC LIMIT ?`
+	args = append(args, limit+1)
+	rows, err := db.DB.Query(query, args...)
 	if err != nil {
 		log.Printf("list audit error: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list audit logs"})
@@ -264,7 +281,15 @@ func ListAuditLogs(c *gin.Context) {
 		}
 		logs = append(logs, item)
 	}
-	c.JSON(http.StatusOK, gin.H{"logs": logs})
+	hasMore := len(logs) > limit
+	if hasMore {
+		logs = logs[:limit]
+	}
+	var nextBeforeID int64
+	if hasMore && len(logs) > 0 {
+		nextBeforeID = logs[len(logs)-1].ID
+	}
+	c.JSON(http.StatusOK, gin.H{"logs": logs, "has_more": hasMore, "next_before_id": nextBeforeID})
 }
 
 // ===== Billing Tool APIs =====

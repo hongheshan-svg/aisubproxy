@@ -36,6 +36,10 @@
             </tbody>
           </table>
         </div>
+        <div v-if="cursor > 0 || loadingMore" class="border-t border-line p-3 text-center">
+          <button class="btn-secondary" :disabled="loadingMore" @click="loadMore">{{ loadingMore ? '加载中...' : '加载更多' }}</button>
+        </div>
+        <div v-else-if="logs.length > 0 && !loading" class="border-t border-line p-3 text-center text-xs text-muted">已显示全部 {{ logs.length }} 条</div>
       </div>
     </div>
   </div>
@@ -47,6 +51,7 @@ import { onMounted, ref } from 'vue'
 import { authFetch } from '../../lib/api'
 import { auditActionLabel, auditDetailLabel } from '../../lib/errors'
 import { fmtAuditTime as formatDate } from '../../lib/auditTime'
+import { AUDIT_PAGE_SIZE, appendAuditPage, auditLogsUrl, nextAuditCursor } from '../../lib/auditPaging'
 
 interface AuditLog {
   id: number
@@ -59,17 +64,35 @@ interface AuditLog {
 
 const logs = ref<AuditLog[]>([])
 const loading = ref(false)
+const loadingMore = ref(false)
+const cursor = ref(0) // 下一页的 before_id；0 表示没有更多
 
 const loadLogs = async () => {
   loading.value = true
   try {
-    const response = await authFetch('/api/v1/admin/audit-logs?limit=300')
+    const response = await authFetch(auditLogsUrl(AUDIT_PAGE_SIZE))
     const data = await response.json()
     logs.value = data.logs || []
+    cursor.value = nextAuditCursor(data)
   } catch (error) {
     logs.value = []
+    cursor.value = 0
   }
   loading.value = false
+}
+
+const loadMore = async () => {
+  if (loadingMore.value || cursor.value <= 0) return
+  loadingMore.value = true
+  try {
+    const response = await authFetch(auditLogsUrl(AUDIT_PAGE_SIZE, cursor.value))
+    const data = await response.json()
+    logs.value = appendAuditPage(logs.value, data.logs || [])
+    cursor.value = nextAuditCursor(data)
+  } catch (error) {
+    // 失败时保留已有记录和游标，可以再点一次
+  }
+  loadingMore.value = false
 }
 
 const actionLabel = auditActionLabel

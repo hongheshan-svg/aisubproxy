@@ -32,6 +32,9 @@ type Pool interface {
 	CardInfo(context.Context, string) (cardpool.CardInfo, error)
 	ListTransactions(context.Context, cardpool.TxnFilter) ([]cardpool.Transaction, int, error)
 	BackfillRecent(context.Context, int) (cardpool.BackfillState, error)
+	// LastWebhookAt 返回最近一次收到卡平台 Webhook 的时间，一条都没有时 ok = false。只读；只用来提前告警、改写等验证码超时的说明，
+	// 不影响付款流程（3DS 验证码只能通过 Webhook 收到）。
+	LastWebhookAt(context.Context) (at time.Time, ok bool, err error)
 }
 
 // ChatGPT 是引擎用到的 ChatGPT 接口，*chatgpt.Client 直接满足。

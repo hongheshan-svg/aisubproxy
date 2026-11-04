@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"math/rand/v2"
 	"strings"
 	"time"
@@ -270,9 +271,14 @@ func (s *Service) waitOutcome(ctx context.Context, j *job) (paybrowser.Outcome, 
 }
 
 // answerChallenge 是步骤 8：截 3DS 验证框、等该卡在提交之后收到的验证码、填入并提交。
+// 验证码只能通过卡平台的 Webhook 收到：最近 7 天一条 Webhook 都没收到时，进入 requires_3ds 就告警，等验证码超时的说明也写明原因。
+// 这只影响告警与说明文字，等验证码和超时之后的处理一律不变。
 func (s *Service) answerChallenge(ctx context.Context, j *job) error {
 	if err := s.advance(ctx, j, StateRequires3DS, "出现 3DS 验证框，等待验证码", nil); err != nil {
 		return err
+	}
+	if s.noRecentWebhook(ctx, j) {
+		s.opts.Alert(fmt.Sprintf("付款单 %s 需要 3DS 验证码，但最近 7 天没收到过 MarsWallex Webhook，验证码很可能收不到", j.o.OrderNo))
 	}
 	shotCtx, cancelShot := context.WithTimeout(ctx, s.t.PageLoad)
 	s.shot(shotCtx, j, "challenge", paybrowser.ShotChallenge)
@@ -282,6 +288,10 @@ func (s *Service) answerChallenge(ctx context.Context, j *job) error {
 	defer cancel()
 	otp, err := j.pool.WaitOTP(octx, j.o.CardID, time.Unix(*j.o.SubmittedAt, 0))
 	if errors.Is(err, context.DeadlineExceeded) {
+		// 超时这一刻再查一次：等待期间收到过 Webhook，就不再说可能没配置
+		if s.noRecentWebhook(ctx, j) {
+			return errors.New("等待验证码超时（最近 7 天没收到过 MarsWallex Webhook，可能没配置通知地址）")
+		}
 		return errors.New("等待验证码超时")
 	}
 	if err != nil {
@@ -295,4 +305,17 @@ func (s *Service) answerChallenge(ctx context.Context, j *job) error {
 	}
 	s.event(ctx, j, "info", "已填写验证码", "")
 	return nil
+}
+
+// noRecentWebhook 判断最近 7 天是否一条卡平台 Webhook 都没收到（从没收到也算）。查询出错按不确定处理，返回 false：
+// 不告警、不改说明。只读，结果只用于告警与说明文字。
+func (s *Service) noRecentWebhook(ctx context.Context, j *job) bool {
+	at, ok, err := j.pool.LastWebhookAt(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			log.Printf("[payengine] 单据 %s 查最近一次收到 Webhook 的时间失败，按不确定处理: %v", j.o.OrderNo, err)
+		}
+		return false
+	}
+	return cardpool.WebhookQuiet(at, ok, s.now())
 }

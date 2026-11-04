@@ -102,6 +102,8 @@ type fakePool struct {
 	cardInfo  func(string) (cardpool.CardInfo, error)
 	listTxns  func(cardpool.TxnFilter) ([]cardpool.Transaction, int, error)
 	backfill  func(context.Context, int) (cardpool.BackfillState, error)
+	// lastWebhook 未设置时 LastWebhookAt 返回 errFakeUnset，引擎按「不确定」处理：不告警、不改超时说明
+	lastWebhook func() (time.Time, bool, error)
 
 	relMu    sync.Mutex
 	releases []releaseCall
@@ -187,6 +189,14 @@ func (p *fakePool) BackfillRecent(c context.Context, days int) (cardpool.Backfil
 		return p.backfill(c, days)
 	}
 	return cardpool.BackfillState{}, errFakeUnset
+}
+
+func (p *fakePool) LastWebhookAt(context.Context) (time.Time, bool, error) {
+	p.hit("LastWebhookAt")
+	if p.lastWebhook != nil {
+		return p.lastWebhook()
+	}
+	return time.Time{}, false, errFakeUnset
 }
 
 // fakeChatGPT 按配置返回账号与支付会话；配置须在 Start 之前设好。

@@ -142,15 +142,63 @@ func preflightBinary(bin, wantVersion string) error {
 		log.Printf("[update] v%s 不晚于 v%s，没有 --check，只做 --version 自检", got, lastVersionWithoutCheck)
 		return nil
 	}
-	// 新程序的工作目录是解压目录，数据库路径要换成当前进程实际用的绝对路径
+	// 新程序的工作目录是解压目录，数据库路径要换成当前进程实际用的绝对路径，只放进 --check 专用的变量
 	dbPath, err := filepath.Abs(db.ResolvePath())
 	if err != nil {
 		return fmt.Errorf("确定数据库路径失败: %v", err)
 	}
-	if out, err := runPreflight(bin, "--check", 30*time.Second, []string{"DB_PATH=" + dbPath}); err != nil {
-		return fmt.Errorf("新版本的启动检查没通过，换上去会起不来（%v）：%s", err, tailText(out, 600))
+	guard, cleanup, err := checkGuardDBPath()
+	if err != nil {
+		return fmt.Errorf("准备启动检查失败: %v", err)
 	}
-	return nil
+	defer cleanup()
+	// 第二道防线（裁定 R17）：万一新程序其实不认识 --check（例如漏了本功能的版本），它会当成普通启动。
+	// 这几项让它在第一步就退出、什么都碰不到：启动接管直接跳过（不 exec、不动数据卷的 runtime 目录），
+	// 按 DB_PATH 打开库失败（建表、迁移、付款引擎、卡池都在这之后），万一打开了也监听不了端口。
+	out, err = runPreflight(bin, "--check", 30*time.Second, []string{
+		db.CheckDBPathEnv + "=" + dbPath,
+		"DB_PATH=" + guard,
+		"CDK_RUNTIME_HANDOFF=1",
+		"SERVER_PORT=-1",
+	})
+	if err == nil && hasLine(out, CheckOKLine) {
+		return nil
+	}
+	if !strings.Contains(out, CheckFailPrefix) {
+		return fmt.Errorf("新程序没有按 --check 的约定回应，可能是不支持 --check 的版本，已中止（%v）：%s", err, tailText(out, 600))
+	}
+	return fmt.Errorf("新版本的启动检查没通过，换上去会起不来（%v）：%s", err, tailText(out, 600))
+}
+
+// --check 的输出约定：通过时单独一行打印 CheckOKLine；不通过时以 CheckFailPrefix 开头说明原因并以非 0 退出。
+const (
+	CheckOKLine     = "启动检查通过"
+	CheckFailPrefix = "启动检查未通过"
+)
+
+// hasLine 判断输出里有没有恰好是 want 的一行。
+func hasLine(out, want string) bool {
+	for _, l := range strings.Split(out, "\n") {
+		if strings.TrimSpace(l) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// checkGuardDBPath 返回一个打不开的库路径：放在一个普通文件「下面」，上级目录建不出来，SQLite 也打不开。
+// 跑 --check 时把 DB_PATH 指向它，误收 --check 的老程序在打开库那一步就失败退出。cleanup 删掉那个文件。
+func checkGuardDBPath() (string, func(), error) {
+	f, err := os.CreateTemp("", "cdk-check-guard-*")
+	if err != nil {
+		return "", nil, err
+	}
+	name := f.Name()
+	if err := f.Close(); err != nil {
+		_ = os.Remove(name)
+		return "", nil, err
+	}
+	return filepath.Join(name, "cdk_recharge.db"), func() { _ = os.Remove(name) }, nil
 }
 
 // runPreflight 以 arg 运行新程序，返回合并后的输出。环境变量沿用当前进程的，去掉 CDK_APP_VERSION，

@@ -27,15 +27,16 @@ func main() {
 		case "--check":
 			// 启动检查：按当前环境变量和数据库（只读打开）跑一遍启动时会拒绝启动的检查，和启动用同一个函数。
 			// 不建表、不迁移、不写库，不启动任何后台任务。在线更新换文件之前用它确认新版本起得来。
+			// 库路径读 CDK_CHECK_DB_PATH（在线更新时 DB_PATH 被故意换成打不开的路径），没设就和启动一样读 DB_PATH。
 			cfg, err := config.Load()
 			if err == nil {
 				err = server.Check(cfg)
 			}
 			if err != nil {
-				fmt.Fprintln(os.Stderr, "启动检查未通过:", err)
+				fmt.Fprintln(os.Stderr, handler.CheckFailPrefix+":", err)
 				os.Exit(1)
 			}
-			fmt.Println("启动检查通过")
+			fmt.Println(handler.CheckOKLine)
 			return
 		case "rollback":
 			if err := handler.Rollback(os.Stdout); err != nil {

@@ -34,9 +34,9 @@ func startupChecks(mode string) error {
 
 // Check 是命令行 --check：只读打开现有数据库，按当前环境变量跑一遍 startupChecks。
 // 不建表、不迁移、不写库，不连任何外部服务，不启动后台任务。返回 nil 表示这个版本能通过启动检查。
-// 数据库文件不存在时报错（--check 只检查已有的安装）。
+// 库路径用 db.CheckPath（专用变量 CDK_CHECK_DB_PATH 优先）；数据库文件不存在时报错（--check 只检查已有的安装）。
 func Check(cfg *config.Config) error {
-	conn, err := db.OpenReadOnly(db.ResolvePath())
+	conn, err := db.OpenReadOnly(db.CheckPath())
 	if err != nil {
 		return err
 	}

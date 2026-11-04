@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,14 +24,15 @@ func o3CheckScript(version, check string) string {
 esac`
 }
 
-// 版本高于 1.5.3 的新程序：--version 之后跑 --check，带上当前进程实际用的数据库绝对路径。
+// 版本高于 1.5.3 的新程序：--version 之后跑 --check。真实库的绝对路径只走专用变量 CDK_CHECK_DB_PATH，
+// DB_PATH 被换成打不开的路径（裁定 R17：误收 --check 的老程序打开库那一步就退出）。
 func TestO3PreflightRunsCheckWithCurrentDBPath(t *testing.T) {
 	dir := t.TempDir()
 	mark := filepath.Join(dir, "check-ran")
 	t.Setenv("O3_MARK", mark)
 	t.Setenv("DB_PATH", "rel-data/cdk_recharge.db") // 相对路径：要换成绝对路径再交给新程序（新程序的工作目录不同）
 	bin := filepath.Join(dir, "cdk-recharge")
-	writeFakeBinary(t, bin, o3CheckScript("v1.6.0", `echo "$DB_PATH" > "$O3_MARK"; echo 启动检查通过; exit 0`))
+	writeFakeBinary(t, bin, o3CheckScript("v1.6.0", `echo "$`+db.CheckDBPathEnv+`" > "$O3_MARK"; echo "$DB_PATH" >> "$O3_MARK"; echo 启动检查通过; exit 0`))
 
 	if err := preflightBinary(bin, "1.6.0"); err != nil {
 		t.Fatalf("--check 通过时预检应通过: %v", err)
@@ -39,9 +41,97 @@ func TestO3PreflightRunsCheckWithCurrentDBPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("应运行 --check: %v", err)
 	}
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
 	want, _ := filepath.Abs(db.ResolvePath())
-	if got := strings.TrimSpace(string(b)); got != want || !filepath.IsAbs(got) {
-		t.Fatalf("--check 拿到的 DB_PATH = %q，应为当前进程的数据库绝对路径 %q", got, want)
+	if len(lines) != 2 || lines[0] != want || !filepath.IsAbs(lines[0]) {
+		t.Fatalf("--check 拿到的 %s = %q，应为当前进程的数据库绝对路径 %q", db.CheckDBPathEnv, lines, want)
+	}
+	if lines[1] == want || lines[1] == "rel-data/cdk_recharge.db" {
+		t.Fatalf("跑 --check 时 DB_PATH 不能是真实库路径: %q", lines[1])
+	}
+}
+
+// 裁定 R17：一个自报高于 1.5.3、却不认识 --check 的程序（把 --check 当普通启动：先接管、再按 DB_PATH 建库、
+// 再监听 SERVER_PORT）。它拿到的库路径不能是真实库，建库失败就退出；预检判失败、不替换文件，真实库一个字节都不动。
+func TestO3PreflightOldBinaryTakingCheckAsStartNeverSeesRealDB(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "data", "cdk_recharge.db")
+	if err := os.MkdirAll(filepath.Dir(real), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(real, []byte("real-db-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DB_PATH", real)
+	t.Setenv("SERVER_PORT", "18080")
+	t.Setenv("CDK_RUNTIME_HANDOFF", "")
+	mark := filepath.Join(dir, "old-start")
+	t.Setenv("O3_MARK", mark)
+	bin := filepath.Join(dir, "cdk-recharge")
+	// 假老程序：只认 --version，其余参数一律当普通启动
+	writeFakeBinary(t, bin, `case "$1" in
+--version) echo 1.6.0; exit 0;;
+esac
+{ echo "db=$DB_PATH"; echo "port=$SERVER_PORT"; echo "handoff=$CDK_RUNTIME_HANDOFF"; } > "$O3_MARK"
+mkdir -p "$(dirname "$DB_PATH")" 2>/dev/null && echo opened >> "$DB_PATH" 2>/dev/null || {
+  echo "Failed to initialize server: unable to open database file" >&2; exit 1; }
+echo "Starting server on 0.0.0.0:$SERVER_PORT"
+exit 0`)
+
+	err := preflightBinary(bin, "1.6.0")
+	if err == nil {
+		t.Fatal("不认识 --check 的程序，预检必须失败")
+	}
+	if !strings.Contains(err.Error(), "--check") {
+		t.Fatalf("错误应提示新程序可能不支持 --check: %v", err)
+	}
+	b, rerr := os.ReadFile(mark)
+	if rerr != nil {
+		t.Fatalf("假老程序应已运行: %v", rerr)
+	}
+	got := string(b)
+	if strings.Contains(got, "db="+real) || strings.Contains(got, filepath.Dir(real)) {
+		t.Fatalf("老程序拿到了真实库路径: %s", got)
+	}
+	if strings.Contains(got, "port=18080") || !strings.Contains(got, "handoff=1") {
+		t.Fatalf("端口应换成不可用的值、启动接管应关掉: %s", got)
+	}
+	if data, _ := os.ReadFile(real); string(data) != "real-db-bytes" {
+		t.Fatalf("真实库被动过: %q", data)
+	}
+}
+
+// 防线用的库路径：目录建不出来、SQLite 也打不开；用完清理。
+func TestO3CheckGuardDBPathUnopenable(t *testing.T) {
+	p, cleanup, err := checkGuardDBPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err == nil {
+		t.Fatalf("防线路径的上级目录不应能建出来: %s", p)
+	}
+	c, err := sql.Open("sqlite3", p+"?_journal_mode=WAL")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Ping(); err == nil {
+		c.Close()
+		t.Fatalf("SQLite 不应能打开防线路径: %s", p)
+	}
+	c.Close()
+	cleanup()
+	if _, err := os.Stat(filepath.Dir(p)); !os.IsNotExist(err) {
+		t.Fatalf("用完应清理: %v", err)
+	}
+}
+
+// 新程序 --check 退出 0 但没打印「启动检查通过」：不认为通过（老程序或别的东西冒充）。
+func TestO3PreflightRequiresCheckOKLine(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "cdk-recharge")
+	writeFakeBinary(t, bin, o3CheckScript("1.6.0", `echo "Starting server"; exit 0`))
+	if err := preflightBinary(bin, "1.6.0"); err == nil || !strings.Contains(err.Error(), "--check") {
+		t.Fatalf("没有「启动检查通过」不能算通过: %v", err)
 	}
 }
 

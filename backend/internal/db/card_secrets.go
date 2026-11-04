@@ -17,6 +17,12 @@ const (
 
 var cardSecretKeys = []string{SettingCardAPIKey, SettingWebhookSecret}
 
+// legacyPlainCardSecret 判断卡台密钥的库内值是不是升级前遗留的明文（非空、不是 v1: 密文）。
+// 启动迁移（MigrateCardSecrets）和启动检查（CheckCardSecretsMigratable，--check 也用）共用这一条规则。
+func legacyPlainCardSecret(raw string) bool {
+	return strings.TrimSpace(raw) != "" && !strings.HasPrefix(raw, sealedPrefix)
+}
+
 // GetCardSecret 读卡台密钥（card_api_key / webhook_secret）。
 // 以 v1: 开头的按密文解密；其余视为升级前遗留的明文原样返回（启动迁移会把它们加密，迁移失败启动就会报错）。
 // 未设置返回 "", nil；解不开返回错误。
@@ -42,7 +48,7 @@ func MigrateCardSecrets() error {
 		if err != nil {
 			return fmt.Errorf("读取 %s 失败: %w", key, err)
 		}
-		if strings.TrimSpace(raw) == "" || strings.HasPrefix(raw, sealedPrefix) {
+		if !legacyPlainCardSecret(raw) {
 			continue
 		}
 		if err := SetSecretSetting(key, strings.TrimSpace(raw)); err != nil {

@@ -14,6 +14,18 @@ import (
 // 启动检查里要读库的部分。启动（server.New）和命令行 --check（在线更新换版本前的预检）共用，
 // --check 在只读打开的库上调用，不建表、不迁移、不写任何东西。
 
+// CheckDBPathEnv 是命令行 --check 读库路径用的专用环境变量（裁定 R17）。在线更新跑 --check 时，真实库路径只放在这里，
+// DB_PATH 换成打不开的路径：不认识 --check 的老程序会把它当普通启动，按 DB_PATH 打开库那一步就失败退出，碰不到真实库。
+const CheckDBPathEnv = "CDK_CHECK_DB_PATH"
+
+// CheckPath 是 --check 要检查的库：CDK_CHECK_DB_PATH 有值用它，否则和启动一样按 ResolvePath（管理员手工运行时）。
+func CheckPath() string {
+	if p := strings.TrimSpace(os.Getenv(CheckDBPathEnv)); p != "" {
+		return p
+	}
+	return ResolvePath()
+}
+
 // OpenReadOnly 只读打开已有的数据库文件（--check 用）：文件不存在时报错，不会新建；
 // 连接带 mode=ro 和 query_only，任何写入都会失败。调用方负责 Close。
 func OpenReadOnly(path string) (*sql.DB, error) {
@@ -38,11 +50,6 @@ func OpenReadOnly(path string) (*sql.DB, error) {
 		return nil, fmt.Errorf("只读打开数据库 %s 失败: %w", abs, err)
 	}
 	return conn, nil
-}
-
-// legacyPlainCardSecret 判断卡台密钥的库内值是不是升级前遗留的明文（非空、不是 v1: 密文）。
-func legacyPlainCardSecret(raw string) bool {
-	return strings.TrimSpace(raw) != "" && !strings.HasPrefix(raw, sealedPrefix)
 }
 
 // CheckCardSecretsMigratable 只读判断启动时的卡台密钥加密迁移（MigrateCardSecrets）能不能做：

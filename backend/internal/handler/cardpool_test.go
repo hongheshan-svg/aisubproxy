@@ -125,7 +125,7 @@ func TestSensitiveEndpointAuditsWithoutSecrets(t *testing.T) {
 		t.Errorf("Cache-Control=%q", w.Header().Get("Cache-Control"))
 	}
 	m := mwJSON(t, w)
-	if len(m) != 3 || m["card_no"] != cpFullPAN || m["cvv2"] != "987" || m["expiry_date"] != "1228" {
+	if len(m) != 1 || m["card_no_masked"] != "411111******1234" {
 		t.Errorf("body %v", m)
 	}
 	audit := cpAudit(t, c)

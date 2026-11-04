@@ -295,6 +295,8 @@ func setupRoutes(r *gin.Engine) {
 		{
 			lookup.GET("/cdk", handler.LookupCDKStatus)
 			lookup.POST("/cdk/batch", handler.LookupCDKStatusBatch)
+			// 批量兑换页轮询：一次查多个令牌的结果，按一次查询计限流
+			lookup.POST("/cdk/results", handler.LookupCDKResultBatch)
 			// 兼容旧路径
 			lookup.GET("/task", handler.LookupCDKStatus)
 		}

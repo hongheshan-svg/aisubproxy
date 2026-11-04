@@ -105,6 +105,8 @@ func MigrateCardPool() error {
 		{"mw_cardholders", "out_card_holder_id", "TEXT NOT NULL DEFAULT ''"},
 		// 卡进入「只剩冻结余额」状态的时间（MO-05）；余额清零或卡离开 releasing 时清空
 		{"mw_cards", "frozen_since", "INTEGER"},
+		// 定时查询卡状态的上次查询时间（Unix 秒）；为空表示从没查过，排在最前
+		{"mw_cards", "status_polled_at", "INTEGER"},
 	}
 	for _, c := range cols {
 		var n int

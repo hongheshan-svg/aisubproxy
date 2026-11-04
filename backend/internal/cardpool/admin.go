@@ -26,12 +26,12 @@ const (
 // ImportCardholder 从平台读取持卡人并写入；已存在则更新平台字段（备注 note 保留），状态有变化时按 §7.5 告警，
 // 首次导入不告警。平台返回的 out_card_holder_id 一并写入，匹配 submitted / unknown 提交记录时标 linked。
 func (s *Service) ImportCardholder(ctx context.Context, id, by string) (*Cardholder, error) {
-	return s.importCardholder(ctx, id, "")
+	return s.importCardholder(ctx, id, "", sourceAdmin)
 }
 
 // importCardholder 同 ImportCardholder；平台没有给出可信的 out_card_holder_id 时用 fallbackOutID（来自推送）。
-// 只取姓名、国家、状态、备注，其余资料不落地。刷新、修改、启停后的重新导入都经过这里。
-func (s *Service) importCardholder(ctx context.Context, id, fallbackOutID string) (*Cardholder, error) {
+// 只取姓名、国家、状态、备注，其余资料不落地。刷新、定时查询、修改、启停后的重新导入都经过这里；src 是告警里写的来源。
+func (s *Service) importCardholder(ctx context.Context, id, fallbackOutID string, src alertSource) (*Cardholder, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return nil, badRequest("持卡人 ID 不能为空")
@@ -83,17 +83,22 @@ func (s *Service) importCardholder(ctx context.Context, id, fallbackOutID string
 		return nil, err
 	}
 	if existed {
-		s.holderStatusChanged(id, oldStatus, normStatus(d.Status), d.Remark)
+		s.holderStatusChanged(id, oldStatus, normStatus(d.Status), d.Remark, src)
 	}
 	return getCardholder(ctx, id)
 }
 
 // RefreshCardholder 重新同步已导入的持卡人。
 func (s *Service) RefreshCardholder(ctx context.Context, id string) (*Cardholder, error) {
+	return s.refreshCardholder(ctx, id, sourceAdmin)
+}
+
+// refreshCardholder 是后台「刷新持卡人」与定时查询共用的同步逻辑：本地须已导入，状态有变化时按 src 告警。
+func (s *Service) refreshCardholder(ctx context.Context, id string, src alertSource) (*Cardholder, error) {
 	if _, err := getCardholder(ctx, id); err != nil {
 		return nil, err
 	}
-	return s.ImportCardholder(ctx, id, "")
+	return s.importCardholder(ctx, id, "", src)
 }
 
 // ListCardholders 列出所有已导入的持卡人。

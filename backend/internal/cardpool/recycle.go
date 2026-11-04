@@ -106,7 +106,7 @@ func (s *Service) advanceReleasing(ctx context.Context, c *Card) error {
 			return err
 		}
 		if moved {
-			s.alert("extfreeze:"+c.CardID, fmt.Sprintf("卡 %s 在清零时发现平台状态为 REVOKED（已被冻结），已从卡池停用（原因：平台冻结），请到 MarsWallex 后台核查", c.CardID))
+			s.alert("extfreeze:"+c.CardID, extFreezeDisabledText(c.CardID, sourceRecycle))
 		}
 		return nil
 	}

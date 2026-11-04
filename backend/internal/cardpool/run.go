@@ -25,19 +25,22 @@ func (s *Service) Kick() {
 	}
 }
 
-// Start 启动四个后台协程，ctx 结束时全部退出：
-//   - 每 5 秒：释放到期租约 → 清除过期验证码 → 处理有效期不足的可用卡 → 对账 → 同步账户 → 回收；
+// Start 启动五个后台协程，ctx 结束时全部退出：
+//   - 每 5 秒：释放到期租约 → 清除过期验证码 → 处理有效期不足的可用卡 → 对账 → 检查是否长期收不到 Webhook → 同步账户 → 回收；
 //   - 每 60 秒或收到补卡通知：补卡；
 //   - 收到 Kick 或每 10 秒：处理 Webhook 事件（启动时先处理一轮积压）；
-//   - 每 15 分钟：补拉授权与结算交易（与手动补拉串行）。
+//   - 每 15 分钟：补拉授权与结算交易（与手动补拉串行）；
+//   - 每 10 分钟：定时查询卡状态与持卡人状态（没配 Webhook 时补上外部冻结、注销与审核结果的告警）。
 //
 // 各步骤出错只记日志、不中断循环；取不到 MarsWallex 客户端（未配置）时，本轮跳过需要调接口的步骤。
 func (s *Service) Start(ctx context.Context) {
-	s.loops.Add(4)
+	poll := cardStatusPollInterval
+	s.loops.Add(5)
 	safego.Go("卡池维护循环", func() { s.runLoop(ctx, "卡池维护", maintainInterval, nil, s.maintainRound) })
 	safego.Go("补卡循环", func() { s.runLoop(ctx, "补卡", replenishInterval, s.kickReplenishCh, s.replenishRound) })
 	safego.Go("Webhook 事件循环", func() { s.runLoop(ctx, "Webhook 事件处理", eventScanInterval, s.kickEvents, s.eventsRound) })
 	safego.Go("交易补拉循环", func() { s.runLoop(ctx, "交易补拉", backfillInterval, nil, s.backfillRound) })
+	safego.Go("定时查询循环", func() { s.runLoop(ctx, "定时查询卡与持卡人状态", poll, nil, s.statusPollRound) })
 	s.Kick()
 }
 
@@ -66,7 +69,8 @@ func (s *Service) runLoop(ctx context.Context, name string, every time.Duration,
 }
 
 // maintainRound：先做只读写本地库的步骤（释放到期租约、清除过期验证码、处理有效期不足的可用卡），平台变慢也不会拖延它们；
-// 再对账（取不到客户端时只做本地的超时升级并告警，见 reconcileOrdersOnce），然后按需同步账户，最后回收（要调接口，取不到客户端时跳过）。
+// 再对账（取不到客户端时只做本地的超时升级并告警，见 reconcileOrdersOnce），然后检查是否长期收不到 Webhook（只读本地库）、按需同步账户，
+// 最后回收（要调接口，取不到客户端时跳过；Webhook 检查与同步账户也只在 MarsWallex 已就绪时做）。
 func (s *Service) maintainRound(ctx context.Context, lg *loopLog) {
 	local := []struct {
 		name string
@@ -92,6 +96,7 @@ func (s *Service) maintainRound(ctx context.Context, lg *loopLog) {
 	if cerr != nil || ctx.Err() != nil {
 		return
 	}
+	lg.check("检查是否收到 Webhook", s.checkNoWebhook(ctx))
 	lg.check("同步账户", s.syncAccountsIfDirty(ctx))
 	if ctx.Err() != nil {
 		return

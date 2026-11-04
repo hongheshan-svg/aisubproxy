@@ -540,7 +540,7 @@ func (s *Service) onCardStatusChanged(ctx context.Context, ev *marswallex.Webhoo
 		}
 		return fmt.Sprintf("本系统发起的改状态（单据 %s：%s）", o.OutOrderNo, o.State), nil
 	}
-	return s.applyExternalStatus(ctx, card, status)
+	return s.applyExternalStatus(ctx, card, status, sourceWebhook)
 }
 
 // ourStatusOrder 返回同卡同目标、非终态或 600 秒内成功过的最新一张改状态单；没有返回 nil。
@@ -574,10 +574,11 @@ func ownerSuffix(c *Card) string {
 	return "（持有方 " + c.LeaseOwner + "）"
 }
 
-// applyExternalStatus 处理不是我们发起的卡状态变更。池状态用条件更新，读取后被别处改过就重读再判断。
-func (s *Service) applyExternalStatus(ctx context.Context, c *Card, status string) (string, error) {
+// applyExternalStatus 处理不是我们发起的卡状态变更，推送与定时查询共用；src 是告警里写的来源。
+// 池状态用条件更新，读取后被别处改过就重读再判断。
+func (s *Service) applyExternalStatus(ctx context.Context, c *Card, status string, src alertSource) (string, error) {
 	for i := 0; i < 3; i++ {
-		note, done, err := s.tryExternalStatus(ctx, c, status)
+		note, done, err := s.tryExternalStatus(ctx, c, status, src)
 		if err != nil || done {
 			return note, err
 		}
@@ -591,7 +592,7 @@ func (s *Service) applyExternalStatus(ctx context.Context, c *Card, status strin
 }
 
 // tryExternalStatus 按读取到的池状态执行一次；done = false 表示条件更新没有命中（池状态已变）。
-func (s *Service) tryExternalStatus(ctx context.Context, c *Card, status string) (string, bool, error) {
+func (s *Service) tryExternalStatus(ctx context.Context, c *Card, status string, src alertSource) (string, bool, error) {
 	now := s.now().Unix()
 	switch {
 	case status == "CANCELED" && c.PoolState != PoolRetired:
@@ -605,8 +606,7 @@ func (s *Service) tryExternalStatus(ctx context.Context, c *Card, status string)
 		}
 		log.Printf("[cardpool] 卡 %s 在平台上被注销（非本系统发起），%s → retired", c.CardID, c.PoolState)
 		if c.PoolState == PoolLeased {
-			s.alert("extcancel:"+c.CardID, fmt.Sprintf("MarsWallex 卡 %s 租用中%s在平台上被注销（非本系统发起），已退役，请检查对应订单",
-				c.CardID, ownerSuffix(c)))
+			s.alert("extcancel:"+c.CardID, extCancelLeasedText(c, src))
 		}
 		return "外部注销：" + c.PoolState + " → retired", true, nil
 
@@ -619,16 +619,25 @@ func (s *Service) tryExternalStatus(ctx context.Context, c *Card, status string)
 		if n, err := res.RowsAffected(); err != nil || n != 1 {
 			return "", false, err
 		}
-		s.alert("extfreeze:"+c.CardID, fmt.Sprintf("MarsWallex 卡 %s 在平台上被冻结（非本系统发起），已从卡池停用（原因：平台冻结），请到 MarsWallex 后台核查", c.CardID))
+		s.alert("extfreeze:"+c.CardID, extFreezeDisabledText(c.CardID, src))
 		return "外部冻结：available → disabled", true, nil
 	}
 
-	if err := s.setPlatformStatus(ctx, c.CardID, status); err != nil {
+	// 其余情况只更新平台状态。条件更新：平台状态已经是新值，说明推送或定时查询先处理过这次变化，租用中的卡不再重复告警
+	res, err := db.DB.ExecContext(ctx, `UPDATE mw_cards SET platform_status = ?, updated_at = ? WHERE card_id = ? AND platform_status <> ?`,
+		status, now, c.CardID, status)
+	if err != nil {
+		return "", false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
 		return "", false, err
 	}
 	if status == "REVOKED" && c.PoolState == PoolLeased {
-		s.alert("extfreeze:"+c.CardID, fmt.Sprintf("MarsWallex 卡 %s 租用中%s在平台上被冻结（非本系统发起），请检查对应订单",
-			c.CardID, ownerSuffix(c)))
+		if n == 0 {
+			return "外部冻结：租用中的卡，平台状态已是 REVOKED，不重复告警", true, nil
+		}
+		s.alert("extfreeze:"+c.CardID, extFreezeLeasedText(c, src))
 		return "外部冻结：租用中的卡，已告警", true, nil
 	}
 	return "平台状态更新为 " + status, true, nil
@@ -664,7 +673,7 @@ func (s *Service) onCardholderStatusChange(ctx context.Context, ev *marswallex.W
 	if n == 0 {
 		return "持卡人未导入", nil
 	}
-	s.holderStatusChanged(id, old.Status, status, d.Remark)
+	s.holderStatusChanged(id, old.Status, status, d.Remark, sourceWebhook)
 	return "持卡人状态更新为 " + status, nil
 }
 

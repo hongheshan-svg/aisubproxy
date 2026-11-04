@@ -73,7 +73,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import AgentPasswordDialog from './components/AgentPasswordDialog.vue'
 import { adminApi } from '../../lib/provider'
-import { adminErrorText } from '../../lib/agentAdmin'
+import { adminErrorText, USERNAME_TAKEN_HINT } from '../../lib/agentAdmin'
 import { fmtUsd } from '../../lib/agentMoney'
 import { fmtBeijing } from '../../lib/mwwebhook'
 import { dialog } from '../../lib/dialog'
@@ -107,6 +107,7 @@ function nameOf(id: number): string {
 const createOpen = ref(false)
 const creating = ref(false)
 const createErr = ref('')
+let createUncertain = false // 上一次建号请求结果未知（网络异常或 5xx）
 const form = reactive({ username: '', display_name: '', tier_id: 0 as number, note: '' })
 const newPassword = ref('')
 const newUsername = ref('')
@@ -114,6 +115,7 @@ const newUsername = ref('')
 function openCreate() {
   Object.assign(form, { username: '', display_name: '', tier_id: tiers.value[0]?.id || 0, note: '' })
   createErr.value = ''
+  createUncertain = false
   createOpen.value = true
 }
 
@@ -125,7 +127,14 @@ async function create() {
     username: form.username.trim(), display_name: form.display_name.trim(), tier_id: form.tier_id, note: form.note.trim(),
   })
   creating.value = false
-  if (!r.ok) { createErr.value = adminErrorText(r.data, r.status); return }
+  if (!r.ok) {
+    let msg = adminErrorText(r.data, r.status)
+    if (r.status === 0 || r.status >= 500) createUncertain = true
+    else if (r.data?.error === 'username_taken' && createUncertain) msg += '。' + USERNAME_TAKEN_HINT
+    createErr.value = msg
+    return
+  }
+  createUncertain = false
   createOpen.value = false
   newUsername.value = String(r.data.agent?.username || '')
   newPassword.value = String(r.data.password || '')

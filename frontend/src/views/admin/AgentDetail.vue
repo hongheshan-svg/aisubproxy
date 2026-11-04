@@ -31,7 +31,7 @@
 
     <section v-if="agent" class="card p-4 space-y-3">
       <div class="flex flex-wrap gap-2 text-sm">
-        <button v-for="t in TABS" :key="t.key" type="button" :class="tab === t.key ? 'btn-primary' : 'btn-ghost'" @click="tab = t.key">{{ t.label }}</button>
+        <button v-for="t in TABS" :key="t.key" type="button" :class="tab === t.key ? 'btn-primary' : 'btn-ghost'" @click="switchTab(t.key)">{{ t.label }}</button>
       </div>
 
       <!-- 流水 -->
@@ -124,16 +124,21 @@
     </el-dialog>
 
     <!-- 调账 -->
-    <el-dialog v-model="adjustOpen" title="调账" width="min(480px, 96vw)" append-to-body :close-on-click-modal="false" :close-on-press-escape="false" :before-close="beforeCloseAdjust">
+    <el-dialog v-model="adjustOpen" :title="`调账：${agent?.username || ''}`" width="min(480px, 96vw)" append-to-body :show-close="!adjBusy" :close-on-click-modal="false" :close-on-press-escape="false" :before-close="beforeCloseAdjust">
       <div class="space-y-3" data-testid="adjust-dialog">
-        <p class="text-sm">当前余额 <b>{{ agent ? fmtUsd(agent.balance_cents) : '' }}</b>。正数充值，负数扣款，不能扣成负数；每笔调账都会记入流水和审计。</p>
+        <p class="text-sm">代理商 <b>{{ agent?.username }}</b> 当前余额 <b>{{ agent ? fmtUsd(agent.balance_cents) : '' }}</b>。正数充值，负数扣款，不能扣成负数；每笔调账都会记入流水和审计。</p>
         <label class="block text-sm"><span class="block mb-1">金额（美元，可带负号）</span><el-input v-model="adjAmount" :disabled="adjLocked || adjBusy" placeholder="例如 100 或 -20.5" /></label>
         <label class="block text-sm"><span class="block mb-1">原因（必填）</span><el-input v-model="adjNote" :disabled="adjLocked || adjBusy" maxlength="200" /></label>
-        <p v-if="adjMsg" class="text-sm" :class="adjLocked ? 'text-amber-600' : 'text-red-500'" role="alert">{{ adjMsg }}</p>
+        <div v-if="preview" class="text-sm rounded p-2" :class="preview.direction === 'credit' ? 'adj-credit' : 'adj-debit'" data-testid="adjust-preview">
+          <div class="font-semibold">{{ preview.text }}</div>
+          <div>{{ preview.afterText }}</div>
+          <div v-if="preview.warning" class="font-semibold" role="alert">{{ preview.warning }}</div>
+        </div>
+        <p v-if="adjMsg" class="text-sm" :class="adjLocked ? 'text-amber-600' : 'text-red-500'" role="alert">{{ adjLocked ? `代理商 ${agent?.username}：` : '' }}{{ adjMsg }}</p>
       </div>
       <template #footer>
-        <el-button v-if="adjLocked" type="danger" plain @click="abandonAdjust">放弃这次调账</el-button>
-        <el-button v-else @click="closeAdjust">取消</el-button>
+        <el-button v-if="adjLocked" type="danger" plain :disabled="adjBusy" @click="abandonAdjust">放弃这次调账</el-button>
+        <el-button v-else :disabled="adjBusy" @click="closeAdjust">取消</el-button>
         <el-button type="primary" :loading="adjBusy" :disabled="adjBusy" @click="submitAdjust">{{ adjLocked ? '原样重试' : '确认调账' }}</el-button>
       </template>
     </el-dialog>
@@ -144,14 +149,16 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute } from 'vue-router'
 import AgentPasswordDialog from './components/AgentPasswordDialog.vue'
 import { adminApi, centsToUsd, localCdkStatusText } from '../../lib/provider'
 import { authFetch } from '../../lib/api'
-import { adminErrorText, classifyAdjust, overrideChanges } from '../../lib/agentAdmin'
+import {
+  ADJUST_LEAVE_TEXT, adjustKeeperFor, adjustLeaveWarning, adjustOpenState, adjustPendings, adjustPreview, adminErrorText,
+  classifyAdjust, overrideChanges,
+} from '../../lib/agentAdmin'
 import { fmtUsd, parseSignedUsd } from '../../lib/agentMoney'
 import { beijingRange, defaultLedgerRange, ledgerQuery, LEDGER_KIND_LABELS } from '../../lib/agentViews'
-import { IdempotencyKeeper } from '../../lib/idempotency'
 import { fmtBeijing } from '../../lib/mwwebhook'
 import { dialog } from '../../lib/dialog'
 
@@ -291,7 +298,17 @@ async function loadCodes() {
 }
 
 const loaders: Record<string, () => Promise<void>> = { ledger: loadLedger, orders: loadOrders, overrides: loadOverrides, codes: loadCodes }
-watch(tab, (t) => { loaders[t]?.() })
+const overridesDirty = () => overrideChanges(
+  overrides.value.map((o) => ({ product_id: o.product_id, price_cents: o.override_price_cents || 0 })), { ...overrideEdit },
+).cells.length > 0
+async function switchTab(key: string) {
+  if (tab.value === 'overrides' && key !== 'overrides' && overridesDirty()) {
+    const ok = await dialog.confirm('覆盖价有没保存的修改，切换页签会丢掉这些修改。确认切换？', { title: '有未保存的修改', okText: '丢掉并切换', danger: true })
+    if (!ok) return
+  }
+  tab.value = key
+  loaders[key]?.()
+}
 
 // ---------- 编辑、启停、重置 ----------
 const editOpen = ref(false)
@@ -341,7 +358,7 @@ async function resetTotp() {
 }
 
 // ---------- 调账 ----------
-const keeper = new IdempotencyKeeper()
+// 未决调账（结果未知）和幂等键放模块级内存（lib/agentAdmin），关对话框、切页面都不丢，不写 storage
 const adjustOpen = ref(false)
 const adjAmount = ref('')
 const adjNote = ref('')
@@ -349,19 +366,28 @@ const adjBusy = ref(false)
 const adjLocked = ref(false) // 结果未知：锁定金额和原因，只能原样重试或放弃
 const adjMsg = ref('')
 
+const preview = computed(() => {
+  const p = parseSignedUsd(adjAmount.value)
+  if (!p.ok || !agent.value) return null
+  return adjustPreview(agent.value.username, agent.value.balance_cents, p.cents)
+})
+
 function openAdjust() {
-  adjAmount.value = ''
-  adjNote.value = ''
-  adjMsg.value = ''
-  adjLocked.value = false
-  keeper.done()
+  const st = adjustOpenState(adjustPendings.get(id.value))
+  adjAmount.value = st.amountText
+  adjNote.value = st.note
+  adjLocked.value = st.locked
+  adjMsg.value = st.locked ? '上一次调账结果未知，请原样重试，或放弃后先到「余额流水」确认' : ''
+  if (!st.locked) adjustKeeperFor(id.value).done() // 没有未决调账才换新键
   adjustOpen.value = true
 }
-function closeAdjust() { adjustOpen.value = false }
+function closeAdjust() { if (!adjBusy.value) adjustOpen.value = false }
 async function abandonAdjust() {
-  const ok = await dialog.confirm('这次调账可能已经入账。放弃后不会再重试，请先到「余额流水」确认有没有这笔记录，再决定是否重新调账。确认放弃？', { title: '放弃这次调账', okText: '放弃', danger: true })
+  if (adjBusy.value) return
+  const ok = await dialog.confirm(`这次对 ${agent.value?.username} 的调账可能已经入账。放弃后不会再重试，请先到「余额流水」确认有没有这笔记录，再决定是否重新调账。确认放弃？`, { title: '放弃这次调账', okText: '放弃', danger: true })
   if (!ok) return
-  keeper.done()
+  adjustPendings.delete(id.value)
+  adjustKeeperFor(id.value).done()
   adjLocked.value = false
   adjMsg.value = ''
   adjustOpen.value = false
@@ -369,23 +395,32 @@ async function abandonAdjust() {
   loadLedger()
 }
 function beforeCloseAdjust(done: () => void) {
+  if (adjBusy.value) return
   if (adjLocked.value) { dialog.toast('结果未知，请先原样重试或放弃这次调账', 'warn'); return }
   done()
 }
 async function submitAdjust() {
-  if (adjBusy.value) return
+  if (adjBusy.value || !agent.value) return
   const p = parseSignedUsd(adjAmount.value)
   if (!p.ok) { adjMsg.value = p.error; return }
   const note = adjNote.value.trim()
   if (!note) { adjMsg.value = '请填写原因'; return }
+  const pv = adjustPreview(agent.value.username, agent.value.balance_cents, p.cents)
+  if (pv.willBeNegative && !adjLocked.value) { adjMsg.value = pv.warning; return }
+  const ok = await dialog.confirm(`${pv.text}\n${pv.afterText}\n原因：${note}\n确认调账？`, { title: `确认调账：${agent.value.username}`, okText: pv.direction === 'credit' ? '确认充值' : '确认扣款', danger: pv.direction === 'debit' })
+  if (!ok) return
+  const aid = id.value
+  const keeper = adjustKeeperFor(aid)
   adjBusy.value = true
   adjMsg.value = ''
   try {
-    const key = keeper.keyFor({ agent_id: id.value, amount_cents: p.cents, note })
-    const r = await adminApi<any>(`/agents/${id.value}/adjust`, 'POST', { amount_cents: p.cents, note }, { 'Idempotency-Key': key })
+    const payload = { agent_id: aid, amount_cents: p.cents, note }
+    const key = keeper.keyFor(payload)
+    const r = await adminApi<any>(`/agents/${aid}/adjust`, 'POST', { amount_cents: p.cents, note }, { 'Idempotency-Key': key })
     const o = classifyAdjust(r.status, r.data)
-    if (o.clearKey) keeper.done()
-    if (o.kind === 'unknown') { adjLocked.value = true; adjMsg.value = o.message; return }
+    if (o.clearKey) { keeper.done(); adjustPendings.delete(aid) }
+    if (aid !== id.value) return // 请求期间已切到别的代理商：只处理键和未决状态
+    if (o.kind === 'unknown') { adjustPendings.set(aid, payload); adjLocked.value = true; adjMsg.value = o.message; return }
     adjLocked.value = false
     if (o.kind === 'failed') { adjMsg.value = o.message; return }
     dialog.toast(o.message, o.kind === 'replayed' ? 'info' : 'ok', o.kind === 'replayed' ? 6000 : 2800)
@@ -397,6 +432,32 @@ async function submitAdjust() {
   }
 }
 
+// 有未决调账时离开（或换到另一个代理商）先提示
+async function confirmLeave(): Promise<boolean> {
+  if (!adjustLeaveWarning(id.value)) return true
+  return dialog.confirm(ADJUST_LEAVE_TEXT, { title: '调账结果未知', okText: '仍然离开', danger: true })
+}
+onBeforeRouteLeave(async () => (await confirmLeave()) || false)
+onBeforeRouteUpdate(async () => (await confirmLeave()) || false)
+
+function resetForId() {
+  agent.value = null
+  err.value = ''
+  adjustOpen.value = false
+  adjAmount.value = ''
+  adjNote.value = ''
+  adjLocked.value = false
+  adjMsg.value = ''
+  for (const k of Object.keys(overrideEdit)) delete overrideEdit[k]
+  overrides.value = []
+  ledger.value = []; orders.value = []; codes.value = []
+  ledgerPage.value = ordersPage.value = codesPage.value = 1
+  tab.value = 'ledger'
+  loadAgent()
+  loadLedger()
+}
+watch(id, (n, o) => { if (n && n !== o) resetForId() })
+
 onMounted(async () => {
   loadAgent()
   loadLedger()
@@ -404,3 +465,8 @@ onMounted(async () => {
   if (t.ok) tiers.value = t.data.items || []
 })
 </script>
+
+<style scoped>
+.adj-credit { background: rgba(22, 163, 74, 0.1); color: #15803d; }
+.adj-debit { background: rgba(220, 38, 38, 0.1); color: #b91c1c; }
+</style>

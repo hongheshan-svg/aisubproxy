@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
-  adminErrorText, classifyAdjust, matrixChanges, overrideChanges, validProductCode,
+  adminErrorText, adjustOpenState, adjustPreview, classifyAdjust, matrixChanges, overrideChanges, validProductCode,
+  adjustPendings, adjustKeeperFor, USERNAME_TAKEN_HINT,
 } from '../agentAdmin'
 
 describe('matrixChanges', () => {
@@ -88,6 +89,9 @@ describe('adminErrorText', () => {
   it('兜底', () => {
     expect(adminErrorText({}, 0)).toBe('操作失败，请稍后再试')
   })
+  it('未知英文编号带上编号', () => {
+    expect(adminErrorText({ error: 'zzz_unknown' })).toBe('操作失败（zzz_unknown）')
+  })
 })
 
 describe('validProductCode', () => {
@@ -98,5 +102,51 @@ describe('validProductCode', () => {
     expect(validProductCode('a_b')).toBe(false)
     expect(validProductCode('a'.repeat(49))).toBe(false)
     expect(validProductCode('a'.repeat(48))).toBe(true)
+  })
+})
+
+describe('adjustPreview', () => {
+  it('充值', () => {
+    const p = adjustPreview('alice', 1000, 250)
+    expect(p.direction).toBe('credit')
+    expect(p.text).toBe('将给 alice 充值 $2.50')
+    expect(p.afterText).toBe('调账后余额 $12.50')
+    expect(p.willBeNegative).toBe(false)
+  })
+  it('扣款', () => {
+    const p = adjustPreview('alice', 1000, -300)
+    expect(p.direction).toBe('debit')
+    expect(p.text).toBe('将从 alice 扣除 $3.00')
+    expect(p.afterText).toBe('调账后余额 $7.00')
+    expect(p.willBeNegative).toBe(false)
+  })
+  it('扣成负数提前提示', () => {
+    const p = adjustPreview('alice', 100, -300)
+    expect(p.willBeNegative).toBe(true)
+    expect(p.warning).toContain('余额不足')
+    expect(p.afterText).toBe('调账后余额 -$2.00')
+  })
+})
+
+describe('adjustOpenState / 未决调账', () => {
+  it('没有未决调账：空白、不锁定、不丢键', () => {
+    expect(adjustOpenState(null)).toEqual({ locked: false, amountText: '', note: '' })
+  })
+  it('有未决调账：恢复金额和原因并锁定', () => {
+    expect(adjustOpenState({ agent_id: 1, amount_cents: -2050, note: '补差' })).toEqual({ locked: true, amountText: '-20.50', note: '补差' })
+    expect(adjustOpenState({ agent_id: 1, amount_cents: 100, note: 'x' }).amountText).toBe('1.00')
+  })
+  it('未决按代理商存在模块级，键按代理商各自保留', () => {
+    adjustPendings.set(5, { agent_id: 5, amount_cents: 100, note: 'a' })
+    const k1 = adjustKeeperFor(5).keyFor({ agent_id: 5, amount_cents: 100, note: 'a' })
+    expect(adjustKeeperFor(5).keyFor({ agent_id: 5, amount_cents: 100, note: 'a' })).toBe(k1)
+    expect(adjustKeeperFor(6)).not.toBe(adjustKeeperFor(5))
+    adjustPendings.clear()
+  })
+})
+
+describe('其他文案', () => {
+  it('建号重名提示', () => {
+    expect(USERNAME_TAKEN_HINT).toContain('重置密码')
   })
 })

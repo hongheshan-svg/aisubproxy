@@ -87,11 +87,11 @@ export const routes: RouteRecordRaw[] = [
       { path: 'marswallex-wallet', name: 'MarsWallexWallet', component: () => import('../views/admin/MarsWallexWallet.vue'), meta: { title: '钱包', fullTitle: 'MarsWallex 钱包', group: 'MarsWallex', icon: 'Wallet' } },
       { path: 'cardpool', name: 'CardPool', component: () => import('../views/admin/CardPool.vue'), meta: { title: '卡池', fullTitle: 'MarsWallex 卡池', group: 'MarsWallex', icon: 'CreditCard' } },
       { path: 'marswallex-selection', name: 'MarsWallexSelection', component: () => import('../views/admin/MarsWallexSelection.vue'), meta: { title: '选卡规则', fullTitle: 'MarsWallex 选卡规则', group: 'MarsWallex', icon: 'Operation' } },
-      // 系统
       // 代理商（管理员侧）：详情页不设 title，不进侧栏
       { path: 'agents', name: 'AgentList', component: () => import('../views/admin/AgentList.vue'), meta: { title: '代理商', group: '代理商', icon: 'User' } },
       { path: 'agents/:id', name: 'AgentDetail', component: () => import('../views/admin/AgentDetail.vue') },
       { path: 'agent-pricing', name: 'AgentPricing', component: () => import('../views/admin/AgentPricing.vue'), meta: { title: '批发商品与价格', group: '代理商', icon: 'PriceTag' } },
+      // 系统
       { path: 'appearance', name: 'SiteAppearance', component: () => import('../views/admin/SiteAppearance.vue'), meta: { title: '外观与品牌', group: '系统', icon: 'Brush' } },
       { path: 'telegram', name: 'TelegramAlerts', component: () => import('../views/admin/TelegramAlerts.vue'), meta: { title: 'Telegram 告警', group: '系统', icon: 'ChatDotRound' } },
       { path: 'audit', name: 'AuditLogs', component: () => import('../views/admin/AuditLogs.vue'), meta: { title: '审计日志', group: '系统', icon: 'List' } },

@@ -177,12 +177,14 @@ func (s *Service) adoptSubmitted(ctx context.Context) {
 	}
 }
 
-// adoptOne 接管一张已提交的单。panic 时只记日志、跳过这一单（单据原样留着，下一轮再试），不影响同一轮的其他单。
+// adoptOne 接管一张已提交的单。panic 时记日志、按天告警（panicAlert），跳过这一单（单据原样留着，下一轮再试），不影响同一轮的其他单。
 // panic 的值可能带会话等，只记类型和位置。
 func (s *Service) adoptOne(ctx context.Context, o *Order) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("[payengine] 单据 %s 接管时内部错误（panic），跳过，下一轮再试：%s", o.OrderNo, safego.Describe(r))
+			desc := safego.Describe(r)
+			log.Printf("[payengine] 单据 %s 接管时内部错误（panic），跳过，下一轮再试：%s", o.OrderNo, desc)
+			s.panicAlert(o.OrderNo, "接管", desc)
 		}
 	}()
 	j := &job{o: o}
@@ -758,12 +760,14 @@ func (s *Service) sweepStale(ctx context.Context) {
 	}
 }
 
-// sweepOne 收尾一张停滞单。panic 时只记日志、跳过这一单（下一轮再试），不影响同一轮的其他单。
+// sweepOne 收尾一张停滞单。panic 时记日志、按天告警（panicAlert），跳过这一单（下一轮再试），不影响同一轮的其他单。
 // panic 的值可能带会话等，只记类型和位置。
 func (s *Service) sweepOne(ctx context.Context, o *Order) {
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("[payengine] 收敛停滞单据 %s 时内部错误（panic），跳过，下一轮再试：%s", o.OrderNo, safego.Describe(r))
+			desc := safego.Describe(r)
+			log.Printf("[payengine] 收敛停滞单据 %s 时内部错误（panic），跳过，下一轮再试：%s", o.OrderNo, desc)
+			s.panicAlert(o.OrderNo, "收敛停滞单", desc)
 		}
 	}()
 	j := &job{o: o}
@@ -777,6 +781,30 @@ func (s *Service) sweepOne(ctx context.Context, o *Order) {
 		return // escalateUnpooled 已告警
 	}
 	s.opts.Alert(fmt.Sprintf("付款单 %s 停在「%s」超过 %v 没有进展，已按提交前放弃收尾（没有点支付）", o.OrderNo, from, staleAfter))
+}
+
+// panicAlertMaxKeys 是 panicAlerted 最多记多少个键，满了就清空重记：多发几条告警可以接受，内存不能无限涨。
+const panicAlertMaxKeys = 256
+
+// panicAlert 在接管、收敛停滞单时某一单 panic 后发运维告警。确定性的 panic 每一轮都会发生、这一单一直卡着，
+// 只记日志没人知道；同一单、同一阶段（stage）在同一北京日只发一次。文字只有单号、阶段和 desc（safego.Describe：panic 类型和位置），
+// 不带邮箱、链接和 panic 的值。去重只在内存里，重启后多发一条可以接受。读时钟或告警本身出错也不往外抛：调用方在 recover 里。
+func (s *Service) panicAlert(no, stage, desc string) {
+	defer safego.RecoverNoAlert("付款单 " + no + " " + stage + "时内部错误的告警")
+	key := no + "|" + stage
+	day := s.now().In(time.FixedZone("UTC+8", 8*3600)).Format("2006-01-02")
+	s.mu.Lock()
+	dup := s.panicAlerted[key] == day
+	if !dup {
+		if s.panicAlerted == nil || len(s.panicAlerted) >= panicAlertMaxKeys {
+			s.panicAlerted = map[string]string{}
+		}
+		s.panicAlerted[key] = day
+	}
+	s.mu.Unlock()
+	if !dup {
+		s.opts.Alert(fmt.Sprintf("付款单 %s %s时内部错误（panic），已跳过，下一轮再试；这一单会一直卡着，请查看日志：%s。同一单当天不再重复提醒。", no, stage, desc))
+	}
 }
 
 // cleanProfiles 只在用真实浏览器时清理：注入假浏览器的测试不该碰系统临时目录，

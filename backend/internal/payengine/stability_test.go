@@ -323,3 +323,86 @@ func TestHandlePanicSettlesEvenIfAlertPanics(t *testing.T) {
 		t.Fatal("收尾之后仍应尝试告警")
 	}
 }
+
+// panicAlerts 返回告警里提到单号 no、说的是内部错误（panic）的那几条。
+func panicAlerts(h *harness, no string) []string {
+	var out []string
+	for _, a := range h.alerts.Texts() {
+		if strings.Contains(a, no) && strings.Contains(a, "panic") {
+			out = append(out, a)
+		}
+	}
+	return out
+}
+
+// 最终修复 B10：接管已提交单时 panic，除日志外还要告警：确定性 panic 的单会一直卡着，没人知道。
+// 同一单、同一阶段按北京日去重（每轮都会 panic，不能刷屏），第二天再提醒一次。告警不带邮箱、链接和 panic 的值。
+func TestAdoptPanicAlertsDaily(t *testing.T) {
+	h := newPayHarness(t, nil)
+	bad := presetOrder(t, "bad@example.com", StateSubmitted, map[string]any{"submitted_at": h.clock.Now().Unix()})
+	var armed atomic.Bool
+	clock := h.svc.opts.Now
+	h.svc.opts.Now = func() time.Time {
+		if armed.CompareAndSwap(true, false) { // 只让接管时第一次读时钟 panic
+			panicNow()
+		}
+		return clock()
+	}
+	round := func() {
+		armed.Store(true)
+		h.svc.adoptSubmitted(ctx)
+	}
+	round()
+	got := panicAlerts(h, bad.OrderNo)
+	if len(got) != 1 || !strings.Contains(got[0], "接管") {
+		t.Fatalf("接管 panic 应告警一次: %q", got)
+	}
+	round()
+	if got := panicAlerts(h, bad.OrderNo); len(got) != 1 {
+		t.Fatalf("同一天同一单不应重复告警: %q", got)
+	}
+	h.clock.Advance(24 * time.Hour)
+	round()
+	if got := panicAlerts(h, bad.OrderNo); len(got) != 2 {
+		t.Fatalf("第二天应再提醒一次: %q", got)
+	}
+	if g := mustOrder(t, bad.OrderNo); g.State != StateSubmitted {
+		t.Fatalf("panic 的那单应原样留着: %+v", g)
+	}
+	assertNoPanicValue(t, h, bad.OrderNo)
+	for _, a := range h.alerts.Texts() {
+		if strings.Contains(a, "@") || strings.Contains(a, "http") {
+			t.Fatalf("告警不应带邮箱或链接: %q", a)
+		}
+	}
+}
+
+// 最终修复 B10：扫描停滞单时 panic 同样告警，按单号 + 阶段每天一次；和接管的告警互不吞掉。
+func TestSweepPanicAlertsDaily(t *testing.T) {
+	h := newPayHarness(t, nil)
+	bad := presetStale(t, "bad@example.com", StateFilling, 10*time.Minute, map[string]any{"card_id": "card-b", "lease_token": "tok-b"})
+	h.pool.release = func(l *cardpool.Lease, _ cardpool.Outcome) error {
+		if l.OrderRef == bad.OrderNo {
+			panicNow()
+		}
+		return nil
+	}
+	h.svc.recovered.Store(true)
+	h.svc.sweepStale(ctx)
+	h.svc.sweepStale(ctx)
+	got := panicAlerts(h, bad.OrderNo)
+	if len(got) != 1 || !strings.Contains(got[0], "停滞") {
+		t.Fatalf("扫描 panic 同一天应只告警一次: %q", got)
+	}
+	h.clock.Advance(24 * time.Hour)
+	h.svc.sweepStale(ctx)
+	if got := panicAlerts(h, bad.OrderNo); len(got) != 2 {
+		t.Fatalf("第二天应再提醒一次: %q", got)
+	}
+	assertNoPanicValue(t, h, bad.OrderNo)
+	for _, a := range h.alerts.Texts() {
+		if strings.Contains(a, "@") || strings.Contains(a, "http") {
+			t.Fatalf("告警不应带邮箱或链接: %q", a)
+		}
+	}
+}

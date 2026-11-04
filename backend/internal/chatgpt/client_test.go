@@ -108,7 +108,8 @@ func TestCreateCheckoutRequestShape(t *testing.T) {
 
 func TestCreateCheckoutCustomSession(t *testing.T) {
 	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte(`{"checkout_session_id":"cs_live_abc","tag":"custom_checkout_session","processor_entity":" openai_llc ","checkout_ui_mode":"custom","client_secret":"cs_live_abc_secret_x"}`))
+		// tag、processor_entity 首尾带空白：源头就去掉（设计 §5.2），调用方直接比较 co.Tag 也不会误判
+		w.Write([]byte(`{"checkout_session_id":"cs_live_abc","tag":" custom_checkout_session\n","processor_entity":" openai_llc ","checkout_ui_mode":"custom","client_secret":"cs_live_abc_secret_x"}`))
 	}))
 	got, err := c.CreateCheckout(context.Background(), Session{AccessToken: "at-1"}, "chatgptplusplan", "PH", "PHP")
 	if err != nil {

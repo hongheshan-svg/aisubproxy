@@ -8,9 +8,9 @@ package payengine
 //     Pro 20x ₱9,990、Pro 50x ₱32,490（免税价 ₱29,008.93）；Codex 点数每 250 点 ₱565。
 //     PH 实际扣款含税还是免税取决于账单地址，所以区间同时覆盖两种。
 //
-// 区间规则：
+// 区间规则（整数运算，向下取整；上限一律向上取整，见 capOf）：
 //   - US：预期 = 最低 = 标价，上限 = 标价 × 110%。
-//   - PH 订阅：预期 = 最新标价；最低 = 已知标价最低值 × 7/8（÷1.12 再 ×0.98）；上限 = 已知标价最高值 × 102%，向上取整。
+//   - PH 订阅：预期 = 最新标价；最低 = 已知标价最低值 × 7/8（÷1.12 再 ×0.98）；上限 = 已知标价最高值 × 102%。
 //   - PH 点数：预期 = ₱565 × 数量 / 250；最低 = 预期 × 7/8；上限 = 预期 × 112%。
 const (
 	builtinUSCapPercent = 110 // US 上限 = 标价 × 110%
@@ -37,7 +37,7 @@ var builtinPHSub = map[string]phSubPrice{
 }
 
 // BuiltinRegionPrice 返回套餐在地区的内置价格（币种、预期、最低、上限）；Enabled 为 false、FundCents 为 0。
-// 只有 US、PH 有内置价；其他地区或未知套餐返回 false。
+// 只有 US、PH 有内置价；其他地区、未知套餐，或订阅套餐在内置价格表里没有这一项，都返回 false。
 func BuiltinRegionPrice(planKey, region string) (RegionConf, bool) {
 	q := CreditQuantity(planKey)
 	isSub := contains(SubscriptionPlanKeys, planKey)
@@ -46,23 +46,27 @@ func BuiltinRegionPrice(planKey, region string) (RegionConf, bool) {
 	}
 	switch region {
 	case "US":
-		var list int64
+		list := creditUSPer250Minor * int64(q) / 250
 		if isSub {
-			list = builtinUSSub[planKey]
-		} else {
-			list = creditUSPer250Minor * int64(q) / 250
+			var ok bool
+			if list, ok = builtinUSSub[planKey]; !ok {
+				return RegionConf{}, false
+			}
 		}
-		return RegionConf{Currency: "USD", ExpectMinor: list, FloorMinor: list, CapMinor: list * builtinUSCapPercent / 100}, true
+		return RegionConf{Currency: "USD", ExpectMinor: list, FloorMinor: list, CapMinor: capOf(list, builtinUSCapPercent)}, true
 	case "PH":
 		if !isSub {
 			expect := creditPHPer250Minor * int64(q) / 250
-			return RegionConf{Currency: "PHP", ExpectMinor: expect, FloorMinor: expect * phFloorNum / phFloorDen, CapMinor: expect * creditPHCapPercent / 100}, true
+			return RegionConf{Currency: "PHP", ExpectMinor: expect, FloorMinor: expect * phFloorNum / phFloorDen, CapMinor: capOf(expect, creditPHCapPercent)}, true
 		}
-		p := builtinPHSub[planKey]
+		p, ok := builtinPHSub[planKey]
+		if !ok {
+			return RegionConf{}, false
+		}
 		return RegionConf{
 			Currency: "PHP", ExpectMinor: p.latest,
 			FloorMinor: p.low * phFloorNum / phFloorDen,
-			CapMinor:   (p.high*phCapPercent + 99) / 100, // 向上取整
+			CapMinor:   capOf(p.high, phCapPercent),
 		}, true
 	}
 	return RegionConf{}, false
@@ -72,7 +76,9 @@ func BuiltinRegionPrice(planKey, region string) (RegionConf, bool) {
 // 币种与内置币种不同（且不为空）时不补，因为金额单位不同。补完的结果仍能通过 SavePlanTable 的校验：
 //   - 内置上限放不下管理员的非 0 预期或最低时，上限不补；
 //   - 内置预期会大于非 0 上限、或小于非 0 最低时，预期不补，留 0；
-//   - 补出来的最低若高于非 0 的预期或上限，降到两者中较小的非 0 值。
+//   - 最低只按上限拉低：补出来的最低高于非 0 的上限时，降到上限。
+//   - 管理员的非 0 预期低于内置最低时，最低不补、留 0，真实付款由 ResolvePlan 以「未配置最低金额」拒绝。
+//     预期多半是填错了（比如 pro_5x 填成 Plus 的 $20）：按它拉低最低，会让便宜档的页面过得了下限。
 func fillBuiltin(planKey, region string, rc RegionConf) RegionConf {
 	b, ok := BuiltinRegionPrice(planKey, region)
 	if !ok || (rc.Currency != "" && rc.Currency != b.Currency) {
@@ -84,14 +90,12 @@ func fillBuiltin(planKey, region string, rc RegionConf) RegionConf {
 	if rc.ExpectMinor == 0 && (rc.CapMinor == 0 || b.ExpectMinor <= rc.CapMinor) && b.ExpectMinor >= rc.FloorMinor {
 		rc.ExpectMinor = b.ExpectMinor
 	}
-	if rc.FloorMinor == 0 {
-		floor := b.FloorMinor
-		for _, limit := range []int64{rc.ExpectMinor, rc.CapMinor} {
-			if limit > 0 && floor > limit {
-				floor = limit
-			}
+	if rc.FloorMinor == 0 && (rc.ExpectMinor == 0 || rc.ExpectMinor >= b.FloorMinor) {
+		// 预期为 0 或不低于内置最低：最低 ≤ 预期自然成立，只需不高于上限
+		rc.FloorMinor = b.FloorMinor
+		if rc.CapMinor > 0 && rc.FloorMinor > rc.CapMinor {
+			rc.FloorMinor = rc.CapMinor
 		}
-		rc.FloorMinor = floor
 	}
 	return rc
 }
@@ -110,3 +114,6 @@ func BuiltinPrices() map[string]map[string]RegionConf {
 	}
 	return out
 }
+
+// capOf 是上限 = x × pct%，向上取整（设计 §5.10：金额向下取整，上限一律向上取整）。
+func capOf(x, pct int64) int64 { return (x*pct + 99) / 100 }

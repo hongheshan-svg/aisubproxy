@@ -153,6 +153,8 @@ type Service struct {
 	verifyFails map[string]int
 
 	breakerAlerted string // 熔断告警的去重键，见 breakerAlert；受 mu 保护
+	// panicAlerted 记接管、收敛停滞单时 panic 的告警发到了哪一天（单号|阶段 → 北京日），见 panicAlert；受 mu 保护
+	panicAlerted map[string]string
 
 	recoveryFailed bool            // 重启恢复失败过（已告警）；只在 Start 和其后的工作协程里读写，二者不并发
 	graceRestored  map[string]bool // 本次启动已补过宽限期的被拒单，恢复重试时不再补；读写范围同上

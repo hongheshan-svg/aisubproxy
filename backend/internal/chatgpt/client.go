@@ -280,5 +280,6 @@ func (c *Client) CreateCheckout(ctx context.Context, s Session, planName, countr
 	if data.SessionID == "" {
 		return Checkout{}, errors.New("创建支付会话未返回 checkout_session_id")
 	}
-	return Checkout{SessionID: data.SessionID, URL: data.URL, Tag: data.Tag, ProcessorEntity: strings.TrimSpace(data.ProcessorEntity)}, nil
+	// tag 和 processor_entity 在源头去掉首尾空白（设计 §5.2），和点数那条路（billing.go）一致
+	return Checkout{SessionID: data.SessionID, URL: data.URL, Tag: strings.TrimSpace(data.Tag), ProcessorEntity: strings.TrimSpace(data.ProcessorEntity)}, nil
 }

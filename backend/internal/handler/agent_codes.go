@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -137,14 +136,10 @@ func loadAgentCodes(c *gin.Context, f agentCodeFilter) ([]agentCodeEntry, bool) 
 		agentOrderBusy(c, "列出码", err)
 		return nil, false
 	}
-	orders, _, err := db.ListAgentOrders(ctx, aid, 1<<30, 0)
+	product, err := db.AgentOrderProductCodes(ctx, aid)
 	if err != nil {
 		agentOrderBusy(c, "列出订单", err)
 		return nil, false
-	}
-	product := make(map[int64]string, len(orders))
-	for _, o := range orders {
-		product[o.ID] = o.ProductCode
 	}
 	out := make([]agentCodeEntry, 0, len(rows))
 	for _, r := range rows {
@@ -159,7 +154,6 @@ func loadAgentCodes(c *gin.Context, f agentCodeFilter) ([]agentCodeEntry, bool) 
 			out = append(out, e)
 		}
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].row.ID > out[j].row.ID })
 	return out, true
 }
 
@@ -252,7 +246,7 @@ func AgentExportCodes(c *gin.Context) {
 		list = kept
 	}
 	if len(list) > agentExportMax {
-		agentOrderInvalid(c, fmt.Sprintf("一次最多导出 %d 张，请缩小筛选范围", agentExportMax))
+		agentError(c, http.StatusBadRequest, "export_too_large", fmt.Sprintf("一次最多导出 %d 张，请缩小筛选范围", agentExportMax))
 		return
 	}
 	ids := make([]int64, len(list))
@@ -304,20 +298,10 @@ func AgentOverview(c *gin.Context) {
 	}
 	now := agentNow().In(beijingZone)
 	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, beijingZone)
-	entries, _, err := db.ListAgentLedger(ctx, aid, monthStart.Unix(), monthStart.AddDate(0, 1, 0).Unix(), 1<<30, 0)
+	month, err := db.AgentPurchaseSince(ctx, aid, monthStart.Unix(), monthStart.AddDate(0, 1, 0).Unix())
 	if err != nil {
 		agentOrderBusy(c, "统计本月下单", err)
 		return
-	}
-	var month int64
-	for _, e := range entries {
-		if e.Kind == db.LedgerPurchase {
-			if e.AmountCents < 0 {
-				month -= e.AmountCents
-			} else {
-				month += e.AmountCents
-			}
-		}
 	}
 	rows, err := db.LoadLocalCDKRowsByAgent(ctx, aid)
 	if err != nil {

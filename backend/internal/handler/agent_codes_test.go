@@ -211,6 +211,11 @@ func TestAgentCodesExportByIDsScoped(t *testing.T) {
 		}
 	}
 	audit := auditRows(t)
+	for _, row := range append(out, f.listAll(t)...) {
+		if row.CodePrefix != "" && strings.Contains(audit, row.CodePrefix) {
+			t.Fatalf("审计里不应出现码的前缀 %q:\n%s", row.CodePrefix, audit)
+		}
+	}
 	if !strings.Contains(audit, "agent:alice|agent_codes_export|count=2 mode=ids") || !strings.Contains(audit, "mode=filter") {
 		t.Fatalf("缺导出审计:\n%s", audit)
 	}
@@ -267,6 +272,13 @@ func TestAgentCodesExportNoMasterKey(t *testing.T) {
 	if code != 503 || jsonField(t, raw, "error") != "maintenance" {
 		t.Fatalf("没有主密钥应 503 maintenance: %d %s", code, raw)
 	}
+	if alerts := f.alertList(); len(alerts) != 1 || !strings.Contains(alerts[0], "APP_MASTER_KEY") {
+		t.Fatalf("应有 1 条每日告警: %v", alerts)
+	}
+	f.exportCodes(f.s, `{"filter":{}}`)
+	if n := len(f.alertList()); n != 1 {
+		t.Fatalf("每日告警同一天只发一次: %d", n)
+	}
 }
 
 func TestAgentCodesExportLimit(t *testing.T) {
@@ -277,7 +289,7 @@ func TestAgentCodesExportLimit(t *testing.T) {
 	agentExportMax = 2
 	t.Cleanup(func() { agentExportMax = old })
 	code, _, raw := f.exportCodes(f.s, `{"filter":{}}`)
-	if code != 400 || !strings.Contains(raw, "一次最多导出 2 张，请缩小筛选范围") {
+	if code != 400 || jsonField(t, raw, "error") != "export_too_large" || !strings.Contains(raw, "一次最多导出 2 张，请缩小筛选范围") {
 		t.Fatalf("超过上限应 400: %d %s", code, raw)
 	}
 	if code, out, _ := f.exportCodes(f.s, fmt.Sprintf(`{"ids":[%d,%d]}`, r.Codes[0].ID, r.Codes[1].ID)); code != 200 || len(out) != 2 {
@@ -369,7 +381,7 @@ func (f *orderFix) ledgerGet(path string) (int, map[string]any) {
 func ledgerFix(t *testing.T) (*orderFix, int64) {
 	f := newOrderFix(t, newAgentEnv(t), true)
 	o := f.mustOrder(f.s, orderReq("mw-plus-ph", 1, "", "req-led-1", 500))
-	const t0 = int64(1_800_000_000)
+	const t0 = int64(1_700_000_000)
 	if _, err := db.DB.Exec(`UPDATE agent_ledger SET created_at = ? WHERE agent_id = ? AND kind = 'adjust'`, t0, f.aid); err != nil {
 		t.Fatal(err)
 	}
@@ -381,7 +393,7 @@ func ledgerFix(t *testing.T) (*orderFix, int64) {
 
 func TestAgentLedgerSummaryAndRange(t *testing.T) {
 	f, orderID := ledgerFix(t)
-	const t0 = int64(1_800_000_000)
+	const t0 = int64(1_700_000_000)
 	code, m := f.ledgerGet(fmt.Sprintf("%s?from=%d&to=%d", ledgerPath, t0-10, t0+1000))
 	if code != 200 || m["total"] != float64(2) {
 		t.Fatalf("流水: %d %v", code, m)
@@ -447,7 +459,7 @@ func TestAgentLedgerSummaryAndRange(t *testing.T) {
 
 func TestAgentLedgerExportCSV(t *testing.T) {
 	f, orderID := ledgerFix(t)
-	const t0 = int64(1_800_000_000)
+	const t0 = int64(1_700_000_000)
 	if _, err := db.DB.Exec(`UPDATE agent_ledger SET note = '=HYPERLINK("http://x")' WHERE kind = 'adjust'`); err != nil {
 		t.Fatal(err)
 	}
@@ -504,7 +516,7 @@ func TestCSVSafe(t *testing.T) {
 
 func TestAdminAgentLedgerSharesQuery(t *testing.T) {
 	f, _ := ledgerFix(t)
-	const t0 = int64(1_800_000_000)
+	const t0 = int64(1_700_000_000)
 	if _, err := db.DB.Exec(`UPDATE agent_ledger SET operator = 'admin', ext_ref = 'adj-ref-1' WHERE kind = 'adjust'`); err != nil {
 		t.Fatal(err)
 	}
@@ -554,5 +566,161 @@ func TestAdminAgentLedgerSharesQuery(t *testing.T) {
 		if w := f.adminDo("GET", adminBase+p, "", nil); w.Code != 404 {
 			t.Errorf("%s 应 404: %d", p, w.Code)
 		}
+	}
+}
+
+// listAll 取 alice 的全部码行（带前缀），给审计测试比对用。
+func (f *orderFix) listAll(t *testing.T) []codeRowReply {
+	t.Helper()
+	_, items := f.listCodes(f.s, "?page_size=200")
+	return items
+}
+
+// 两个商品各下一单：每张码的 product_code 对，按商品筛选只返回对应的码（把 product 写死或忽略筛选的实现会失败）。
+func TestAgentCodesProductCodeAndFilter(t *testing.T) {
+	f := newOrderFix(t, newAgentEnv(t), true)
+	f.topUp()
+	// 套餐 × 地区唯一，同一地区建不了第二个商品：第二单下完后把订单改成另一个商品编码
+	a := f.mustOrder(f.s, orderReq("mw-plus-ph", 2, "", "req-pf-a", 500))
+	b := f.mustOrder(f.s, orderReq("mw-plus-ph", 1, "", "req-pf-b", 500))
+	if _, err := db.DB.Exec(`UPDATE agent_orders SET product_code = 'mw-plus-ph-b' WHERE id = ?`, b.Order.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, all := f.listCodes(f.s, "")
+	if len(all) != 3 {
+		t.Fatalf("应有 3 张: %+v", all)
+	}
+	for _, c := range all {
+		want := "mw-plus-ph"
+		if c.OrderID == b.Order.ID {
+			want = "mw-plus-ph-b"
+		}
+		if c.ProductCode != want {
+			t.Fatalf("码 %d product_code=%q 想要 %q", c.ID, c.ProductCode, want)
+		}
+	}
+	if _, items := f.listCodes(f.s, "?product=mw-plus-ph-b"); len(items) != 1 || items[0].ID != b.Codes[0].ID {
+		t.Fatalf("按商品 b 筛选: %+v", items)
+	}
+	if _, items := f.listCodes(f.s, "?product=mw-plus-ph"); len(items) != 2 || items[0].OrderID != a.Order.ID {
+		t.Fatalf("按商品 a 筛选: %+v", items)
+	}
+	_, out, raw := f.exportCodes(f.s, `{"filter":{"product":"mw-plus-ph-b"}}`)
+	if len(out) != 1 || out[0].ProductCode != "mw-plus-ph-b" {
+		t.Fatalf("导出按商品筛选: %s", raw)
+	}
+}
+
+// 别人名下（或后台发的）本地码有付款单，不影响 alice 的码列表、状态和概览。
+func TestAgentCodesUnaffectedByOthersPayOrders(t *testing.T) {
+	f := newOrderFix(t, newAgentEnv(t), true)
+	_, bs := f.seedBuyer("bob", 1000)
+	mine := f.mustOrder(f.s, orderReq("mw-plus-ph", 1, "", "req-sc-a", 500))
+	theirs := f.mustOrder(bs, orderReq("mw-plus-ph", 1, "", "req-sc-b", 500))
+	adminCode, adminID := f.issueCode("plus", "PH")
+	_ = adminCode
+	f.insertOrder("cdk", db.LocalCDKSourceRef(theirs.Codes[0].ID), 0, "bob@example.com", "succeeded", "", true)
+	f.insertOrder("cdk", db.LocalCDKSourceRef(adminID), 0, "adm@example.com", "succeeded", "", true)
+	// 引用到 alice 码 ID 以外的 source_ref 前缀相近的干扰单
+	f.insertOrder("cdk", db.LocalCDKSourceRef(mine.Codes[0].ID)+"9", 0, "x@example.com", "succeeded", "", true)
+
+	total, items := f.listCodes(f.s, "")
+	if total != 1 || len(items) != 1 || items[0].ID != mine.Codes[0].ID || items[0].Status != "unused" || items[0].Email != nil {
+		t.Fatalf("alice 的码不应受别人的付款单影响: %+v", items)
+	}
+	w := f.agentDo(f.s, "GET", agentBase+"/overview", "")
+	if !strings.Contains(w.Body.String(), `"unused":1`) || !strings.Contains(w.Body.String(), `"used":0`) {
+		t.Fatalf("概览: %s", w.Body.String())
+	}
+	_, bitems := f.listCodes(bs, "")
+	if len(bitems) != 1 || bitems[0].Status != "used" {
+		t.Fatalf("bob 的码应是 used: %+v", bitems)
+	}
+}
+
+// 概览的「本月」按北京时间：北京 11-01 00:30（UTC 10-31 16:30）算进 11 月；北京 10-31 23:30 不算。
+func TestAgentOverviewMonthBoundaryBeijing(t *testing.T) {
+	f := newOrderFix(t, newAgentEnv(t), true)
+	f.mustOrder(f.s, orderReq("mw-plus-ph", 1, "", "req-mb-1", 500))
+	f.mustOrder(f.s, orderReq("mw-plus-ph", 1, "", "req-mb-2", 500))
+	in := time.Date(2026, 11, 1, 0, 30, 0, 0, beijingZone).Unix()
+	out := time.Date(2026, 10, 31, 23, 30, 0, 0, beijingZone).Unix()
+	var ids []int64
+	rows, err := db.DB.Query(`SELECT id FROM agent_ledger WHERE agent_id = ? AND kind = 'purchase' ORDER BY id`, f.aid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rows.Next() {
+		var id int64
+		_ = rows.Scan(&id)
+		ids = append(ids, id)
+	}
+	rows.Close()
+	if _, err := db.DB.Exec(`UPDATE agent_ledger SET created_at = ? WHERE id = ?`, in, ids[0]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.DB.Exec(`UPDATE agent_ledger SET created_at = ? WHERE id = ?`, out, ids[1]); err != nil {
+		t.Fatal(err)
+	}
+	w := f.agentDo(f.s, "GET", agentBase+"/overview", "")
+	if m := decodeMap(t, w.Body.String()); m["month_order_cents"] != float64(500) {
+		t.Fatalf("本月应只含北京 11-01 00:30 的一笔 500: %s", w.Body.String())
+	}
+}
+
+// 默认窗口是最近 30 天：31 天前的流水不在，29 天前的在。
+func TestAgentLedgerDefaultWindow(t *testing.T) {
+	f := newOrderFix(t, newAgentEnv(t), true)
+	f.mustOrder(f.s, orderReq("mw-plus-ph", 1, "", "req-dw-1", 500))
+	now := f.clock.Unix()
+	day := int64(86400)
+	if _, err := db.DB.Exec(`UPDATE agent_ledger SET created_at = ? WHERE agent_id = ? AND kind = 'adjust'`, now-31*day, f.aid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.DB.Exec(`UPDATE agent_ledger SET created_at = ? WHERE agent_id = ? AND kind = 'purchase'`, now-29*day, f.aid); err != nil {
+		t.Fatal(err)
+	}
+	_, m := f.ledgerGet(ledgerPath)
+	items := m["items"].([]any)
+	if m["total"] != float64(1) || len(items) != 1 || items[0].(map[string]any)["kind"] != "purchase" {
+		t.Fatalf("默认只含 30 天内的流水: %v", m)
+	}
+	if m["summary"].(map[string]any)["opening_cents"] != float64(1000) {
+		t.Fatalf("31 天前的流水计入期初: %v", m["summary"])
+	}
+}
+
+// from、to 为负数或极端值：400，不能因为减法溢出而放行。
+func TestAgentLedgerNegativeAndOverflowRange(t *testing.T) {
+	f, _ := ledgerFix(t)
+	for _, q := range []string{
+		"?from=-9223372036854775808", "?from=-1", "?to=-1", "?from=-9223372036854775808&to=9223372036854775807",
+		"?from=0&to=9223372036854775807", "?from=-9223372036854775808&to=0",
+	} {
+		code, m := f.ledgerGet(ledgerPath + q)
+		if code != 400 {
+			t.Errorf("%s 应 400: %d %v", q, code, m)
+		}
+		w := f.agentDo(f.s, "GET", ledgerPath+"/export"+q, "")
+		if w.Code != 400 {
+			t.Errorf("导出 %s 应 400: %d", q, w.Code)
+		}
+	}
+}
+
+// CSV 导出把 to 截到当前秒：未来时间的行不会进来，所以导出过程中新插入的行也不会和翻页重叠。
+func TestAgentLedgerExportClampsToNow(t *testing.T) {
+	f, _ := ledgerFix(t)
+	now := f.clock.Unix()
+	if _, err := db.DB.Exec(`UPDATE agent_ledger SET created_at = ? WHERE agent_id = ? AND kind = 'purchase'`, now+1000, f.aid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.DB.Exec(`UPDATE agent_ledger SET created_at = ? WHERE agent_id = ? AND kind = 'adjust'`, now-1000, f.aid); err != nil {
+		t.Fatal(err)
+	}
+	q := fmt.Sprintf("?from=%d&to=%d", now-86400, now+5000)
+	w := f.agentDo(f.s, "GET", ledgerPath+"/export"+q, "")
+	if w.Code != 200 || strings.Contains(w.Body.String(), ",下单,") || !strings.Contains(w.Body.String(), ",调账,") {
+		t.Fatalf("to 应被截到当前秒，未来的下单行不应导出: %d %q", w.Code, w.Body.String())
 	}
 }

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -65,6 +66,9 @@ func TestReconcileRunsOncePerDayAndAlerts(t *testing.T) {
 	alerts := e.alertList()
 	if len(alerts) != 1 || !strings.Contains(alerts[0], "代理商余额与流水对不上") || !strings.Contains(alerts[0], "0.77") {
 		t.Fatalf("应有 1 条告警: %v", alerts)
+	}
+	if !strings.Contains(alerts[0], fmt.Sprintf("代理商 %d", id)) || strings.Contains(alerts[0], "alice") {
+		t.Fatalf("告警只写代理商 ID 和差额，不写登录名: %v", alerts)
 	}
 
 	// 同一个北京日再跑：告警数不变，结果不变

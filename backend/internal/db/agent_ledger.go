@@ -286,3 +286,11 @@ func AgentTotalsSince(ctx context.Context, dayStart, monthStart int64) (AgentTot
 	}
 	return t, nil
 }
+
+// AgentPurchaseSince 这个代理商 from <= created_at < to 的下单合计（purchase 流水金额的绝对值之和），规则同 AgentTotalsSince。
+func AgentPurchaseSince(ctx context.Context, agentID, from, to int64) (int64, error) {
+	var n int64
+	err := DB.QueryRowContext(ctx, `SELECT COALESCE(SUM(ABS(amount_cents)), 0) FROM agent_ledger
+		WHERE agent_id = ? AND kind = 'purchase' AND created_at >= ? AND created_at < ?`, agentID, from, to).Scan(&n)
+	return n, err
+}

@@ -63,10 +63,13 @@ func agentLedgerRange(c *gin.Context) (from, to int64, ok bool) {
 		f = t - agentLedgerDefaultDays*day
 	}
 	switch {
+	case f < 0 || t < 0:
+		agentOrderInvalid(c, "时间不能为负数")
+		return 0, 0, false
 	case f > t:
 		agentOrderInvalid(c, "开始时间不能晚于结束时间")
 		return 0, 0, false
-	case t-f > agentLedgerMaxDays*day:
+	case t-f > agentLedgerMaxDays*day: // 两端都 >= 0，相减不会溢出
 		agentError(c, http.StatusBadRequest, "range_too_large", fmt.Sprintf("查询范围最多 %d 天", agentLedgerMaxDays))
 		return 0, 0, false
 	}
@@ -116,6 +119,9 @@ func writeLedgerCSV(c *gin.Context, aid int64, username string, admin bool, fail
 	from, to, ok := agentLedgerRange(c)
 	if !ok {
 		return
+	}
+	if now := agentNow().Unix(); to > now { // 截到当前秒：导出期间新插入的行不会出现在翻页里造成重复或漏行
+		to = now
 	}
 	var buf bytes.Buffer
 	buf.Write([]byte{0xEF, 0xBB, 0xBF}) // UTF-8 BOM，让 Excel 认出中文

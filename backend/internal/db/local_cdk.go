@@ -444,16 +444,19 @@ type LocalCDKRow struct {
 // LoadLocalCDKRows 取全部本地码并派生状态，新的在前。状态是派生值，不能用 SQL 筛选，所以整表读出来在 Go 里算；
 // 本地码按批发放、数量有限，后台接口和补卡闸的调用频率都低，先读码再读单，两次查询之间没有持有结果集。
 func LoadLocalCDKRows(ctx context.Context) ([]LocalCDKRow, error) {
-	return loadLocalCDKRows(ctx, "")
+	return loadLocalCDKRows(ctx, "", nil, "", nil)
 }
 
 // LoadLocalCDKRowsByAgent 只取这个代理商的码，派生规则与 LoadLocalCDKRows 相同。
 func LoadLocalCDKRowsByAgent(ctx context.Context, agentID int64) ([]LocalCDKRow, error) {
-	return loadLocalCDKRows(ctx, "l.agent_id = ?", agentID)
+	// 付款单也限定到这个代理商自己的码：读取代价只和它自己的码数有关，不随全站付款单增长
+	return loadLocalCDKRows(ctx, "l.agent_id = ?", []any{agentID},
+		` AND source_ref IN (SELECT CAST(id AS TEXT) FROM local_cdks WHERE agent_id = ?)`, []any{agentID})
 }
 
-// loadLocalCDKRows 是两个对外函数共用的实现；where 是固定的 SQL 片段，值一律走参数。
-func loadLocalCDKRows(ctx context.Context, where string, args ...any) ([]LocalCDKRow, error) {
+// loadLocalCDKRows 是两个对外函数共用的实现；where、orderWhere 是固定的 SQL 片段，值一律走参数。
+// orderWhere 追加在付款单查询的条件后面（用于只读这批码的付款单），为空表示读全部真实付款单。
+func loadLocalCDKRows(ctx context.Context, where string, args []any, orderWhere string, orderArgs []any) ([]LocalCDKRow, error) {
 	q := `SELECT ` + localCDKColumns + ` FROM local_cdks l`
 	if where != "" {
 		q += ` WHERE ` + where
@@ -477,7 +480,8 @@ func loadLocalCDKRows(ctx context.Context, where string, args ...any) ([]LocalCD
 	}
 	rows.Close()
 
-	orderRows, err := DB.QueryContext(ctx, `SELECT `+localCDKOrderColumns+` FROM pay_orders WHERE source = ? AND dry_run = 0 ORDER BY id`, localCDKSource)
+	orderRows, err := DB.QueryContext(ctx, `SELECT `+localCDKOrderColumns+` FROM pay_orders WHERE source = ? AND dry_run = 0`+orderWhere+` ORDER BY id`,
+		append([]any{localCDKSource}, orderArgs...)...)
 	if err != nil {
 		return nil, err
 	}

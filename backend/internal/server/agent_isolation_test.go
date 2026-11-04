@@ -59,3 +59,31 @@ func TestAdminTokenRejectedByAgentMiddleware(t *testing.T) {
 		t.Fatalf("%d %s", w.Code, w.Body)
 	}
 }
+
+// 管理员流水的两条新路由在 admin 组内：无凭证、代理商会话都被拒。
+func TestAdminAgentLedgerRoutesRejectNonAdmin(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Setenv("WEB_DIR", "")
+	r := gin.New()
+	setupRoutes(r)
+	tok, _, err := agent.SignSession(1, 1, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"/api/v1/admin/agents/1/ledger", "/api/v1/admin/agents/1/ledger/export"} {
+		for name, mod := range map[string]func(*http.Request){
+			"无凭证":         func(*http.Request) {},
+			"代理商 cookie":  func(r *http.Request) { r.AddCookie(&http.Cookie{Name: "auth_token", Value: tok}) },
+			"代理商 bearer":  func(r *http.Request) { r.Header.Set("Authorization", "Bearer "+tok) },
+			"agent_token": func(r *http.Request) { r.AddCookie(&http.Cookie{Name: "agent_token", Value: tok}) },
+		} {
+			req := httptest.NewRequest("GET", path, nil)
+			mod(req)
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+			if w.Code != http.StatusUnauthorized {
+				t.Errorf("%s %s 应 401，实际 %d", name, path, w.Code)
+			}
+		}
+	}
+}

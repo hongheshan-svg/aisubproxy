@@ -267,3 +267,30 @@ func TestO3CheckReadOnlyWhileServerHoldsDB(t *testing.T) {
 		t.Fatal("Check 结束后应还原 db.DB")
 	}
 }
+
+// 裁定 R17：--check 从专用变量 CDK_CHECK_DB_PATH 取库路径；在线更新时 DB_PATH 被换成打不开的路径，不影响检查。
+func TestO3CheckReadsDedicatedDBPathVar(t *testing.T) {
+	o3Env(t)
+	path := o3NewDBFile(t, func(c *sql.DB) {
+		o3SeedAdmin(t, c, "admin")
+		o3Exec(t, c, `INSERT INTO site_settings (key, value) VALUES ('card_api_key', ?)`, o3PlainCardK)
+	})
+	guardFile := filepath.Join(t.TempDir(), "guard")
+	if err := os.WriteFile(guardFile, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("DB_PATH", filepath.Join(guardFile, "cdk_recharge.db"))
+	t.Setenv(db.CheckDBPathEnv, path)
+	if err := o3Check("release"); err != nil {
+		t.Fatalf("应按 %s 检查真实库并通过: %v", db.CheckDBPathEnv, err)
+	}
+	t.Setenv("APP_MASTER_KEY", "")
+	if err := o3Check("release"); err == nil || !strings.Contains(err.Error(), "card_api_key") {
+		t.Fatalf("应读到真实库里的明文密钥并拒绝: %v", err)
+	}
+	// 没设专用变量时和启动一样读 DB_PATH（这里是打不开的路径）
+	t.Setenv(db.CheckDBPathEnv, "")
+	if err := o3Check("release"); err == nil {
+		t.Fatal("没设专用变量时应按 DB_PATH 打开，打不开就报错")
+	}
+}

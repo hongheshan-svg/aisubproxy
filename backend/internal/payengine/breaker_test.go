@@ -382,23 +382,17 @@ func TestBreakerDoesNotStopVerification(t *testing.T) {
 	}
 }
 
-// G5：熔断只看最近 24 小时内结束的单：24 小时前的失败不计入，也不和之后的失败连起来。
-func TestBreakerIgnoresOrdersOlderThan24h(t *testing.T) {
+// G5：熔断不会因为时间过去而自己解除：25 小时前连续 3 单被拒触发的暂停，现在仍是暂停，只有管理员恢复才解除。
+func TestBreakerStaysPausedAfter24h(t *testing.T) {
 	dbtest.Open(t)
 	old := time.Now().Add(-25 * time.Hour).Unix()
-	feedBO(t, old, boDeclined, boDeclined, boDeclined, boFill, boFill, boFill)
-	if st := breakerNow(t); st.Paused || st.SubmittedFailureStreak != 0 || st.FillFailureStreak != 0 {
-		t.Fatalf("24 小时前的失败不应计入: %+v", st)
-	}
-	recent := feedBO(t, time.Now().Unix()-100, boDeclined, boDeclined)
-	if st := breakerNow(t); st.Paused || st.SubmittedFailureStreak != 2 {
-		t.Fatalf("只应算最近的 2 单: %+v", st)
-	}
-	more := feedBO(t, time.Now().Unix()-50, boDeclined)
+	nos := feedBO(t, old, boDeclined, boDeclined, boDeclined)
 	st := breakerNow(t)
-	if !st.Paused || st.Reason != BreakerReasonSubmit || len(st.OrderNos) != 3 ||
-		st.OrderNos[0] != recent[0] || st.OrderNos[2] != more[0] {
-		t.Fatalf("最近连续 3 单被拒应触发: %+v", st)
+	if !st.Paused || st.Reason != BreakerReasonSubmit || len(st.OrderNos) != 3 || st.OrderNos[2] != nos[2] {
+		t.Fatalf("25 小时前触发的暂停应仍然有效: %+v", st)
+	}
+	if st.TrippedAt == nil || *st.TrippedAt != old+2 {
+		t.Fatalf("触发时刻: %+v", st.TrippedAt)
 	}
 }
 

@@ -508,6 +508,7 @@ func localTestRouter() *gin.Engine {
 	lookup := r.Group("/lookup", LookupGuard())
 	lookup.GET("/cdk", LookupCDKStatus)
 	lookup.POST("/cdk/batch", LookupCDKStatusBatch)
+	lookup.POST("/cdk/results", LookupCDKResultBatch)
 	admin := r.Group("/admin", func(c *gin.Context) { c.Set("username", "alice") })
 	admin.POST("/cardplatform/cdks", CardPlatformIssueCDKs)
 	admin.POST("/cdks/issue", CardPlatformIssueCDKs)

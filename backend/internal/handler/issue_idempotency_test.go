@@ -15,7 +15,7 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/provider"
 )
 
-// MO-07：发码幂等键由客户端提供，服务端缺头拒绝；兜底找回只认本次请求开始之后创建的码。
+// MO-07：发码幂等键由客户端提供，服务端缺头拒绝；结果不明时只用同一个键重放，不按时间扫卡台列表。
 type issueFake struct {
 	mu        sync.Mutex
 	issueKeys []string
@@ -125,37 +125,8 @@ func TestIssueForwardsSameKeyOnRetry(t *testing.T) {
 	}
 }
 
-func TestIssueRecoveryOnlyCountsCodesCreatedAfterRequestStarted(t *testing.T) {
-	now := time.Now().UTC()
-	f := &issueFake{issueFail: true, list: []map[string]any{
-		{"id": 11, "plan": "plus", "code": "ZC-OLD-OTHER-PLACE-CODE-1", "status": "unused", "created_at": now.Add(-time.Hour).Format(time.RFC3339)},
-		{"id": 12, "plan": "plus", "code": "ZC-NODATE-OTHER-CODE-22", "status": "unused"},
-		{"id": 13, "plan": "plus", "code": "ZC-THIS-REQUEST-CODE-0003", "status": "unused", "created_at": now.Add(time.Minute).Format(time.RFC3339)},
-	}}
-	r := newIssueRouter(t, f)
-	w := postIssue(r, "uuid-recover")
-	if w.Code != 200 {
-		t.Fatalf("应从卡台找回: %d %s", w.Code, w.Body.String())
-	}
-	var got struct {
-		Recovered bool `json:"recovered"`
-		Count     int  `json:"count"`
-		Issued    []struct {
-			ID   int64  `json:"id"`
-			Code string `json:"code"`
-		} `json:"issued"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
-		t.Fatal(err)
-	}
-	if !got.Recovered || got.Count != 1 || len(got.Issued) != 1 || got.Issued[0].ID != 13 {
-		t.Fatalf("只应找回本次请求开始之后创建的码（id 13）: %s", w.Body.String())
-	}
-	var n int
-	if err := db.DB.QueryRow(`SELECT COUNT(*) FROM cardplatform_cdk_codes`).Scan(&n); err != nil || n != 1 {
-		t.Fatalf("其他码不应被入库: n=%d err=%v", n, err)
-	}
-}
+// 原来这里有 TestIssueRecoveryOnlyCountsCodesCreatedAfterRequestStarted，钉的是「按时间窗从卡台列表找回」。
+// 审计 C-5 / E-1 证实时间窗会把同时发出的别批码算成本批，已删掉这种找回，改为同键重放，见 issue_recovery_audit_ob_test.go。
 
 func TestIssueRecoveryWithNothingNewFailsInsteadOfGuessing(t *testing.T) {
 	old := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)

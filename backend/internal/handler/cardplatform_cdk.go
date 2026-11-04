@@ -176,7 +176,6 @@ func zovoCardIssueCDKs(c *gin.Context, req cdkIssueRequest) {
 	if !ok {
 		return
 	}
-	issueStartedAt := time.Now()
 	// 本站选卡配置 → 发码偏好（跳过未启动卡头；ch1 等历史写法会归一成 one）
 	var issuePrefs []cardplatform.IssueCardPref
 	pref, hasSitePref := issuePrefFromSite()
@@ -203,8 +202,6 @@ func zovoCardIssueCDKs(c *gin.Context, req cdkIssueRequest) {
 		pref.PaymentCountry = payCountry
 		issuePrefs = append(issuePrefs, pref)
 	}
-	var res *cardplatform.IssueCDKResult
-	var err error
 	wirePlan := plan
 	if product == "grok" {
 		wirePlan = cardplatform.GrokIssuePlan(plan)
@@ -212,29 +209,37 @@ func zovoCardIssueCDKs(c *gin.Context, req cdkIssueRequest) {
 	if product == "claude" {
 		wirePlan = cardplatform.ClaudeIssuePlan(plan)
 	}
-	if len(issuePrefs) > 0 {
-		res, err = cli.IssueCDKs(c.Request.Context(), wirePlan, req.Count, idem, issuePrefs[0])
-	} else {
-		res, err = cli.IssueCDKs(c.Request.Context(), wirePlan, req.Count, idem)
+	issue := func(ctx context.Context) (*cardplatform.IssueCDKResult, error) {
+		if len(issuePrefs) > 0 {
+			return cli.IssueCDKs(ctx, wirePlan, req.Count, idem, issuePrefs[0])
+		}
+		return cli.IssueCDKs(ctx, wirePlan, req.Count, idem)
+	}
+	res, err := issue(c.Request.Context())
+	replayed := false
+	if err != nil && !issueDefinitelyFailed(err) && c.Request.Context().Err() == nil {
+		// 结果不明（超时、断连、5xx、同键处理中）：卡台可能已经出码。唯一能对上「这一次」的是幂等键：
+		// 卡台同键只执行一次、重放原样返回首次结果，所以只用同一个键重放一次，拿回来的一定是本批。
+		// ★绝不按时间窗扫卡台列表「找回」★：列表里没有幂等键，同一时间别的管理员、代理换码发出的码也在里面，
+		// 那样会把别人的码当成本批交出去，一码两卖（审计 C-5 / E-1）。
+		rctx, cancel := context.WithTimeout(c.Request.Context(), issueReplayTimeout)
+		res, err = issue(rctx)
+		cancel()
+		replayed = err == nil
 	}
 	if err != nil {
-		// 超时/断线时卡台可能已经出码。立刻从卡台列表把完整码捞回本站。
-		if recovered, recErr := cli.SyncUpstreamFullCodesSince(c.Request.Context(), "unused", plan, 10, issueStartedAt); recErr == nil && recovered != nil && recovered.Imported > 0 {
-			c.JSON(http.StatusOK, gin.H{
-				"provider":              string(provider.ZovoCard),
-				"provider_display_name": provider.DisplayName(provider.ZovoCard),
-				"requested":             req.Count,
-				"issued":                recovered.Codes,
-				"count":                 len(recovered.Codes),
-				"stored_count":          recovered.Imported,
-				"store_failed":          0,
-				"server_stored":         true,
-				"recovered":             true,
-				"msg":                   fmt.Sprintf("发码请求未完成，已从卡台找回 %d 张完整码", recovered.Imported),
-			})
+		if issueDefinitelyFailed(err) {
+			writeCardErr(c, err)
 			return
 		}
-		writeCardErr(c, err)
+		// 重放也没拿到结果：不给任何码，也不入库。码若已出，仍在卡台库存里属于这个幂等键，
+		// 操作者用同一个键再点一次（前端失败时不换键）就会原样拿回；不会多发。
+		log.Printf("[cdk-issue] 发码结果不明 plan=%s count=%d: %v", plan, req.Count, err)
+		c.JSON(http.StatusBadGateway, gin.H{
+			"error":          "卡台发码结果不明（已用同一个幂等键重试一次，仍没拿到结果）：" + err.Error(),
+			"result_unknown": true,
+			"upstream":       true,
+		})
 		return
 	}
 	u, _ := c.Get("username")
@@ -246,6 +251,9 @@ func zovoCardIssueCDKs(c *gin.Context, req cdkIssueRequest) {
 	// 地区同时记录到发码审计和本站完整码缓存。
 	if payCountry != "" {
 		prefNote += " region=" + payCountry
+	}
+	if replayed {
+		prefNote += " replayed=1"
 	}
 	db.WriteAudit(username, "cardplatform_issue_cdk", "plan="+plan+" count="+strconv.Itoa(req.Count)+prefNote, c.ClientIP())
 	// 规范化：保证前端总能拿到完整 code 字段；绝不把 code_prefix 填进 code
@@ -295,8 +303,13 @@ func zovoCardIssueCDKs(c *gin.Context, req cdkIssueRequest) {
 		"stored_count":          stored,
 		"store_failed":          storeFailed,
 		"server_stored":         true,
+		"replayed":              replayed,
 	})
 }
+
+// issueReplayTimeout 是发码结果不明时用同一个幂等键重放一次的时限。卡台遇到同键请求仍在处理时最多等 30 秒再回 409，
+// 这里留一点余量；超时同样按「结果不明」报给操作者。
+const issueReplayTimeout = 45 * time.Second
 
 // CardPlatformSyncUpstreamCDKs POST /api/v1/admin/cardplatform/cdks/sync
 // 从卡台列表拉取完整码写入本站。卡台升级后列表会带 code；旧后端只能拿到前缀。

@@ -657,25 +657,9 @@ type SyncUpstreamResult struct {
 }
 
 // SyncUpstreamFullCodes 翻页拉取卡台 CDK，把带完整 code 的写入本站。
+// 只用于后台「从卡台同步」：把库存补进本站，不把任何码算作某一次发码的结果。
+// 发码结果不明时不能用它「找回」：列表里没有幂等键，同一时间别处发出的码也在里面（审计 C-5 / E-1），见 CardPlatformIssueCDKs。
 func (c *Client) SyncUpstreamFullCodes(ctx context.Context, status, plan string, maxPages int) (*SyncUpstreamResult, error) {
-	return c.SyncUpstreamFullCodesSince(ctx, status, plan, maxPages, time.Time{})
-}
-
-// parseUpstreamTime 解析卡台列表里的 created_at；认不出格式返回 false。无时区的按 UTC 处理。
-func parseUpstreamTime(s string) (time.Time, bool) {
-	s = strings.TrimSpace(s)
-	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02T15:04:05", "2006-01-02 15:04:05"} {
-		if t, err := time.ParseInLocation(layout, s, time.UTC); err == nil {
-			return t, true
-		}
-	}
-	return time.Time{}, false
-}
-
-// SyncUpstreamFullCodesSince 同 SyncUpstreamFullCodes，但 since 非零时只认 created_at 不早于 since（按秒取整）的码，
-// 其余既不入库也不返回；created_at 缺失或认不出的同样不认。发码超时后的兜底找回用它，避免把别处发的码当成本次的。
-func (c *Client) SyncUpstreamFullCodesSince(ctx context.Context, status, plan string, maxPages int, since time.Time) (*SyncUpstreamResult, error) {
-	since = since.Truncate(time.Second)
 	if maxPages <= 0 || maxPages > 50 {
 		maxPages = 50
 	}
@@ -695,11 +679,6 @@ func (c *Client) SyncUpstreamFullCodesSince(ctx context.Context, status, plan st
 		}
 		for _, it := range res.List {
 			out.Scanned++
-			if !since.IsZero() {
-				if at, ok := parseUpstreamTime(it.CreatedAt); !ok || at.Before(since) {
-					continue
-				}
-			}
 			code := it.FullCodeText()
 			if code == "" {
 				_ = db.UpdateCardplatformCDKRegion(it.ID, it.PaymentCountry)

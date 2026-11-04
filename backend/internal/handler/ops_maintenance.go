@@ -10,6 +10,7 @@ import (
 
 	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
+	"github.com/tuzi/cdk-recharge-system/internal/safego"
 )
 
 // opsMaintenanceEvery 是 CDK 链路后台维护（清理到期会话等）的间隔。
@@ -141,18 +142,9 @@ func sweepCDKSessionsOnce(now time.Time) {
 }
 
 // StartOpsMaintenance 启动时先跑一轮，之后每 10 分钟一轮，ctx 结束时停止。
+// 每一轮单独兜住 panic：一轮出错，下一轮照常。
 func StartOpsMaintenance(ctx context.Context) {
-	go func() {
-		runOpsMaintenance(time.Now())
-		ticker := time.NewTicker(opsMaintenanceEvery)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				runOpsMaintenance(time.Now())
-			}
-		}
-	}()
+	safego.Go("CDK 运维维护循环", func() {
+		safego.Loop(ctx, "CDK 运维维护", 0, opsMaintenanceEvery, func(context.Context) { runOpsMaintenance(time.Now()) })
+	})
 }

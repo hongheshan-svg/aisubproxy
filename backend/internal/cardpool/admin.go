@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"sort"
 	"strings"
 
@@ -26,18 +27,27 @@ const (
 // ImportCardholder 从平台读取持卡人并写入；已存在则更新平台字段（备注 note 保留），状态有变化时按 §7.5 告警，
 // 首次导入不告警。平台返回的 out_card_holder_id 一并写入，匹配 submitted / unknown 提交记录时标 linked。
 func (s *Service) ImportCardholder(ctx context.Context, id, by string) (*Cardholder, error) {
-	return s.importCardholder(ctx, id, "")
+	return s.importCardholder(ctx, id, "", sourceAdmin)
 }
 
 // importCardholder 同 ImportCardholder；平台没有给出可信的 out_card_holder_id 时用 fallbackOutID（来自推送）。
-// 只取姓名、国家、状态、备注，其余资料不落地。刷新、修改、启停后的重新导入都经过这里。
-func (s *Service) importCardholder(ctx context.Context, id, fallbackOutID string) (*Cardholder, error) {
+// 只取姓名、国家、状态、备注，其余资料不落地。刷新、定时查询、修改、启停后的重新导入都经过这里；src 是告警里写的来源。
+//
+// 调平台之前先记下本地状态，写入时用条件更新（本地状态仍是调平台前那个值才写）：调平台期间推送等已经改了状态，
+// 平台返回的可能是旧结果，就以本地较新的为准，不覆盖、不告警。本地原来没有的照常插入；插入时已被别人先写入的同样不覆盖。
+func (s *Service) importCardholder(ctx context.Context, id, fallbackOutID string, src alertSource) (*Cardholder, error) {
 	id = strings.TrimSpace(id)
 	if id == "" {
 		return nil, badRequest("持卡人 ID 不能为空")
 	}
 	c, err := s.opts.Client()
 	if err != nil {
+		return nil, err
+	}
+	var prevStatus string
+	err = db.DB.QueryRowContext(ctx, `SELECT status FROM mw_cardholders WHERE card_holder_id = ?`, id).Scan(&prevStatus)
+	existed := err == nil
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, err
 	}
 	d, err := c.GetCardholder(ctx, id)
@@ -58,19 +68,23 @@ func (s *Service) importCardholder(ctx context.Context, id, fallbackOutID string
 		return nil, err
 	}
 	defer tx.Rollback()
-	var oldStatus string
-	err = tx.QueryRowContext(ctx, `SELECT status FROM mw_cardholders WHERE card_holder_id = ?`, id).Scan(&oldStatus)
-	existed := err == nil
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+	// 平台没给商户侧 ID 时保留已有的
+	const insert = `INSERT INTO mw_cardholders (card_holder_id, first_name, last_name, country_code, status, remark,
+		synced_at, created_at, out_card_holder_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	args := []any{id, d.FirstName, d.LastName, d.CountryCode, normStatus(d.Status), d.Remark, now, now, outID}
+	q := insert + ` ON CONFLICT(card_holder_id) DO NOTHING`
+	if existed {
+		q = insert + ` ON CONFLICT(card_holder_id) DO UPDATE SET first_name = excluded.first_name, last_name = excluded.last_name,
+		country_code = excluded.country_code, status = excluded.status, remark = excluded.remark, synced_at = excluded.synced_at,
+		out_card_holder_id = CASE WHEN excluded.out_card_holder_id <> '' THEN excluded.out_card_holder_id ELSE out_card_holder_id END
+		WHERE mw_cardholders.status = ?`
+		args = append(args, prevStatus)
+	}
+	res, err := tx.ExecContext(ctx, q, args...)
+	if err != nil {
 		return nil, err
 	}
-	// 平台没给商户侧 ID 时保留已有的
-	_, err = tx.ExecContext(ctx, `INSERT INTO mw_cardholders (card_holder_id, first_name, last_name, country_code, status, remark,
-		synced_at, created_at, out_card_holder_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(card_holder_id) DO UPDATE SET first_name = excluded.first_name, last_name = excluded.last_name,
-		country_code = excluded.country_code, status = excluded.status, remark = excluded.remark, synced_at = excluded.synced_at,
-		out_card_holder_id = CASE WHEN excluded.out_card_holder_id <> '' THEN excluded.out_card_holder_id ELSE out_card_holder_id END`,
-		id, d.FirstName, d.LastName, d.CountryCode, normStatus(d.Status), d.Remark, now, now, outID)
+	n, err := res.RowsAffected()
 	if err != nil {
 		return nil, err
 	}
@@ -82,18 +96,26 @@ func (s *Service) importCardholder(ctx context.Context, id, fallbackOutID string
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	if existed {
-		s.holderStatusChanged(id, oldStatus, normStatus(d.Status), d.Remark)
+	switch {
+	case n == 0:
+		log.Printf("[cardpool] 同步持卡人 %s 期间本地记录已被改动，以本地较新的为准，本次结果不写入", id)
+	case existed:
+		s.holderStatusChanged(id, prevStatus, normStatus(d.Status), d.Remark, src)
 	}
 	return getCardholder(ctx, id)
 }
 
 // RefreshCardholder 重新同步已导入的持卡人。
 func (s *Service) RefreshCardholder(ctx context.Context, id string) (*Cardholder, error) {
+	return s.refreshCardholder(ctx, id, sourceAdmin)
+}
+
+// refreshCardholder 是后台「刷新持卡人」与定时查询共用的同步逻辑：本地须已导入，状态有变化时按 src 告警。
+func (s *Service) refreshCardholder(ctx context.Context, id string, src alertSource) (*Cardholder, error) {
 	if _, err := getCardholder(ctx, id); err != nil {
 		return nil, err
 	}
-	return s.ImportCardholder(ctx, id, "")
+	return s.importCardholder(ctx, id, "", src)
 }
 
 // ListCardholders 列出所有已导入的持卡人。
@@ -226,9 +248,18 @@ func (s *Service) ImportCard(ctx context.Context, cardID, productID, holderID, b
 	return getCard(ctx, cardID)
 }
 
-// RefreshCard 从平台同步卡组、国家、币种、有效期、状态与余额。平台返回的空字段不覆盖已有值。
+// RefreshCard 从平台同步卡组、国家、币种、有效期、状态与余额，供后台刷新、启用、清扫等后台操作调用（告警来源「后台操作」）。见 refreshCard。
 func (s *Service) RefreshCard(ctx context.Context, cardID string) (*Card, error) {
-	if _, err := getCard(ctx, cardID); err != nil {
+	return s.refreshCard(ctx, cardID, sourceAdmin)
+}
+
+// refreshCard 从平台同步卡组、国家、币种、有效期、状态与余额。平台返回的空字段不覆盖已有值。
+// 可用或租用中的卡在平台上变成 REVOKED、CANCELED，且是一次外部变更（见 externalStatusChange）时，平台状态不在这里直接写，
+// 改由 applyExternalStatus 处理，结果和告警与推送、定时查询完全一样（可用卡立即停用、租用中的卡告警、注销的退役），src 是告警里写的来源。
+// 否则这里先把平台状态写成新值，之后到的推送与定时查询都会以为已经处理过，告警就丢了，可用卡也不会被停用。
+func (s *Service) refreshCard(ctx context.Context, cardID string, src alertSource) (*Card, error) {
+	old, err := getCard(ctx, cardID)
+	if err != nil {
 		return nil, err
 	}
 	c, err := s.opts.Client()
@@ -247,6 +278,15 @@ func (s *Service) RefreshCard(ctx context.Context, cardID string) (*Card, error)
 	if err != nil {
 		return nil, fmt.Errorf("解析冻结余额失败: %w", err)
 	}
+	status := normStatus(d.Status)
+	external, err := s.externalStatusChange(ctx, old, status)
+	if err != nil {
+		return nil, err
+	}
+	writeStatus := status
+	if external {
+		writeStatus = "" // 平台状态交给 applyExternalStatus 写
+	}
 	now := s.now().Unix()
 	_, err = db.DB.ExecContext(ctx, `UPDATE mw_cards SET
 		card_label = CASE WHEN ? <> '' THEN ? ELSE card_label END,
@@ -258,13 +298,41 @@ func (s *Service) RefreshCard(ctx context.Context, cardID string) (*Card, error)
 		available_cents = ?, frozen_cents = ?, balance_synced_at = ?, updated_at = ?
 		WHERE card_id = ?`,
 		d.CardLabel, d.CardLabel, d.CardCountry, d.CardCountry, d.CardCurrency, d.CardCurrency,
-		d.ExpiryDate, d.ExpiryDate, normStatus(d.Status), normStatus(d.Status),
+		d.ExpiryDate, d.ExpiryDate, writeStatus, writeStatus,
 		lastDigits4(d.CardNo), lastDigits4(d.CardNo),
 		avail, frozen, now, now, cardID)
 	if err != nil {
 		return nil, err
 	}
+	if external {
+		card, err := getCard(ctx, cardID)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := s.applyExternalStatus(ctx, card, status, src); err != nil {
+			return nil, err
+		}
+	}
 	return getCard(ctx, cardID)
+}
+
+// externalStatusChange 判断平台状态 status 对卡 c 是否是一次要按外部变更处理的冻结或注销：
+// 可用或租用中的卡、状态为 REVOKED 或 CANCELED、与本地不同，且没有本系统发起的同目标改状态单（见 ourStatusOrder，留给对账定论）。
+func (s *Service) externalStatusChange(ctx context.Context, c *Card, status string) (bool, error) {
+	if status != "REVOKED" && status != "CANCELED" {
+		return false, nil
+	}
+	if c.PoolState != PoolAvailable && c.PoolState != PoolLeased {
+		return false, nil
+	}
+	if status == normStatus(c.PlatformStatus) {
+		return false, nil
+	}
+	o, err := s.ourStatusOrder(ctx, c.CardID, status)
+	if err != nil {
+		return false, err
+	}
+	return o == nil, nil
 }
 
 // ---------- 卡：开卡 ----------

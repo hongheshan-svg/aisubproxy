@@ -13,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
+	"github.com/tuzi/cdk-recharge-system/internal/safego"
 )
 
 const cardHealthPolicyKey = "card_health_policy"
@@ -297,7 +298,7 @@ func observeFromWebhookPayload(payload map[string]interface{}) {
 	}
 
 	webhookObservers.Add(1)
-	go func() {
+	safego.Go("观察卡健康（Webhook）", func() {
 		defer webhookObservers.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -316,7 +317,7 @@ func observeFromWebhookPayload(payload map[string]interface{}) {
 			log.Printf("[card-health] webhook order=%d card=%d verdict=%s blocked=%v freeze=%s",
 				orderID, cardID, res.Verdict, res.Blocked, res.FreezeStatus)
 		}
-	}()
+	})
 }
 
 // observeFromPublicResult 兑换 result 轮询时补充观察（webhook 未配也能学）。

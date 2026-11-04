@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tuzi/cdk-recharge-system/internal/cardpool"
@@ -101,6 +102,8 @@ type fakePool struct {
 	cardInfo  func(string) (cardpool.CardInfo, error)
 	listTxns  func(cardpool.TxnFilter) ([]cardpool.Transaction, int, error)
 	backfill  func(context.Context, int) (cardpool.BackfillState, error)
+	// lastWebhook 未设置时 LastWebhookAt 返回 errFakeUnset，引擎按「不确定」处理：不告警、不改超时说明
+	lastWebhook func() (time.Time, bool, error)
 
 	relMu    sync.Mutex
 	releases []releaseCall
@@ -188,6 +191,14 @@ func (p *fakePool) BackfillRecent(c context.Context, days int) (cardpool.Backfil
 	return cardpool.BackfillState{}, errFakeUnset
 }
 
+func (p *fakePool) LastWebhookAt(context.Context) (time.Time, bool, error) {
+	p.hit("LastWebhookAt")
+	if p.lastWebhook != nil {
+		return p.lastWebhook()
+	}
+	return time.Time{}, false, errFakeUnset
+}
+
 // fakeChatGPT 按配置返回账号与支付会话；配置须在 Start 之前设好。
 type fakeChatGPT struct {
 	callLog
@@ -196,6 +207,8 @@ type fakeChatGPT struct {
 	checkout                            chatgpt.Checkout
 	// accountFn 非 nil 时优先于 account / accountErr，n 为第几次调用 Account（从 1 起）。
 	accountFn func(n int) (chatgpt.Account, error)
+	// accountSess 非 nil 时优先于 accountFn，能按会话（例如邮箱）区分单据。
+	accountSess func(s chatgpt.Session, n int) (chatgpt.Account, error)
 
 	// 关闭续费：cancelFn、subStatusFn 非 nil 时按第 n 次调用取值；未设置时取消成功、核实为不再续费。
 	cancelFn    func(n int) error
@@ -263,6 +276,9 @@ func (g *fakeChatGPT) Refresh(_ context.Context, s *chatgpt.Session) error {
 
 func (g *fakeChatGPT) Account(_ context.Context, s chatgpt.Session) (chatgpt.Account, error) {
 	g.hit("Account", s.AccessToken)
+	if g.accountSess != nil {
+		return g.accountSess(s, g.count("Account"))
+	}
 	if g.accountFn != nil {
 		return g.accountFn(g.count("Account"))
 	}
@@ -283,6 +299,7 @@ type browserFactory struct {
 	amountErr  error
 	readAmount func(n int) (int64, string, error) // 非 nil 时按第 n 次（从 1 起）调用取值，覆盖上面三项
 	openGate   chan struct{}                      // 非 nil 时 Open 阻塞到它被关闭
+	blockNew   atomic.Bool                        // true 时 New 阻塞到 ctx 结束（模拟 Chrome 启动卡住），返回 ctx 的错误
 
 	// 付款步骤的替身；未设置时方法返回 errFakeUnset。n 为该浏览器第几次调用 WaitOutcome（从 1 起）。
 	fill        func(paybrowser.Card, paybrowser.Billing) error
@@ -305,7 +322,11 @@ type browserFactory struct {
 	maxOpening int
 }
 
-func (f *browserFactory) New(_ context.Context, proxyURL, shotDir string) (Browser, error) {
+func (f *browserFactory) New(ctx context.Context, proxyURL, shotDir string) (Browser, error) {
+	if f.blockNew.Load() {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.proxies = append(f.proxies, proxyURL)
@@ -348,12 +369,14 @@ func (f *browserFactory) openingNow() (cur, peak int) {
 
 type fakeBrowser struct {
 	callLog
-	f *browserFactory
+	f        *browserFactory
+	openKind paybrowser.PageKind // 最近一次 Open 收到的页面类型
 }
 
-func (b *fakeBrowser) Open(ctx context.Context, url string, cookies []paybrowser.Cookie) error {
+func (b *fakeBrowser) Open(ctx context.Context, url string, kind paybrowser.PageKind, cookies []paybrowser.Cookie) error {
 	b.hit("Open", url, cookies)
 	b.f.mu.Lock()
+	b.openKind = kind
 	b.f.opening++
 	if b.f.opening > b.f.maxOpening {
 		b.f.maxOpening = b.f.opening

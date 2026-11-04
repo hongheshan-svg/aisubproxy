@@ -75,6 +75,7 @@
             <el-table-column label="状态" width="100">
               <template #default="{ row }">
                 <el-tag size="small" :type="stateTagType(row.pool_state)">{{ poolStateLabel(row.pool_state) }}</el-tag>
+                <div v-if="usedStateNote(row)" class="text-xs text-subtle mt-1">{{ usedStateNote(row) }}</div>
               </template>
             </el-table-column>
             <el-table-column prop="platform_status" label="平台状态" width="100" />
@@ -106,10 +107,10 @@
                   <el-button v-if="canViewSensitive(row)" size="small" type="primary" plain @click="viewSensitive(row)">查看卡号</el-button>
                   <el-button v-if="row.pool_state !== 'retired'" size="small" type="primary" plain @click="viewOtp(row)">查看验证码</el-button>
                   <el-button v-if="row.pool_state === 'disabled'" size="small" type="success" plain @click="enableCard(row)">启用</el-button>
+                  <el-button v-if="canFreeze(row.platform_status)" size="small" plain @click="runOrderAction(row, 'freeze', '冻结')">冻结</el-button>
+                  <el-button v-if="canUnfreeze(row.platform_status)" size="small" plain @click="runOrderAction(row, 'unfreeze', '解冻')">解冻</el-button>
                   <template v-if="row.pool_state !== 'retired'">
                     <el-button size="small" plain @click="runCardAction(row, 'refresh', '已刷新')">刷新</el-button>
-                    <el-button size="small" plain @click="runOrderAction(row, 'freeze', '冻结')">冻结</el-button>
-                    <el-button size="small" plain @click="runOrderAction(row, 'unfreeze', '解冻')">解冻</el-button>
                     <el-button size="small" plain @click="sweepCard(row)">清零</el-button>
                     <el-button size="small" type="danger" plain @click="cancelCard(row)">注销</el-button>
                   </template>
@@ -172,7 +173,7 @@
             <el-table-column prop="country_code" label="国家" width="80" />
             <el-table-column prop="status" label="状态" width="100" />
             <el-table-column prop="remark" label="备注" min-width="120" show-overflow-tooltip />
-            <el-table-column label="同步时间" min-width="150">
+            <el-table-column label="最近同步/查询" min-width="150">
               <template #default="{ row }">{{ fmtTs(row.synced_at) }}</template>
             </el-table-column>
             <el-table-column label="操作" width="230">
@@ -394,11 +395,26 @@
     <el-dialog v-model="importOpen" title="导入卡" width="460px" :close-on-click-modal="false">
       <el-form label-position="top" @submit.prevent>
         <el-form-item label="card_id">
-          <el-input v-model="importForm.card_id" class="mono" />
+          <div class="flex w-full gap-2">
+            <el-input v-model="importForm.card_id" class="mono" @input="resetPreview" @keyup.enter="queryImportCard" />
+            <el-button :loading="previewing" :disabled="!importForm.card_id.trim()" @click="queryImportCard">查询</el-button>
+          </div>
+          <p class="text-xs text-subtle mt-1">在 MarsWallex 平台的卡详情里找，是一串数字，不是卡号。平台没有卡列表接口，只能手动填。</p>
         </el-form-item>
+        <div v-if="preview" class="mb-3 space-y-1 text-sm">
+          <div class="text-muted">
+            {{ preview.card_label }} · {{ preview.card_country }} · {{ preview.card_currency }} · {{ preview.card_mode }} · 状态 {{ preview.status }}
+          </div>
+          <div class="text-muted">
+            余额 {{ money(preview.available_cents) }}（冻结 {{ money(preview.frozen_cents) }}）· 有效期 {{ preview.expiry || '—' }} ·
+            <span class="mono">{{ preview.first6 || '······' }}…{{ preview.last4 || '····' }}</span>
+          </div>
+          <div v-if="preview.already_in_pool" class="text-warn">已在池中</div>
+          <div v-if="importSweepWarning(preview.available_cents)" class="text-warn">{{ importSweepWarning(preview.available_cents) }}</div>
+        </div>
         <el-form-item label="产品">
           <el-select v-model="importForm.product_id" filterable style="width: 100%">
-            <el-option v-for="p in products" :key="p.product_id" :label="productLabel(p.product_id)" :value="p.product_id" />
+            <el-option v-for="p in importProducts" :key="p.product_id" :label="productLabel(p.product_id) + (p.matched ? '（匹配）' : '')" :value="p.product_id" />
           </el-select>
         </el-form-item>
         <el-form-item label="持卡人（可选）">
@@ -410,7 +426,7 @@
       </el-form>
       <template #footer>
         <el-button @click="importOpen = false">取消</el-button>
-        <el-button type="primary" :loading="importing" @click="submitImportCard">导入</el-button>
+        <el-button type="primary" :loading="importing" :disabled="!preview || preview.already_in_pool" @click="submitImportCard">导入</el-button>
       </template>
     </el-dialog>
 
@@ -545,6 +561,9 @@ import {
   ORDER_KINDS, canAbandonSubmission, errText, submissionLabel, submissionTagType, fmtTs, isUncertain, kindLabel, money, poolApi as api,
   orderStateText, orderToast, withoutSelection, type CardholderFormValue,
 } from '../../lib/cardpool'
+import {
+  canFreeze, canUnfreeze, importProductOptions, importSweepWarning, previewMatchesInput, releaseConfirmText, releaseDoneText, sensitiveNote, usedStateNote,
+} from '../../lib/mwcardtext'
 import { dialog } from '../../lib/dialog'
 import { useAuthStore } from '../../stores/auth'
 
@@ -565,6 +584,7 @@ interface Card {
   card_id: string; card_holder_id: string; product_id: string; last4: string; expiry: string
   platform_status: string; available_cents: number; frozen_cents: number; pool_state: string
   lease_owner: string; lease_expires_at: number | null; use_count: number
+  lease_sensitive?: boolean; cancel_after?: number | null
   disabled_reason: string; retire_reason: string
 }
 interface Holder {
@@ -759,7 +779,10 @@ async function leaseCard(row: Card) {
   await runCardAction(row, 'lease', '已租用')
 }
 async function releaseCard(row: Card) {
-  await runCardAction(row, 'release', '已释放')
+  const ok = await dialog.confirm(releaseConfirmText(row, policy.value), { title: '释放', okText: '释放' })
+  if (!ok) return
+  // 去向按点击时的使用次数与策略预判，成功后提示
+  await runCardAction(row, 'release', releaseDoneText(row, policy.value))
 }
 async function enableCard(row: Card) {
   await runCardAction(row, 'enable', '已启用')
@@ -810,7 +833,7 @@ function clearOtp() {
 }
 
 async function viewSensitive(row: Card) {
-  const note = row.pool_state === 'leased' ? '本次租用将计为已取卡号（使用次数 +1）。' : '仅供排查，不改变卡的状态。'
+  const note = sensitiveNote(row.pool_state, policy.value)
   const ok = await dialog.confirm(`将显示卡 ${row.card_id}（后四位 ${row.last4}）的完整卡号和 CVV2，此操作会被记录。${note}继续？`, {
     title: '查看卡号', okText: '查看',
   })
@@ -893,21 +916,62 @@ const importOpen = ref(false)
 const importing = ref(false)
 const importForm = reactive({ card_id: '', product_id: '', card_holder_id: '' })
 
+interface CardPreview {
+  card_id: string; card_label: string; card_country: string; card_currency: string; card_mode: string; status: string
+  available_cents: number; frozen_cents: number; expiry: string; first6: string; last4: string
+  already_in_pool: boolean; suggested_product_id: string; candidates: string[]
+}
+const preview = ref<CardPreview | null>(null)
+const previewing = ref(false)
+// 列出全部产品，查询得到的候选排前面并标「（匹配）」
+const importProducts = computed(() => importProductOptions(products.value, preview.value?.candidates))
+function resetPreview() {
+  preview.value = null
+  importForm.product_id = ''
+}
+async function queryImportCard() {
+  const id = importForm.card_id.trim()
+  if (!id) return
+  previewing.value = true
+  try {
+    const r = await api<CardPreview>('/cards/preview', 'POST', { card_id: id })
+    // 查询在途时改了卡 ID：旧结果作废，不写入 preview 和产品
+    if (importForm.card_id.trim() !== id) return
+    if (!r.ok) {
+      preview.value = null
+      return dialog.toast(errText(r, '查询失败'), 'err')
+    }
+    preview.value = r.data
+    importForm.product_id = r.data.suggested_product_id || ''
+  } finally {
+    previewing.value = false
+  }
+}
+
 async function openImportCard() {
   if (!holders.value.length) await loadHolders()
+  resetPreview()
   importOpen.value = true
 }
 async function submitImportCard() {
   if (!importForm.card_id.trim() || !importForm.product_id) return dialog.toast('请填写 card_id 并选择产品', 'warn')
+  const pv = preview.value // 确认框期间输入可能被改，先取下来
+  if (!pv || !previewMatchesInput(pv.card_id, importForm.card_id)) {
+    return dialog.toast('卡 ID 已改动，请重新查询', 'warn')
+  }
+  if (pv.already_in_pool) return
+  const warn = importSweepWarning(pv.available_cents)
+  if (warn && !(await dialog.confirm(warn, { title: '导入卡', okText: '导入' }))) return
   importing.value = true
   try {
     const r = await api('/cards/import', 'POST', {
-      card_id: importForm.card_id.trim(), product_id: importForm.product_id, card_holder_id: importForm.card_holder_id,
+      card_id: pv.card_id, product_id: importForm.product_id, card_holder_id: importForm.card_holder_id,
     })
     if (!r.ok) return dialog.toast(errText(r, '导入失败'), 'err')
     dialog.toast('已导入', 'ok')
     importOpen.value = false
     importForm.card_id = ''
+    preview.value = null
     loadCards()
   } finally {
     importing.value = false
@@ -1272,10 +1336,10 @@ function ensureTargetRows() {
   }
 }
 
-async function loadPolicy() {
+async function loadPolicy(quiet = false) {
   policyError.value = ''
   const r = await api<Policy>('/policy')
-  if (!r.ok) return dialog.toast(errText(r, '加载策略失败'), 'err')
+  if (!r.ok) return quiet ? undefined : dialog.toast(errText(r, '加载策略失败'), 'err')
   const p = r.data
   p.plan_products = p.plan_products || {}
   p.product_targets = p.product_targets || {}
@@ -1367,6 +1431,7 @@ watch(tab, onTab)
 
 onMounted(() => {
   loadProducts()
+  loadPolicy(true) // 查看卡号、释放的确认文字要读使用次数上限和注销天数
   // 刷新后从 ?tab= 直接落在非概览标签时，加载该标签的数据
   if (tab.value === 'overview') loadOverview()
   else { loadOverview(); onTab(tab.value) }

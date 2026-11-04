@@ -554,3 +554,75 @@ func TestReprocessIsIdempotent(t *testing.T) {
 		t.Fatalf("不存在的事件: %v", err)
 	}
 }
+
+// F2：处理一条 Webhook 事件时 panic：这条标成处理失败、不再自动重放（人工可在后台「重新处理」），同一轮的其他事件照常处理。
+func TestEventPanicMarkedAndNotReplayed(t *testing.T) {
+	const secret = "4242424242424242"
+	s, _, clock, alerts := newTestService(t)
+	var calls int
+	s.eventHandler = func(_ context.Context, _ *queuedEvent, ev *marswallex.WebhookEvent) (string, error) {
+		calls++
+		if ev.Topic == marswallex.TopicCard3DSOTP {
+			panic("坏事件，卡号 " + secret)
+		}
+		return "好事件", nil
+	}
+	bad := enqueueEvent(t, marswallex.TopicCard3DSOTP, otpData("c1", "123456"))
+	good := enqueueEvent(t, marswallex.TopicCardStatusChanged, `{"card_id":"c1","card_status":"ACTIVE"}`)
+	if n := mustProcessEvents(t, s); n != 2 {
+		t.Fatalf("同一轮应处理 2 条: %d", n)
+	}
+	mustBeProcessed(t, good, "好事件")
+	e := getEvent(t, bad)
+	if e.processed || e.attempts < eventMaxAttempts || !strings.Contains(e.procErr, "内部错误") {
+		t.Fatalf("坏事件应标成处理失败、停止重试: %+v", e)
+	}
+	if strings.Contains(e.procErr, secret) || strings.Contains(e.payload, "123456") {
+		t.Fatalf("错误里不应带 panic 的值，停止重试时应抹掉验证码: %+v", e)
+	}
+	if alertsContaining(alerts, fmt.Sprintf("#%d（", bad)) != 1 {
+		t.Fatalf("应告警一次: %v", alerts.Texts())
+	}
+	for _, text := range alerts.Texts() {
+		if strings.Contains(text, secret) || strings.Contains(text, "123456") {
+			t.Fatalf("告警里不应带 panic 的值或验证码: %s", text)
+		}
+	}
+	clock.Advance(time.Hour)
+	if n := mustProcessEvents(t, s); n != 0 {
+		t.Fatalf("坏事件不应再自动重放: %d", n)
+	}
+	if calls != 2 {
+		t.Fatalf("处理函数应只调用 2 次: %d", calls)
+	}
+	// 人工「重新处理」后会再处理一次
+	if err := s.Reprocess(context.Background(), bad, "admin"); err != nil {
+		t.Fatal(err)
+	}
+	if n := mustProcessEvents(t, s); n != 1 || calls != 3 {
+		t.Fatalf("重新处理后应再处理一次: n=%d calls=%d", n, calls)
+	}
+}
+
+// F2：后台循环按「每一轮」兜住 panic：一轮出错，下一轮照常，循环本身不退出。
+func TestRunLoopSurvivesPanic(t *testing.T) {
+	s, _, _, _ := newTestService(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var rounds atomic.Int32
+	s.loops.Add(1)
+	go s.runLoop(ctx, "测试循环", time.Millisecond, nil, func(context.Context, *loopLog) {
+		if rounds.Add(1) <= 2 {
+			panic("一轮出错")
+		}
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for rounds.Load() < 4 {
+		if time.Now().After(deadline) {
+			t.Fatalf("panic 之后循环应继续: %d 轮", rounds.Load())
+		}
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	s.Wait()
+}

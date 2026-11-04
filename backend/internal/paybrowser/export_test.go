@@ -2,6 +2,7 @@ package paybrowser
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/chromedp/chromedp"
@@ -51,11 +52,15 @@ func ScanBeforeClick(ctx context.Context, b *Browser) (map[string]bool, error) {
 	return got, err
 }
 
-// ShortenFillWaits 缩短地址字段的等待时限，返回恢复函数。用来测「一直等不到」的情形，免得每个用例等满 15 秒。
+// ShortenFillWaits 把地址字段、地址联想、重打街道前、关联想下拉、填完失焦后的等待时限都缩短到 address
+// （重打前、关下拉、失焦后的等待不变长），返回恢复函数。用来测「一直等不到」的情形，免得每个用例等满 15 秒、8 秒、3 秒、2 秒。
 func ShortenFillWaits(address time.Duration) (restore func()) {
-	old := addressWait
-	addressWait = address
-	return func() { addressWait = old }
+	oldAddress, oldSuggest, oldRetype, oldClose, oldBlur := addressWait, suggestWait, suggestRetypeWait, suggestCloseWait, blurSettle
+	addressWait, suggestWait = address, address
+	suggestRetypeWait, suggestCloseWait, blurSettle = min(address, suggestRetypeWait), min(address, suggestCloseWait), min(address, blurSettle)
+	return func() {
+		addressWait, suggestWait, suggestRetypeWait, suggestCloseWait, blurSettle = oldAddress, oldSuggest, oldRetype, oldClose, oldBlur
+	}
 }
 
 // SetDeclineSettle 设置判到被拒后再看的时长，返回恢复函数。多数用例不关心它，TestMain 统一缩短。
@@ -87,6 +92,39 @@ func FailClick(b *Browser, afterMouse bool, err error) {
 	}
 }
 
+// RunBeforeRecheck 让内嵌页 Submit 找到唯一的支付按钮之后、点击前复查之前，在主页面执行一段脚本，模拟这期间页面变化。
+func RunBeforeRecheck(b *Browser, js string) {
+	b.beforeRecheck = func(ctx context.Context) error { return chromedp.Evaluate(js, nil).Do(ctx) }
+}
+
+// RunBeforePayCheck 让内嵌页点支付前的最后检查（payClickPoint）在读完按钮位置之后、payClickJS 求值之前，
+// 在主页面执行一段脚本，模拟滚动、等稳这段时间里页面的变化。
+func RunBeforePayCheck(b *Browser, js string) {
+	b.beforePayCheck = func(ctx context.Context) error { return chromedp.Evaluate(js, nil).Do(ctx) }
+}
+
+// SetBeforePayCheck 同 RunBeforePayCheck，但执行任意动作（比如重新加载页面、等它重新就绪）。
+func SetBeforePayCheck(b *Browser, fn func(ctx context.Context) error) { b.beforePayCheck = fn }
+
+// SetCheckoutHost 设置内嵌结账页的主机名，返回恢复函数。TestMain 设成仿造页的 127.0.0.1；
+// 用例设回 chatgpt.com，模拟主页面停在别的主机上。
+func SetCheckoutHost(h string) (restore func()) {
+	old := checkoutHost
+	checkoutHost = h
+	return func() { checkoutHost = old }
+}
+
+// EvalMain 在主页面执行一段脚本，用来模拟页面在打开之后、填表之前的变化。
+func EvalMain(ctx context.Context, b *Browser, js string) error {
+	return b.do(ctx, func(ctx context.Context) error { return chromedp.Evaluate(js, nil).Do(ctx) })
+}
+
+// ReloadBeforeRecheck 让内嵌页 Submit 找到唯一的支付按钮之后、点击前复查之前重新加载页面并等它加载完：
+// 找到按钮时所在文档的执行环境随旧文档失效，复查读不出。
+func ReloadBeforeRecheck(b *Browser) {
+	b.beforeRecheck = func(ctx context.Context) error { return chromedp.Reload().Do(ctx) }
+}
+
 // MaskPageText 抹掉页面文字里的邮箱和长数字串。
 var MaskPageText = maskPageText
 
@@ -111,3 +149,108 @@ var IsCFChallengeTitle = isCFChallengeTitle
 
 // AmountRendered 只判断一次金额是否已真正显示（不等待）。
 func AmountRendered(ctx context.Context, b *Browser) (bool, error) { return b.amountRendered(ctx) }
+
+// SetPageLoadTimeout 设置打开支付页的时限，返回恢复函数。用来测「一直等不到」的情形，免得每个用例等满 60 秒。
+func SetPageLoadTimeout(d time.Duration) (restore func()) {
+	old := pageLoadTimeout
+	pageLoadTimeout = d
+	return func() { pageLoadTimeout = old }
+}
+
+// NormalizeEmbeddedAmount 把内嵌页读屏金额文字规范成「数字 + 空格 + 大写币种代码」。
+var NormalizeEmbeddedAmount = normalizeEmbeddedAmount
+
+// FieldValue 在各 frame 里找 sel 命中的第一个元素（不要求可见），返回它的 value。用来核对 iframe 里的字段。
+func FieldValue(ctx context.Context, b *Browser, sel string) (string, error) {
+	var v string
+	err := callOnFirst(ctx, b, sel, `function () { return String(this.value) }`, &v)
+	return v, err
+}
+
+// FieldChecked 在各 frame 里找 sel 命中的第一个元素（不要求可见），返回它是否勾着。
+func FieldChecked(ctx context.Context, b *Browser, sel string) (bool, error) {
+	var v bool
+	err := callOnFirst(ctx, b, sel, `function () { return !!this.checked }`, &v)
+	return v, err
+}
+
+// VisibleCount 数主页面和各级可见 iframe 里 sel 命中的可见元素，返回合计。用来核对填表后还有没有可见的联想选项。
+func VisibleCount(ctx context.Context, b *Browser, sel string) (int, error) {
+	total := 0
+	err := b.do(ctx, func(ctx context.Context) error {
+		frames, err := b.frames(ctx)
+		if err != nil {
+			return err
+		}
+		for _, f := range frames {
+			n, err := b.countVisible(ctx, f, sel)
+			if err != nil {
+				return err
+			}
+			total += n
+		}
+		return nil
+	})
+	return total, err
+}
+
+// ClickOption 在各 frame 里找 sel 命中的第一个可见元素，用点地址联想的 clickOption 点它。
+func ClickOption(ctx context.Context, b *Browser, sel string) error {
+	return b.do(ctx, func(ctx context.Context) error {
+		frames, err := b.frames(ctx)
+		if err != nil {
+			return err
+		}
+		e := b.find(ctx, frames, []string{sel}, false)
+		if e == nil {
+			return fmt.Errorf("找不到 %s", sel)
+		}
+		return b.clickOption(ctx, frames, e)
+	})
+}
+
+// ClickBox 在各 frame 里找 sel 命中的第一个元素（不要求可见），用点勾选框的 clickBox 点它。
+func ClickBox(ctx context.Context, b *Browser, sel string) error {
+	return b.do(ctx, func(ctx context.Context) error {
+		frames, err := b.frames(ctx)
+		if err != nil {
+			return err
+		}
+		e := b.findAny(ctx, frames, []string{sel})
+		if e == nil {
+			return fmt.Errorf("找不到 %s", sel)
+		}
+		return b.clickBox(ctx, e)
+	})
+}
+
+// FocusField 在各 frame 里找 sel 命中的第一个元素（不要求可见），用选中输入框的 focusField 选中它，返回 direct 和错误。
+func FocusField(ctx context.Context, b *Browser, sel string) (direct string, err error) {
+	err = b.do(ctx, func(ctx context.Context) error {
+		frames, err := b.frames(ctx)
+		if err != nil {
+			return err
+		}
+		e := b.findAny(ctx, frames, []string{sel})
+		if e == nil {
+			return fmt.Errorf("找不到 %s", sel)
+		}
+		direct, err = b.focusField(ctx, e)
+		return err
+	})
+	return direct, err
+}
+
+func callOnFirst(ctx context.Context, b *Browser, sel, fn string, res any) error {
+	return b.do(ctx, func(ctx context.Context) error {
+		frames, err := b.frames(ctx)
+		if err != nil {
+			return err
+		}
+		e := b.findAny(ctx, frames, []string{sel})
+		if e == nil {
+			return fmt.Errorf("找不到 %s", sel)
+		}
+		return callOn(ctx, e.obj, fn, res)
+	})
+}

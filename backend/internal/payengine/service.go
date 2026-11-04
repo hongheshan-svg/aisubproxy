@@ -32,6 +32,9 @@ type Pool interface {
 	CardInfo(context.Context, string) (cardpool.CardInfo, error)
 	ListTransactions(context.Context, cardpool.TxnFilter) ([]cardpool.Transaction, int, error)
 	BackfillRecent(context.Context, int) (cardpool.BackfillState, error)
+	// LastWebhookAt 返回最近一次收到卡平台 Webhook 的时间，一条都没有时 ok = false。只读；只用来提前告警、改写等验证码超时的说明，
+	// 不影响付款流程（3DS 验证码只能通过 Webhook 收到）。
+	LastWebhookAt(context.Context) (at time.Time, ok bool, err error)
 }
 
 // ChatGPT 是引擎用到的 ChatGPT 接口，*chatgpt.Client 直接满足。
@@ -49,7 +52,7 @@ type ChatGPT interface {
 
 // FormBrowser 是填表用到的浏览器能力，没有 Submit：只拿到它的代码点不了支付。
 type FormBrowser interface {
-	Open(context.Context, string, []paybrowser.Cookie) error
+	Open(context.Context, string, paybrowser.PageKind, []paybrowser.Cookie) error
 	ReadAmount(context.Context, string) (int64, string, error)
 	// WaitRendered 等支付页真正显示出来再截图，最多等给定时长；等不到返回 false，不报错，只读不点。
 	WaitRendered(context.Context, time.Duration) bool
@@ -76,9 +79,11 @@ type Browser interface {
 // Timeouts 是各步骤的超时；测试可缩短。VerifyTick 是确认协程扫描到期单据的间隔；
 // OutcomeMargin 是等页面结果时外层时限比 SubmitResult 多出的余量；Backfill 是定论失败前补拉一次交易的时限。
 // RenewalTick 是续费协程的扫描间隔；SessionKeep 是单据结束后会话最长保留多久（关闭续费要用）。
+// Launch 是创建浏览器（启动 Chrome）的时限，这一步在取卡之前，不计入 MaxPayDuration。
 type Timeouts struct {
 	PageLoad, Fill, SubmitResult, OTP, Fund, Verify, VerifyEvery, DeclineGrace, VerifyTick, OutcomeMargin, Backfill time.Duration
 	RenewalTick, SessionKeep                                                                                        time.Duration
+	Launch                                                                                                          time.Duration
 }
 
 // DefaultTimeouts 返回引擎默认超时：页面加载 60 秒、填表 2 分钟、提交后等待页面结果 2 分钟、
@@ -101,6 +106,8 @@ func DefaultTimeouts() Timeouts {
 
 		RenewalTick: defaultRenewalTick,
 		SessionKeep: defaultSessionKeep,
+
+		Launch: 90 * time.Second,
 	}
 }
 
@@ -138,11 +145,16 @@ type Service struct {
 	loops   sync.WaitGroup // 工作协程与各单据协程
 	mu      sync.Mutex
 	running map[string]bool // 正在处理的单号
+	holds   int             // 暂停派发的次数（停止服务、在线更新重载前排空在途单），大于 0 时不派发新单；受 mu 保护
 	// verifyErrs 记各单上次写入时间线的确认错误（单号 → 来源 → 脱敏后的文本），文本没变就不再写。
 	// 只在内存里，重启后多写一条可以接受；单据定论时删除。
 	verifyErrs map[string]map[string]string
+	// verifyFails 记各单确认阶段查账号连续出错的次数（单号 → 次数），用来退避下次检查；只在内存里，成功一次或单据定论时删除。受 mu 保护。
+	verifyFails map[string]int
 
 	breakerAlerted string // 熔断告警的去重键，见 breakerAlert；受 mu 保护
+	// panicAlerted 记接管、收敛停滞单时 panic 的告警发到了哪一天（单号|阶段 → 北京日），见 panicAlert；受 mu 保护
+	panicAlerted map[string]string
 
 	recoveryFailed bool            // 重启恢复失败过（已告警）；只在 Start 和其后的工作协程里读写，二者不并发
 	graceRestored  map[string]bool // 本次启动已补过宽限期的被拒单，恢复重试时不再补；读写范围同上
@@ -187,11 +199,14 @@ func New(o Options) *Service {
 	if t.RenewalTick <= 0 {
 		t.RenewalTick = defaultRenewalTick
 	}
+	if t.Launch <= 0 {
+		t.Launch = DefaultTimeouts().Launch
+	}
 	// 会话保留不能比默认更长：到点一律清空（设计 §3.1 最长 1 小时）
 	if t.SessionKeep <= 0 || t.SessionKeep > defaultSessionKeep {
 		t.SessionKeep = defaultSessionKeep
 	}
-	return &Service{opts: o, t: t, realBrowser: realBrowser, kick: make(chan struct{}, 1), running: map[string]bool{}, verifyErrs: map[string]map[string]string{},
+	return &Service{opts: o, t: t, realBrowser: realBrowser, kick: make(chan struct{}, 1), running: map[string]bool{}, verifyErrs: map[string]map[string]string{}, verifyFails: map[string]int{},
 		renewing: map[string]bool{}, checkURL: checkCheckoutURL}
 }
 

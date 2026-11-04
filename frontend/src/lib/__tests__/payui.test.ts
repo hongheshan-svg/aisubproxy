@@ -30,7 +30,23 @@ describe('展示映射', () => {
   })
   it('新错误码有翻译，未知码返回空串', () => {
     for (const c of ['cf_challenge', 'amount_changed', 'submit_not_clicked', 'dry_run_fill_failed']) expect(payErrorText(c)).not.toBe('')
+    expect(payErrorText('amount_below_floor')).toContain('最低金额')
+    expect(payErrorText('amount_below_floor')).toContain('没有注资')
     expect(payErrorText('something_new')).toBe('')
+  })
+  it('稳定性相关错误码有说明', () => {
+    expect(payErrorText('verify_unreachable')).toContain('查不到账号状态')
+    expect(payErrorText('verify_unreachable')).not.toContain('未开通')
+    expect(payErrorText('stale_order')).toContain('没有点支付')
+    // internal_error 既用于提交前放弃，也用于确认阶段转人工，说明要两种都涵盖
+    expect(payErrorText('internal_error')).toContain('没点支付')
+    expect(payErrorText('internal_error')).toContain('人工核对')
+  })
+  it('plan_unavailable、checkout_url_untrusted 说明与后端现在的用法一致', () => {
+    // plan_unavailable 也用于「未配置最低金额」等金额没配好，不只是账号问题
+    expect(payErrorText('plan_unavailable')).toBe('套餐在该地区不可用（未启用或金额未配置）')
+    // checkout_url_untrusted 也用于「点数单只支持托管支付页」「路径不对、带查询串」，不只是域名
+    expect(payErrorText('checkout_url_untrusted')).toBe('支付链接不可信（域名或格式不对），已放弃（没有注资）')
   })
   it('熔断原因优先用后端文案', () => {
     expect(breakerReason({ reason: 'submit_failures', reason_text: '连续 3 单' })).toBe('连续 3 单')

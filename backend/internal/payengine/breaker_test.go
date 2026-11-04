@@ -381,3 +381,38 @@ func TestBreakerDoesNotStopVerification(t *testing.T) {
 		t.Fatalf("新单不应派发: %s", cur.State)
 	}
 }
+
+// G5：熔断不会因为时间过去而自己解除：25 小时前连续 3 单被拒触发的暂停，现在仍是暂停，只有管理员恢复才解除。
+func TestBreakerStaysPausedAfter24h(t *testing.T) {
+	dbtest.Open(t)
+	old := time.Now().Add(-25 * time.Hour).Unix()
+	nos := feedBO(t, old, boDeclined, boDeclined, boDeclined)
+	st := breakerNow(t)
+	if !st.Paused || st.Reason != BreakerReasonSubmit || len(st.OrderNos) != 3 || st.OrderNos[2] != nos[2] {
+		t.Fatalf("25 小时前触发的暂停应仍然有效: %+v", st)
+	}
+	if st.TrippedAt == nil || *st.TrippedAt != old+2 {
+		t.Fatalf("触发时刻: %+v", st.TrippedAt)
+	}
+}
+
+// G5：查询带 LIMIT（只取最近 breakerScanLimit 张），取回来以后仍按结束时间从早到晚计算：触发单号、触发时刻和全量扫描一致。
+func TestBreakerScansRecentOrdersInOrder(t *testing.T) {
+	dbtest.Open(t)
+	base := time.Now().Unix() - 3*breakerScanLimit
+	list := make([]bo, 0, breakerScanLimit+8)
+	for i := 0; i < breakerScanLimit+5; i++ {
+		list = append(list, boSuccess)
+	}
+	list = append(list, boDeclined, boDeclined, boDeclined)
+	nos := feedBO(t, base, list...)
+	st := breakerNow(t)
+	last := len(list) - 1
+	if !st.Paused || st.Reason != BreakerReasonSubmit || st.SubmittedFailureStreak != 3 {
+		t.Fatalf("最近连续 3 单被拒应触发: %+v", st)
+	}
+	if st.TrippedAt == nil || *st.TrippedAt != base+int64(last) || len(st.OrderNos) != 3 ||
+		st.OrderNos[0] != nos[last-2] || st.OrderNos[2] != nos[last] {
+		t.Fatalf("触发单号和时刻应按结束时间顺序: %+v %v", st.OrderNos, st.TrippedAt)
+	}
+}

@@ -12,6 +12,7 @@ import (
 
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/marswallex"
+	"github.com/tuzi/cdk-recharge-system/internal/safego"
 )
 
 const (
@@ -108,12 +109,61 @@ func (s *Service) processEventsOnce(ctx context.Context) (int, error) {
 		if err := ctx.Err(); err != nil {
 			return n, err
 		}
-		if err := s.processEvent(ctx, handler, &list[i]); err != nil {
+		if err := s.processEventSafe(ctx, handler, &list[i]); err != nil {
 			return n, err
 		}
 		n++
 	}
 	return n, nil
+}
+
+// processEventSafe 同 processEvent，处理时 panic 的那一条标成处理失败、停止自动重放（见 panicEvent），同一轮的其他事件照常处理。
+func (s *Service) processEventSafe(ctx context.Context, handler func(context.Context, *queuedEvent, *marswallex.WebhookEvent) (string, error), e *queuedEvent) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = s.panicEvent(ctx, e, safego.Describe(r))
+		}
+	}()
+	return s.processEvent(ctx, handler, e)
+}
+
+// panicEvent 记录处理时 panic 的事件：直接记满失败次数，不再自动重放，否则每一轮都会再 panic 一次；
+// 原文里的验证码随之抹掉，告警请人工查看后「重新处理」。desc 只有 panic 的类型和位置，不带 panic 的值。
+func (s *Service) panicEvent(ctx context.Context, e *queuedEvent, desc string) error {
+	ev := decodeQuietly(e.payload)
+	msg := "处理时内部错误（panic）：" + desc
+	ok, err := s.markEventFailed(ctx, e, ev, msg, eventMaxAttempts)
+	if err != nil {
+		return err
+	}
+	topic := eventTopic(ev)
+	log.Printf("[cardpool] Webhook 事件 #%d（%s）%s，已停止重试", e.id, topic, msg)
+	if ok {
+		s.alert(fmt.Sprintf("event:%d", e.id), fmt.Sprintf("MarsWallex Webhook 事件 #%d（%s）%s，已停止重试，"+
+			"请在后台查看后「重新处理」。", e.id, topic, msg))
+	}
+	return nil
+}
+
+// decodeQuietly 解析事件原文，解析失败或解析时 panic 都返回 nil。
+func decodeQuietly(payload string) (ev *marswallex.WebhookEvent) {
+	defer func() {
+		if recover() != nil {
+			ev = nil
+		}
+	}()
+	ev, err := marswallex.DecodeWebhookPayload([]byte(payload))
+	if err != nil {
+		return nil
+	}
+	return ev
+}
+
+func eventTopic(ev *marswallex.WebhookEvent) string {
+	if ev == nil {
+		return "无法解析"
+	}
+	return ev.Topic
 }
 
 // processEvent 处理一条事件并记录结果。
@@ -196,6 +246,21 @@ func (s *Service) finishEvent(ctx context.Context, e *queuedEvent, ev *marswalle
 // 满 10 次后停止重试、抹掉原文里的验证码并告警（key event:<id>）。
 func (s *Service) failEvent(ctx context.Context, e *queuedEvent, ev *marswallex.WebhookEvent, msg string) error {
 	attempts := e.attempts + 1
+	ok, err := s.markEventFailed(ctx, e, ev, msg, attempts)
+	if err != nil {
+		return err
+	}
+	log.Printf("[cardpool] Webhook 事件 #%d（%s）处理失败（第 %d 次）: %s", e.id, eventTopic(ev), attempts, msg)
+	if ok && attempts >= eventMaxAttempts {
+		s.alert(fmt.Sprintf("event:%d", e.id), fmt.Sprintf("MarsWallex Webhook 事件 #%d（%s）连续处理失败 %d 次，已停止重试，"+
+			"请在后台查看后「重新处理」。最后错误：%s", e.id, eventTopic(ev), attempts, truncate(msg, 200)))
+	}
+	return nil
+}
+
+// markEventFailed 把事件的失败次数记成 attempts、写下错误和下次重试时间；满 10 次就停止重试，并抹掉原文里的验证码。
+// 返回是否真的写进去了：处理期间被「重新处理」重置过计数的不覆盖。ev 为 nil（原文无法解析）时也尽力抹一次验证码。
+func (s *Service) markEventFailed(ctx context.Context, e *queuedEvent, ev *marswallex.WebhookEvent, msg string, attempts int) (bool, error) {
 	now := s.now().Unix()
 	stop := attempts >= eventMaxAttempts
 	var payload string
@@ -218,14 +283,10 @@ func (s *Service) failEvent(ctx context.Context, e *queuedEvent, ev *marswallex.
 	res, err := db.DB.ExecContext(context.WithoutCancel(ctx), `UPDATE marswallex_webhook_events SET `+set+`
 		WHERE id = ? AND processed_at IS NULL AND process_attempts = ?`, args...)
 	if err != nil {
-		return err
+		return false, err
 	}
-	log.Printf("[cardpool] Webhook 事件 #%d（%s）处理失败（第 %d 次）: %s", e.id, ev.Topic, attempts, msg)
-	if n, _ := res.RowsAffected(); n == 1 && stop {
-		s.alert(fmt.Sprintf("event:%d", e.id), fmt.Sprintf("MarsWallex Webhook 事件 #%d（%s）连续处理失败 %d 次，已停止重试，"+
-			"请在后台查看后「重新处理」。最后错误：%s", e.id, ev.Topic, attempts, truncate(msg, 200)))
-	}
-	return nil
+	n, _ := res.RowsAffected()
+	return n == 1, nil
 }
 
 // Reprocess 重置事件的处理状态（清空 processed_at、process_error、process_note、next_attempt_at，attempts 归零），
@@ -431,11 +492,12 @@ func (s *Service) finalizeFundsEvent(ctx context.Context, o *Order, status strin
 }
 
 // refreshBalanceNote 尽力刷新池中卡的详情与余额，返回追加到备注的说明；失败只写备注。
+// 刷新时发现可用、租用中的卡被外部冻结或注销，按推送处理并告警（来源「平台推送」），见 refreshCard。
 func (s *Service) refreshBalanceNote(ctx context.Context, cardID string) string {
 	if cardID == "" {
 		return "，卡不在池中"
 	}
-	_, err := s.RefreshCard(ctx, cardID)
+	_, err := s.refreshCard(ctx, cardID, sourceWebhook)
 	switch {
 	case err == nil:
 		return "，余额已刷新"
@@ -479,7 +541,7 @@ func (s *Service) onCardStatusChanged(ctx context.Context, ev *marswallex.Webhoo
 		}
 		return fmt.Sprintf("本系统发起的改状态（单据 %s：%s）", o.OutOrderNo, o.State), nil
 	}
-	return s.applyExternalStatus(ctx, card, status)
+	return s.applyExternalStatus(ctx, card, status, sourceWebhook)
 }
 
 // ourStatusOrder 返回同卡同目标、非终态或 600 秒内成功过的最新一张改状态单；没有返回 nil。
@@ -513,10 +575,11 @@ func ownerSuffix(c *Card) string {
 	return "（持有方 " + c.LeaseOwner + "）"
 }
 
-// applyExternalStatus 处理不是我们发起的卡状态变更。池状态用条件更新，读取后被别处改过就重读再判断。
-func (s *Service) applyExternalStatus(ctx context.Context, c *Card, status string) (string, error) {
+// applyExternalStatus 处理不是我们发起的卡状态变更，推送与定时查询共用；src 是告警里写的来源。
+// 池状态用条件更新，读取后被别处改过就重读再判断。
+func (s *Service) applyExternalStatus(ctx context.Context, c *Card, status string, src alertSource) (string, error) {
 	for i := 0; i < 3; i++ {
-		note, done, err := s.tryExternalStatus(ctx, c, status)
+		note, done, err := s.tryExternalStatus(ctx, c, status, src)
 		if err != nil || done {
 			return note, err
 		}
@@ -530,7 +593,7 @@ func (s *Service) applyExternalStatus(ctx context.Context, c *Card, status strin
 }
 
 // tryExternalStatus 按读取到的池状态执行一次；done = false 表示条件更新没有命中（池状态已变）。
-func (s *Service) tryExternalStatus(ctx context.Context, c *Card, status string) (string, bool, error) {
+func (s *Service) tryExternalStatus(ctx context.Context, c *Card, status string, src alertSource) (string, bool, error) {
 	now := s.now().Unix()
 	switch {
 	case status == "CANCELED" && c.PoolState != PoolRetired:
@@ -544,8 +607,7 @@ func (s *Service) tryExternalStatus(ctx context.Context, c *Card, status string)
 		}
 		log.Printf("[cardpool] 卡 %s 在平台上被注销（非本系统发起），%s → retired", c.CardID, c.PoolState)
 		if c.PoolState == PoolLeased {
-			s.alert("extcancel:"+c.CardID, fmt.Sprintf("MarsWallex 卡 %s 租用中%s在平台上被注销（非本系统发起），已退役，请检查对应订单",
-				c.CardID, ownerSuffix(c)))
+			s.alert("extcancel:"+c.CardID, extCancelLeasedText(c, src))
 		}
 		return "外部注销：" + c.PoolState + " → retired", true, nil
 
@@ -558,16 +620,25 @@ func (s *Service) tryExternalStatus(ctx context.Context, c *Card, status string)
 		if n, err := res.RowsAffected(); err != nil || n != 1 {
 			return "", false, err
 		}
-		s.alert("extfreeze:"+c.CardID, fmt.Sprintf("MarsWallex 卡 %s 在平台上被冻结（非本系统发起），已从卡池停用（原因：平台冻结），请到 MarsWallex 后台核查", c.CardID))
+		s.alert("extfreeze:"+c.CardID, extFreezeDisabledText(c.CardID, src))
 		return "外部冻结：available → disabled", true, nil
 	}
 
-	if err := s.setPlatformStatus(ctx, c.CardID, status); err != nil {
+	// 其余情况只更新平台状态。条件更新：平台状态已经是新值，说明推送或定时查询先处理过这次变化，租用中的卡不再重复告警
+	res, err := db.DB.ExecContext(ctx, `UPDATE mw_cards SET platform_status = ?, updated_at = ? WHERE card_id = ? AND platform_status <> ?`,
+		status, now, c.CardID, status)
+	if err != nil {
+		return "", false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
 		return "", false, err
 	}
 	if status == "REVOKED" && c.PoolState == PoolLeased {
-		s.alert("extfreeze:"+c.CardID, fmt.Sprintf("MarsWallex 卡 %s 租用中%s在平台上被冻结（非本系统发起），请检查对应订单",
-			c.CardID, ownerSuffix(c)))
+		if n == 0 {
+			return "外部冻结：租用中的卡，平台状态已是 REVOKED，不重复告警", true, nil
+		}
+		s.alert("extfreeze:"+c.CardID, extFreezeLeasedText(c, src))
 		return "外部冻结：租用中的卡，已告警", true, nil
 	}
 	return "平台状态更新为 " + status, true, nil
@@ -603,7 +674,7 @@ func (s *Service) onCardholderStatusChange(ctx context.Context, ev *marswallex.W
 	if n == 0 {
 		return "持卡人未导入", nil
 	}
-	s.holderStatusChanged(id, old.Status, status, d.Remark)
+	s.holderStatusChanged(id, old.Status, status, d.Remark, sourceWebhook)
 	return "持卡人状态更新为 " + status, nil
 }
 

@@ -46,7 +46,7 @@ func payEnv(t *testing.T) (*payengine.Service, string) {
 	tbl := payengine.DefaultPlanTable()
 	for i := range tbl {
 		if tbl[i].Key == "plus" {
-			tbl[i].Regions["PH"] = payengine.RegionConf{Enabled: true, Currency: "PHP", CapMinor: 120000, FundCents: 3000}
+			tbl[i].Regions["PH"] = payengine.RegionConf{Enabled: true, Currency: "PHP", CapMinor: 120000, FloorMinor: 10000, FundCents: 3000}
 		}
 	}
 	if err := payengine.SavePlanTable(tbl); err != nil {
@@ -491,7 +491,7 @@ func TestPayPutConfig(t *testing.T) {
 	plans := payengine.DefaultPlanTable()
 	for i := range plans {
 		if plans[i].Key == "plus" {
-			plans[i].Regions["US"] = payengine.RegionConf{Enabled: true, Currency: "USD", CapMinor: 3000, FundCents: 3000}
+			plans[i].Regions["US"] = payengine.RegionConf{Enabled: true, Currency: "USD", CapMinor: 3000, FloorMinor: 1000, FundCents: 3000}
 		}
 	}
 	pb, _ := json.Marshal(map[string]any{"plans": plans, "concurrency": 2})
@@ -720,5 +720,47 @@ func TestPayPutConfigPartialSaveAudited(t *testing.T) {
 	}
 	if a := payAudit(t); !strings.Contains(a, "pay_config_update") || !strings.Contains(a, "套餐表已保存，并发数保存失败") {
 		t.Fatalf("审计: %s", a)
+	}
+}
+
+// GET /pay/config 返回 builtin：每个套餐的美国、菲律宾内置价，与 BuiltinRegionPrice 一致；没有内置价的地区不出现。
+func TestPayConfigReturnsBuiltin(t *testing.T) {
+	payEnv(t)
+	w := payDo(AdminPayGetConfig, "GET", "/config", "/config", "")
+	if w.Code != 200 {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Builtin map[string]map[string]struct {
+			Currency    string `json:"currency"`
+			ExpectMinor int64  `json:"expect_minor"`
+			FloorMinor  int64  `json:"floor_minor"`
+			CapMinor    int64  `json:"cap_minor"`
+		} `json:"builtin"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if len(body.Builtin) != len(payengine.PlanKeys) {
+		t.Fatalf("builtin 应覆盖全部 %d 个套餐: %d", len(payengine.PlanKeys), len(body.Builtin))
+	}
+	for _, key := range payengine.PlanKeys {
+		regions := body.Builtin[key]
+		if len(regions) != 2 {
+			t.Fatalf("%s 应只有 US、PH 两项: %v", key, regions)
+		}
+		for _, r := range []string{"US", "PH"} {
+			want, _ := payengine.BuiltinRegionPrice(key, r)
+			got, ok := regions[r]
+			if !ok || got.Currency != want.Currency || got.ExpectMinor != want.ExpectMinor || got.FloorMinor != want.FloorMinor || got.CapMinor != want.CapMinor {
+				t.Fatalf("%s/%s 与 BuiltinRegionPrice 不一致: %+v 期望 %+v", key, r, got, want)
+			}
+		}
+		if _, ok := regions["JP"]; ok {
+			t.Fatalf("%s/JP 不应有内置价", key)
+		}
+	}
+	if p := body.Builtin["plus"]["PH"]; p.FloorMinor != 87412 || p.CapMinor != 112200 {
+		t.Fatalf("plus/PH 内置价: %+v", p)
 	}
 }

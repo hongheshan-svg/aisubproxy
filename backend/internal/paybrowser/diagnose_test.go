@@ -116,7 +116,7 @@ func TestDiagnoseBoundedOnBusyPage(t *testing.T) {
 	t.Cleanup(srv.Close)
 	b := launch(t, paybrowser.LaunchOptions{})
 	ctx := openCtx(t)
-	if err := b.Open(ctx, srv.URL, nil); err != nil {
+	if err := b.Open(ctx, srv.URL, paybrowser.PageHosted, nil); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	select {

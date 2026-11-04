@@ -17,6 +17,7 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/cardpool"
 	"github.com/tuzi/cdk-recharge-system/internal/chatgpt"
 	"github.com/tuzi/cdk-recharge-system/internal/paybrowser"
+	"github.com/tuzi/cdk-recharge-system/internal/safego"
 )
 
 const (
@@ -40,10 +41,10 @@ func (s *Service) Start(ctx context.Context) {
 	s.cleanProfiles() // 第一次派发之前先扫一遍，之后由清理协程每小时一次
 	s.tryRecover(ctx)
 	s.loops.Add(4)
-	go s.loop(ctx)
-	go s.verifyLoop(ctx)
-	go s.cleanLoop(ctx)
-	go s.renewalLoop(ctx)
+	safego.Go("付款派发循环", func() { s.loop(ctx) })
+	safego.Go("付款确认循环", func() { s.verifyLoop(ctx) })
+	safego.Go("付款清理循环", func() { s.cleanLoop(ctx) })
+	safego.Go("关闭续费循环", func() { s.renewalLoop(ctx) })
 	s.Kick()
 }
 
@@ -64,10 +65,13 @@ func (s *Service) loop(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
-		if !s.recovered.Load() && !s.tryRecover(ctx) {
-			continue
-		}
-		s.dispatch(ctx)
+		// 每一轮单独兜住 panic：一轮出错，下一轮照常派发
+		safego.Run("付款派发", func() {
+			if !s.recovered.Load() && !s.tryRecover(ctx) {
+				return
+			}
+			s.dispatch(ctx)
+		})
 	}
 }
 
@@ -78,7 +82,7 @@ func (s *Service) dispatch(ctx context.Context) {
 	}
 	limit := LoadConcurrency()
 	s.mu.Lock()
-	full := len(s.running) >= limit
+	full := len(s.running) >= limit || s.dispatchHeld()
 	s.mu.Unlock()
 	if full {
 		return
@@ -91,7 +95,8 @@ func (s *Service) dispatch(ctx context.Context) {
 	for i := range queued {
 		o := queued[i]
 		s.mu.Lock()
-		if len(s.running) >= limit {
+		// 暂停派发在名额表的锁里再判断一次：Drain 返回之后不会再有新单开始处理
+		if len(s.running) >= limit || s.dispatchHeld() {
 			s.mu.Unlock()
 			return
 		}
@@ -102,20 +107,90 @@ func (s *Service) dispatch(ctx context.Context) {
 		s.running[o.OrderNo] = true
 		s.mu.Unlock()
 		s.loops.Add(1)
-		go s.handle(ctx, &o)
+		safego.Go("付款单处理", func() { s.handle(ctx, &o) })
 	}
 }
 
 // handle 处理一张单据并归还名额；领取成功的单据处理完后踢醒工作协程，让排队的单据接上。
+// 处理中 panic 时由 recoverJob 按结算规则收尾；名额在 defer 里归还，panic 也不会占着不放。
 func (s *Service) handle(ctx context.Context, o *Order) {
 	defer s.loops.Done()
-	claimed := s.process(ctx, o)
-	s.mu.Lock()
-	delete(s.running, o.OrderNo)
-	s.mu.Unlock()
-	if claimed {
-		s.Kick()
+	j := &job{o: o}
+	kick := false
+	defer func() {
+		if r := recover(); r != nil {
+			s.recoverJob(ctx, j, r)
+			kick = true
+		}
+		s.mu.Lock()
+		delete(s.running, o.OrderNo)
+		s.mu.Unlock()
+		if kick {
+			s.Kick()
+		}
+	}()
+	kick = s.process(ctx, j)
+}
+
+// recoverJob 收尾处理中 panic 的单据（见 settlePanic），再发告警，最后关浏览器。panic 的值可能带卡号、会话，只记类型和位置。
+// 先收尾再告警：告警出错（包括告警函数自己 panic）不能让单据停在中间状态。收尾和告警各自兜住，出错只记日志；
+// 收尾没做成的单留在中间状态，由确认协程（已提交的）或周期扫描（提交前的，见 sweepStale）接管。
+func (s *Service) recoverJob(ctx context.Context, j *job, r any) {
+	desc := safego.Describe(r)
+	state := j.o.State // 收尾会改 j.o.State，告警写出错时的状态
+	defer closeBrowserQuietly(j)
+	log.Printf("[payengine] 单据 %s 在 %s 时内部错误（panic）：%s", j.o.OrderNo, state, desc)
+	func() {
+		defer safego.RecoverNoAlert("付款单 " + j.o.OrderNo + " 内部错误后的收尾")
+		s.settlePanic(ctx, j)
+	}()
+	if ctx.Err() != nil {
+		return
 	}
+	defer safego.RecoverNoAlert("付款单 " + j.o.OrderNo + " 内部错误的告警")
+	s.opts.Alert(fmt.Sprintf("付款单 %s 在 %s 时内部错误（panic）：%s。已按规则收尾：写过提交时间或不能证明没点支付的转确认，其余按提交前放弃。", j.o.OrderNo, state, desc))
+}
+
+// closeBrowserQuietly 关浏览器，关的时候 panic 只记日志。
+func closeBrowserQuietly(j *job) {
+	defer safego.RecoverNoAlert("关闭付款浏览器")
+	j.closeBrowser()
+}
+
+// settlePanic 按结算规则收尾 panic 的单据：写过 submitted_at，或者浏览器不能证明没点过支付（LockSubmit），一律转确认；
+// 否则按提交前放弃处理，记 internal_error。服务停止时不收尾，单据与租约都留给重启恢复。
+func (s *Service) settlePanic(ctx context.Context, j *job) {
+	if ctx.Err() != nil {
+		log.Printf("[payengine] 单据 %s 在 %s 时服务停止，留待重启后处理", j.o.OrderNo, j.o.State)
+		return
+	}
+	if s.mayHaveClicked(ctx, j) {
+		s.toVerify(ctx, j, "内部错误，点击结果不明")
+		return
+	}
+	s.abandon(ctx, j, &stepFailure{code: "internal_error", msg: "内部错误，已放弃（没有点支付）"})
+}
+
+// mayHaveClicked 判断 panic 的单据是不是可能已经点过支付：内存或库里有 submitted_at 就算；
+// 都没有时，开着浏览器的要 LockSubmit 返回 false 才能证明没点过（试运行单打开页面时就锁定了提交，付款流程也拒绝试运行单）。
+// 读库失败时以内存为准：submitted_at 写库成功后立刻记到内存里，两者之间没有别的调用。
+func (s *Service) mayHaveClicked(ctx context.Context, j *job) (clicked bool) {
+	if j.o.SubmittedAt != nil {
+		return true
+	}
+	if fresh, err := getOrder(ctx, j.o.OrderNo); err == nil && fresh.SubmittedAt != nil {
+		j.o.SubmittedAt = fresh.SubmittedAt
+		return true
+	}
+	if j.browser == nil || j.o.DryRun {
+		return false
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			clicked = true // LockSubmit 自己出错：证明不了没点过
+		}
+	}()
+	return j.browser.LockSubmit()
 }
 
 // job 是处理中的一张单据及其运行期资源。
@@ -136,6 +211,8 @@ type job struct {
 
 	// keepSession 为 true 时写终态不清空会话，留给续费协程关闭续费，最长保留 SessionKeep（见 renewal.go）
 	keepSession bool
+
+	floorMinor int64 // 最低金额，建会话时取自套餐配置；不落库，openPage 判下限用
 }
 
 // note 记下一列，随下一次状态写入落库。
@@ -298,17 +375,16 @@ func (s *Service) shot(ctx context.Context, j *job, step string, scope paybrowse
 }
 
 // process 领取并处理一张排队单据；未能领取（状态已变或写库失败）返回 false。
-func (s *Service) process(ctx context.Context, o *Order) bool {
-	j := &job{o: o}
+// 浏览器不用 defer 关：panic 时 settlePanic 还要问它有没有点过支付，由 recoverJob 最后关。
+func (s *Service) process(ctx context.Context, j *job) bool {
 	if err := s.advance(ctx, j, StateChecking, "检查账号", nil); err != nil {
 		if !errors.Is(err, ErrStateChanged) && ctx.Err() == nil && !errors.Is(err, context.Canceled) {
-			log.Printf("[payengine] 单据 %s 领取失败: %v", o.OrderNo, err)
+			log.Printf("[payengine] 单据 %s 领取失败: %v", j.o.OrderNo, err)
 		}
 		return false
 	}
-	defer j.closeBrowser()
-
 	s.settle(ctx, j, s.run(ctx, j))
+	j.closeBrowser()
 	return true
 }
 
@@ -327,22 +403,28 @@ func (s *Service) settle(ctx context.Context, j *job, err error) {
 	case errors.As(err, &notClicked):
 		s.abandonNotClicked(ctx, j, notClicked)
 	case j.o.SubmittedAt != nil:
-		msg := truncate(j.scrub(err.Error()), errorMessageLimit)
-		log.Printf("[payengine] 单据 %s 提交后在 %s 时出错，转确认: %s", j.o.OrderNo, j.o.State, msg)
-		s.event(ctx, j, "warn", "提交后出错："+msg, "")
-		if verr := s.beginVerify(ctx, j, paybrowser.OutcomeUnknown, msg, "页面结果不明，确认是否开通"); verr != nil {
-			detail := j.scrub(verr.Error())
-			log.Printf("[payengine] 单据 %s 转确认失败，等确认协程接管: %s", j.o.OrderNo, detail)
-			if ctx.Err() == nil {
-				s.opts.Alert(fmt.Sprintf("付款单 %s 已提交，但转确认连续失败，等确认协程接管：%s", j.o.OrderNo, detail))
-			}
-		}
+		s.toVerify(ctx, j, err.Error())
 	case errors.As(err, &f):
 		s.abandon(ctx, j, f)
 	default:
 		msg := j.scrub(err.Error())
 		log.Printf("[payengine] 单据 %s 在 %s 时中断: %s", j.o.OrderNo, j.o.State, msg)
 		s.abandon(ctx, j, &stepFailure{code: "internal_error", msg: "内部错误：" + msg})
+	}
+}
+
+// toVerify 把可能已经点过支付的单转确认，页面结果按不明处理；text 是出错说明（这里先脱敏）。
+// 转不过去就告警：已提交的单由确认协程接管（adoptSubmitted）。
+func (s *Service) toVerify(ctx context.Context, j *job, text string) {
+	msg := truncate(j.scrub(text), errorMessageLimit)
+	log.Printf("[payengine] 单据 %s 提交后在 %s 时出错，转确认: %s", j.o.OrderNo, j.o.State, msg)
+	s.event(ctx, j, "warn", "提交后出错："+msg, "")
+	if verr := s.beginVerify(ctx, j, paybrowser.OutcomeUnknown, msg, "页面结果不明，确认是否开通"); verr != nil {
+		detail := j.scrub(verr.Error())
+		log.Printf("[payengine] 单据 %s 转确认失败，等确认协程接管: %s", j.o.OrderNo, detail)
+		if ctx.Err() == nil {
+			s.opts.Alert(fmt.Sprintf("付款单 %s 已提交，但转确认连续失败，等确认协程接管：%s", j.o.OrderNo, detail))
+		}
 	}
 }
 
@@ -476,14 +558,17 @@ func (s *Service) check(ctx context.Context, j *job) error {
 }
 
 // createLink 是步骤 3：按套餐表创建支付会话，记下会话号与支付链接。点数单见 createCreditLink。
+// 会话带链接时不管 tag 都用这个链接（托管页）；没有链接且 tag 是 custom_checkout_session 时，用 processor_entity 和会话号拼内嵌结账页链接，
+// 拼不出来就在这里放弃。两样都没有时照旧报「未返回支付链接」。链接一律再过支付域名白名单（acceptCheckoutURL）。
 func (s *Service) createLink(ctx context.Context, j *job) error {
-	plan, _, err := ResolvePlan(j.o.PlanKey, j.o.Region, j.o.DryRun)
+	plan, rc, err := ResolvePlan(j.o.PlanKey, j.o.Region, j.o.DryRun)
 	if errors.Is(err, ErrPlanUnavailable) {
 		return abort("plan_unavailable", "%v", err)
 	}
 	if err != nil {
 		return abort("internal_error", "读取套餐配置失败：%v", err)
 	}
+	j.floorMinor = rc.FloorMinor // 订阅单和点数单共用这一处
 	if j.o.Kind == KindCredit {
 		return s.createCreditLink(ctx, j)
 	}
@@ -492,16 +577,24 @@ func (s *Service) createLink(ctx context.Context, j *job) error {
 		return s.chatgptAbort(j, "checkout_failed", "创建支付会话失败", err)
 	}
 	j.note("checkout_session_id", co.SessionID)
-	return s.acceptCheckoutURL(ctx, j, co.SessionID, co.URL)
+	link := co.URL
+	if strings.TrimSpace(link) == "" && strings.TrimSpace(co.Tag) == chatgpt.CheckoutTagCustom {
+		if link, err = embeddedCheckoutURL(co.ProcessorEntity, co.SessionID); err != nil {
+			return err
+		}
+	}
+	return s.acceptCheckoutURL(ctx, j, co.SessionID, link)
 }
 
-// acceptCheckoutURL 校验支付链接并推进到 link_created。链接为空记 checkout_failed；
-// 不在支付域名白名单里记 checkout_url_untrusted，链接不落库、不打开。两种情况都还没取卡、没注资。
+// acceptCheckoutURL 先去掉链接首尾空白，再校验并推进到 link_created。链接为空记 checkout_failed；
+// 不在支付域名白名单里（含点数单拿到内嵌结账页链接）记 checkout_url_untrusted，链接不落库、不打开。两种情况都还没取卡、没注资。
+// 落库的是去掉空白后的链接：之后打开页面、判页面类型、确认「保存付款信息」看到的都是同一个链接。
 func (s *Service) acceptCheckoutURL(ctx context.Context, j *job, sessionID, link string) error {
-	if strings.TrimSpace(link) == "" {
+	link = strings.TrimSpace(link)
+	if link == "" {
 		return abort("checkout_failed", "创建支付会话未返回支付链接")
 	}
-	if err := s.checkURL(link); err != nil {
+	if err := s.checkOrderURL(j, link); err != nil {
 		return err
 	}
 	if err := s.advance(ctx, j, StateLinkCreated, "已生成支付链接", map[string]any{"checkout_url": link}); err != nil {
@@ -511,20 +604,65 @@ func (s *Service) acceptCheckoutURL(ctx context.Context, j *job, sessionID, link
 	return nil
 }
 
-// trustedCheckoutHosts 是付款引擎允许打开的支付页域名：OpenAI 的支付域名和 Stripe 托管结账页。
-// 只认这两个主机名本身，子域名、相似域名、chatgpt.com（自定义结账页，引擎不支持）一律不认。
+// checkOrderURL 在支付域名白名单（s.checkURL）之上按单据类型收紧：点数单只走托管支付页，chatgpt.com 内嵌结账页一律不认，
+// 记 checkout_url_untrusted，说明里只写域名。建链接和打开支付页之前都走这里。
+func (s *Service) checkOrderURL(j *job, link string) error {
+	if err := s.checkURL(link); err != nil {
+		return err
+	}
+	if j.o.Kind == KindCredit && checkoutPageKind(link) == paybrowser.PageEmbedded {
+		return abort("checkout_url_untrusted", "点数单只支持托管支付页，支付链接的域名 %s 不支持，已放弃，未注资", embeddedCheckoutHost)
+	}
+	return nil
+}
+
+// embeddedCheckoutHost 是内嵌结账页的主机名。
+const embeddedCheckoutHost = "chatgpt.com"
+
+// 内嵌结账页链接 /checkout/<processor_entity>/<会话号> 两段的格式。拼链接和白名单共用：两段都不可能带「/」「.」「?」「#」、空白或转义字符。
+var (
+	processorEntityRe = regexp.MustCompile(`^[a-z0-9_]{1,64}$`)
+	checkoutSessionRe = regexp.MustCompile(`^[A-Za-z0-9_]{1,255}$`)
+)
+
+// embeddedCheckoutURL 用建会话返回的 processor_entity 和会话号拼出内嵌结账页链接 https://chatgpt.com/checkout/<processor_entity>/<会话号>。
+// 任一段不合格就返回 checkout_failed 的放弃原因，这时还没取卡、没注资、没启动浏览器。说明里不写会话号，也不写 processor_entity 原文。
+func embeddedCheckoutURL(processorEntity, sessionID string) (string, error) {
+	switch {
+	case processorEntity == "":
+		return "", abort("checkout_failed", "内嵌结账会话没有返回 processor_entity，拼不出支付链接，已放弃，未注资")
+	case !processorEntityRe.MatchString(processorEntity):
+		return "", abort("checkout_failed", "内嵌结账会话的 processor_entity 格式不合格，已放弃，未注资")
+	case !checkoutSessionRe.MatchString(sessionID):
+		return "", abort("checkout_failed", "内嵌结账会话的会话号格式不合格，已放弃，未注资")
+	}
+	return "https://" + embeddedCheckoutHost + "/checkout/" + processorEntity + "/" + sessionID, nil
+}
+
+// trustedCheckoutHosts 是付款引擎允许打开的支付页域名：OpenAI 的支付域名、Stripe 托管结账页和 chatgpt.com 内嵌结账页。
+// 只认这三个主机名本身，子域名、相似域名一律不认。
+// pay.openai.com、checkout.stripe.com 不限路径；chatgpt.com 只放行 /checkout/<processor_entity>/<会话号>：
+// 两段分别匹配 processorEntityRe、checkoutSessionRe，路径里没有转义字符，不带查询串和 # 片段（连空的「?」「#」也不行），见 embeddedCheckoutLink。
 // 这份名单只管付款；免付款探测工具另有一份更宽的名单，只用于报告，两份互不复用。
 var trustedCheckoutHosts = map[string]bool{
 	"pay.openai.com":      true,
 	"checkout.stripe.com": true,
+	embeddedCheckoutHost:  true,
 }
 
-// checkCheckoutURL 校验支付链接：必须是 https、没有账号密码、没有端口，主机名正好在 trustedCheckoutHosts 里。
+// checkCheckoutURL 校验支付链接（先去首尾空白）：必须是 https、没有账号密码、没有端口，主机名只含 ASCII 字符、正好在 trustedCheckoutHosts 里；
+// 主机名是 chatgpt.com 时另外要求连空端口（「chatgpt.com:」）也没有，并且是标准的内嵌结账页链接（embeddedCheckoutLink）。
 // 不通过时返回 checkout_url_untrusted 的放弃原因，说明里只写域名，绝不写完整链接（链接里带会话号）。
 func checkCheckoutURL(raw string) error {
-	u, err := url.Parse(strings.TrimSpace(raw))
+	raw = strings.TrimSpace(raw)
+	u, err := url.Parse(raw)
 	if err != nil || u.Host == "" {
 		return abort("checkout_url_untrusted", "支付链接无法解析出域名，已放弃，未注资")
+	}
+	// 转小写之前先拒绝非 ASCII 主机名：strings.ToLower 会把 İ（U+0130）折成 i、开尔文符号（U+212A）折成 k，
+	// 「pay.openaİ.com」转小写后和白名单一样，浏览器做国际化域名转换后去的却是别的域名。百分号编码的主机名解码后同样在这里拦下
+	if !isASCII(u.Hostname()) {
+		return abort("checkout_url_untrusted", "支付链接的域名 %+q 含非 ASCII 字符，已放弃，未注资", u.Hostname())
 	}
 	host := strings.ToLower(u.Hostname())
 	switch {
@@ -536,12 +674,37 @@ func checkCheckoutURL(raw string) error {
 		return abort("checkout_url_untrusted", "支付链接带端口（域名 %s），已放弃，未注资", host)
 	case !trustedCheckoutHosts[host]:
 		return abort("checkout_url_untrusted", "支付链接的域名 %s 不在支付域名白名单里，已放弃，未注资", host)
+	case host == embeddedCheckoutHost && u.Host != u.Hostname():
+		return abort("checkout_url_untrusted", "支付链接带端口（域名 %s），已放弃，未注资", host)
+	case host == embeddedCheckoutHost && !embeddedCheckoutLink(u, raw):
+		return abort("checkout_url_untrusted", "支付链接不是标准的内嵌结账页链接：路径不对，或带了查询串、片段（域名 %s），已放弃，未注资", host)
 	}
 	return nil
 }
 
+// isASCII 判断字符串是否只含 ASCII 字符。
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+// embeddedCheckoutLink 判断 chatgpt.com 的链接是不是标准的内嵌结账页：没有查询串和片段（raw 里出现「?」「#」就不算，空的也一样），
+// 路径里没有转义字符（RawPath 为空），路径按「/」切开正好是 ["", "checkout", processor_entity, 会话号]，两段都匹配对应的正则。
+func embeddedCheckoutLink(u *url.URL, raw string) bool {
+	if u.RawQuery != "" || u.Fragment != "" || strings.ContainsAny(raw, "?#") || u.RawPath != "" {
+		return false
+	}
+	parts := strings.Split(u.Path, "/")
+	return len(parts) == 4 && parts[0] == "" && parts[1] == "checkout" &&
+		processorEntityRe.MatchString(parts[2]) && checkoutSessionRe.MatchString(parts[3])
+}
+
 // openPage 是步骤 4：启动浏览器（走地区代理）、注入会话 cookie、打开支付页、截整页图、读应付金额；
-// 读不出或真实付款超过上限则放弃。
+// 打不开（停在 Cloudflare 挑战页记 cf_challenge 并告警）、读不出，或真实付款超过上限、低于最低金额也都在注资前放弃。
 // pageRenderWait 是打开支付页后、截图前最多等页面显示完整的时间。Stripe 先放金额再淡入，通常一两秒内完成。
 const pageRenderWait = 10 * time.Second
 
@@ -549,9 +712,19 @@ func (s *Service) openPage(ctx context.Context, j *job) error {
 	if err := s.advance(ctx, j, StateOpening, "启动浏览器，打开支付页", nil); err != nil {
 		return err
 	}
-	b, err := s.opts.Browser(ctx, j.proxy, filepath.Join(s.opts.ShotDir, j.o.OrderNo))
+	// 启动 Chrome 加时限：卡住时不能一直占着付款名额。浏览器工厂只用这个 ctx 约束启动过程，返回后浏览器照常存活到 Close。
+	lctx, cancelLaunch := context.WithTimeout(ctx, s.t.Launch)
+	b, err := s.opts.Browser(lctx, j.proxy, filepath.Join(s.opts.ShotDir, j.o.OrderNo))
+	timedOut := errors.Is(lctx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
+	cancelLaunch()
 	if err != nil {
 		msg := j.scrub(err.Error())
+		if timedOut {
+			msg = fmt.Sprintf("%d 秒内没有启动完成", int(s.t.Launch/time.Second))
+			if s.t.Launch < time.Second {
+				msg = fmt.Sprintf("%v 内没有启动完成", s.t.Launch)
+			}
+		}
 		s.opts.Alert(fmt.Sprintf("付款单 %s 浏览器无法启动：%s", j.o.OrderNo, msg))
 		return abort("browser_failed", "浏览器无法启动：%s", msg)
 	}
@@ -560,17 +733,22 @@ func (s *Service) openPage(ctx context.Context, j *job) error {
 		b.LockSubmit() // 试运行单：浏览器对象本身拒绝点击，不只靠流程分支
 	}
 	// 建链接时已经校验过；打开之前再拦一次，不让任何别的路径带进来的链接被打开
-	if err := s.checkURL(j.o.CheckoutURL); err != nil {
+	if err := s.checkOrderURL(j, j.o.CheckoutURL); err != nil {
 		return err
 	}
 
 	pctx, cancel := context.WithTimeout(ctx, s.t.PageLoad)
 	defer cancel()
-	if err := b.Open(pctx, j.o.CheckoutURL, sessionCookies(j.sess)); err != nil {
+	if err := b.Open(pctx, j.o.CheckoutURL, checkoutPageKind(j.o.CheckoutURL), sessionCookies(j.sess)); err != nil {
 		s.notePageDiag(ctx, j, b, "打开支付页失败")
 		sctx, cancelShot := context.WithTimeout(ctx, diagTimeout)
 		defer cancelShot()
 		s.shot(sctx, j, "open-failed", paybrowser.ShotPage) // 还没填卡，允许截整页；pctx 可能已经超时
+		if errors.Is(err, paybrowser.ErrCFChallenge) {
+			// 和建会话被拦（chatgptAbort）一样：换会话没有用，要查该地区代理的出口 IP，所以单独一个错误码并告警
+			s.opts.Alert(fmt.Sprintf("付款单 %s（地区 %s）打开支付页被 Cloudflare 拦截，请检查该地区代理的出口 IP；换会话没有用。", j.o.OrderNo, j.o.Region))
+			return abort("cf_challenge", "打开支付页被 Cloudflare 拦截，请检查该地区代理的出口 IP")
+		}
 		return abort("page_failed", "打开支付页失败：%v", err)
 	}
 	if !b.WaitRendered(pctx, pageRenderWait) {
@@ -591,6 +769,19 @@ func (s *Service) openPage(ctx context.Context, j *job) error {
 	j.note("amount_minor", minor)
 	if !j.o.DryRun && minor > j.o.CapMinor {
 		return abort("amount_over_cap", "应付金额 %s 超过上限 %s %s", text, formatMinor(j.o.CapMinor, j.o.Currency), j.o.Currency)
+	}
+	// 下限：偏低多半是选错了档位或带了优惠。必须在任何注资动作之前判
+	if j.o.DryRun {
+		if j.floorMinor <= 0 {
+			s.event(ctx, j, "info", "未配置最低金额，跳过下限检查", "")
+		} else if minor < j.floorMinor {
+			s.event(ctx, j, "warn", fmt.Sprintf("支付页金额 %s 低于最低金额 %s %s（可能选错了档位或带了优惠）；真实付款会在此放弃", text, formatMinor(j.floorMinor, j.o.Currency), j.o.Currency), "")
+		}
+	} else if j.floorMinor <= 0 {
+		// 真实单不允许没有最低金额：ResolvePlan 已兜底，这里防以后重构漏赋值时下限被悄悄跳过
+		return abort("plan_unavailable", "套餐 %s 在地区 %s 未配置最低金额，已放弃，未注资", j.o.PlanKey, j.o.Region)
+	} else if minor < j.floorMinor {
+		return abort("amount_below_floor", "支付页金额 %s 低于该套餐在该地区的最低金额 %s %s（可能选错了档位或带了优惠），已放弃，未注资", text, formatMinor(j.floorMinor, j.o.Currency), j.o.Currency)
 	}
 	return nil
 }
@@ -613,4 +804,14 @@ func formatMinor(v int64, currency string) string {
 	}
 	div := int64(math.Pow10(exp))
 	return fmt.Sprintf("%d.%0*d", v/div, exp, v%div)
+}
+
+// checkoutPageKind 按链接域名决定页面类型：主机名是 chatgpt.com 为内嵌页，其余（含解析失败）按托管页。
+// 和 checkCheckoutURL 一样先去首尾空白，否则过得了白名单的「 https://chatgpt.com/…」会被误判成托管页。
+func checkoutPageKind(raw string) paybrowser.PageKind {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || strings.ToLower(u.Hostname()) != embeddedCheckoutHost {
+		return paybrowser.PageHosted
+	}
+	return paybrowser.PageEmbedded
 }

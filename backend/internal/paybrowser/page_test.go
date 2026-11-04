@@ -31,6 +31,7 @@ const sessionCookie = "__Secure-next-auth.session-token"
 func TestMain(m *testing.M) {
 	paybrowser.SetDeclineSettle(300 * time.Millisecond)
 	paybrowser.SetEmailSettle(200 * time.Millisecond)
+	paybrowser.SetCheckoutHost("127.0.0.1") // 仿造的内嵌结账页在 127.0.0.1 上
 	os.Exit(m.Run())
 }
 
@@ -189,7 +190,7 @@ func TestOpenAndReadAmount(t *testing.T) {
 		ctx := openCtx(t)
 
 		cookies := []paybrowser.Cookie{{Name: sessionCookie, Value: "sess-abc123", Domain: host}}
-		if err := b.Open(ctx, f.urlOf(k, ""), cookies); err != nil {
+		if err := b.Open(ctx, f.urlOf(k, ""), paybrowser.PageHosted, cookies); err != nil {
 			t.Fatalf("Open: %v", err)
 		}
 		if v := f.gotSession(); v != "sess-abc123" {
@@ -265,7 +266,7 @@ func TestProxyAuth(t *testing.T) {
 	pu.User = url.UserPassword("alice", "s3cret")
 
 	b := launch(t, paybrowser.LoopbackProxy(paybrowser.LaunchOptions{ProxyURL: pu.String()}))
-	if err := b.Open(openCtx(t), f.url(""), nil); err != nil {
+	if err := b.Open(openCtx(t), f.url(""), paybrowser.PageHosted, nil); err != nil {
 		t.Fatalf("经代理 Open 失败: %v", err)
 	}
 	if proxy.challenged.Load() == 0 || proxy.authorized.Load() == 0 {
@@ -293,7 +294,7 @@ func openKind(t *testing.T, f *fakeCheckout, k checkoutKind, query string, o pay
 	t.Helper()
 	b := launch(t, o)
 	ctx := openCtx(t)
-	if err := b.Open(ctx, f.urlOf(k, query), nil); err != nil {
+	if err := b.Open(ctx, f.urlOf(k, query), paybrowser.PageHosted, nil); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	return b, ctx
@@ -714,7 +715,7 @@ func TestScanBeforeClickBoundedOnBusyPage(t *testing.T) {
 	t.Cleanup(srv.Close)
 	b := launch(t, paybrowser.LaunchOptions{})
 	ctx := openCtx(t)
-	if err := b.Open(ctx, srv.URL, nil); err != nil {
+	if err := b.Open(ctx, srv.URL, paybrowser.PageHosted, nil); err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 
@@ -983,6 +984,31 @@ func TestFillRejectsBadCard(t *testing.T) {
 		}
 		if strings.Contains(err.Error(), c.Number) || strings.Contains(err.Error(), c.CVC) {
 			t.Errorf("错误消息泄露了卡号或 CVC: %v", err)
+		}
+	}
+}
+
+// 账单地址任何字段含控制字符都在碰页面之前拒绝：逐字键入会把 \n、\r 当回车发出去，回车可能触发提交。错误只带字段名，不带值。
+func TestFillRejectsBillingControlChars(t *testing.T) {
+	b := &paybrowser.Browser{} // 校验在碰浏览器之前完成
+	for label, set := range map[string]func(*paybrowser.Billing){
+		"姓名":   func(bl *paybrowser.Billing) { bl.Name = "Secret\nName" },
+		"街道地址": func(bl *paybrowser.Billing) { bl.Line1 = "1 Secret St\r" },
+		"城市":   func(bl *paybrowser.Billing) { bl.City = "Secret\tCity" },
+		"州/省":  func(bl *paybrowser.Billing) { bl.State = "Secret\x00" },
+		"邮编":   func(bl *paybrowser.Billing) { bl.Zip = "Secret\u0085" },
+		"国家":   func(bl *paybrowser.Billing) { bl.Country = "Secret\x1b" },
+		"邮箱":   func(bl *paybrowser.Billing) { bl.Email = "secret@example.com\n" },
+	} {
+		bl := testBilling
+		set(&bl)
+		err := b.Fill(context.Background(), testCard, bl)
+		if err == nil || !strings.Contains(err.Error(), "账单地址含控制字符（"+label+"）") {
+			t.Errorf("%s 含控制字符：Fill = %v，期望报账单地址含控制字符（%s）", label, err, label)
+			continue
+		}
+		if strings.Contains(strings.ToLower(err.Error()), "secret") {
+			t.Errorf("错误消息泄露了字段值: %v", err)
 		}
 	}
 }

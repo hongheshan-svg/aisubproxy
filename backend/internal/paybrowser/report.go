@@ -3,6 +3,7 @@ package paybrowser
 import (
 	"fmt"
 	"regexp"
+	"strings"
 )
 
 var (
@@ -27,13 +28,15 @@ type FieldCheck struct {
 // FillReport 是一次 Fill 的结果，用来在真实付款前核实页面结构。不含卡号、邮箱等任何值。
 type FillReport struct {
 	Fields        []FieldCheck
-	ManualAddress string // 手动地址入口：未点击或已点击几次
-	LinkVerify    string // Link 内嵌验证框（「Confirm it’s you」）的处理结果，没出现时为空
-	LinkSave      string // Link 保存勾选框的处理结果
-	Email         string // 邮箱框的处理结果
-	Phone         string // 手机框的检查结果
-	SavePayment   string // 「保存付款信息」勾选框的处理结果（只有点数单检查）
-	Terms         string // 「同意条款」勾选框的处理结果
+	ManualAddress string   // 怎么展开折叠的地址字段：未点击、手动地址入口已点击几次；内嵌页上是已选或已点（未展开）地址联想、点的是第几个 iframe 里的选项，或地址联想没有出现；重打过街道时注明；填完时联想下拉开着的，注明关闭了没有
+	LinkVerify    string   // Link 内嵌验证框（「Confirm it’s you」）的处理结果，没出现时为空
+	LinkSave      string   // Link 保存勾选框的处理结果
+	Email         string   // 邮箱框的处理结果
+	Phone         string   // 手机框的检查结果
+	SavePayment   string   // 「保存付款信息」勾选框的处理结果（点数单和内嵌结账页检查，见 payengine 的 needsNoSaveCheck；其余单子为空）
+	Terms         string   // 「同意条款」勾选框的处理结果
+	Absent        []string // 内嵌页上 DOM 里没有的地址字段的中文名，按填写顺序；托管页的地址字段必填，这里总是空
+	DirectFocus   []string // 内嵌页上没用鼠标点、直接设焦点填的字段，形如「街道地址（点击落点不在页面上）」，同一字段只记第一次；托管页总是空
 }
 
 // Lines 把结果写成时间线上的中文短句，失败时也能看到走到了哪一步。
@@ -45,6 +48,12 @@ func (r FillReport) Lines() []string {
 			where = "iframe"
 		}
 		out = append(out, fmt.Sprintf("字段「%s」：命中 %s（%s），%s", f.Label, f.Selector, where, f.Status))
+	}
+	if len(r.Absent) > 0 {
+		out = append(out, "页面没有的字段："+strings.Join(r.Absent, "、"))
+	}
+	if len(r.DirectFocus) > 0 {
+		out = append(out, "直接设焦点："+strings.Join(r.DirectFocus, "、"))
 	}
 	for _, x := range []struct{ name, val string }{
 		{"手动地址", r.ManualAddress}, {"Link 验证", r.LinkVerify}, {"Link 保存", r.LinkSave}, {"邮箱", r.Email}, {"手机", r.Phone}, {"保存付款信息", r.SavePayment}, {"同意条款", r.Terms},
@@ -62,6 +71,8 @@ func (b *Browser) FillReport() FillReport {
 	defer b.mu.Unlock()
 	r := b.report
 	r.Fields = append([]FieldCheck(nil), r.Fields...)
+	r.Absent = append([]string(nil), r.Absent...)
+	r.DirectFocus = append([]string(nil), r.DirectFocus...)
 	return r
 }
 
@@ -74,6 +85,21 @@ func (b *Browser) updateReport(f func(*FillReport)) {
 func (b *Browser) noteField(e *elem, f field) {
 	b.updateReport(func(r *FillReport) {
 		r.Fields = append(r.Fields, FieldCheck{Label: f.label, Selector: e.sel, InFrame: e.frame.parent != "", Status: "已填写"})
+	})
+}
+
+// noteDirectFocus 记下内嵌页上直接设焦点填的字段和原因（reason 为空时不记）。同一字段只记第一次。
+func (b *Browser) noteDirectFocus(label, reason string) {
+	if reason == "" {
+		return
+	}
+	b.updateReport(func(r *FillReport) {
+		for _, d := range r.DirectFocus {
+			if strings.HasPrefix(d, label+"（") {
+				return
+			}
+		}
+		r.DirectFocus = append(r.DirectFocus, label+"（"+reason+"）")
 	})
 }
 

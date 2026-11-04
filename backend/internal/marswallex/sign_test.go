@@ -4,10 +4,14 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/pem"
+	"math/big"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSigningPayloadMatchesDocExamples(t *testing.T) {
@@ -154,6 +158,59 @@ func TestParseKeysToleratesCRLFAndWhitespace(t *testing.T) {
 		t.Errorf("public: %v", err)
 	}
 }
+
+// 平台后台给公钥的格式不一：纯 Base64、标题与内容不符、整段一行、从 JSON 里复制的字面 \n、证书。都要认得出，私钥要拒绝。
+func TestParsePublicKeyLenientFormats(t *testing.T) {
+	priv, p1, p8, pub1, pub8 := testPEMs(t)
+	pkix, err := x509.MarshalPKIXPublicKey(&priv.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkcs1 := x509.MarshalPKCS1PublicKey(&priv.PublicKey)
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(1), Subject: pkix509Name("mw"), NotBefore: time.Unix(0, 0), NotAfter: time.Unix(4102444800, 0)}
+	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &priv.PublicKey, priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b64 := base64.StdEncoding.EncodeToString
+	body := func(s string) string { // PEM 去掉首尾行后的正文
+		lines := strings.Split(strings.TrimSpace(s), "\n")
+		return strings.Join(lines[1:len(lines)-1], "\n")
+	}
+	ok := map[string]string{
+		"纯 Base64 PKIX 一行":      b64(pkix),
+		"纯 Base64 PKIX 带换行":     body(pub8),
+		"纯 Base64 PKCS#1":       b64(pkcs1),
+		"带引号的纯 Base64":          `"` + b64(pkix) + `"`,
+		"标题写 RSA 内容是 PKIX":      strings.Replace(strings.Replace(pub8, "BEGIN PUBLIC", "BEGIN RSA PUBLIC", 1), "END PUBLIC", "END RSA PUBLIC", 1),
+		"标题写 PUBLIC 内容是 PKCS#1": strings.Replace(strings.Replace(pub1, "BEGIN RSA PUBLIC", "BEGIN PUBLIC", 1), "END RSA PUBLIC", "END PUBLIC", 1),
+		"整段一行":                  "-----BEGIN PUBLIC KEY-----" + b64(pkix) + "-----END PUBLIC KEY-----",
+		"字面 \\n":                strings.ReplaceAll(strings.TrimSpace(pub8), "\n", `\n`),
+		"正文里夹空格":                strings.Replace(pub8, "\n", "\n  ", 3),
+		"证书 PEM":                string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})),
+		"纯 Base64 证书":           b64(certDER),
+	}
+	for name, in := range ok {
+		k, err := ParsePublicKey(in)
+		if err != nil || k.N.Cmp(priv.N) != 0 {
+			t.Errorf("%s：应能解析，得到 %v", name, err)
+		}
+	}
+	bad := map[string]string{
+		"空":             "  ",
+		"乱码":            "garbage!!",
+		"私钥 PKCS#8 PEM": p8,
+		"私钥 PKCS#1 PEM": p1,
+		"纯 Base64 私钥":   body(p8),
+	}
+	for name, in := range bad {
+		if _, err := ParsePublicKey(in); err == nil {
+			t.Errorf("%s：应拒绝", name)
+		}
+	}
+}
+
+func pkix509Name(cn string) pkix.Name { return pkix.Name{CommonName: cn} }
 
 // 生成的私钥是 2048 位 RSA、PKCS#8 PEM，能被 ParsePrivateKey 读出；每次生成都不同。
 func TestGeneratePrivateKeyPEM(t *testing.T) {

@@ -713,6 +713,12 @@ func TestPreSubmitFailuresReleaseAborted(t *testing.T) {
 		{"持卡人姓名为空", "card_info_failed", func(h *harness) {
 			h.pool.cardInfo = func(string) (cardpool.CardInfo, error) { return cardpool.CardInfo{Last4: "4242"}, nil }
 		}, 0},
+		// 姓名要逐字键入账单表单：含控制字符（\n、\r 会被当成回车）就在注资之前放弃，不先把钱转进卡里
+		{"持卡人姓名含控制字符", "card_info_failed", func(h *harness) {
+			h.pool.cardInfo = func(string) (cardpool.CardInfo, error) {
+				return cardpool.CardInfo{Last4: "4242", Currency: "USD", HolderFirstName: "JO\nHN", HolderLastName: "DOE"}, nil
+			}
+		}, 0},
 		// fund_cents 是美元分，而 cardpool.Fund 按卡币种下单：非美元卡会多充或少充
 		{"卡币种不是美元", "card_currency_unsupported", func(h *harness) {
 			h.pool.cardInfo = func(string) (cardpool.CardInfo, error) {

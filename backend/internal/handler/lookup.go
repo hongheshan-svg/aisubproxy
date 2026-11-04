@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +16,7 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/provider"
+	"github.com/tuzi/cdk-recharge-system/internal/safego"
 )
 
 // 公开批量查询上限：每条可能回源卡台 Result，避免一次打爆上游。
@@ -47,9 +47,6 @@ func LookupCDKStatus(c *gin.Context) {
 		return
 	}
 
-	if _, local := provider.CardSupplyForCode(code); local && !localRateCheck(c, localRateQuery) {
-		return
-	}
 	resp := lookupOneCDK(c.Request.Context(), code, deviceFrom(c))
 	if resp.Status == "unknown" {
 		c.JSON(http.StatusNotFound, gin.H{
@@ -88,25 +85,21 @@ func LookupCDKStatusBatch(c *gin.Context) {
 		return
 	}
 
-	// 只有批次里有本地码才计入限流：纯上游码的批量查询行为不变
-	if slices.ContainsFunc(codes, func(code string) bool { _, local := provider.CardSupplyForCode(code); return local }) &&
-		!localRateCheck(c, localRateQuery) {
-		return
-	}
-
 	results := make([]cdkLookupResult, len(codes))
 	sem := make(chan struct{}, lookupBatchWorkers)
 	var wg sync.WaitGroup
 	ctx := c.Request.Context()
 	device := deviceFrom(c)
 	for i, code := range codes {
+		// 先放一个「查询出错」的结果：子协程 panic 时（safego 兜住）这一条就是它，不会是空记录
+		results[i] = cdkLookupResult{CDKCode: code, Status: "unknown", Message: "查询出错，请稍后再试"}
 		wg.Add(1)
-		go func(i int, code string) {
+		safego.Go("批量查询卡密", func() {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			results[i] = lookupOneCDK(ctx, code, device)
-		}(i, code)
+		})
 	}
 	wg.Wait()
 

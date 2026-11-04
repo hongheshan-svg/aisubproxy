@@ -184,7 +184,7 @@ func (b *localFakeBrowser) New(context.Context, string, string) (payengine.Brows
 	return b, nil
 }
 
-func (b *localFakeBrowser) Open(context.Context, string, []paybrowser.Cookie) error {
+func (b *localFakeBrowser) Open(context.Context, string, paybrowser.PageKind, []paybrowser.Cookie) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.filled = false
@@ -465,11 +465,11 @@ func setupLocalEnv(t *testing.T) *localEnv {
 	tbl := payengine.DefaultPlanTable()
 	for i := range tbl {
 		if tbl[i].Key == "plus" {
-			tbl[i].Regions["PH"] = payengine.RegionConf{Enabled: true, Currency: "PHP", CapMinor: 120000, FundCents: 3000}
+			tbl[i].Regions["PH"] = payengine.RegionConf{Enabled: true, Currency: "PHP", CapMinor: 120000, FloorMinor: 10000, FundCents: 3000}
 		}
 		if tbl[i].Key == "pro_20x" {
 			tbl[i].ExpectPlanType = "pro"
-			tbl[i].Regions["US"] = payengine.RegionConf{Enabled: true, Currency: "USD", CapMinor: 25000, FundCents: 3000}
+			tbl[i].Regions["US"] = payengine.RegionConf{Enabled: true, Currency: "USD", CapMinor: 25000, FloorMinor: 1000, FundCents: 3000}
 		}
 	}
 	if err := payengine.SavePlanTable(tbl); err != nil {
@@ -494,15 +494,18 @@ func setupLocalEnv(t *testing.T) *localEnv {
 
 func localTestRouter() *gin.Engine {
 	r := gin.New()
-	r.POST("/public/cdk/preview", PublicCDKPreview)
-	r.POST("/public/cdk/preflight", PublicCDKPreflight)
-	r.POST("/public/cdk/redeem", PublicCDKRedeem)
-	r.GET("/public/cdk/result", PublicCDKResult)
-	r.GET("/public/cdk/result-by-code", PublicCDKResultByCode)
-	r.POST("/public/cdk/exchange", PublicAgentCDKExchange)
-	r.POST("/public/cdk/recover-subscription", PublicCDKGraceRecovery)
-	r.GET("/lookup/cdk", LookupCDKStatus)
-	r.POST("/lookup/cdk/batch", LookupCDKStatusBatch)
+	// 和正式路由一样挂上公开接口的中间件（限流、请求体上限）
+	pub := r.Group("/public", PublicGuard())
+	pub.POST("/cdk/preview", PublicCDKPreview)
+	pub.POST("/cdk/preflight", PublicCDKPreflight)
+	pub.POST("/cdk/redeem", PublicCDKRedeem)
+	pub.GET("/cdk/result", PublicCDKResult)
+	pub.GET("/cdk/result-by-code", PublicCDKResultByCode)
+	pub.POST("/cdk/exchange", PublicAgentCDKExchange)
+	pub.POST("/cdk/recover-subscription", PublicCDKGraceRecovery)
+	lookup := r.Group("/lookup", LookupGuard())
+	lookup.GET("/cdk", LookupCDKStatus)
+	lookup.POST("/cdk/batch", LookupCDKStatusBatch)
 	admin := r.Group("/admin", func(c *gin.Context) { c.Set("username", "alice") })
 	admin.POST("/cardplatform/cdks", CardPlatformIssueCDKs)
 	admin.POST("/cdks/issue", CardPlatformIssueCDKs)

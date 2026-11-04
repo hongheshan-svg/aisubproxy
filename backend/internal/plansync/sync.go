@@ -9,6 +9,7 @@ import (
 
 	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
+	"github.com/tuzi/cdk-recharge-system/internal/safego"
 )
 
 const syncInterval = 3 * time.Minute
@@ -19,25 +20,13 @@ type SyncResult struct {
 	Products int
 }
 
-// Start 启动后台产品状态同步（goroutine；ctx.Done() 时优雅退出）。
+// Start 启动后台产品状态同步（goroutine；ctx.Done() 时优雅退出）。启动时立即同步一次，之后每 3 分钟一次；
+// 每一轮单独兜住 panic，一轮出错下一轮照常。
 func Start(ctx context.Context) {
-	go run(ctx)
-}
-
-func run(ctx context.Context) {
-	// 启动时立即同步一次
-	syncOnce(ctx)
-	ticker := time.NewTicker(syncInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			log.Println("[plan-sync] stopped")
-			return
-		case <-ticker.C:
-			syncOnce(ctx)
-		}
-	}
+	safego.Go("卡台产品同步循环", func() {
+		safego.Loop(ctx, "卡台产品同步", 0, syncInterval, syncOnce)
+		log.Println("[plan-sync] stopped")
+	})
 }
 
 // SyncNow 供 handler 主动触发（同步调用，有 ctx 超时保护）。

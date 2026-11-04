@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Secure payment input frame</title>
+<style>
+  body { font-family: sans-serif; margin: 8px; }
+  label { display: block; margin: 6px 0; }
+  .p-HiddenText { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+</style>
+</head>
+<body>
+<!--
+  仿造的 Stripe Payment Element 卡片 iframe（测试用），照设计文档 §2 的真实 DOM，由与结账页跨站的服务提供。
+  卡片字段 id 与 card.html 相同。给读屏软件的金额说明放在视觉隐藏的容器里：
+    <p>Payment amount: {amount}</p><p>Currency: {currency}</p><p>Payment mode: Live mode. Test data not accepted.</p>
+  三段之间没有空白，和 React 渲染出来的一样。
+
+  查询参数：
+    amount=文字      金额原文（默认 $100.00）
+    currency=代码    币种代码（默认 usd）
+    nocurrency=1     去掉 Currency 那一段（模拟 Stripe 改了读屏文字）
+    noamount=1       没有读屏金额容器
+    savepay=1        「保存付款信息」勾选框一开始就勾上
+    linksave=1       加一个默认勾着的 Link 保存勾选框（#enableStripePass）
+    terms=1          加一个默认不勾的「同意条款」勾选框（#termsOfServiceConsentCheckbox）
+    linkverify=1     仿 Stripe Link 内嵌验证：收到结账页发来的 linkverify 消息时，卡号、有效期、CVC 藏起来，
+                     显示 .LinkVerificationContent，并回 linkverify-shown 消息；可信地点其中的「Pay without Link」后验证框消失、卡字段显示。
+                     （内嵌页打开时要等到可见的卡号框，所以验证框只能在打开之后由测试叫出来）
+    addr=1           卡号框输入满 16 位后才出现国家（选项 US、PH）和邮编
+    addr=stripe      仿真实页面（2026-11-04 实测）：卡号框输入满 16 位后出现国家（US、PH）、姓名、街道地址；
+                     城市、州（含 OR）、邮编在 DOM 里但 display:none，点「Enter address manually」后才可见
+    addr=stripe-nolink  同 addr=stripe，但没有「Enter address manually」，三个字段一直不可见
+    reflow=1         配 addr=stripe：国家默认选 PH；国家改了之后（收到 change），地址区除国家外的字段立刻拿掉，
+                     800ms 后才重新渲染出来（新的、空的）。仿 PH 单改成 US 时地址表单重绘，比 reflowDelay（500ms）慢
+    addr=suggest     仿真实页面（2026-11-04 实测，没有手动地址入口）：卡号框输入满 16 位后出现国家（US、PH）、姓名、
+                     街道地址（role=combobox）；城市、州（含 OR、WA）、邮编在 DOM 里但 display:none。
+                     街道收到可信的 input 且长度 ≥ 3 时显示地址联想（ul role=listbox，2 个 li role=option），按 Esc 收起；
+                     可信地点一条联想：街道、城市、州、邮编改成联想的地址（第一条是 1 Main Street / Seattle / WA / 98101），
+                     三个折叠字段显示出来，联想收起
+    addr=suggest-none   同 addr=suggest，但地址联想永远不出现
+    addr=suggest-stuck  同 addr=suggest，地址联想会出现，但点了也不展开
+    addr=suggest-decoy  同 addr=suggest，但本 iframe 里的联想点了不展开（同 suggest-stuck）；联想出现时，下面还有一个
+                     子 iframe（下拉框，srcdoc）也列出联想，点它里面的选项才展开（同 addr=suggest 点第一条）
+    addr=suggest-lazy   同 addr=suggest，但联想库要懒加载（2026-11-04 实测第一次键入不出联想、清空重打才出）：
+                     街道第一次收到可信 input 时开始加载，加载期间每来一次可信 input 都把加载完成推到 500ms 后（第一轮键入期间加载不完）；
+                     加载完成之后的可信 input 才按 addr=suggest 显示联想
+    addr=suggest-async  同 addr=suggest，但联想是异步结果（2026-11-04 07:23 实测：覆盖街道时的键入触发了联想请求，
+                     Esc 先于结果到达，结果回来后下拉又打开了）：街道收到可信 input 后约 300ms 才按收到 input 时的值显示或收起联想，
+                     期间按 Esc 不会取消这次显示；显示之后再按 Esc 会收起
+    addr=suggest-sticky 同 addr=suggest，但联想显示之后按 Esc 收不起来（点一条联想照样收起）
+    addr=suggest-revert 同 addr=suggest-async，另外联想开着、街道 500ms 以上没有可信 input 时按 Esc，街道被清空
+                     （仿按 Esc 撤销输入的 combobox；填街道时紧跟在键入后面的 Esc 不受影响，只有填完关下拉那一下会清空）
+    addr=late        卡号框输入满 16 位后出现国家（US、PH）和街道地址；街道收到 input 后才插入姓名框（测「先没有、后出现」）
+    clip=1           本页文档不能被脚本滚动（body overflow: clip），超出 iframe 高度的部分看不到也滚不过来：
+                     addr=1 时整个地址区（国家、邮编）、addr=suggest 时折叠的城市、州、邮编，都放在 iframe 可视区下沿以下。
+                     getContentQuads 不按 iframe 裁剪，按坐标点这些字段会点到主页面上紧贴 iframe 下沿的支付按钮
+    low=1            配 clip=1：「保存付款信息」、Link 保存、「同意条款」三个勾选框，addr=stripe 的「Enter address manually」，
+                     linkverify=1 的「Pay without Link」，都放进 iframe 可视区下沿以下的 #low（同样被裁掉、滚不过来）
+    nocvc=1          没有 CVC 框（测必填字段缺失时报错）
+    blurzip=1        邮编框（两种 id 都算）失焦时，5 位数字的值被改写成「值-0000」（测失焦时改写格式）
+  #frame-keys（hidden）记本页收到的可信 keydown 次数（任何元素）。
+  结账页发来 collect 消息时回传各字段的值和卡号框收到的真实按键次数（与 card.html 相同的协议）。
+  另外几条发给结账页的消息（结账页的 cover=1、busy=… 用，其余情况结账页不理会）：
+    number-full      卡号框第一次输入满 16 位时发一次（cover=1 用）
+    address-changed  地址区（#address）里任一字段收到 input 或 change 事件、而且值和上次不同时发（失焦补发的 change 不算；busy=1 用）
+    field-blur       本页任一元素失焦（focusout）时发（结账页 busy=blur 用）
+    frame-blur       本页整个失去焦点（window 的 blur，焦点移到了结账页上，比如点支付按钮）时发（结账页 busy=blur-stuck 用）
+-->
+<label>Card number <input id="payment-numberInput" name="number" autocomplete="cc-number" inputmode="numeric"></label>
+<label>Expiration date <input id="payment-expiryInput" name="expiry" autocomplete="cc-exp" inputmode="numeric"></label>
+<label>Security code <input id="payment-cvcInput" name="cvc" autocomplete="cc-csc" inputmode="numeric"></label>
+<div id="address"></div>
+<label><input type="checkbox" id="payment-savePaymentInput" name="savePayment" class="p-Checkbox-input"> Save payment details to OpenAI OpCo, LLC for future purchases</label>
+<script>
+  var q = new URLSearchParams(location.search)
+
+  if (q.get('noamount') !== '1') {
+    var box = document.createElement('div')
+    box.className = 'p-HiddenText'
+    var lines = ['Payment amount: ' + (q.get('amount') || '$100.00')]
+    if (q.get('nocurrency') !== '1') lines.push('Currency: ' + (q.get('currency') || 'usd'))
+    lines.push('Payment mode: Live mode. Test data not accepted.')
+    lines.forEach(function (text) {
+      var p = document.createElement('p')
+      p.textContent = text
+      box.appendChild(p)
+    })
+    document.body.insertBefore(box, document.body.firstChild)
+  }
+
+  // clip=1：html 不滚动，body 按 iframe 高度裁掉超出的内容（clip 不是滚动容器，脚本也滚不动）；
+  // body 设 relative，让 .below 的绝对定位以 body 为准、同样被裁掉
+  var clip = q.get('clip') === '1'
+  if (clip) {
+    var clipStyle = document.createElement('style')
+    clipStyle.textContent =
+      'html { overflow: hidden; height: 100%; }' +
+      'body { position: relative; box-sizing: border-box; height: 100%; margin: 0; padding: 8px; overflow: clip; }' +
+      '.below { position: absolute; top: calc(100% + 8px); left: 8px; right: 8px; }'
+    document.head.appendChild(clipStyle)
+    if (q.get('addr') === '1') document.getElementById('address').classList.add('below')
+  }
+
+  var low = null
+  if (clip && q.get('low') === '1') {
+    low = document.createElement('div')
+    low.id = 'low'
+    low.className = 'below'
+    document.body.appendChild(low)
+    low.appendChild(document.getElementById('payment-savePaymentInput').closest('label'))
+  }
+  // addBox 加一个勾选框，low=1 时放进 #low
+  function addBox(html) {
+    var label = document.createElement('label')
+    label.innerHTML = html
+    ;(low || document.body).appendChild(label)
+  }
+  if (q.get('linksave') === '1') {
+    addBox('<input type="checkbox" id="enableStripePass" name="enableStripePass" checked> Save my information for faster checkout with Link')
+  }
+  if (q.get('terms') === '1') {
+    addBox('<input type="checkbox" id="termsOfServiceConsentCheckbox" name="termsOfServiceConsentCheckbox"> I agree to the Terms of Service')
+  }
+  if (q.get('savepay') === '1') document.getElementById('payment-savePaymentInput').checked = true
+  if (q.get('nocvc') === '1') document.getElementById('payment-cvcInput').closest('label').remove()
+
+  if (q.get('linkverify') === '1') {
+    var verify = null
+    window.addEventListener('message', function (e) {
+      if (e.source !== parent || !e.data || e.data.type !== 'linkverify' || verify) return
+      var cardLabels = ['payment-numberInput', 'payment-expiryInput', 'payment-cvcInput'].map(function (id) {
+        return document.getElementById(id)
+      }).filter(Boolean).map(function (el) { return el.closest('label') })
+      cardLabels.forEach(function (l) { l.style.display = 'none' })
+      verify = document.createElement('div')
+      verify.className = 'LinkVerificationContent'
+      verify.innerHTML = '<p>Confirm it’s you</p>'
+      document.body.insertBefore(verify, cardLabels[0])
+      var skip = document.createElement('button')
+      skip.type = 'button'
+      skip.textContent = 'Pay without Link'
+      ;(low || verify).appendChild(skip)
+      skip.addEventListener('click', function (e) {
+        if (!e.isTrusted) return
+        verify.remove()
+        skip.remove()
+        cardLabels.forEach(function (l) { l.style.display = '' })
+      })
+      parent.postMessage({ type: 'linkverify-shown' }, '*')
+    })
+  }
+
+  var number = document.getElementById('payment-numberInput')
+  var numberKeys = 0
+  number.addEventListener('keydown', function (e) {
+    if (e.isTrusted && e.key.length === 1) numberKeys++
+  })
+  var frameKeys = document.createElement('input')
+  frameKeys.type = 'hidden'
+  frameKeys.id = 'frame-keys'
+  frameKeys.value = '0'
+  document.body.appendChild(frameKeys)
+  document.addEventListener('keydown', function (e) {
+    if (e.isTrusted) frameKeys.value = String(Number(frameKeys.value) + 1)
+  }, true)
+  document.addEventListener('focusout', function (e) {
+    if (q.get('blurzip') === '1' && /postalCodeInput$/.test(e.target.id) && /^\d{5}$/.test(e.target.value)) {
+      e.target.value += '-0000'
+    }
+    parent.postMessage({ type: 'field-blur' }, '*')
+  })
+  window.addEventListener('blur', function () { parent.postMessage({ type: 'frame-blur' }, '*') })
+  var numberFull = false
+  number.addEventListener('input', function () {
+    if (numberFull || number.value.replace(/\D/g, '').length < 16) return
+    numberFull = true
+    parent.postMessage({ type: 'number-full' }, '*')
+  })
+  // 只在值真的变了时发：输入框失焦时浏览器也会补发 change（比如点支付按钮那一下），那不算地址变化
+  var addressValues = {}
+  ;['input', 'change'].forEach(function (type) {
+    document.getElementById('address').addEventListener(type, function (e) {
+      var key = e.target.id || e.target.name
+      if (addressValues[key] === e.target.value) return
+      addressValues[key] = e.target.value
+      parent.postMessage({ type: 'address-changed' }, '*')
+    })
+  })
+  if (q.get('addr') === '1') {
+    number.addEventListener('input', function () {
+      if (document.getElementById('payment-countryInput') || number.value.replace(/\D/g, '').length < 16) return
+      document.getElementById('address').innerHTML =
+        '<label>Country or region <select id="payment-countryInput" name="country" autocomplete="billing country">' +
+        '<option value="US">United States</option><option value="PH">Philippines</option></select></label>' +
+        '<label>ZIP <input id="payment-postalCodeInput" name="postalCode" autocomplete="billing postal-code"></label>'
+    })
+  }
+
+  var addr = q.get('addr') || ''
+  var countryHTML =
+    '<label>Country or region <select id="billingAddress-countryInput" name="country" autocomplete="billing country">' +
+    '<option value="US">United States</option><option value="PH">Philippines</option></select></label>'
+  var nameHTML = '<label>Full name <input id="billingAddress-nameInput" name="name" autocomplete="billing name"></label>'
+  var foldedHTML =
+    '<div id="folded" style="display:none">' +
+    '<label>City <input id="billingAddress-localityInput" name="locality" autocomplete="billing address-level2"></label>' +
+    '<label>State <select id="billingAddress-administrativeAreaInput" name="administrativeArea" autocomplete="billing address-level1">' +
+    '<option value="">State</option><option value="OR">Oregon</option><option value="WA">Washington</option></select></label>' +
+    '<label>ZIP <input id="billingAddress-postalCodeInput" name="postalCode" autocomplete="billing postal-code"></label>' +
+    '</div>'
+  // onFullNumber 在卡号框输入满 16 位后渲染一次地址区
+  function onFullNumber(render) {
+    number.addEventListener('input', function () {
+      if (document.getElementById('billingAddress-countryInput') || number.value.replace(/\D/g, '').length < 16) return
+      render(document.getElementById('address'))
+    })
+  }
+
+  if (addr === 'stripe' || addr === 'stripe-nolink') {
+    var stripeRest = nameHTML +
+      '<label>Address line 1 <input id="billingAddress-addressLine1Input" name="addressLine1" autocomplete="billing address-line1"></label>' +
+      (addr === 'stripe' ? '<button type="button" id="manual">Enter address manually</button>' : '') +
+      foldedHTML
+    var wireManual = function () {
+      var manual = document.getElementById('manual')
+      if (manual && low) low.appendChild(manual)
+      if (manual) manual.addEventListener('click', function () {
+        document.getElementById('folded').style.display = 'block'
+        manual.remove()
+      })
+    }
+    onFullNumber(function (box) {
+      box.innerHTML = countryHTML + stripeRest
+      wireManual()
+      if (q.get('reflow') !== '1') return
+      var country = document.getElementById('billingAddress-countryInput')
+      country.value = 'PH'
+      country.addEventListener('change', function () {
+        var row = country.closest('label')
+        while (row.nextSibling) row.nextSibling.remove()
+        setTimeout(function () {
+          box.insertAdjacentHTML('beforeend', stripeRest)
+          wireManual()
+        }, 800)
+      })
+    })
+  }
+
+  if (['suggest', 'suggest-none', 'suggest-stuck', 'suggest-decoy', 'suggest-lazy', 'suggest-async', 'suggest-sticky', 'suggest-revert'].indexOf(addr) >= 0) {
+    onFullNumber(function (box) {
+      box.innerHTML = countryHTML + nameHTML +
+        '<label>Address line 1 <input id="billingAddress-addressLine1Input" name="addressLine1" autocomplete="billing address-line1"' +
+        ' role="combobox" aria-controls="autocomplete-search" aria-expanded="false"></label>' +
+        '<ul id="autocomplete-search" role="listbox" style="display:none">' +
+        '<li role="option" data-line1="1 Main Street" data-city="Seattle" data-state="WA" data-zip="98101">1 Main Street, Seattle, WA, USA</li>' +
+        '<li role="option" data-line1="1 Main Avenue" data-city="Tacoma" data-state="WA" data-zip="98402">1 Main Avenue, Tacoma, WA, USA</li>' +
+        '</ul>' +
+        foldedHTML
+      if (clip) document.getElementById('folded').classList.add('below')
+      var line1 = document.getElementById('billingAddress-addressLine1Input')
+      var list = document.getElementById('autocomplete-search')
+      var dropdown = null
+      function showList(on) {
+        list.style.display = on ? 'block' : 'none'
+        if (dropdown) dropdown.style.display = on ? 'block' : 'none'
+        line1.setAttribute('aria-expanded', on ? 'true' : 'false')
+      }
+      function pick(opt) {
+        line1.value = opt.dataset.line1
+        document.getElementById('billingAddress-localityInput').value = opt.dataset.city
+        document.getElementById('billingAddress-administrativeAreaInput').value = opt.dataset.state
+        document.getElementById('billingAddress-postalCodeInput').value = opt.dataset.zip
+        document.getElementById('folded').style.display = 'block'
+        showList(false)
+      }
+      var loaded = addr !== 'suggest-lazy'
+      var lastInput = 0 // 街道最近一次收到可信 input 的时刻（suggest-revert 用）
+      var loading = null
+      line1.addEventListener('input', function (e) {
+        if (!e.isTrusted || addr === 'suggest-none') return
+        lastInput = Date.now()
+        if (!loaded) {
+          clearTimeout(loading)
+          loading = setTimeout(function () { loaded = true }, 500)
+          return
+        }
+        if (addr === 'suggest-async' || addr === 'suggest-revert') {
+          // 异步结果：按收到 input 时的值，约 300ms 后才显示或收起；这期间的 Esc 不取消它
+          var query = line1.value
+          setTimeout(function () { showList(query.length >= 3) }, 300)
+          return
+        }
+        showList(line1.value.length >= 3)
+      })
+      line1.addEventListener('keydown', function (e) {
+        if (e.key !== 'Escape' || addr === 'suggest-sticky') return
+        if (addr === 'suggest-revert' && list.style.display !== 'none' && Date.now() - lastInput >= 500) line1.value = ''
+        showList(false)
+      })
+      list.addEventListener('click', function (e) {
+        var opt = e.target.closest('[role="option"]')
+        if (!e.isTrusted || !opt || addr === 'suggest-stuck' || addr === 'suggest-decoy') return
+        pick(opt)
+      })
+      if (addr === 'suggest-decoy') {
+        // 下拉框是同源的子 iframe，里面的选项被可信地点中时，按本页第一条联想展开
+        dropdown = document.createElement('iframe')
+        dropdown.title = 'Address suggestions'
+        dropdown.style.cssText = 'display: none; border: 1px solid #ccc; width: 360px; height: 60px'
+        dropdown.addEventListener('load', function () {
+          dropdown.contentDocument.addEventListener('click', function (e) {
+            if (e.isTrusted && e.target.closest('[role="option"]')) pick(list.querySelector('[role="option"]'))
+          })
+        })
+        dropdown.srcdoc = '<ul role="listbox" style="margin: 4px; font-family: sans-serif">' +
+          '<li role="option">1 Main Street, Seattle, WA, USA</li></ul>'
+        list.after(dropdown)
+      }
+    })
+  }
+
+  if (addr === 'late') {
+    onFullNumber(function (box) {
+      box.innerHTML = countryHTML +
+        '<label>Address line 1 <input id="billingAddress-addressLine1Input" name="addressLine1" autocomplete="billing address-line1"></label>'
+      document.getElementById('billingAddress-addressLine1Input').addEventListener('input', function () {
+        if (document.getElementById('billingAddress-nameInput')) return
+        box.insertAdjacentHTML('beforeend', nameHTML)
+      })
+    })
+  }
+
+  function val(id) {
+    var el = document.getElementById(id)
+    return el ? el.value : ''
+  }
+  window.addEventListener('message', function (e) {
+    if (e.source !== parent || !e.data || e.data.type !== 'collect') return
+    parent.postMessage({
+      type: 'card',
+      number: val('payment-numberInput'), expiry: val('payment-expiryInput'), cvc: val('payment-cvcInput'),
+      numberKeys: numberKeys,
+      country: val('payment-countryInput'), zip: val('payment-postalCodeInput'),
+      savePayment: document.getElementById('payment-savePaymentInput').checked
+    }, '*')
+  })
+</script>
+</body>
+</html>

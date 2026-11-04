@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/chromedp/cdproto/cdp"
@@ -388,26 +390,308 @@ func click(ctx context.Context, e *elem) error {
 	return chromedp.MouseClickXY((x0+x1)/2, (y0+y1)/2).Do(ctx)
 }
 
+const (
+	landSettle       = 50 * time.Millisecond  // 落点检查时两次读位置的间隔
+	landScrollSettle = 150 * time.Millisecond // 落点检查真的滚动过时，读位置前至少等这么久，让页面跟上
+	landScrollMax    = time.Second            // 落点检查真的滚动过时，最多等这么久等位置停稳（见 settleAfterScroll）
+	landTolerance    = 1.0                    // 两次读到的中心点相差不超过这么多像素，才算没在移动
+	landEdge         = 10.0                   // 中心点离主页面可视区边缘不足这么多像素，就先用脚本滚动
+)
+
+// scrollIntoMainViewJS 以主页面上的元素（装着目标的顶层 iframe）为 this，把主页面可视区里的点 (x, y) 挪到可视区中部。
+// 点在可视区外、或离边缘不足 edge 像素时才滚：从 this 往上找可滚动的祖先，由近到远逐个 scrollBy，近的滚到头还差的交给更外一层，
+// 最后是 document.scrollingElement（两个方向都滚）。只是脚本滚动，不发鼠标、键盘事件。
+//   - 某个方向算可滚：那个方向的 overflow 是 auto、scroll、hidden 或 clip，而且内容比框长。hidden 用户滚不动、脚本能滚，
+//     浏览器自己的滚入（scrollIntoView）也会滚它；clip 脚本也滚不动，scrollBy 位移是 0，差的照样交给外层。
+//   - 只沿算可滚的方向 scrollBy：只因纵向可滚被选中的容器，不横着滚它。
+//
+// 返回滚了没有。可视区宽高取 innerWidth/innerHeight 与 documentElement 的 clientWidth/clientHeight（不含滚动条）中较小的。
+const scrollIntoMainViewJS = `function (x, y, edge) {
+	const de = document.documentElement
+	const w = Math.min(innerWidth, de.clientWidth || innerWidth)
+	const h = Math.min(innerHeight, de.clientHeight || innerHeight)
+	let dx = x < edge || x >= w - edge ? x - w / 2 : 0
+	let dy = y < edge || y >= h - edge ? y - h / 2 : 0
+	if (!dx && !dy) return false
+	const can = o => o === 'auto' || o === 'scroll' || o === 'hidden' || o === 'clip'
+	const boxes = []
+	for (let el = this.parentElement; el; el = el.parentElement) {
+		const s = getComputedStyle(el)
+		const ax = can(s.overflowX) && el.scrollWidth > el.clientWidth
+		const ay = can(s.overflowY) && el.scrollHeight > el.clientHeight
+		if (ax || ay) boxes.push({ el, ax, ay })
+	}
+	const root = document.scrollingElement || de
+	if (!boxes.some(b => b.el === root)) boxes.push({ el: root, ax: true, ay: true })
+	let moved = false
+	for (const { el, ax, ay } of boxes) {
+		if (Math.abs(dx) < 1 && Math.abs(dy) < 1) break
+		if (!(ax && Math.abs(dx) >= 1) && !(ay && Math.abs(dy) >= 1)) continue
+		const top = el.scrollTop, left = el.scrollLeft
+		el.scrollBy({ left: ax ? dx : 0, top: ay ? dy : 0, behavior: 'instant' })
+		const my = el.scrollTop - top, mx = el.scrollLeft - left
+		if (my || mx) moved = true
+		dy -= my
+		dx -= mx
+	}
+	return moved
+}`
+
+// scrollAnchor 返回主页面上「装着元素的顶层 iframe」元素的句柄：沿 frame 的父链往上，找到父 frame 是主页面的那一层，
+// 取它在主页面里的 iframe 元素。元素本身就在主页面时返回它自己。
+func (b *Browser) scrollAnchor(ctx context.Context, frames []frameRef, e *elem) (runtime.RemoteObjectID, error) {
+	main := frames[0]
+	if e.frame.id == main.id {
+		return e.obj, nil
+	}
+	f := e.frame
+	for f.parent != main.id {
+		i := slices.IndexFunc(frames, func(p frameRef) bool { return p.id == f.parent })
+		if i < 0 {
+			return "", errors.New("找不到元素所在 iframe 的上层")
+		}
+		f = frames[i]
+	}
+	owner, _, err := dom.GetFrameOwner(f.id).Do(ctx)
+	if err != nil {
+		return "", err
+	}
+	obj, err := dom.ResolveNode().WithBackendNodeID(owner).WithExecutionContextID(main.ctx).WithObjectGroup(objectGroup).Do(ctx)
+	if err != nil {
+		b.forgetWorld(main.id)
+		return "", err
+	}
+	return obj.ObjectID, nil
+}
+
+// landPoint 把元素滚进视野、等它停稳，返回它中心点在主页面可视区里的坐标。落点检查 landsInOwnFrame 和点支付前的 payClickPoint 共用。
+//   - 先 ScrollIntoViewIfNeeded，读一次中心点。中心点仍在主页面可视区外、或离边缘不足 landEdge 时，
+//     从装着它的顶层 iframe（元素在主页面时就是它自己）往上找滚动容器，用 scrollIntoMainViewJS 滚到让它居中；
+//     真滚动过就等 landScrollSettle 再重新读。
+//     依据 2026-11-04 实测：卡片、地址 iframe 在首屏以下，iframe 里元素的滚入不带动主页面；主页面的 html 滚不动，
+//     真正的滚动容器是 main（overflow-y: auto），所以只滚 window 也没用。滚完仍在视口外，调用方的 elementFromPoint
+//     读不到元素，照旧不通过。
+//   - 没滚动过：隔 landSettle 读两次位置，相差超过 landTolerance 说明还在移动，不通过。
+//   - 滚动过（CDP 滚入让位置变了，或脚本滚动真滚了）：settleAfterScroll 等位置停稳，到 landScrollMax 还在变就不通过。
+//
+// 两次读位置只能看出主线程上的移动：transform 动画由合成线程驱动，读两次可能读到同一个值。点支付前的最后检查（payClickJS）
+// 另看正在跑的动画。frames 的第一个必须是主页面。只滚动、读位置，不发任何鼠标、键盘事件。
+func (b *Browser) landPoint(ctx context.Context, frames []frameRef, e *elem) (x, y float64, err error) {
+	center := func() (float64, float64, error) {
+		x0, y0, x1, y1, err := bounds(ctx, e)
+		return (x0 + x1) / 2, (y0 + y1) / 2, err
+	}
+	bx, by, err := center() // 滚入之前的位置，用来看 CDP 滚入有没有真的滚动
+	if err != nil {
+		return 0, 0, err
+	}
+	if err := dom.ScrollIntoViewIfNeeded().WithObjectID(e.obj).Do(ctx); err != nil {
+		return 0, 0, err
+	}
+	x0, y0, err := center()
+	if err != nil {
+		return 0, 0, err
+	}
+	scrolled := math.Abs(x0-bx) > landTolerance || math.Abs(y0-by) > landTolerance
+	anchor, err := b.scrollAnchor(ctx, frames, e)
+	if err != nil {
+		return 0, 0, err
+	}
+	var moved bool
+	if err := callOn(ctx, anchor, scrollIntoMainViewJS, &moved, x0, y0, landEdge); err != nil {
+		return 0, 0, err
+	}
+	if scrolled || moved {
+		return settleAfterScroll(ctx, center)
+	}
+	if err := sleep(ctx, landSettle); err != nil {
+		return 0, 0, err
+	}
+	if x, y, err = center(); err != nil {
+		return 0, 0, err
+	}
+	if math.Abs(x-x0) > landTolerance || math.Abs(y-y0) > landTolerance {
+		return 0, 0, errors.New("位置还在变，没有点击")
+	}
+	return x, y, nil
+}
+
+// settleAfterScroll 在落点检查滚动过之后等位置停稳：先等 landScrollSettle，再每隔 landSettle 读一次中心点，
+// 相邻两次相差都不超过 landTolerance 就算停稳，返回这次读到的位置；从开始等算起到 landScrollMax 还在变，就不通过。
+//
+// 为什么不固定等：滚动会触发页面的滚动监听，比如收起吸顶栏、懒加载改布局，这些调整要多久不一定。固定等 150ms 太短时，
+// 后面那两次读位置会把还在调整的布局判成「位置还在变」，点支付就在注资之后放弃；固定等得长，又拖慢每一个字段。
+// 所以至少等 150ms，停稳就走，最多等 1 秒。一直在动的元素照样不通过。
+func settleAfterScroll(ctx context.Context, center func() (float64, float64, error)) (x, y float64, err error) {
+	start := time.Now()
+	if err := sleep(ctx, landScrollSettle); err != nil {
+		return 0, 0, err
+	}
+	px, py, err := center()
+	if err != nil {
+		return 0, 0, err
+	}
+	for {
+		if err := sleep(ctx, landSettle); err != nil {
+			return 0, 0, err
+		}
+		if x, y, err = center(); err != nil {
+			return 0, 0, err
+		}
+		if math.Abs(x-px) <= landTolerance && math.Abs(y-py) <= landTolerance {
+			return x, y, nil
+		}
+		if time.Since(start) >= landScrollMax {
+			return 0, 0, errors.New("位置还在变，没有点击")
+		}
+		px, py = x, y
+	}
+}
+
+// landsInOwnFrame 把元素滚进视野、等它停稳（landPoint），确认鼠标点下去会落在它自己所在的 iframe 上，返回这个坐标。
+// 在主页面上用 elementFromPoint 看中心那一点：必须是 iframe 元素，而且是元素所在 frame 或它的上层。主页面上的元素一律不通过。
+//
+// 内嵌页的 iframe 可能只露出一部分（2026-11-04 实测地址 iframe 带 scrolling="no"、内文档比 iframe 高），
+// getContentQuads 不按 iframe 裁剪，算出的坐标可能在 iframe 外面、落到主页面别的元素上，而支付按钮就在主页面。
+// frames 是 b.frames 的结果，第一个是主页面。只在内嵌页（PageEmbedded）的路径上用。
+func (b *Browser) landsInOwnFrame(ctx context.Context, frames []frameRef, e *elem) (x, y float64, err error) {
+	if x, y, err = b.landPoint(ctx, frames, e); err != nil {
+		return 0, 0, err
+	}
+
+	r, err := b.eval(ctx, frames[0], fmt.Sprintf("document.elementFromPoint(%f, %f)", x, y))
+	if err != nil {
+		return 0, 0, err
+	}
+	if r.ObjectID == "" {
+		return 0, 0, errors.New("点击落点不在页面上，没有点击")
+	}
+	hit := &elem{frame: frames[0], obj: r.ObjectID}
+	var tag string
+	if err := callOn(ctx, hit.obj, `function () { return this.tagName }`, &tag); err != nil {
+		return 0, 0, err
+	}
+	if tag != "IFRAME" {
+		return 0, 0, fmt.Errorf("点击落点是主页面上的 %s，不是 iframe，没有点击", strings.ToLower(tag))
+	}
+	id, err := contentFrame(ctx, hit)
+	if err != nil {
+		return 0, 0, err
+	}
+	if !slices.ContainsFunc(subtree(frames, id), func(f frameRef) bool { return f.id == e.frame.id }) {
+		return 0, 0, errors.New("点击落点是别的 iframe，没有点击")
+	}
+	return x, y, nil
+}
+
+// clickOption 点 iframe 里的下拉选项（地址联想）。先确认选项本身不是提交控件（refuseSubmitControl），
+// 再过 landsInOwnFrame，落点检查紧挨着鼠标点击；任一不过就不点、返回错误。主页面上的选项一律不点。
+func (b *Browser) clickOption(ctx context.Context, frames []frameRef, e *elem) error {
+	if err := refuseSubmitControl(ctx, e); err != nil {
+		return err
+	}
+	return b.clickLanded(ctx, frames, e)
+}
+
+// clickLanded 过 landsInOwnFrame 后用鼠标点它算出的坐标；不过就不发任何鼠标事件，返回原因。
+func (b *Browser) clickLanded(ctx context.Context, frames []frameRef, e *elem) error {
+	x, y, err := b.landsInOwnFrame(ctx, frames, e)
+	if err != nil {
+		return err
+	}
+	return chromedp.MouseClickXY(x, y).Do(ctx)
+}
+
+// clickBox 用鼠标点勾选框。托管页同 click（调用方 setCheck、EnsureNoSavePayment 已先看过不是提交控件）；
+// 内嵌页上同 clickOption：不是提交控件（errSubmitControl）、落点检查也通过才点，不通过就不点、返回原因。
+// 落点不对时调用方改用脚本点并核对；是提交控件时调用方绝不能再用脚本点（它们自己点之前也会先看）。
+func (b *Browser) clickBox(ctx context.Context, e *elem) error {
+	if b.pageKind() != PageEmbedded {
+		return click(ctx, e)
+	}
+	frames, err := b.frames(ctx)
+	if err != nil {
+		return err
+	}
+	return b.clickOption(ctx, frames, e)
+}
+
+// clickEntry 点按文字找到的入口（新卡、Pay without Link、手动地址）。托管页同 clickReveal；
+// 内嵌页同 clickOption：不是提交控件、落点检查也通过才点，不通过就不点、返回原因。
+func (b *Browser) clickEntry(ctx context.Context, frames []frameRef, e *elem) error {
+	if b.pageKind() != PageEmbedded {
+		return clickReveal(ctx, e)
+	}
+	return b.clickOption(ctx, frames, e)
+}
+
+// landReason 把没用鼠标点的原因（落点检查、提交控件检查的错误）写成报告里的短句：去掉「，没有点击」，不含任何值。
+func landReason(err error) string { return strings.TrimSuffix(err.Error(), "，没有点击") }
+
+// refusedNote 返回内嵌页上入口、勾选框没用鼠标点的原因（landReason）；没出错或是托管页时返回空，托管页的报告不变。
+func (b *Browser) refusedNote(err error) string {
+	if err == nil || b.pageKind() != PageEmbedded {
+		return ""
+	}
+	return landReason(err)
+}
+
 // focus 点击输入框；点完焦点仍不在它上面时直接设焦点。
 func focus(ctx context.Context, e *elem) error {
 	if err := click(ctx, e); err != nil {
 		return err
 	}
+	_, err := ensureFocus(ctx, e)
+	return err
+}
+
+// focusField 选中要填写的输入框。托管页同 focus。内嵌页上先确认它不是提交控件（refuseSubmitControl：是就不点、不设焦点，
+// 返回 errSubmitControl——焦点落在提交控件上，之后键入的回车、空格会直接触发它），再过 landsInOwnFrame，通过才用鼠标点；
+// 不通过（落点不在它自己的 iframe 上、还在移动、读不出位置）就不发任何鼠标事件，直接用 DOM.focus 设焦点。
+// 内嵌页上用了直接设焦点时，direct 是原因（落点检查的错误文字，去掉「，没有点击」，不含任何值），由调用方写进填表报告；托管页总是空。
+func (b *Browser) focusField(ctx context.Context, e *elem) (direct string, err error) {
+	if b.pageKind() != PageEmbedded {
+		return "", focus(ctx, e)
+	}
+	if err := refuseSubmitControl(ctx, e); err != nil {
+		return "", err
+	}
+	frames, lerr := b.frames(ctx)
+	if lerr == nil {
+		var x, y float64
+		if x, y, lerr = b.landsInOwnFrame(ctx, frames, e); lerr == nil {
+			if err := chromedp.MouseClickXY(x, y).Do(ctx); err != nil {
+				return "", err
+			}
+		}
+	}
+	set, err := ensureFocus(ctx, e)
+	switch {
+	case lerr != nil:
+		direct = landReason(lerr)
+	case set:
+		direct = "鼠标点了，焦点没过去"
+	}
+	return direct, err
+}
+
+// ensureFocus 确认焦点在输入框上，不在就用 DOM.focus 直接设（不发鼠标事件）。set 表示用了 DOM.focus。
+func ensureFocus(ctx context.Context, e *elem) (set bool, err error) {
 	const focused = `function () { return this.ownerDocument.hasFocus() && this.ownerDocument.activeElement === this }`
 	var ok bool
 	if err := callOn(ctx, e.obj, focused, &ok); err != nil || ok {
-		return err
+		return false, err
 	}
 	if err := dom.Focus().WithObjectID(e.obj).Do(ctx); err != nil {
-		return err
+		return true, err
 	}
 	if err := callOn(ctx, e.obj, focused, &ok); err != nil {
-		return err
+		return true, err
 	}
 	if !ok {
-		return errors.New("焦点不在输入框上")
+		return true, errors.New("焦点不在输入框上")
 	}
-	return nil
+	return true, nil
 }
 
 // clearInput 选中输入框全部内容后按退格清空（真实按键，受控组件能感知）。

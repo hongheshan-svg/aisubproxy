@@ -3,9 +3,11 @@ package handler
 import (
 	"archive/tar"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -16,11 +18,14 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
+	"github.com/tuzi/cdk-recharge-system/internal/payengine"
+	"github.com/tuzi/cdk-recharge-system/internal/safego"
 )
 
 // 一键更新状态（进程内；重启后重置为 idle，版本由 VERSION 体现）
@@ -141,9 +146,9 @@ func AdminSystemUpdateStatus(c *gin.Context) {
 		"state":       st,
 		"current":     resolveLocalVersion(),
 		"install":     installRoot(),
-		"goos":        runtime.GOOS,
+		"goos":        updateGOOS,
 		"goarch":      runtime.GOARCH,
-		"can_update":  updateEnabled() && runtime.GOOS == "linux",
+		"can_update":  updateEnabled() && updateGOOS == "linux",
 		"update_hint": updateHint(),
 		"deploy_mode": deployMode(),
 	})
@@ -157,7 +162,7 @@ func AdminSystemUpdate(c *gin.Context) {
 		c.JSON(http.StatusForbidden, gin.H{"error": "UPDATE_ENABLED=0，未开启一键更新"})
 		return
 	}
-	if runtime.GOOS != "linux" {
+	if updateGOOS != "linux" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "一键更新目前仅支持 linux 生产部署"})
 		return
 	}
@@ -182,6 +187,12 @@ func AdminSystemUpdate(c *gin.Context) {
 	if updRunning {
 		updMu.Unlock()
 		c.JSON(http.StatusConflict, gin.H{"error": "已有更新在进行中", "state": getUpdateState()})
+		return
+	}
+	// 有在途付款单就不更新：替换程序、重载进程会把正在开浏览器、注资、填表的单打断。只查这一次，不自动排空
+	if err := checkNoPaymentsInFlight(c.Request.Context()); err != nil {
+		updMu.Unlock()
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
 	}
 	updRunning = true
@@ -211,7 +222,8 @@ func AdminSystemUpdate(c *gin.Context) {
 func runSeamlessUpdate(target, username string) {
 	defer func() {
 		if r := recover(); r != nil {
-			failUpdate(fmt.Sprintf("panic: %v", r))
+			// panic 的值可能带敏感信息，只记类型和位置
+			failUpdate("内部错误（panic）：" + safego.Describe(r))
 		}
 		updMu.Lock()
 		// reloading 阶段会 re-exec，不在此清 running
@@ -313,6 +325,12 @@ func runSeamlessUpdate(target, username string) {
 	}
 	if err := preflightBinary(binSrc, version); err != nil {
 		failUpdate("新程序自检失败，已中止更新: " + err.Error())
+		return
+	}
+
+	// 开始备份、替换文件之前再查一次在途付款单：下载、校验期间可能有新单开始处理
+	if err := checkNoPaymentsInFlight(context.Background()); err != nil {
+		failUpdate(err.Error())
 		return
 	}
 
@@ -423,10 +441,13 @@ func runSeamlessUpdate(target, username string) {
 	pruneBackups(updDir, maxUpdateBackups)
 
 	// 延迟 re-exec，让状态接口还能被读一次
-	go func() {
+	safego.Go("在线更新重载", func() {
 		time.Sleep(400 * time.Millisecond)
+		// 兜底：前面查过没有在途单，这里再停止派发、等可能刚开始的单进入确认或结束，再 exec
+		resume := drainPayments()
 		// 优先同进程 re-exec（PID 不变，systemd 无感，亚秒恢复）。容器里 PID 1 也不变，容器不用重启
 		if err := reexecFn(binDst, env); err != nil {
+			resume() // 进程接着跑，恢复派发
 			if l.Container {
 				// 程序没跑起来，不算一次启动；下次容器启动由启动接管换过去
 				_ = saveBoot(osFS{}, l.RuntimeDir, bootState{Version: version})
@@ -438,7 +459,38 @@ func runSeamlessUpdate(target, username string) {
 			// 若仍失败，标记 failed（进程若还活着）
 			failUpdate("重载失败: " + err.Error() + "（已尝试 systemctl restart）")
 		}
-	}()
+	})
+}
+
+// updateGOOS 是判断「只支持 linux」用的系统名；测试可改。
+var updateGOOS = runtime.GOOS
+
+// checkNoPaymentsInFlight 有在途付款单（已离开排队、还没进入确认）时返回拒绝更新的提示。确认中、排队的单不挡：重启后能接着跑。
+// 查不到时也拒绝：宁可这次不更新，也不打断正在付款的单。
+func checkNoPaymentsInFlight(ctx context.Context) error {
+	n, err := payengine.CountProcessing(ctx)
+	if err != nil {
+		log.Printf("[update] 查询在途付款单失败: %v", err)
+		return errors.New("查不到付款单状态，稍后再更新")
+	}
+	if n > 0 {
+		return fmt.Errorf("有 %d 张付款单正在处理，稍后再更新", n)
+	}
+	return nil
+}
+
+// drainPayments 在 re-exec 之前停止派发新付款单，等在途单进入确认或结束（最多 payengine.DrainMax）。
+// 返回恢复派发的函数：重载失败、进程接着跑时调用。付款引擎没启动时什么也不做。
+func drainPayments() (resume func()) {
+	engine := payEngine
+	if engine == nil {
+		return func() {}
+	}
+	left, resume := engine.Drain(payengine.DrainMax, payengine.DrainLogEvery)
+	if left > 0 {
+		log.Printf("[update] 还有 %d 张在途付款单没处理完，照旧重载，重启后由恢复逻辑接管", left)
+	}
+	return resume
 }
 
 func failUpdate(msg string) {
@@ -586,8 +638,37 @@ func resolveReleaseBundle(target string) (assetURL, version, shaURL, sigURL stri
 	return "", "", "", "", fmt.Errorf("release v%s 未找到预编译包 cdk-bundle-linux-amd64.tgz。请先用 git tag 触发 CI 发布，或手动上传 bundle 到 Release", version)
 }
 
-func downloadFile(url, dest string, progress func(done, total int64)) error {
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+// 下载发布包的时限（G7）：总共最多 10 分钟，60 秒没有收到新数据就取消。测试可缩短。
+var (
+	downloadTotalTimeout = 10 * time.Minute
+	downloadIdleTimeout  = 60 * time.Second
+)
+
+// shaFetchTimeout 是下载 sha256 校验文件的总时限（文件很小）。
+const shaFetchTimeout = 60 * time.Second
+
+// downloadFile 下载到 dest。总时间超过 downloadTotalTimeout，或 downloadIdleTimeout 内没有收到新数据（含等响应头），就取消并返回错误。
+func downloadFile(url, dest string, progress func(done, total int64)) (err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), downloadTotalTimeout)
+	defer cancel()
+	var stalled atomic.Bool
+	idle := time.AfterFunc(downloadIdleTimeout, func() {
+		stalled.Store(true)
+		cancel()
+	})
+	defer idle.Stop()
+	defer func() {
+		if err == nil {
+			return
+		}
+		switch {
+		case stalled.Load():
+			err = fmt.Errorf("%v 没有收到新数据，已取消下载", downloadIdleTimeout)
+		case errors.Is(ctx.Err(), context.DeadlineExceeded):
+			err = fmt.Errorf("%v 没有下载完，已取消下载", downloadTotalTimeout)
+		}
+	}()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return err
 	}
@@ -615,6 +696,7 @@ func downloadFile(url, dest string, progress func(done, total int64)) error {
 	for {
 		n, er := resp.Body.Read(buf)
 		if n > 0 {
+			idle.Reset(downloadIdleTimeout)
 			if _, ew := f.Write(buf[:n]); ew != nil {
 				return ew
 			}
@@ -634,7 +716,12 @@ func downloadFile(url, dest string, progress func(done, total int64)) error {
 }
 
 func verifySHA256File(tgzPath, shaURL string) error {
-	req, _ := http.NewRequest(http.MethodGet, shaURL, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), shaFetchTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, shaURL, nil)
+	if err != nil {
+		return err
+	}
 	req.Header.Set("User-Agent", "cdk-recharge-system-updater")
 	if tok := strings.TrimSpace(os.Getenv("GITHUB_TOKEN")); tok != "" {
 		req.Header.Set("Authorization", "Bearer "+tok)

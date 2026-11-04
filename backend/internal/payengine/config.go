@@ -60,19 +60,6 @@ func CreditQuantity(planKey string) int {
 	return n
 }
 
-// 点数各档在 PH 的默认金额（设计 2026-11-03 §5.3，取自 ZovoCard 文档）：每 250 点 ₱565，按数量线性计算；上限为预期金额 × 1.12。
-// 金额为比索的最小单位（分）。其他地区没有默认值，管理员配置后才能用。
-const (
-	creditPHPPer250Minor = 56500
-	creditCapPercent     = 112
-)
-
-// creditDefaultPH 返回点数档在 PH 的默认预期金额与上限。
-func creditDefaultPH(quantity int) (expect, capMinor int64) {
-	expect = int64(creditPHPPer250Minor) * int64(quantity) / 250
-	return expect, expect * creditCapPercent / 100
-}
-
 // Regions 是支持的地区（顺序即展示顺序）。
 var Regions = []string{"PH", "US", "JP", "CL", "EG"}
 
@@ -91,13 +78,15 @@ var planDefaults = map[string]planDefault{
 var currencyRe = regexp.MustCompile(`^[A-Z]{3}$`)
 
 // RegionConf 是某套餐在某地区的付款参数；金额均为最小单位。
-// ExpectMinor 是预期应付金额，只用于展示和校验配置（上限不能低于它），付款时以支付页实际读到的金额为准、以 CapMinor 为上限。
+// ExpectMinor 是预期应付金额，只用于展示和校验配置（上限不能低于它），付款时以支付页实际读到的金额为准，上限由 CapMinor 把关，下限由 FloorMinor 把关。
 type RegionConf struct {
 	Enabled     bool   `json:"enabled"`
 	Currency    string `json:"currency"`
 	CapMinor    int64  `json:"cap_minor"`
 	FundCents   int64  `json:"fund_cents"`
 	ExpectMinor int64  `json:"expect_minor"`
+	// FloorMinor 是最低金额：支付页金额低于它就在注资前放弃，单位与币种同 CapMinor。
+	FloorMinor int64 `json:"floor_minor"`
 }
 
 // PlanConf 是一个套餐及其各地区配置。Kind 与 CreditQuantity 由套餐键决定，保存时客户端传什么都以键为准。
@@ -115,19 +104,24 @@ type PlanConf struct {
 func defaultPlan(key string) PlanConf {
 	if q := CreditQuantity(key); q > 0 {
 		p := PlanConf{Key: key, Label: fmt.Sprintf("Codex 点数 %d", q), Kind: KindCredit, CreditQuantity: q, Regions: map[string]RegionConf{}}
-		for _, r := range Regions {
-			p.Regions[r] = RegionConf{Currency: defaultCurrency[r]}
-		}
-		expect, capMinor := creditDefaultPH(q)
-		p.Regions["PH"] = RegionConf{Currency: "PHP", ExpectMinor: expect, CapMinor: capMinor}
+		fillDefaultRegions(&p)
 		return p
 	}
 	d := planDefaults[key]
 	p := PlanConf{Key: key, Label: d.label, Kind: KindSubscription, ChatGPTPlanName: d.name, ExpectPlanType: d.expect, Regions: map[string]RegionConf{}}
+	fillDefaultRegions(&p)
+	return p
+}
+
+// fillDefaultRegions 填各地区的出厂值：US、PH 用内置价格区间，其他地区只有币种。全部未启用、注资为 0。
+func fillDefaultRegions(p *PlanConf) {
 	for _, r := range Regions {
+		if b, ok := BuiltinRegionPrice(p.Key, r); ok {
+			p.Regions[r] = b
+			continue
+		}
 		p.Regions[r] = RegionConf{Currency: defaultCurrency[r]}
 	}
-	return p
 }
 
 // normalizePlan 把由套餐键决定的字段改回键的取值：种类、点数；点数档不留 ChatGPT 套餐名和期望套餐类型。
@@ -138,7 +132,7 @@ func normalizePlan(p *PlanConf) {
 	}
 }
 
-// DefaultPlanTable 返回全部未启用、金额为 0 的默认套餐表。
+// DefaultPlanTable 返回全部未启用的默认套餐表：美国、菲律宾带内置价格区间，其他地区金额为 0。
 func DefaultPlanTable() []PlanConf {
 	out := make([]PlanConf, 0, len(PlanKeys))
 	for _, k := range PlanKeys {
@@ -148,6 +142,7 @@ func DefaultPlanTable() []PlanConf {
 }
 
 // LoadPlanTable 读取套餐表，并与默认表合并：补齐缺项、丢弃未知键。
+// 美国、菲律宾已存的预期、最低、上限为 0 时用内置价补上（规则见 fillBuiltin），补的值保存前只在内存里。
 func LoadPlanTable() ([]PlanConf, error) {
 	raw, err := db.GetSetting(settingPlanTable)
 	if err != nil {
@@ -169,7 +164,7 @@ func LoadPlanTable() ([]PlanConf, error) {
 			tbl[i].Label, tbl[i].ChatGPTPlanName, tbl[i].ExpectPlanType = s.Label, s.ChatGPTPlanName, s.ExpectPlanType
 			for _, r := range Regions {
 				if rc, ok := s.Regions[r]; ok {
-					tbl[i].Regions[r] = rc
+					tbl[i].Regions[r] = fillBuiltin(s.Key, r, rc)
 				}
 			}
 			normalizePlan(&tbl[i])
@@ -207,11 +202,17 @@ func SavePlanTable(p []PlanConf) error {
 			if !contains(Regions, r) {
 				return fmt.Errorf("%w: 未知地区", ErrBadRequest)
 			}
-			if rc.CapMinor < 0 || rc.FundCents < 0 || rc.ExpectMinor < 0 {
+			if rc.CapMinor < 0 || rc.FundCents < 0 || rc.ExpectMinor < 0 || rc.FloorMinor < 0 {
 				return fmt.Errorf("%w: %s/%s 金额不能为负", ErrBadRequest, pc.Key, r)
 			}
 			if rc.ExpectMinor > 0 && rc.CapMinor > 0 && rc.CapMinor < rc.ExpectMinor {
 				return fmt.Errorf("%w: %s/%s 金额上限不能低于预期金额", ErrBadRequest, pc.Key, r)
+			}
+			if rc.FloorMinor > 0 && rc.CapMinor > 0 && rc.FloorMinor > rc.CapMinor {
+				return fmt.Errorf("%w: %s/%s 最低金额不能高于金额上限", ErrBadRequest, pc.Key, r)
+			}
+			if rc.FloorMinor > 0 && rc.ExpectMinor > 0 && rc.FloorMinor > rc.ExpectMinor {
+				return fmt.Errorf("%w: %s/%s 最低金额不能高于预期金额", ErrBadRequest, pc.Key, r)
 			}
 			if rc.FundCents > pol.MaxFundCents {
 				return fmt.Errorf("%w: %s/%s 注资金额 %d 分超过单笔上限 %d 分", ErrBadRequest, pc.Key, r, rc.FundCents, pol.MaxFundCents)
@@ -243,7 +244,7 @@ func unavailable(format string, a ...any) error {
 }
 
 // ResolvePlan 取出可用的套餐与地区配置。
-// 真实付款要求：地区已启用、币种、金额上限与注资金额大于 0；订阅开通还要 ChatGPT 套餐名与期望套餐类型齐全。
+// 真实付款要求：地区已启用、币种、最低金额、金额上限与注资金额大于 0；订阅开通还要 ChatGPT 套餐名与期望套餐类型齐全。
 // 试运行：订阅开通只要求 ChatGPT 套餐名；点数档没有额外要求（读金额、填表都不点支付，金额上限不用于试运行）。
 func ResolvePlan(planKey, region string, dryRun bool) (PlanConf, RegionConf, error) {
 	tbl, err := LoadPlanTable()
@@ -278,6 +279,9 @@ func ResolvePlan(planKey, region string, dryRun bool) (PlanConf, RegionConf, err
 	}
 	if rc.Currency == "" {
 		return PlanConf{}, RegionConf{}, unavailable("套餐 %s 在地区 %s 未配置币种", plan.Label, region)
+	}
+	if rc.FloorMinor <= 0 {
+		return PlanConf{}, RegionConf{}, unavailable("套餐 %s 在地区 %s 未配置最低金额", plan.Label, region)
 	}
 	if rc.CapMinor <= 0 {
 		return PlanConf{}, RegionConf{}, unavailable("套餐 %s 在地区 %s 未配置金额上限", plan.Label, region)

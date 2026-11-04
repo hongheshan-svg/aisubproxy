@@ -93,19 +93,13 @@ export function isCreditPlan(p: { kind?: string } | null | undefined): boolean {
   return p?.kind === 'credit'
 }
 
-// 点数档在 PH 的默认金额，与后端 creditDefaultPH 一致：每 250 点 565.00 PHP，上限是预期金额的 112%（都向下取整到最小单位）。
-const CREDIT_PHP_PER_250_MINOR = 56500
-const CREDIT_CAP_PERCENT = 112
-
-export function creditDefaultPH(quantity: number): { currency: string; expect_minor: number; cap_minor: number } {
-  const q = Math.max(0, Math.floor(quantity || 0))
-  const expect = Math.floor((CREDIT_PHP_PER_250_MINOR * q) / 250)
-  return { currency: 'PHP', expect_minor: expect, cap_minor: Math.floor((expect * CREDIT_CAP_PERCENT) / 100) }
-}
+/** 接口返回的内置价格（后端 BuiltinRegionPrice）：套餐键 → 地区 → 价格，只含美国、菲律宾。 */
+export interface BuiltinPrice { currency: string; expect_minor: number; floor_minor: number; cap_minor: number }
+export type BuiltinPrices = Record<string, Record<string, BuiltinPrice>>
 
 // ---------- 付款配置：套餐表与编辑表单互转 ----------
 
-export interface RegionConf { enabled: boolean; currency: string; expect_minor?: number; cap_minor: number; fund_cents: number }
+export interface RegionConf { enabled: boolean; currency: string; expect_minor?: number; floor_minor?: number; cap_minor: number; fund_cents: number }
 export interface PlanConf {
   key: string; label: string; chatgpt_plan_name: string; expect_plan_type: string
   kind?: string; credit_quantity?: number
@@ -114,7 +108,7 @@ export interface PlanConf {
 /** 表单里的金额是主单位（PHP 565.00 填 565），保存时再换回最小单位。 */
 export interface FormRow {
   region: string; enabled: boolean; initEnabled: boolean; currency: string
-  expect: number | null; cap: number | null; fund: number | null
+  expect: number | null; floor: number | null; cap: number | null; fund: number | null
 }
 export interface FormPlan {
   key: string; label: string; chatgpt_plan_name: string; expect_plan_type: string
@@ -126,10 +120,10 @@ export function planToForm(p: PlanConf, regions: readonly string[]): FormPlan {
     key: p.key, label: p.label, chatgpt_plan_name: p.chatgpt_plan_name, expect_plan_type: p.expect_plan_type,
     kind: p.kind || '', credit_quantity: p.credit_quantity || 0,
     rows: regions.map((r) => {
-      const rc = p.regions?.[r] || { enabled: false, currency: '', expect_minor: 0, cap_minor: 0, fund_cents: 0 }
+      const rc = p.regions?.[r] || { enabled: false, currency: '', expect_minor: 0, floor_minor: 0, cap_minor: 0, fund_cents: 0 }
       return {
         region: r, enabled: rc.enabled, initEnabled: rc.enabled, currency: rc.currency,
-        expect: fromMinor(rc.expect_minor || 0, rc.currency), cap: fromMinor(rc.cap_minor, rc.currency), fund: rc.fund_cents / 100,
+        expect: fromMinor(rc.expect_minor || 0, rc.currency), floor: fromMinor(rc.floor_minor || 0, rc.currency), cap: fromMinor(rc.cap_minor, rc.currency), fund: rc.fund_cents / 100,
       }
     }),
   }
@@ -144,32 +138,49 @@ export function formToPlan(p: FormPlan): PlanConf {
       const cur = row.currency.trim().toUpperCase()
       return [row.region, {
         enabled: row.enabled, currency: cur,
-        expect_minor: toMinor(row.expect || 0, cur), cap_minor: toMinor(row.cap || 0, cur), fund_cents: Math.round((row.fund || 0) * 100),
+        expect_minor: toMinor(row.expect || 0, cur), floor_minor: toMinor(row.floor || 0, cur), cap_minor: toMinor(row.cap || 0, cur), fund_cents: Math.round((row.fund || 0) * 100),
       }]
     })),
   }
 }
 
-/** 把点数档的 PH 行恢复成默认币种、预期金额和上限；不动启用开关和注资金额（注资没有默认值，要按汇率填）。 */
-export function applyCreditDefaultPH(p: FormPlan): boolean {
-  const row = p.rows.find((r) => r.region === 'PH')
-  if (!row || !isCreditPlan(p) || !(p.credit_quantity > 0)) return false
-  const d = creditDefaultPH(p.credit_quantity)
-  row.currency = d.currency
-  row.expect = fromMinor(d.expect_minor, d.currency)
-  row.cap = fromMinor(d.cap_minor, d.currency)
+/** 把某个地区的行恢复成内置价格（币种、预期金额、最低金额、上限）；不动启用开关和注资金额。订阅和点数都能用，没有内置价返回 false。 */
+export function applyBuiltinPrice(p: FormPlan, region: string, builtin: BuiltinPrices | undefined): boolean {
+  const row = p.rows.find((r) => r.region === region)
+  const b = builtin?.[p.key]?.[region]
+  if (!row || !b) return false
+  row.currency = b.currency
+  row.expect = fromMinor(b.expect_minor, b.currency)
+  row.floor = fromMinor(b.floor_minor, b.currency)
+  row.cap = fromMinor(b.cap_minor, b.currency)
   return true
 }
+
+/** 套餐在哪些地区有内置价（按地区顺序）。 */
+export function builtinRegions(p: FormPlan, builtin: BuiltinPrices | undefined): string[] {
+  return p.rows.map((r) => r.region).filter((r) => !!builtin?.[p.key]?.[r])
+}
+
+/** 表格下方的说明：内置价覆盖哪些地区。 */
+export const BUILTIN_NOTE = '美国、菲律宾的预期金额、最低金额、上限已按官方价格内置（可改）；其他地区要自己填。'
 
 /** 金额上限低于预期金额时的提示（两者都大于 0 才比较），与后端保存时的校验一致。 */
 export function capBelowExpect(capMinor: number, expectMinor: number): boolean {
   return capMinor > 0 && expectMinor > 0 && capMinor < expectMinor
 }
 
+/** 最低金额的保存问题：高于上限或高于预期金额时后端会拒绝（被比较的一方大于 0 才比），没问题返回空串。 */
+export function floorProblem(floorMinor: number, expectMinor: number, capMinor: number): string {
+  if (!(floorMinor > 0)) return ''
+  if (capMinor > 0 && floorMinor > capMinor) return '最低金额高于上限，保存会被拒绝'
+  if (expectMinor > 0 && floorMinor > expectMinor) return '最低金额高于预期金额，保存会被拒绝'
+  return ''
+}
+
 // payBlockReason 返回这个套餐与地区不能提交的原因，可以提交时返回空串。
 // 试运行只要求有 ChatGPT 套餐名（点数档不需要）；真实付款还要求地区已启用且金额都已配置。与后端 ResolvePlan 的规则一致。
 export function payBlockReason(
-  plan: { chatgpt_plan_name: string; kind?: string; regions?: Record<string, { enabled: boolean; cap_minor: number; fund_cents: number }> } | undefined,
+  plan: { chatgpt_plan_name: string; kind?: string; regions?: Record<string, { enabled: boolean; cap_minor: number; fund_cents: number; floor_minor?: number }> } | undefined,
   region: string,
   dryRun: boolean,
 ): string {
@@ -179,6 +190,7 @@ export function payBlockReason(
   const rc = plan.regions?.[region]
   if (!rc || !rc.enabled) return '该套餐在此地区未启用，不能真实付款（可先试运行）'
   if (!(rc.cap_minor > 0) || !(rc.fund_cents > 0)) return '该套餐在此地区的金额未配置，不能真实付款（可先试运行）'
+  if (!((rc.floor_minor || 0) > 0)) return '该套餐在此地区未配置最低金额，不能真实付款（可先试运行）'
   return ''
 }
 
@@ -196,6 +208,12 @@ export interface ProxyTestResult {
 }
 
 const COUNTRY_NAME: Record<string, string> = { PH: '菲律宾', US: '美国', JP: '日本', CL: '智利', EG: '埃及', SG: '新加坡' }
+
+/** 地区缩写后带中文国名，如「PH 菲律宾」；不认识的地区只显示缩写。 */
+export function regionWithName(code: string): string {
+  const name = COUNTRY_NAME[code]
+  return name ? `${code} ${name}` : code
+}
 
 /** 代理测试结果的展示文案；tone 对应界面颜色：ok 绿、warn 警告色、err 红。 */
 export function proxyTestText(r: ProxyTestResult): { tone: 'ok' | 'warn' | 'err'; text: string } {

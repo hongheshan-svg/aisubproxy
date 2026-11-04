@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -136,31 +137,75 @@ func ParsePrivateKey(pemText string) (*rsa.PrivateKey, error) {
 	return nil, fmt.Errorf("marswallex: 不支持的私钥类型 %q", block.Type)
 }
 
-// ParsePublicKey 解析 PKIX（PUBLIC KEY）或 PKCS#1（RSA PUBLIC KEY）公钥。
-func ParsePublicKey(pemText string) (*rsa.PublicKey, error) {
-	block, err := decodePEM(pemText)
-	if err != nil {
-		return nil, err
+// pemRe 认出 PEM 的首尾行与正文，不要求首尾行单独成行（整段粘成一行时也认得出）。
+var pemRe = regexp.MustCompile(`(?s)-----BEGIN ([A-Z0-9 ]+)-----(.*?)-----END [A-Z0-9 ]+-----`)
+
+// ParsePublicKey 解析 RSA 公钥。MarsWallex 后台给的平台公钥是没有首尾行的一串 Base64，别处复制来的格式也不一，所以都认：
+// PEM（PUBLIC KEY、RSA PUBLIC KEY、CERTIFICATE；首尾行与内容不符时按内容认）、纯 Base64（DER）、带引号、从 JSON 复制来的字面 \n。
+// 内容一律按 PKIX、PKCS#1、证书依次尝试。私钥一律拒绝，免得误把私钥当公钥存起来。
+func ParsePublicKey(text string) (*rsa.PublicKey, error) {
+	s := strings.TrimSpace(text)
+	s = strings.NewReplacer(`\r\n`, "\n", `\n`, "\n", "\r\n", "\n").Replace(s)
+	s = strings.TrimSpace(strings.Trim(s, `"'`))
+	if s == "" {
+		return nil, errors.New("marswallex: 公钥为空")
 	}
-	switch block.Type {
-	case "PUBLIC KEY":
-		k, err := x509.ParsePKIXPublicKey(block.Bytes)
-		if err != nil {
-			return nil, fmt.Errorf("marswallex: 解析 PKIX 公钥失败: %w", err)
+	b64 := s
+	if m := pemRe.FindStringSubmatch(s); m != nil {
+		if strings.Contains(m[1], "PRIVATE") {
+			return nil, errors.New("marswallex: 这是私钥，不是公钥")
 		}
+		b64 = m[2]
+	}
+	der, err := decodeBase64Loose(b64)
+	if err != nil {
+		return nil, errors.New("marswallex: 不是有效的 PEM，也不是 Base64 公钥")
+	}
+	return parsePublicDER(der)
+}
+
+// decodeBase64Loose 去掉所有空白后按标准、无填充、URL 安全几种 Base64 依次尝试。
+func decodeBase64Loose(s string) ([]byte, error) {
+	s = strings.Join(strings.Fields(s), "")
+	var lastErr error
+	for _, enc := range []*base64.Encoding{base64.StdEncoding, base64.RawStdEncoding, base64.URLEncoding, base64.RawURLEncoding} {
+		b, err := enc.DecodeString(s)
+		if err == nil && len(b) > 0 {
+			return b, nil
+		}
+		lastErr = err
+	}
+	if lastErr == nil {
+		lastErr = errors.New("内容为空")
+	}
+	return nil, lastErr
+}
+
+// parsePublicDER 按 PKIX、PKCS#1、X.509 证书依次解析出 RSA 公钥；是私钥时明确拒绝。
+func parsePublicDER(der []byte) (*rsa.PublicKey, error) {
+	asRSA := func(k any) (*rsa.PublicKey, error) {
 		rk, ok := k.(*rsa.PublicKey)
 		if !ok {
 			return nil, errors.New("marswallex: 公钥不是 RSA")
 		}
 		return rk, nil
-	case "RSA PUBLIC KEY":
-		k, err := x509.ParsePKCS1PublicKey(block.Bytes)
-		if err != nil {
-			return nil, fmt.Errorf("marswallex: 解析 PKCS#1 公钥失败: %w", err)
-		}
+	}
+	if k, err := x509.ParsePKIXPublicKey(der); err == nil {
+		return asRSA(k)
+	}
+	if k, err := x509.ParsePKCS1PublicKey(der); err == nil {
 		return k, nil
 	}
-	return nil, fmt.Errorf("marswallex: 不支持的公钥类型 %q", block.Type)
+	if c, err := x509.ParseCertificate(der); err == nil {
+		return asRSA(c.PublicKey)
+	}
+	if _, err := x509.ParsePKCS8PrivateKey(der); err == nil {
+		return nil, errors.New("marswallex: 这是私钥，不是公钥")
+	}
+	if _, err := x509.ParsePKCS1PrivateKey(der); err == nil {
+		return nil, errors.New("marswallex: 这是私钥，不是公钥")
+	}
+	return nil, errors.New("marswallex: 无法解析公钥：既不是 PKIX、PKCS#1 公钥，也不是证书")
 }
 
 // PublicKeyPEM 将公钥编码为 PKIX PEM。

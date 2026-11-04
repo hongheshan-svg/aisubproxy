@@ -416,7 +416,7 @@ func (s *Service) refreshAfterChange(ctx context.Context, id, status string) (*C
 		if _, err := db.DB.ExecContext(wctx, `UPDATE mw_cardholders SET status = ? WHERE card_holder_id = ?`, status, id); err != nil {
 			return nil, err
 		}
-		s.holderStatusChanged(id, old.Status, status, "")
+		s.holderStatusChanged(id, old.Status, status, "", sourceAdmin)
 	}
 	return getCardholder(wctx, id)
 }
@@ -440,49 +440,23 @@ func (s *Service) linkHolderByEvent(ctx context.Context, id, outID string) (stri
 	if sub.State != SubmissionSubmitted && sub.State != SubmissionUnknown {
 		return "持卡人未导入", nil
 	}
-	h, err := s.importCardholder(ctx, id, outID)
+	h, err := s.importCardholder(ctx, id, outID, sourceWebhook)
 	if err != nil {
 		// 不带平台 message 进事件错误与日志
 		return "", fmt.Errorf("导入持卡人 %s 失败: %s", id, safeErr(err))
 	}
-	s.holderStatusChanged(id, "", h.Status, h.Remark)
+	s.holderStatusChanged(id, "", h.Status, h.Remark, sourceWebhook)
 	return "已关联提交记录 " + outID + "，持卡人状态 " + h.Status, nil
 }
 
-// holderStatusChanged 是持卡人本地状态变化的唯一告警入口，推送、导入 / 刷新、启停回写都走这里：
-// 新状态为空或与旧状态相同不告警，否则按 spec §7.5 告警。key 按天去重，所以刷新与随后的推送不会重复发。
-func (s *Service) holderStatusChanged(id, old, status, remark string) {
+// holderStatusChanged 是持卡人本地状态变化的唯一告警入口，推送、定时查询、导入 / 刷新、启停回写都走这里：
+// 新状态为空或与旧状态相同不告警，否则按 holderAlert 告警，src 是发现变化的路径。key 按天去重，所以刷新与随后的推送不会重复发。
+func (s *Service) holderStatusChanged(id, old, status, remark string, src alertSource) {
 	old, status = normStatus(old), normStatus(status)
 	if status == "" || status == old {
 		return
 	}
-	s.holderStatusAlert(id, old, status, remark)
-}
-
-// holderStatusAlert 按 spec §7.5 处理持卡人状态变化的告警；只由 holderStatusChanged 调用。
-func (s *Service) holderStatusAlert(id, old, status, remark string) {
-	old, status, remark = normStatus(old), normStatus(status), strings.TrimSpace(remark)
-	switch status {
-	case holderApproved:
-		if old != holderApproved {
-			s.alert("holderok:"+id, fmt.Sprintf("MarsWallex 持卡人 %s 已通过审核，可在策略中加入补卡持卡人", id))
-		}
-	case holderPendingReview:
-		if old == holderApproved {
-			s.alert("holder:"+id, fmt.Sprintf("MarsWallex 持卡人 %s 由 APPROVED 变为 PENDING_REVIEW（修改后重新审核），自动补卡将跳过该持卡人", id))
-		}
-	case holderRejected:
-		reason := remark
-		if reason == "" {
-			reason = "平台未提供"
-		}
-		// 驳回单独去重，免得驳回原因被同一天更早的 holder: 告警吞掉
-		s.alert("holderrej:"+id, fmt.Sprintf("MarsWallex 持卡人 %s 审核被驳回（REJECTED），自动补卡将跳过该持卡人。驳回原因：%s", id, truncate(reason, 200)))
-	default:
-		msg := fmt.Sprintf("MarsWallex 持卡人 %s 状态变为 %s，自动补卡将跳过该持卡人", id, status)
-		if remark != "" {
-			msg += "。平台备注：" + truncate(remark, 200)
-		}
-		s.alert("holder:"+id, msg)
+	if key, text := holderAlert(id, old, status, remark, src); key != "" {
+		s.alert(key, text)
 	}
 }

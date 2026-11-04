@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"container/list"
 	"context"
 	"encoding/json"
 	"errors"
@@ -44,61 +45,100 @@ const (
 )
 
 // 公开接口限流：每 IP 每小时。兑换页一张码要调 3 次变更接口；结果接口 3 秒轮询一次，批量页还是多张一起轮询，所以额度差得多。
-// 现有公开接口里只有换码和安装向导有限流，预览、预检、兑换、结果、查询原来都没有，这里只给本地码分支加，ZovoCard 不变。
+// 限流在 PublicGuard、LookupGuard 里做，读请求体之前、按码分派之前，本地码和上游型服务商的码都算。
 const (
 	localRateMutate = "mutate"
 	localRateQuery  = "query"
+	localRateWindow = time.Hour
 )
 
 var localRateLimits = map[string]int{localRateMutate: 300, localRateQuery: 6000}
 
-type localRateWindow struct {
+// localRateMaxKeys 是限流表最多记多少个键。满了再来新键就淘汰窗口开始得最早的那个（O(1)），
+// 不在请求路径里遍历整张表；一小时以前的键由 sweepLocalRate 每分钟清一次。测试可调小。
+var localRateMaxKeys = 20000
+
+// localRateNow 是限流用的时钟，测试可替换。
+var localRateNow = time.Now
+
+type localRateEntry struct {
+	key   string
 	start time.Time
 	count int
+	elem  *list.Element
 }
 
 var (
 	localRateMu   sync.Mutex
-	localRateHits = map[string]*localRateWindow{}
+	localRateHits = map[string]*localRateEntry{}
+	// localRateOrder 按窗口开始时间从早到晚排：新键放到队尾，窗口到期重开的也挪到队尾
+	localRateOrder = list.New()
 )
 
-// localRateAllow 固定窗口计数。结果接口的额度大，存时间戳太占内存。
+// localRateAllow 固定窗口计数，请求路径里只做 O(1) 的操作。结果接口的额度大，存时间戳太占内存。
 func localRateAllow(kind, ip string) bool {
-	now := time.Now()
+	now := localRateNow()
+	key := kind + "|" + ip
 	localRateMu.Lock()
 	defer localRateMu.Unlock()
-	if len(localRateHits) > 20000 {
-		for k, w := range localRateHits {
-			if now.Sub(w.start) >= time.Hour {
-				delete(localRateHits, k)
+	w := localRateHits[key]
+	switch {
+	case w == nil:
+		if len(localRateHits) >= localRateMaxKeys {
+			if oldest := localRateOrder.Front(); oldest != nil {
+				localRateOrder.Remove(oldest)
+				delete(localRateHits, oldest.Value.(*localRateEntry).key)
 			}
 		}
-	}
-	key := kind + "|" + ip
-	w := localRateHits[key]
-	if w == nil || now.Sub(w.start) >= time.Hour {
-		localRateHits[key] = &localRateWindow{start: now, count: 1}
+		w = &localRateEntry{key: key, start: now, count: 1}
+		w.elem = localRateOrder.PushBack(w)
+		localRateHits[key] = w
 		return true
-	}
-	if w.count >= localRateLimits[kind] {
+	case now.Sub(w.start) >= localRateWindow:
+		w.start, w.count = now, 1
+		localRateOrder.MoveToBack(w.elem)
+		return true
+	case w.count >= localRateLimits[kind]:
 		return false
 	}
 	w.count++
 	return true
 }
 
+// sweepLocalRate 删掉窗口开始于一小时以前的键，返回删了几个。队列按开始时间排好，从队头删到第一个没过期的为止。
+func sweepLocalRate(now time.Time) int {
+	localRateMu.Lock()
+	defer localRateMu.Unlock()
+	n := 0
+	for e := localRateOrder.Front(); e != nil; e = localRateOrder.Front() {
+		w := e.Value.(*localRateEntry)
+		if now.Sub(w.start) < localRateWindow {
+			break
+		}
+		localRateOrder.Remove(e)
+		delete(localRateHits, w.key)
+		n++
+	}
+	return n
+}
+
 func resetLocalRate() {
 	localRateMu.Lock()
-	localRateHits = map[string]*localRateWindow{}
+	localRateHits = map[string]*localRateEntry{}
+	localRateOrder = list.New()
 	localRateMu.Unlock()
 }
 
-func localRateCheck(c *gin.Context, kind string) bool {
-	if localRateAllow(kind, c.ClientIP()) {
-		return true
-	}
-	localReply(c, http.StatusTooManyRequests, gin.H{"error": "请求过于频繁，请稍后再试"})
-	return false
+func localRateKeys() int {
+	localRateMu.Lock()
+	defer localRateMu.Unlock()
+	return len(localRateHits)
+}
+
+func localRateHas(kind, ip string) bool {
+	localRateMu.Lock()
+	defer localRateMu.Unlock()
+	return localRateHits[kind+"|"+ip] != nil
 }
 
 // 同一张码同一时刻只有一个请求能往下走：状态检查和建单之间不能插进别的兑换或换码。
@@ -199,9 +239,6 @@ func alertLocalCDKExhausted(row db.LocalCDK, v db.LocalCDKView) {
 
 // localCDKPreview 预览：只读，不写任何东西，令牌由码算出。
 func localCDKPreview(c *gin.Context, cs provider.CardSupply, code string) {
-	if !localRateCheck(c, localRateMutate) {
-		return
-	}
 	row, ok := localCDKFromBody(c, cs, map[string]any{"code": code})
 	if !ok {
 		return
@@ -324,9 +361,6 @@ func localCDKReady(c *gin.Context, cs provider.CardSupply, row db.LocalCDK) bool
 
 // localCDKPreflight 预检：不调上游、不落库，通过后把会话封进预检令牌。
 func localCDKPreflight(c *gin.Context, cs provider.CardSupply, body map[string]any) {
-	if !localRateCheck(c, localRateMutate) {
-		return
-	}
 	c.Header("Cache-Control", "no-store")
 	row, ok := localCDKFromBody(c, cs, body)
 	if !ok {
@@ -409,9 +443,6 @@ const localCreditTermsText = "请先阅读并勾选点数兑换须知：仅限�
 
 // localCDKRedeem 兑换（含干净失败后的重兑）。熔断、未就绪、跨服务商冲突都在建单之前拒绝，不占用码。
 func localCDKRedeem(c *gin.Context, cs provider.CardSupply, body map[string]any) {
-	if !localRateCheck(c, localRateMutate) {
-		return
-	}
 	c.Header("Cache-Control", "no-store")
 	row, ok := localCDKFromBody(c, cs, body)
 	if !ok {
@@ -675,9 +706,6 @@ func writeLocalResult(c *gin.Context, row db.LocalCDK, extra gin.H) {
 
 // localCDKResult 按令牌查结果。
 func localCDKResult(c *gin.Context, cs provider.CardSupply, token string) {
-	if !localRateCheck(c, localRateQuery) {
-		return
-	}
 	row, ok := localCDKFromBody(c, cs, map[string]any{"redemption_token": token})
 	if !ok {
 		return
@@ -687,9 +715,6 @@ func localCDKResult(c *gin.Context, cs provider.CardSupply, token string) {
 
 // localCDKResultByCode 按码查结果，顺带把令牌给前端恢复轮询。
 func localCDKResultByCode(c *gin.Context, cs provider.CardSupply, code string) {
-	if !localRateCheck(c, localRateQuery) {
-		return
-	}
 	row, ok := localCDKFromBody(c, cs, map[string]any{"code": code})
 	if !ok {
 		return

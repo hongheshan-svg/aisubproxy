@@ -116,6 +116,31 @@ func mwCount(t *testing.T, c *sql.DB, q string) int {
 	return n
 }
 
+// MarsWallex 后台给的平台公钥是没有首尾行的一串 Base64：要能保存，并统一存成 PEM、指纹与原公钥一致。
+func TestMarsWallexPutConfigAcceptsBareBase64PlatformKey(t *testing.T) {
+	c := mwSetup(t)
+	_, plat := mwKeys(t)
+	der, err := x509.MarshalPKIXPublicKey(&plat.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, _ := json.Marshal(map[string]string{"developer_id": "dev-1", "platform_public_key": base64.StdEncoding.EncodeToString(der) + "  "})
+	w := mwPut(t, string(req))
+	if w.Code != 200 {
+		t.Fatalf("PUT %d %s", w.Code, w.Body.String())
+	}
+	if m := mwJSON(t, w); m["platform_public_key_fingerprint"] != marswallex.Fingerprint(&plat.PublicKey) || m["developer_id"] != "dev-1" {
+		t.Errorf("view %v", m)
+	}
+	var stored string
+	if err := c.QueryRow(`SELECT value FROM site_settings WHERE key=?`, db.SettingMarsWallexPlatformPublicKey).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if stored != marswallex.PublicKeyPEM(&plat.PublicKey) {
+		t.Errorf("应存成 PEM，实际 %q", stored)
+	}
+}
+
 func TestMarsWallexPutConfigStoresEncryptedAndMasksOnRead(t *testing.T) {
 	c := mwSetup(t)
 	our, plat := mwKeys(t)
@@ -362,6 +387,9 @@ func TestMarsWallexTestConnectionSuccess(t *testing.T) {
 	}
 	acc := m["accounts"].([]any)[0].(map[string]any)
 	bal := acc["balances"].([]any)[0].(map[string]any)
+	if acc["account_type"] != "MAIN" {
+		t.Errorf("账户类型 %v", acc["account_type"])
+	}
 	if acc["account_no"] != "2000519969952288769" || bal["available_balance"] != "89246.14" {
 		t.Errorf("accounts %v", m["accounts"])
 	}
@@ -391,7 +419,7 @@ func TestMarsWallexTestConnectionHints(t *testing.T) {
 		t.Errorf("unconfigured: %d %v", w.Code, m)
 	}
 	mwConfigure(t, s.URL+"/portal/api")
-	cases := []struct{ mode, want string }{{"401", "认证或签名被拒"}, {"404", "/portal/api"}, {"nosig", "响应签名验证失败"}}
+	cases := []struct{ mode, want string }{{"401", marsWallexAuthHint}, {"404", "/portal/api"}, {"nosig", "响应签名验证失败"}}
 	for _, c := range cases {
 		mode = c.mode
 		w := mwDo(AdminTestMarsWallex, "POST", "/x", "", nil)
@@ -532,6 +560,29 @@ func TestMarsWallexListWebhookEvents(t *testing.T) {
 	}
 }
 
+// 配置接口带 last_webhook_at：最近一次收到 Webhook 的时间（Unix 秒），一条都没收到时为 null。
+func TestMarsWallexGetConfigLastWebhookAt(t *testing.T) {
+	c := mwSetup(t)
+	m := mwJSON(t, mwDo(AdminGetMarsWallexConfig, "GET", "/x", "", nil))
+	if v, ok := m["last_webhook_at"]; !ok || v != nil {
+		t.Fatalf("没收到过 Webhook 时 last_webhook_at 应为 null: present=%v value=%v", ok, v)
+	}
+	newest := time.Date(2026, 11, 3, 8, 30, 0, 0, time.UTC)
+	for i, at := range []time.Time{newest.Add(-time.Hour), newest, newest.Add(-48 * time.Hour)} {
+		id := "w" + strconv.Itoa(i)
+		if _, err := db.InsertMarsWallexWebhookEvent(id, "T", `{}`); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := c.Exec(`UPDATE marswallex_webhook_events SET received_at = ? WHERE message_id = ?`, at.Format("2006-01-02 15:04:05"), id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	m = mwJSON(t, mwDo(AdminGetMarsWallexConfig, "GET", "/x", "", nil))
+	if v, ok := m["last_webhook_at"].(float64); !ok || int64(v) != newest.Unix() {
+		t.Fatalf("last_webhook_at = %v，期望 %d", m["last_webhook_at"], newest.Unix())
+	}
+}
+
 func mwGenKeypair(body string) *httptest.ResponseRecorder {
 	return mwDo(AdminGenerateMarsWallexKeypair, "POST", "/x", body, nil)
 }
@@ -606,5 +657,18 @@ func TestMarsWallexGenerateKeypairWithoutMasterKey(t *testing.T) {
 	}
 	if n := mwCount(t, c, `SELECT COUNT(*) FROM site_settings WHERE key='marswallex_private_key'`); n != 0 {
 		t.Fatalf("不应写入私钥，行数 %d", n)
+	}
+}
+
+// 401/403 的提示要列出三种可能（平台对它们都只回 Unauthorized），并指向「IP 白名单」一步。
+func TestMarsWallexHintAuthRejected(t *testing.T) {
+	const want = "认证被拒（平台对下面几种情况都只返回 Unauthorized，分不出具体是哪一种）：① Developer ID 或 API Token 不对；② 交给平台的公钥和这里的私钥不是同一对（指纹见上方）；③ 服务器出口 IP 不在平台白名单里（见「IP 白名单」一步）。"
+	if marsWallexAuthHint != want {
+		t.Fatalf("文字不对: %q", marsWallexAuthHint)
+	}
+	for _, st := range []int{401, 403} {
+		if got := marsWallexHint(&marswallex.Error{HTTPStatus: st, Reason: marswallex.ReasonSignatureMissing}); got != want {
+			t.Errorf("%d: %q", st, got)
+		}
 	}
 }

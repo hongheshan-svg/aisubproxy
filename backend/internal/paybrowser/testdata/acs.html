@@ -16,11 +16,28 @@
   验证码框没有 autocomplete="one-time-code"，另有隐藏框与不可见框，检验「框内唯一可见的文本输入框」规则。
   提交后通知支付页：验证码为 123456 时成功，否则被拒。
   ?flaky=1 时，第一次输满 6 位验证码的瞬间提交按钮消失 1.5 秒（模拟页面处理中），这时去点它会失败。
+  ?nobutton=1 时没有提交按钮，在验证码框里按回车提交（照常通知支付页）。
+  ?clip=1 时本页文档不能被脚本滚动（同 card-embedded.html 的 clip=1：html 不滚动，body 按 iframe 高度用 overflow: clip 裁掉超出的内容），
+  验证码框和提交按钮放在本页可视区下沿往下 5px：它们在 iframe 可视区外、滚不过来，getContentQuads 算出的坐标落在 iframe 下面的主页面上。
+  wrap=1 时其余参数原样传给里面那一层。
 -->
 <script>
   var q = new URLSearchParams(location.search)
   if (q.get('wrap') === '1') {
-    document.write('<iframe id="wrap" src="acs.html' + (q.get('flaky') === '1' ? '?flaky=1' : '') + '" title="Bank authentication"></iframe>')
+    var inner = new URLSearchParams(q)
+    inner.delete('wrap')
+    // 用 DOM 接口建 iframe，不把网址参数拼进 HTML（避免 document.write 注入）；地址固定以 acs.html 开头
+    var frame = document.createElement('iframe')
+    frame.id = 'wrap'
+    frame.title = 'Bank authentication'
+    frame.src = 'acs.html' + (String(inner) ? '?' + String(inner) : '')
+    document.body.appendChild(frame)
+  }
+  if (q.get('clip') === '1') {
+    document.write('<style>html { overflow: hidden; height: 100%; }' +
+      ' body { position: relative; box-sizing: border-box; height: 100%; overflow: clip; }' +
+      ' #acs-form { position: absolute; top: calc(100% + 5px); left: 0; padding: 0; margin: 0; }' +
+      ' #acs-form h2, #acs-form p { display: none; }</style>')
   }
 </script>
 <form id="acs-form">
@@ -39,6 +56,12 @@
     var code = document.getElementById('acs-code')
     var submit = document.getElementById('acs-submit')
     var hid = false
+    if (q.get('nobutton') === '1') {
+      submit.remove()
+      code.addEventListener('keydown', function (e) {
+        if (e.key === 'Enter') form.requestSubmit()
+      })
+    }
     code.addEventListener('input', function () {
       if (q.get('flaky') === '1' && !hid && code.value.length >= 6) {
         hid = true

@@ -3,8 +3,10 @@ package handler
 import (
 	"context"
 	"database/sql"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -92,6 +94,7 @@ func TestCardPoolRoutesRequireService(t *testing.T) {
 		{AdminCardPoolCards, "GET", "/x"},
 		{AdminCardPoolSensitive, "POST", "/x"},
 		{AdminCardPoolPutPolicy, "PUT", "/x"},
+		{AdminCardPoolPreviewCard, "POST", "/x"},
 		{AdminCardPoolGetSelection, "GET", "/x"},
 		{AdminCardPoolPutSelection, "PUT", "/x"},
 		{AdminReprocessMarsWallexWebhookEvent, "POST", "/x"},
@@ -368,5 +371,83 @@ func TestApplyCardsPartialFailureReturnsCreatedOrders(t *testing.T) {
 	}
 	if a := cpAudit(t, c); !strings.Contains(a, "created=1") {
 		t.Errorf("audit %q", a)
+	}
+}
+
+// 预览接口：平台卡详情带完整卡号，响应、日志、审计里都不能出现，只给前 6 位和后 4 位。
+func TestPreviewCardEndpointNeverReturnsFullPAN(t *testing.T) {
+	c, mw, _ := cpEnv(t, false)
+	mw.On("GET", "/v1/card/detail/c9", mwtest.OK(`{"card_id":"c9","card_no":"`+cpFullPAN+`","card_label":"visa","card_country":"us","card_mode":"prepaid","card_currency":"usd","expiry_date":"1228","status":"ACTIVE","available_balance":"5.00","freeze_balance":"0.00"}`))
+	mw.On("GET", "/v1/card/product", mwtest.OK(`[{"product_id":"p1","product_name":"美卡-411111","card_label":"VISA","card_country":"US","card_mode":"PREPAID","card_currency":"USD"}]`))
+	var logs strings.Builder
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	w := cpDo(AdminCardPoolPreviewCard, "POST", "/x", "/x", `{"card_id":"c9"}`)
+	if w.Code != 200 {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), cpFullPAN) {
+		t.Fatalf("响应含完整卡号: %s", w.Body.String())
+	}
+	m := mwJSON(t, w)
+	if m["first6"] != "411111" || m["last4"] != "1234" || m["available_cents"] != float64(500) ||
+		m["suggested_product_id"] != "p1" || m["already_in_pool"] != false || m["card_id"] != "c9" {
+		t.Errorf("%v", m)
+	}
+	if strings.Contains(logs.String(), cpFullPAN) || strings.Contains(cpAudit(t, c), cpFullPAN) {
+		t.Error("日志或审计含完整卡号")
+	}
+	// 不写库
+	var n int
+	if err := c.QueryRow(`SELECT COUNT(*) FROM mw_cards`).Scan(&n); err != nil || n != 0 {
+		t.Errorf("预览不应写库 n=%d err=%v", n, err)
+	}
+}
+
+func TestPreviewCardEndpointBadRequest(t *testing.T) {
+	cpEnv(t, false)
+	if w := cpDo(AdminCardPoolPreviewCard, "POST", "/x", "/x", `{"card_id":"  "}`); w.Code != 400 {
+		t.Errorf("空卡 ID: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// 平台返回错误的路径同样不能泄露完整卡号：卡详情成功但产品列表失败，以及平台错误说明里夹带卡号。
+func TestPreviewCardEndpointErrorPathsNeverLeakPAN(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(mw *mwtest.Server)
+	}{
+		{"产品列表被拒", func(mw *mwtest.Server) {
+			mw.On("GET", "/v1/card/detail/c9", mwtest.OK(`{"card_id":"c9","card_no":"`+cpFullPAN+`","status":"ACTIVE"}`))
+			mw.On("GET", "/v1/card/product", mwtest.Rejected(400, "BAD"))
+		}},
+		{"产品列表结果未知", func(mw *mwtest.Server) {
+			mw.On("GET", "/v1/card/detail/c9", mwtest.OK(`{"card_id":"c9","card_no":"`+cpFullPAN+`","status":"ACTIVE"}`))
+			mw.On("GET", "/v1/card/product", mwtest.Unknown())
+		}},
+		{"卡详情被拒且说明里带卡号", func(mw *mwtest.Server) {
+			mw.On("GET", "/v1/card/detail/c9", mwtest.Reply{Status: 400, Body: `{"code":"BAD","message":"card ` + cpFullPAN + ` invalid"}`})
+		}},
+		{"余额格式非法", func(mw *mwtest.Server) {
+			mw.On("GET", "/v1/card/detail/c9", mwtest.OK(`{"card_id":"c9","card_no":"`+cpFullPAN+`","status":"ACTIVE","available_balance":"`+cpFullPAN+`x"}`))
+			mw.On("GET", "/v1/card/product", mwtest.OK(`[]`))
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c, mw, _ := cpEnv(t, false)
+			tc.setup(mw)
+			var logs strings.Builder
+			log.SetOutput(&logs)
+			t.Cleanup(func() { log.SetOutput(os.Stderr) })
+			w := cpDo(AdminCardPoolPreviewCard, "POST", "/x", "/x", `{"card_id":"c9"}`)
+			if w.Code == 200 {
+				t.Fatalf("应失败: %s", w.Body.String())
+			}
+			if strings.Contains(w.Body.String(), cpFullPAN) || strings.Contains(logs.String(), cpFullPAN) || strings.Contains(cpAudit(t, c), cpFullPAN) {
+				t.Errorf("泄露完整卡号: body=%s log=%s", w.Body.String(), logs.String())
+			}
+		})
 	}
 }

@@ -168,7 +168,7 @@ func (s *Service) createCreditLink(ctx context.Context, j *job) error {
 	return s.acceptCheckoutURL(ctx, j, res.SessionID, res.URL)
 }
 
-// noSavePayment 确认支付页上「保存付款信息」没有勾选（只有点数单要确认）。确认不了返回错误，调用方放弃，不点支付。
+// noSavePayment 确认支付页上「保存付款信息」没有勾选（点数单和内嵌结账页要确认，见 needsNoSaveCheck）。确认不了返回错误，调用方放弃，不点支付。
 func noSavePayment(ctx context.Context, b FormBrowser) error {
 	if _, err := b.EnsureNoSavePayment(ctx); err != nil {
 		return err

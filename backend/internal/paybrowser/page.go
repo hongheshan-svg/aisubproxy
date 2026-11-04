@@ -9,9 +9,11 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/chromedp/cdproto/cdp"
@@ -65,8 +67,7 @@ var (
 )
 
 const (
-	pageLoadTimeout = 60 * time.Second
-	pollInterval    = 250 * time.Millisecond
+	pollInterval = 250 * time.Millisecond
 
 	formWait     = 30 * time.Second       // 等卡号框出现（含点开「新卡」入口）
 	keyDelay     = 35 * time.Millisecond  // 卡号类字段逐字键入的间隔
@@ -80,6 +81,8 @@ const (
 )
 
 var (
+	// pageLoadTimeout 是打开支付页、等页面就绪的时限。
+	pageLoadTimeout = 60 * time.Second
 	// fieldWait 是卡号框出现后，等其余各字段、支付按钮、验证码框的时限。
 	fieldWait = 10 * time.Second
 	// declineSettle 是判到被拒或校验错误后再看一会儿的时长：文字之后紧跟着 3DS 或成功的，以后者为准。
@@ -113,8 +116,29 @@ const amountJS = `(sels => {
 	return ''
 })`
 
-// Open 先注入 cookie 再打开支付页，等到金额元素出现为止，最多 60 秒。
-func (b *Browser) Open(ctx context.Context, url string, cookies []Cookie) error {
+// PageKind 是支付页的类型，由引擎按链接域名决定。
+type PageKind int
+
+const (
+	PageHosted   PageKind = iota // Stripe 托管页
+	PageEmbedded                 // chatgpt.com 内嵌结账页
+)
+
+// pageKind 返回 Open 时记下的页面类型。
+func (b *Browser) pageKind() PageKind {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.kind
+}
+
+// Open 先注入 cookie 再打开支付页，等到页面就绪为止，最多 pageLoadTimeout（60 秒）。
+// kind 记在 Browser 上，之后各步按页面类型分支。托管页等金额元素出现；
+// 内嵌页等卡号框、金额读屏文字和唯一的支付按钮，等不到时认出 Cloudflare 挑战页（见 waitEmbedded）。
+func (b *Browser) Open(ctx context.Context, url string, kind PageKind, cookies []Cookie) error {
+	b.mu.Lock()
+	b.kind = kind
+	b.mu.Unlock()
+
 	ctx, cancel := context.WithTimeout(ctx, pageLoadTimeout)
 	defer cancel()
 
@@ -137,6 +161,9 @@ func (b *Browser) Open(ctx context.Context, url string, cookies []Cookie) error 
 	}
 	if err != nil {
 		return openErr("打开支付页失败", err)
+	}
+	if kind == PageEmbedded {
+		return b.waitEmbedded(ctx)
 	}
 
 	tick := time.NewTicker(pollInterval)
@@ -195,7 +222,11 @@ func (b *Browser) amountRendered(ctx context.Context) (bool, error) {
 // WaitRendered 等支付页真正显示出来：金额可见、所在区域完全不透明、没有被遮挡、淡入动画已结束。
 // Stripe 会先把金额放进 DOM、盖着加载骨架再淡入，Open 返回时画面上可能还是骨架，这时截图没有用。
 // 最多等 max；等不到返回 false 而不报错，因为这只影响截图，不能因此中断付款。只读页面，不点击、不输入。
+// 内嵌页的金额是隐藏的读屏文字，改为等卡号框可见。
 func (b *Browser) WaitRendered(ctx context.Context, max time.Duration) bool {
+	if b.pageKind() == PageEmbedded {
+		return b.waitCardVisible(ctx, max)
+	}
 	ctx, cancel := context.WithTimeout(ctx, max)
 	defer cancel()
 	tick := time.NewTicker(pollInterval)
@@ -220,7 +251,11 @@ func openErr(what string, err error) error {
 }
 
 // ReadAmount 读取支付页汇总区的应付总额，返回最小单位金额与页面原文。
+// 内嵌页读 Payment amount 读屏文字，返回规范化原文（如 "100.00 USD"，见 normalizeEmbeddedAmount）。
 func (b *Browser) ReadAmount(ctx context.Context, currency string) (minor int64, text string, err error) {
+	if b.pageKind() == PageEmbedded {
+		return b.readEmbeddedAmount(ctx, currency)
+	}
 	text, err = b.amountText(ctx)
 	if err != nil {
 		return 0, "", fmt.Errorf("读取金额失败: %w", err)
@@ -281,6 +316,20 @@ func (c Card) validate() error {
 	return nil
 }
 
+// validate 在碰页面之前检查账单地址：任何字段含控制字符都拒绝。逐字键入会把 \n、\r 当回车发出去，
+// 回车在 Stripe 输入框里可能触发提交。错误消息只含中文字段名，不含值。
+func (bl Billing) validate() error {
+	for _, f := range []struct{ label, value string }{
+		{"姓名", bl.Name}, {"街道地址", bl.Line1}, {"城市", bl.City}, {"州/省", bl.State},
+		{"邮编", bl.Zip}, {"国家", bl.Country}, {"邮箱", bl.Email},
+	} {
+		if strings.IndexFunc(f.value, unicode.IsControl) >= 0 {
+			return fmt.Errorf("账单地址含控制字符（%s）", f.label)
+		}
+	}
+	return nil
+}
+
 func isDigits(s string, lo, hi int) bool {
 	if len(s) < lo || len(s) > hi {
 		return false
@@ -293,25 +342,28 @@ func isDigits(s string, lo, hi int) bool {
 	return true
 }
 
-// fillField 按字段类型填写并核对。
-func fillField(ctx context.Context, e *elem, f field) error {
+// fillField 按字段类型填写并核对。选中输入框用 focusField：内嵌页上点之前先看落点。
+// changed 表示这是下拉框，而且值真的改了（chooseOption）：页面会重绘地址表单，调用方给下一个字段留足等待。
+func (b *Browser) fillField(ctx context.Context, e *elem, f field) (changed bool, err error) {
 	if f.kind == kindChoice {
 		var tag string
 		if err := callOn(ctx, e.obj, `function () { return this.tagName }`, &tag); err != nil {
-			return fmt.Errorf("读取「%s」失败: %w", f.label, err)
+			return false, fmt.Errorf("读取「%s」失败: %w", f.label, err)
 		}
 		if tag == "SELECT" {
 			return chooseOption(ctx, e, f)
 		}
 		f.kind = kindText
 	}
-	if err := focus(ctx, e); err != nil {
-		return fmt.Errorf("无法选中「%s」输入框: %w", f.label, err)
+	direct, err := b.focusField(ctx, e)
+	if err != nil {
+		return false, fmt.Errorf("无法选中「%s」输入框: %w", f.label, err)
 	}
+	b.noteDirectFocus(f.label, direct)
 	if f.kind == kindCard {
-		return typeCard(ctx, e, f)
+		return false, typeCard(ctx, e, f)
 	}
-	return typeText(ctx, e, f)
+	return false, typeText(ctx, e, f)
 }
 
 // typeCard 清空后逐字键入，再按数字核对（Stripe 会给卡号加空格、给有效期加斜杠）。
@@ -382,20 +434,22 @@ const chooseOptionJS = `function (want) {
 	return this.value === o.value ? 'changed' : 'rejected'
 }`
 
-func chooseOption(ctx context.Context, e *elem, f field) error {
+// chooseOption 在下拉框里选 f.value。值真的改了时 changed 为 true，并先等 reflowDelay 让页面开始重绘；
+// 重绘可能比这更慢（终审 M4），调用方要给下一个字段留足等待（见 fillEmbeddedAddress）。
+func chooseOption(ctx context.Context, e *elem, f field) (changed bool, err error) {
 	var r string
 	if err := callOn(ctx, e.obj, chooseOptionJS, &r, f.value); err != nil {
-		return fmt.Errorf("选择「%s」失败: %w", f.label, err)
+		return false, fmt.Errorf("选择「%s」失败: %w", f.label, err)
 	}
 	switch r {
 	case "missing":
-		return fmt.Errorf("「%s」下拉框里没有 %s 这一项", f.label, f.value)
+		return false, fmt.Errorf("「%s」下拉框里没有 %s 这一项", f.label, f.value)
 	case "rejected":
-		return fmt.Errorf("「%s」选择后核对不一致", f.label)
+		return false, fmt.Errorf("「%s」选择后核对不一致", f.label)
 	case "changed":
-		return sleep(ctx, reflowDelay)
+		return true, sleep(ctx, reflowDelay)
 	}
-	return nil
+	return false, nil
 }
 
 // payEnabledJS 判断支付按钮能不能点。
@@ -413,6 +467,9 @@ func (b *Browser) LockSubmit() (clickAttempted bool) {
 }
 
 // Submit 点击主页面上的支付按钮。必须先 Fill 成功；先记下「已提交」再点击，此后再调用返回 ErrAlreadySubmitted 且不点击。
+// 内嵌页（设计 §5.8）只在主页面仍在结账页时点唯一可见、可用的提交按钮（见 embeddedPayButton）：找到后先把焦点移到主页面、
+// 等按钮重新可用（readyAfterFocus），点击前一刻再核对一次，最后在同一次脚本里查可点、焦点、落点（payClickPoint），
+// 任何一步不过就不点、不置位、返回错误；全部通过才置位，并点刚检查过的坐标。
 func (b *Browser) Submit(ctx context.Context) error {
 	b.mu.Lock()
 	submitted, filled, locked := b.submitted, b.filled, b.submitLocked
@@ -426,9 +483,17 @@ func (b *Browser) Submit(ctx context.Context) error {
 	if !filled {
 		return errors.New("尚未填卡，不能提交")
 	}
+	embedded := b.pageKind() == PageEmbedded
 	return b.do(ctx, func(ctx context.Context) error {
 		seen := false
+		n := payButtonUnreadable // 内嵌页：最后一次看到的主页面按钮状态（见 embeddedPayButton）
 		btn, err := b.waitFind(ctx, fieldWait, func(frames []frameRef) *elem {
+			if embedded { // 内嵌页的按钮只能按个数认：仍在结账页、主页面可见的提交按钮正好一个且可用才算找到
+				if n == payButtonLeft { // 看到过离开结账页，此后绝不再认按钮，等到超时报错
+					return nil
+				}
+				return b.embeddedPayButton(ctx, frames[0], &n)
+			}
 			// 只在主页面找：主页面按钮暂时不可见时，绝不能点到某个 iframe 里的 submit 按钮，白白用掉唯一一次提交
 			e := b.find(ctx, frames[:1], Sel.PayButton, false)
 			if e == nil {
@@ -444,6 +509,19 @@ func (b *Browser) Submit(ctx context.Context) error {
 		if err != nil {
 			return err
 		}
+		if embedded && btn == nil {
+			return embeddedPayButtonErr(n)
+		}
+		if embedded {
+			// 先把焦点移出 Stripe 的 iframe、等页面反应完，再等按钮重新可用：不然按下鼠标那一刻 iframe 才失焦，
+			// 页面要是因此把按钮短暂设成不可用，松开时点击就丢了，而 submitted 已经置位
+			if btn, _, err = b.readyAfterFocus(ctx, btn, &n); err != nil {
+				return fmt.Errorf("%w，没有点击", err)
+			}
+			if btn == nil {
+				return embeddedPayButtonErr(n)
+			}
+		}
 		if btn == nil {
 			if seen {
 				return errors.New("支付按钮一直不可点击（可能有字段未通过页面校验）")
@@ -451,6 +529,27 @@ func (b *Browser) Submit(ctx context.Context) error {
 			return errors.New("找不到支付按钮")
 		}
 		before := b.scanBeforeClick(ctx)
+		pay := click
+		if embedded {
+			if b.beforeRecheck != nil {
+				if err := b.beforeRecheck(ctx); err != nil {
+					return err
+				}
+			}
+			// 点击那一刻再核对一次：scanBeforeClick 最多要 2 秒，这期间页面可能离开结账页、重绘出第二个按钮或换掉按钮。
+			// 只认此刻仍在结账页、主页面上唯一可见、可用的那个，点它；否则不置位、不点击，LockSubmit 仍能证明没点
+			if btn = b.embeddedPayButton(ctx, btn.frame, &n); btn == nil {
+				return embeddedPayButtonErr(n)
+			}
+			// 最后在同一次脚本里查：按钮可点、主页面焦点不在 iframe 上、中心那一点是按钮自己（没被地址联想下拉、横幅、弹层盖住）。
+			// 不过就不点，同样不置位：置位之后只要点了就绝不再点第二次，点到盖着的东西上，这一单就只能走确认、回收。
+			// 通过了就点刚检查过的这个坐标，检查和点击之间不再有等待，也不再重新滚动、求中心
+			x, y, lerr := b.payClickPoint(ctx, btn)
+			if lerr != nil {
+				return payCheckErr(lerr)
+			}
+			pay = func(ctx context.Context, _ *elem) error { return chromedp.MouseClickXY(x, y).Do(ctx) }
+		}
 		// 先记下已提交再点击：点击中途出错也绝不再点第二次。从这里开始，任何错误都不能当成「没点击」（见 LockSubmit）
 		b.mu.Lock()
 		if b.submitted {
@@ -464,7 +563,6 @@ func (b *Browser) Submit(ctx context.Context) error {
 		b.submitted = true
 		b.beforeClick = before
 		b.mu.Unlock()
-		pay := click
 		if b.clickPay != nil {
 			pay = b.clickPay
 		}
@@ -479,12 +577,18 @@ func (b *Browser) Submit(ctx context.Context) error {
 // 认不出的提示只记下（见 Notices）、继续等。到 timeout 仍无可识别的结果时返回 OutcomeUnknown 和最后一条这样的提示、不报错；
 // 父 ctx 取消时返回取消错误。已填过验证码的 3DS 框不再算作新的验证。
 // timeout 约束其中所有 CDP 调用：poll 只在两轮之间看时间，而页面脚本死循环时单次调用根本不会返回。
+// 内嵌页每轮先读主页面路径，不再以 /checkout/ 开头时立即返回 OutcomeUnknown 和「页面已离开结账页」。
 func (b *Browser) WaitOutcome(ctx context.Context, timeout time.Duration) (Outcome, string, error) {
 	wctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	out, msg := OutcomeUnknown, ""
+	embedded, left := b.pageKind() == PageEmbedded, false
 	err := b.do(wctx, func(c context.Context) error {
 		_, err := b.poll(c, timeout, func(frames []frameRef) bool {
+			if embedded && b.leftCheckout(c, frames[0]) { // 内嵌页每轮先看主页面还在不在结账页
+				left = true
+				return true
+			}
 			out, msg = b.outcome(c, frames)
 			return out != OutcomeUnknown
 		})
@@ -493,6 +597,9 @@ func (b *Browser) WaitOutcome(ctx context.Context, timeout time.Duration) (Outco
 		}
 		return err
 	})
+	if left { // 离开结账页不新增结果类型：返回 unknown，由引擎转确认阶段查账号定论
+		return OutcomeUnknown, leftCheckoutMsg, nil
+	}
 	switch {
 	case out != OutcomeUnknown:
 		return out, msg, nil
@@ -650,11 +757,21 @@ func truncateMessage(s string) string {
 
 // EnterOTP 在 3DS 验证框（含其中各级 iframe）里填验证码并提交。
 // 验证码框优先按 Sel.OTPInput 找（首选 autocomplete="one-time-code"），否则取框内唯一可见的文本或数字输入框。
+//
+// 内嵌页（设计 §5.8，终审 I1）：验证框不一定是全屏遮罩，验证码框、提交按钮可能在验证框可视区外，按坐标点会点到主页面——
+// 可能就是第二次点支付。所以选中验证码框用 focusField（过落点检查才用鼠标点，不过就直接设焦点），提交见 submitOTPEmbedded。
+// 托管页不变。
+//
+// 验证码只接受 4–12 位数字或字母（终审二 Minor-1）：验证码是逐字发键的，夹着的 Tab 会把焦点移出验证码框，
+// 之后的空格、回车可能落到别处的按钮上（包括主页面的支付按钮）。先删掉普通空格和横线（otpStrip，短信里常见的分组写法，
+// 如「123 456」「12-34-56」），再查格式；格式不对就报错，一个键都不发，错误里不带验证码。只把删过之后的值打进页面。
+// Tab、回车、换行、全角空格、不换行空格等不删，照旧拒绝：「1234\n」这种不替人猜。
 func (b *Browser) EnterOTP(ctx context.Context, otp string) error {
-	otp = strings.TrimSpace(otp)
-	if otp == "" {
-		return errors.New("验证码为空")
+	otp = otpStrip.Replace(otp)
+	if !otpFormat.MatchString(otp) {
+		return errors.New("验证码格式不对（删掉空格、横线后只接受 4–12 位数字或字母），没有填写")
 	}
+	embedded := b.pageKind() == PageEmbedded
 	return b.do(ctx, func(ctx context.Context) error {
 		var box cdp.FrameID
 		var scope []frameRef
@@ -684,7 +801,11 @@ func (b *Browser) EnterOTP(ctx context.Context, otp string) error {
 		if in == nil {
 			return errors.New("在 3DS 验证框里找不到验证码输入框")
 		}
-		if err := focus(ctx, in); err != nil {
+		if embedded {
+			if _, err := b.focusField(ctx, in); err != nil {
+				return fmt.Errorf("无法选中验证码输入框: %w", err)
+			}
+		} else if err := focus(ctx, in); err != nil {
 			return fmt.Errorf("无法选中验证码输入框: %w", err)
 		}
 		if err := clearInput(ctx, in); err != nil {
@@ -698,11 +819,14 @@ func (b *Browser) EnterOTP(ctx context.Context, otp string) error {
 		if btn == nil {
 			btn = b.otpSubmit(ctx, in, scope)
 		}
-		if btn == nil {
+		switch {
+		case embedded:
+			err = b.submitOTPEmbedded(ctx, box, in, btn)
+		case btn == nil:
 			if err = focus(ctx, in); err == nil {
 				err = chromedp.KeyEvent(kb.Enter).Do(ctx)
 			}
-		} else {
+		default:
 			err = click(ctx, btn)
 		}
 		if err != nil {
@@ -717,6 +841,49 @@ func (b *Browser) EnterOTP(ctx context.Context, otp string) error {
 		b.mu.Unlock()
 		return nil
 	})
+}
+
+// submitOTPEmbedded 是内嵌页上提交验证码的那一步。box 是 3DS 验证框承载的 frame，in、btn 都在它的子树里找到（btn 可以是 nil）。
+//   - 有提交按钮：按钮不能在主页面上、必须在验证框的子树里；过 landsInOwnFrame（主页面上那一点是装着它的 iframe），
+//     再用 DOM.getNodeForLocation 看那一点最深处落在哪个 frame，也必须在验证框的子树里，才用鼠标点。
+//     这里不做「不是提交控件」检查：验证框里的提交按钮本来就该点；它不在主页面上，点它不会是点支付。
+//     任一不过就不点、返回原因（以「，没有点击」结尾），也不改按回车：落点不对时页面的样子没核实过，不赌。
+//   - 没有提交按钮：回车只允许发在 3DS 验证框里（设计 §5.8 的唯一例外）——验证码框在验证框的子树里、
+//     ensureFocus 确认焦点就在它上面，才按回车；否则不按、返回原因。
+func (b *Browser) submitOTPEmbedded(ctx context.Context, box cdp.FrameID, in, btn *elem) error {
+	frames, err := b.frames(ctx)
+	if err != nil {
+		return err
+	}
+	scope := subtree(frames, box)
+	inBox := func(id cdp.FrameID) bool {
+		return id != frames[0].id && slices.ContainsFunc(scope, func(f frameRef) bool { return f.id == id })
+	}
+	if btn == nil {
+		if !inBox(in.frame.id) {
+			return errors.New("验证码输入框不在验证框里，没有按回车")
+		}
+		if _, err := ensureFocus(ctx, in); err != nil {
+			return fmt.Errorf("焦点不在验证码输入框上（%v），没有按回车", err)
+		}
+		return chromedp.KeyEvent(kb.Enter).Do(ctx)
+	}
+	if !inBox(btn.frame.id) {
+		return errors.New("验证码提交按钮不在验证框里，没有点击")
+	}
+	x, y, err := b.landsInOwnFrame(ctx, frames, btn)
+	if err != nil {
+		return err
+	}
+	_, hit, _, err := dom.GetNodeForLocation(int64(math.Round(x)), int64(math.Round(y))).
+		WithIncludeUserAgentShadowDOM(true).WithIgnorePointerEventsNone(false).Do(ctx)
+	if err != nil {
+		return fmt.Errorf("读不出点击落点（%v），没有点击", err)
+	}
+	if !inBox(hit) {
+		return errors.New("点击落点不在验证框里，没有点击")
+	}
+	return chromedp.MouseClickXY(x, y).Do(ctx)
 }
 
 // otpSubmit 找验证码的提交按钮：先在验证码框所在的 frame 里找，再在整个验证框里找。
@@ -756,6 +923,13 @@ func (b *Browser) onlyTextInput(ctx context.Context, scope []frameRef) *elem {
 	}
 	return found
 }
+
+// otpFormat 是 EnterOTP 接受的验证码格式（删掉空格、横线之后）。Go 的 $ 在非多行模式下只匹配文本末尾，结尾带换行的不会被放过。
+var otpFormat = regexp.MustCompile(`^[0-9A-Za-z]{4,12}$`)
+
+// otpStrip 只删普通空格（U+0020）和横线（-）。不用 strings.Fields、unicode.IsSpace 之类：那会把 Tab、换行、全角空格也当空白删掉，
+// 这些照旧要拒绝。
+var otpStrip = strings.NewReplacer(" ", "", "-", "")
 
 var shotName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`)
 
@@ -834,9 +1008,10 @@ func (b *Browser) shotChallenge(ctx context.Context) ([]byte, error) {
 		if err != nil {
 			return err
 		}
-		// 内容四边形是相对可视区域的坐标，截图裁剪区要的是页面坐标
-		x, y := math.Round(x0+vp.PageX), math.Round(y0+vp.PageY)
-		clip := &page.Viewport{X: x, Y: y, Width: math.Round(x1 + vp.PageX - x), Height: math.Round(y1 + vp.PageY - y), Scale: 1}
+		clip, err := challengeClip(x0, y0, x1, y1, vp)
+		if err != nil {
+			return err
+		}
 		buf, err = page.CaptureScreenshot().WithFormat(page.CaptureScreenshotFormatPng).WithFromSurface(true).WithClip(clip).Do(ctx)
 		return err
 	})
@@ -844,6 +1019,16 @@ func (b *Browser) shotChallenge(ctx context.Context) ([]byte, error) {
 		return nil, fmt.Errorf("截取 3DS 验证框失败: %w", err)
 	}
 	return buf, nil
+}
+
+// challengeClip 把验证框相对可视区域的坐标换成截图裁剪区要的页面坐标。浏览器没给可视区域（vp 为 nil）时返回错误：
+// 这一步在点过支付之后，空指针 panic 会让整个进程退出；截图失败只记警告。
+func challengeClip(x0, y0, x1, y1 float64, vp *page.VisualViewport) (*page.Viewport, error) {
+	if vp == nil {
+		return nil, errors.New("浏览器没有返回可视区域位置")
+	}
+	x, y := math.Round(x0+vp.PageX), math.Round(y0+vp.PageY)
+	return &page.Viewport{X: x, Y: y, Width: math.Round(x1 + vp.PageX - x), Height: math.Round(y1 + vp.PageY - y), Scale: 1}, nil
 }
 
 func digitsOf(s string) string {

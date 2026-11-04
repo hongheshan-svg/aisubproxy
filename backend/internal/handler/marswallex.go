@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tuzi/cdk-recharge-system/internal/cardpool"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/marswallex"
 	"github.com/tuzi/cdk-recharge-system/internal/secretbox"
@@ -113,6 +114,19 @@ func marsWallexSetting(key string) string {
 	return v
 }
 
+// marsWallexLastWebhookAt 返回最近一次收到 Webhook 的时间（Unix 秒）；一条都没收到、或读取失败（只记日志）时为 nil。
+func marsWallexLastWebhookAt(c *gin.Context) any {
+	at, ok, err := cardpool.LastWebhookAt(c.Request.Context())
+	if err != nil {
+		log.Printf("marswallex config: read last webhook time failed: %v", err)
+		return nil
+	}
+	if !ok {
+		return nil
+	}
+	return at.Unix()
+}
+
 func marsWallexConfigView(c *gin.Context) gin.H {
 	baseURL := marsWallexSetting(db.SettingMarsWallexBaseURL)
 	devID := marsWallexSetting(db.SettingMarsWallexDeveloperID)
@@ -134,6 +148,7 @@ func marsWallexConfigView(c *gin.Context) gin.H {
 		"master_key_ready":                true,
 		"master_key_error":                "",
 		"webhook_url":                     marsWallexWebhookURL(c),
+		"last_webhook_at":                 marsWallexLastWebhookAt(c),
 	}
 	if _, err := secretbox.LoadKey(); err != nil {
 		view["master_key_ready"] = false
@@ -203,11 +218,14 @@ func AdminPutMarsWallexConfig(c *gin.Context) {
 		}
 	}
 	setPlat := req.PlatformPublicKey != nil && strings.TrimSpace(*req.PlatformPublicKey) != ""
+	var platPEMNorm string // 统一存成 PKIX PEM：平台后台给的是纯 Base64，别处复制来的格式也不一
 	if setPlat {
-		if _, err := marswallex.ParsePublicKey(*req.PlatformPublicKey); err != nil {
+		k, err := marswallex.ParsePublicKey(*req.PlatformPublicKey)
+		if err != nil {
 			bad("平台公钥无法解析：" + err.Error())
 			return
 		}
+		platPEMNorm = marswallex.PublicKeyPEM(k)
 	}
 	if setToken || setPriv {
 		if _, err := secretbox.LoadKey(); err != nil {
@@ -258,7 +276,7 @@ func AdminPutMarsWallexConfig(c *gin.Context) {
 		changed = append(changed, "private_key")
 	}
 	if setPlat {
-		if err := db.SetSetting(db.SettingMarsWallexPlatformPublicKey, strings.TrimSpace(*req.PlatformPublicKey)); err != nil {
+		if err := db.SetSetting(db.SettingMarsWallexPlatformPublicKey, platPEMNorm); err != nil {
 			fail("platform_public_key", err)
 			return
 		}
@@ -270,6 +288,9 @@ func AdminPutMarsWallexConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, marsWallexConfigView(c))
 }
 
+// marsWallexAuthHint 是 401/403 的提示：平台对这几种情况都只回 Unauthorized，分不出具体是哪一种。
+const marsWallexAuthHint = "认证被拒（平台对下面几种情况都只返回 Unauthorized，分不出具体是哪一种）：① Developer ID 或 API Token 不对；② 交给平台的公钥和这里的私钥不是同一对（指纹见上方）；③ 服务器出口 IP 不在平台白名单里（见「IP 白名单」一步）。"
+
 func marsWallexHint(me *marswallex.Error) string {
 	switch {
 	case me.Outcome == marswallex.OutcomeNotSent && me.Reason == marswallex.ReasonConfig:
@@ -277,7 +298,7 @@ func marsWallexHint(me *marswallex.Error) string {
 	case me.Outcome == marswallex.OutcomeNotSent && (me.Reason == marswallex.ReasonDNS || me.Reason == marswallex.ReasonDial):
 		return "无法连接 MarsWallex，请检查服务器网络和接口地址"
 	case me.HTTPStatus == http.StatusUnauthorized || me.HTTPStatus == http.StatusForbidden:
-		return "认证或签名被拒：请检查 developerId、apiToken，并确认交给 MarsWallex 的公钥与此处私钥是同一对"
+		return marsWallexAuthHint
 	case me.HTTPStatus == http.StatusNotFound:
 		return "接口地址不对：请检查地址是否包含 /portal/api 前缀"
 	case me.Reason == marswallex.ReasonSignatureMissing || me.Reason == marswallex.ReasonSignatureInvalid:

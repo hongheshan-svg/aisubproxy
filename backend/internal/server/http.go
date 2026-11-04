@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"html"
 	"log"
+	"net/http"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tuzi/cdk-recharge-system/internal/cardpool"
@@ -19,11 +21,16 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/payengine"
 	"github.com/tuzi/cdk-recharge-system/internal/plansync"
 	"github.com/tuzi/cdk-recharge-system/internal/provider"
+	"github.com/tuzi/cdk-recharge-system/internal/safego"
 )
 
 type Server struct {
 	engine *gin.Engine
 	cfg    *config.Config
+	pay    drainer // 付款引擎：停止服务时先排空在途单
+
+	mu   sync.Mutex
+	http *http.Server // Serve 开始后才有
 }
 
 func New(ctx context.Context, cfg *config.Config) (*Server, error) {
@@ -34,6 +41,8 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	// Telegram 告警：后台配置优先，没配就用环境变量；旧版明文保存的令牌先加密迁移
 	handler.MigrateLegacyTelegramToken()
 	notify.SetSettingsSource(handler.TelegramSettings)
+	// 后台协程 panic 被兜住后的告警、没有自己告警通道的模块（如付款浏览器）的告警，都走这里发到 Telegram
+	safego.SetAlert(alertSender("system", notify.SendText))
 
 	// 生产模式、或已配置动钱上游密钥时，强制要求安全的 JWT secret，避免 token 被伪造后调用动钱接口
 	upstream, err := upstreamKeysConfigured()
@@ -86,11 +95,13 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	// CDK 链路后台维护：清理到期或已完成订单的用户会话
 	handler.SetOpsAlert(alertSender("cdk", notify.SendText))
 	handler.StartOpsMaintenance(ctx)
+	handler.StartLocalRateSweep(ctx)
 	handler.StartCardHeadSync(ctx)
 
 	return &Server{
 		engine: engine,
 		cfg:    cfg,
+		pay:    pay,
 	}, nil
 }
 
@@ -99,6 +110,7 @@ var alertLabels = map[string]string{
 	"payengine": "付款",
 	"cardpool":  "卡池",
 	"cdk":       "CDK",
+	"system":    "系统",
 }
 
 // alertSender 包装模块告警：先写日志（前缀标明模块；Telegram 未配置时 SendText 静默返回，告警不能因此丢失），
@@ -233,11 +245,14 @@ func setupRoutes(r *gin.Engine) {
 			setup.POST("/bootstrap", handler.SetupBootstrap)
 		}
 
+		// 公开接口（/public、/lookup）：先按 IP 限流，再读请求体（上限 256 KB），见 handler.PublicGuard
+		public := api.Group("/public", handler.PublicGuard())
+
 		// 公开站点配置（品牌/皮肤，无密钥）
-		api.GET("/public/site", handler.PublicSiteConfig)
+		public.GET("/site", handler.PublicSiteConfig)
 
 		// 卡台 CDK 公开兑换 BFF + 实时服务费展示
-		pubCDK := api.Group("/public/cdk")
+		pubCDK := public.Group("/cdk")
 		{
 			pubCDK.GET("/plans", handler.PublicCDKPlans)
 			pubCDK.POST("/preview", handler.PublicCDKPreview)
@@ -252,7 +267,7 @@ func setupRoutes(r *gin.Engine) {
 		}
 
 		// 卡密状态查询：是否已用 + 充值邮箱（不返回 token）
-		lookup := api.Group("/lookup")
+		lookup := api.Group("/lookup", handler.LookupGuard())
 		{
 			lookup.GET("/cdk", handler.LookupCDKStatus)
 			lookup.POST("/cdk/batch", handler.LookupCDKStatusBatch)
@@ -266,8 +281,9 @@ func setupRoutes(r *gin.Engine) {
 		api.POST("/webhooks/marswallex", handler.MarsWallexWebhook)
 
 		// 账单：粘贴 session 查 ChatGPT 订阅 + hosted_invoice（小助手同款）
-		api.POST("/public/billing/check", handler.SessionBillingCheck)
-		api.POST("/billing/check", handler.SessionBillingCheck)
+		public.POST("/billing/check", handler.SessionBillingCheck)
+		// 旧路径：和 /public 下的一样先限流、再读请求体（同一个额度）
+		api.POST("/billing/check", handler.PublicGuard(), handler.SessionBillingCheck)
 
 		// Stats routes
 		stats := api.Group("/stats")
@@ -290,6 +306,7 @@ func setupRoutes(r *gin.Engine) {
 			admin.GET("/marswallex/config", handler.AdminGetMarsWallexConfig)
 			admin.PUT("/marswallex/config", handler.AdminPutMarsWallexConfig)
 			admin.POST("/marswallex/test", handler.AdminTestMarsWallex)
+			admin.GET("/marswallex/egress", handler.AdminMarsWallexEgress)
 			admin.POST("/marswallex/keypair", handler.AdminGenerateMarsWallexKeypair)
 			admin.GET("/marswallex/webhook-events", handler.AdminListMarsWallexWebhookEvents)
 			admin.POST("/marswallex/webhook-events/:id/reprocess", handler.AdminReprocessMarsWallexWebhookEvent)
@@ -304,6 +321,7 @@ func setupRoutes(r *gin.Engine) {
 			admin.GET("/cardpool/cards/:id", handler.AdminCardPoolCardDetail)
 			admin.POST("/cardpool/cards/apply", handler.AdminCardPoolApplyCards)
 			admin.POST("/cardpool/cards/import", handler.AdminCardPoolImportCard)
+			admin.POST("/cardpool/cards/preview", handler.AdminCardPoolPreviewCard)
 			admin.POST("/cardpool/cards/:id/refresh", handler.AdminCardPoolRefreshCard)
 			admin.PUT("/cardpool/cards/:id/limit", handler.AdminCardPoolSetCardLimit)
 			admin.GET("/cardpool/cards/:id/limit-usage", handler.AdminCardPoolCardLimitUsage)

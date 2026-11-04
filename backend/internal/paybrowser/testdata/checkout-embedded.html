@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>ChatGPT</title>
+<style>
+  body { font-family: sans-serif; width: 960px; margin: 24px auto; display: flex; gap: 32px; }
+  main { width: 520px; }
+  #card-frame { border: 1px solid #ccc; width: 480px; height: 300px; }
+  #challenge-modal { position: fixed; inset: 0; background: rgba(0, 0, 0, .5); display: flex; align-items: center; justify-content: center; }
+  #challenge-modal iframe { border: 0; width: 420px; height: 280px; background: #fff; }
+</style>
+</head>
+<body>
+<!--
+  仿造的 chatgpt.com 内嵌结账页（测试用），照设计文档 §2 的真实 DOM：
+  左栏是档位按钮（type="button"，引擎不碰）、Card / PayPal 标签、Stripe Payment Element 的卡片 iframe；
+  卡片 iframe 是 card-embedded.html，由另一个服务（__CARD_ORIGIN__，与本页跨站）提供，同真实页面上的 js.stripe.com。
+  主页面只有一个 button[type="submit"]，文字随账号语言（这里用中文）；右栏「今日应付金额」没有 id，不参与读金额。
+
+  查询参数：
+    twobuttons=1    主页面有两个可见的 button[type="submit"]
+    nobutton=1      主页面一个 button[type="submit"] 都没有
+    leave=1         提交成功后跳到 /done（离开结账页）
+    decline=文字    点击后主页面显示带这段文字的 [role="alert"]
+    challenge=1     点击后插入 iframe[name="stripe-challenge-frame"]（全屏遮罩里），指向卡片服务的 acs.html?wrap=1
+    challenge=inline 点击后在结账 form 里、支付按钮正上方插入 200px 高、scrolling="no" 的 3DS 验证框（不是全屏遮罩），
+                    指向 acs.html?wrap=1&clip=1：验证码框和提交按钮在验证框可视区下沿以下、滚不过来，
+                    按坐标点它们会点到紧贴验证框下沿的支付按钮（这时支付按钮高 80px、占满整行）
+    acsnobutton=1   3DS 验证页没有提交按钮，在验证码框里按回车提交（acs.html 的 nobutton=1）
+    #otp-result（hidden）总是有：3DS 验证页提交后设为 ok（验证码对）或 fail
+    rerender=1      页面加载 3 秒后再插入一个可见的提交按钮（模拟填表后页面重绘）
+    pushstate=1     页面加载 3 秒后用 history.pushState 换到 /auth/login（模拟 SPA 换路由离开结账页），按钮仍只有一个
+    clip=1          卡片 iframe 带 scrolling="no"、高 380px，支付按钮占满整行、高 80px，紧贴 iframe 下沿。
+                    同时传给卡片 iframe（见 card-embedded.html 的 clip=1）
+    fold=1          主页面最上面放一个 1200px 高的占位块，卡片 iframe 和支付按钮都在首屏（900px）下方；
+                    主页面再设 scroll-padding-top: 3000px，让 iframe 里元素的「滚进可视区」（含设焦点带来的滚动）
+                    在主页面上落空，只有主页面脚本 window.scrollBy 能滚。真实结账页上滚入没有带动主页面，
+                    本机 Chrome 的 CDP 滚入默认会一路滚到主页面（未激活、scrolling="no"、平滑滚动、overflow: hidden
+                    都试过，照样滚），所以用这个办法模拟
+    fold=main       仿 2026-11-04 06:33 实页结构：html、body 高 100%，自己不滚动（document.scrollingElement 是 html，
+                    scrollHeight = clientHeight）；真正的滚动容器是 main（height: 100%; overflow-y: auto），
+                    main 最上面放 1200px 占位块，卡片 iframe 和支付按钮都在 main 的首屏以下。
+                    main 设 scroll-padding-top: 3000px，让 iframe 里元素的滚入在 main 上落空（同 fold=1 的说明），
+                    只有对 main 本身的脚本 scrollBy 能滚；window.scrollBy 滚不动任何东西
+    fold=hidden     同 fold=main，但 main 是 overflow-y: hidden（用户滚不动、脚本能滚）
+    scrollshift=1   配 fold=main：main 每次滚动（上一次的变化做完之后）都让最上面的占位块在约 300ms 里逐帧变高或变矮 100px
+                    （1200px 与 1100px 之间来回），下面的卡片 iframe、支付按钮跟着挪。仿滚动时收起吸顶栏、懒加载改布局
+    cover=1         卡片 iframe 回 number-full 消息（卡号填满）后，一个透明的 position:fixed 层（#cover，pointer-events: auto）
+                    盖住支付按钮，主页面滚动时跟着按钮挪；它收到可信点击（误点）时 #cover-clicks（hidden）加一
+    busy=1          卡片 iframe 回 address-changed 消息（地址里任一字段变了）后，支付按钮 disabled、aria-busy="true"
+                    约 1.5 秒，之后恢复可用、aria-busy="false"（仿 2026-11-04 07:23 实测：改了地址，页面重算时按钮短暂忙碌）。
+                    卡片 iframe 默认没有地址区，要配 addr=… 才会触发
+    busy=blur       卡片 iframe 回 field-blur 消息（里面有元素失焦）后，支付按钮 disabled、aria-busy="true" 约 800ms，之后恢复
+                    （仿「iframe 失焦时页面重算」：点支付那一下按下鼠标，焦点离开 iframe，按钮在松开之前就变成不可用）
+    busy=blur-stuck 卡片 iframe 回 frame-blur 消息（整个 iframe 失去焦点，焦点移到了本页）后，支付按钮 disabled、aria-busy="true"，
+                    再也不恢复。填表时焦点只在 iframe 里换来换去，不会触发
+    payclicks=1     只为下一条：支付按钮收到可信点击时 #pay-clicks 加一，页面别的不变
+    savepaybutton=1 结账 form 里多一个不写 type 的 <button role="checkbox" aria-checked="true">，文字是 Save payment details …：
+                    form 里不写 type 的 button 默认就是提交按钮，点它（鼠标或脚本 click()）就是提交结账表单、付款
+    clip=1、fold=1、fold=main、fold=hidden、cover=1、busy=…、payclicks=1 时，支付按钮收到可信点击，#pay-clicks（hidden）加一
+    #main-keys（hidden）总是有，记本页收到的可信 keydown 次数
+    linkverify=1    卡片 iframe 回 linkverify-shown 消息（它弹出了 Link 验证框）时，#link-state（hidden）设为 shown
+    其余参数原样传给卡片 iframe（amount、currency、nocurrency、noamount、savepay、linksave、terms、linkverify、addr、clip、low，
+    见 card-embedded.html）
+  点击提交后用 collect 消息向卡片 iframe 取字段值，POST 到本服务的 /pay，供测试断言。
+-->
+<main>
+  <div id="tiers">
+    <button type="button" aria-pressed="true">US$100</button>
+    <button type="button" aria-pressed="false">US$200</button>
+    <button type="button" aria-pressed="false">US$500</button>
+  </div>
+  <form id="checkout-form">
+    <div role="tablist">
+      <button type="button" role="tab" aria-selected="true">Card</button>
+      <button type="button" role="tab" aria-selected="false">PayPal</button>
+    </div>
+    <iframe id="card-frame" name="__privateStripeFrame1" title="Secure payment input frame"></iframe>
+    <div id="buttons"><button type="submit">升级至 Pro</button></div>
+    <p>点击「升级至 Pro」即表示你同意我们的条款。</p>
+  </form>
+</main>
+<aside>
+  <div>今日应付金额</div>
+  <div id="summary-amount"></div>
+</aside>
+
+<script>
+  var CARD_ORIGIN = '__CARD_ORIGIN__'
+  var q = new URLSearchParams(location.search)
+  var own = ['twobuttons', 'nobutton', 'leave', 'decline', 'challenge', 'rerender', 'pushstate', 'cover', 'busy', 'payclicks', 'savepaybutton', 'acsnobutton', 'scrollshift']
+  var cardQuery = new URLSearchParams()
+  q.forEach(function (v, k) {
+    if (own.indexOf(k) < 0) cardQuery.append(k, v)
+  })
+  var cardFrame = document.getElementById('card-frame')
+  var pay = document.querySelector('#buttons button[type="submit"]')
+  if (q.get('clip') === '1') {
+    cardFrame.setAttribute('scrolling', 'no')
+    cardFrame.style.display = 'block'
+    cardFrame.style.height = '380px'
+    pay.style.cssText = 'display: block; width: 100%; height: 80px; margin: 0'
+  }
+  var fold = q.get('fold')
+  if (fold === '1' || fold === 'main' || fold === 'hidden') {
+    var spacer = document.createElement('div')
+    spacer.style.height = '1200px'
+    var mainCol = document.querySelector('main')
+    mainCol.insertBefore(spacer, mainCol.firstChild)
+    if (fold === 'main' || fold === 'hidden') {
+      var foldStyle = document.createElement('style')
+      foldStyle.textContent = 'html, body { height: 100%; } body { margin: 0 auto; } main { height: 100%; overflow-y: ' +
+        (fold === 'hidden' ? 'hidden' : 'auto') + '; }'
+      document.head.appendChild(foldStyle)
+      mainCol.style.scrollPaddingTop = '3000px'
+      if (q.get('scrollshift') === '1') {
+        var shifting = false
+        mainCol.addEventListener('scroll', function () {
+          if (shifting) return
+          shifting = true
+          var from = parseFloat(spacer.style.height), to = from === 1200 ? 1100 : 1200, start = performance.now()
+          requestAnimationFrame(function step(now) {
+            var k = Math.min(1, (now - start) / 300)
+            spacer.style.height = (from + (to - from) * k) + 'px'
+            if (k < 1) requestAnimationFrame(step)
+            else shifting = false
+          })
+        })
+      }
+    } else {
+      document.documentElement.style.scrollPaddingTop = '3000px'
+    }
+  }
+  // counter 在表单里加一个记数的 hidden 输入框，初值 0
+  function counter(id) {
+    var c = document.createElement('input')
+    c.type = 'hidden'
+    c.id = id
+    c.value = '0'
+    document.getElementById('checkout-form').appendChild(c)
+    return c
+  }
+  var mainKeys = counter('main-keys')
+  document.addEventListener('keydown', function (e) {
+    if (e.isTrusted) mainKeys.value = String(Number(mainKeys.value) + 1)
+  }, true)
+  var cover = q.get('cover') === '1', busy = q.get('busy')
+  if (q.get('clip') === '1' || fold === '1' || fold === 'main' || fold === 'hidden' || cover || busy || q.get('payclicks') === '1') {
+    var payClicks = counter('pay-clicks')
+    pay.addEventListener('click', function (e) {
+      if (e.isTrusted) payClicks.value = String(Number(payClicks.value) + 1)
+    })
+  }
+  if (cover) {
+    var coverClicks = counter('cover-clicks')
+    window.addEventListener('message', function (e) {
+      if (e.source !== cardFrame.contentWindow || !e.data || e.data.type !== 'number-full' || document.getElementById('cover')) return
+      var layer = document.createElement('div')
+      layer.id = 'cover'
+      layer.style.cssText = 'position: fixed; z-index: 10; background: transparent; pointer-events: auto'
+      // 盖住按钮四周多 4px；主页面任何滚动容器滚动、窗口改大小时跟着按钮挪
+      function place() {
+        var r = pay.getBoundingClientRect()
+        layer.style.left = (r.left - 4) + 'px'
+        layer.style.top = (r.top - 4) + 'px'
+        layer.style.width = (r.width + 8) + 'px'
+        layer.style.height = (r.height + 8) + 'px'
+      }
+      place()
+      document.addEventListener('scroll', place, true)
+      window.addEventListener('resize', place)
+      layer.addEventListener('click', function (e) {
+        if (e.isTrusted) coverClicks.value = String(Number(coverClicks.value) + 1)
+      })
+      document.body.appendChild(layer)
+    })
+  }
+  // busy 对应的消息和忙碌时长（ms，0 表示不再恢复）
+  var busyOn = { '1': ['address-changed', 1500], 'blur': ['field-blur', 800], 'blur-stuck': ['frame-blur', 0] }[busy]
+  if (busyOn) {
+    var busyTimer = null
+    window.addEventListener('message', function (e) {
+      if (e.source !== cardFrame.contentWindow || !e.data || e.data.type !== busyOn[0]) return
+      pay.disabled = true
+      pay.setAttribute('aria-busy', 'true')
+      clearTimeout(busyTimer)
+      if (busyOn[1]) busyTimer = setTimeout(function () {
+        pay.disabled = false
+        pay.setAttribute('aria-busy', 'false')
+      }, busyOn[1])
+    })
+  }
+  if (q.get('linkverify') === '1') {
+    var linkState = document.createElement('input')
+    linkState.type = 'hidden'
+    linkState.id = 'link-state'
+    document.getElementById('checkout-form').appendChild(linkState)
+    window.addEventListener('message', function (e) {
+      if (e.source === cardFrame.contentWindow && e.data && e.data.type === 'linkverify-shown') linkState.value = 'shown'
+    })
+  }
+  cardFrame.src = CARD_ORIGIN + '/card-embedded.html?' + cardQuery
+  document.getElementById('summary-amount').textContent = q.get('amount') || 'US$100.00'
+
+  var buttons = document.getElementById('buttons')
+  function addButton() {
+    var b = document.createElement('button')
+    b.type = 'submit'
+    b.textContent = '升级至 Pro'
+    buttons.appendChild(b)
+  }
+  if (q.get('savepaybutton') === '1') {
+    var box = document.createElement('button')
+    box.setAttribute('role', 'checkbox')
+    box.setAttribute('aria-checked', 'true')
+    box.textContent = 'Save payment details to OpenAI OpCo, LLC for future purchases'
+    var boxRow = document.createElement('div')
+    boxRow.appendChild(box)
+    document.getElementById('checkout-form').insertBefore(boxRow, buttons)
+  }
+  if (q.get('nobutton') === '1') buttons.innerHTML = ''
+  if (q.get('twobuttons') === '1') addButton()
+  if (q.get('rerender') === '1') setTimeout(addButton, 3000)
+  if (q.get('pushstate') === '1') setTimeout(function () { history.pushState({}, '', '/auth/login') }, 3000)
+
+  var form = document.getElementById('checkout-form')
+  form.addEventListener('submit', function (e) {
+    e.preventDefault()
+    cardFrame.contentWindow.postMessage({ type: 'collect' }, CARD_ORIGIN)
+  })
+
+  var otpResult = counter('otp-result')
+  otpResult.value = ''
+  window.addEventListener('message', function (e) {
+    if (e.origin === CARD_ORIGIN && e.data && e.data.type === '3ds') otpResult.value = e.data.ok ? 'ok' : 'fail'
+  })
+  function afterPay() {
+    var acs = CARD_ORIGIN + '/acs.html?wrap=1' + (q.get('acsnobutton') === '1' ? '&nobutton=1' : '')
+    if (q.get('challenge') === '1') {
+      var modal = document.createElement('div')
+      modal.id = 'challenge-modal'
+      var frame = document.createElement('iframe')
+      frame.name = 'stripe-challenge-frame'
+      frame.src = acs
+      modal.appendChild(frame)
+      document.body.appendChild(modal)
+    }
+    if (q.get('challenge') === 'inline') {
+      var inline = document.createElement('iframe')
+      inline.name = 'stripe-challenge-frame'
+      inline.setAttribute('scrolling', 'no')
+      inline.style.cssText = 'display: block; border: 0; width: 480px; height: 200px'
+      inline.src = acs + '&clip=1'
+      pay.style.cssText = 'display: block; width: 100%; height: 80px; margin: 0'
+      buttons.parentNode.insertBefore(inline, buttons)
+    }
+    if (q.get('decline')) {
+      var note = document.createElement('div')
+      note.setAttribute('role', 'alert')
+      note.textContent = q.get('decline')
+      form.appendChild(note)
+    }
+    if (q.get('leave') === '1') location.href = '/done'
+  }
+
+  window.addEventListener('message', function (e) {
+    if (e.origin !== CARD_ORIGIN || !e.data || e.data.type !== 'card') return
+    var d = e.data
+    var body = {
+      number: d.number, expiry: d.expiry, cvc: d.cvc, numberKeys: d.numberKeys,
+      country: d.country, zip: d.zip, savePayment: d.savePayment
+    }
+    fetch('/pay', { method: 'POST', body: JSON.stringify(body) }).then(afterPay)
+  })
+</script>
+</body>
+</html>

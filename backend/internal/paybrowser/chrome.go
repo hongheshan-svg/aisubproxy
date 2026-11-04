@@ -20,6 +20,8 @@ import (
 	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
+
+	"github.com/tuzi/cdk-recharge-system/internal/safego"
 )
 
 // InstallHint 是 systemd 部署找不到或启动不了 Chrome 时给管理员的安装命令。
@@ -129,6 +131,7 @@ type Browser struct {
 	cardTouched  bool                 // 已开始往页面键入卡号：此后页面上可能有卡号，禁止整页截图
 	filled       bool                 // 已填入卡片与地址
 	submitted    bool                 // 已开始点击支付（点击之前置位）；之后绝不再次点击
+	kind         PageKind             // 页面类型，Open 时记下
 	submitLocked bool                 // 调用过 LockSubmit；之后绝不点击
 	answered     map[cdp.FrameID]bool // 已填过验证码的 3DS 框，WaitOutcome 不再把它当成新的验证
 	beforeClick  map[string]bool      // 点击支付前页面上已有的提示文字，WaitOutcome 不把它们当成付款结果
@@ -136,11 +139,15 @@ type Browser struct {
 	notices      []string             // 还没取走的未识别提示，已脱敏
 	noticeSeen   map[string]bool      // 记过的未识别提示，同一条只给一次
 	lastNotice   string               // 最后一条未识别提示，等到超时时作为说明返回
+	fillMark     fillMark             // 内嵌页 Fill 成功时记下的主页面文档和卡片 iframe，点支付前核对（checkFillMark）
 
 	worldMu sync.Mutex
 	worlds  map[cdp.FrameID]runtime.ExecutionContextID // 各 frame 里本包专用的隔离执行环境
 
-	clickPay func(context.Context, *elem) error // 仅供测试：替换点支付按钮的动作，用来模拟点击中途出错
+	clickPay      func(context.Context, *elem) error // 仅供测试：替换点支付按钮的动作，用来模拟点击中途出错
+	beforeRecheck func(context.Context) error        // 仅供测试：内嵌页点击前复查按钮之前执行，用来模拟这期间页面重绘
+	// 仅供测试：内嵌页点支付前最后检查里，landPoint 读完位置之后、payClickJS 之前执行，用来模拟这期间页面变化
+	beforePayCheck func(context.Context) error
 }
 
 // Launch 启动一个全新的 Chrome：临时用户目录，不带自动化标记，按 o 配置代理。
@@ -216,11 +223,14 @@ func Launch(ctx context.Context, o LaunchOptions) (*Browser, error) {
 
 	// 首次 Run 才真正拉起 Chrome，不能给它挂会取消的上下文（取消会杀掉浏览器），所以另起协程等待。
 	started := make(chan error, 1)
-	go func() { started <- chromedp.Run(tabCtx) }()
+	go func() {
+		defer safego.Recover("启动 Chrome", func(string) { started <- errors.New("启动 Chrome 时内部错误") })
+		started <- chromedp.Run(tabCtx)
+	}()
 	select {
 	case err = <-started:
 	case <-ctx.Done():
-		go b.closeAfterStart(started, abort)
+		safego.Go("关闭启动中的 Chrome", func() { b.closeAfterStart(started, abort) })
 		return nil, fmt.Errorf("启动 Chrome 失败: %w", ctx.Err())
 	}
 	if err != nil {
@@ -232,18 +242,28 @@ func Launch(ctx context.Context, o LaunchOptions) (*Browser, error) {
 
 	// 让页面始终认为自己有焦点：Xvfb 下没有窗口管理器，窗口可能拿不到系统焦点，
 	// 那样 document.hasFocus() 为假，键入与焦点事件都不正常。
-	if err := b.run(ctx, emulation.SetFocusEmulationEnabled(true)); err != nil {
+	if err := b.runInit(ctx, emulation.SetFocusEmulationEnabled(true)); err != nil {
 		b.Close()
 		return nil, fmt.Errorf("启动 Chrome 失败: %w", err)
 	}
 	if auth != nil {
 		chromedp.ListenTarget(tabCtx, b.answerProxyAuth(auth))
-		if err := b.run(ctx, fetch.Enable().WithHandleAuthRequests(true)); err != nil {
+		if err := b.runInit(ctx, fetch.Enable().WithHandleAuthRequests(true)); err != nil {
 			b.Close()
 			return nil, fmt.Errorf("启用代理认证失败: %w", err)
 		}
 	}
 	return b, nil
+}
+
+// initCallTimeout 是启动后两个初始化 CDP 调用各自的时限：Chrome 活着但不响应时不能一直挂着。
+const initCallTimeout = 15 * time.Second
+
+// runInit 执行一个启动时的初始化调用，最多等 initCallTimeout。
+func (b *Browser) runInit(ctx context.Context, action chromedp.Action) error {
+	ictx, cancel := context.WithTimeout(ctx, initCallTimeout)
+	defer cancel()
+	return b.run(ictx, action)
 }
 
 // answerDialog 自动回答页面弹出的 JS 对话框：不关掉它，页面脚本就停在那里，之后的 CDP 调用都不返回。
@@ -254,7 +274,7 @@ func (b *Browser) answerDialog(ev any) {
 	if ev, ok := ev.(*page.EventJavascriptDialogOpening); ok {
 		accept := ev.Type == page.DialogTypeAlert || ev.Type == page.DialogTypeBeforeunload
 		log.Printf("[paybrowser] 自动回答页面对话框，类型 %s，接受 %v", ev.Type, accept)
-		go b.runQuiet(page.HandleJavaScriptDialog(accept))
+		safego.Go("回答页面对话框", func() { b.runQuiet(page.HandleJavaScriptDialog(accept)) })
 	}
 }
 

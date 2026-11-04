@@ -4,9 +4,12 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/tuzi/cdk-recharge-system/internal/paybrowser"
 )
 
-// 不可信的支付链接：子域名、http、带端口、相似域名、chatgpt.com、带账号信息、末尾带点、没有协议等，一律拒绝。
+// 不可信的支付链接：子域名、http、带端口、相似域名、带账号信息、末尾带点、没有协议等，一律拒绝。
+// chatgpt.com 只放行 /checkout/<processor_entity>/<会话号>：路径段数不对、段不合格、带查询串或片段、路径里有转义字符的，同样拒绝。
 var untrustedCheckoutURLs = []string{
 	"https://sub.pay.openai.com/c/pay/cs_live_abc",
 	"https://www.checkout.stripe.com/c/pay/cs_live_abc",
@@ -18,7 +21,6 @@ var untrustedCheckoutURLs = []string{
 	"https://checkout.stripe.com.evil.example/c/pay/cs_live_abc",
 	"https://pay-openai.com/c/pay/cs_live_abc",
 	"https://evil.example/pay.openai.com/c/pay/cs_live_abc",
-	"https://chatgpt.com/checkout/openai_llc/cs_live_abc",
 	"https://user:pw@pay.openai.com/c/pay/cs_live_abc",
 	"https://pay.openai.com@evil.example/c/pay/cs_live_abc",
 	"https://pay.openai.com./c/pay/cs_live_abc",
@@ -27,6 +29,23 @@ var untrustedCheckoutURLs = []string{
 	"javascript:alert(1)",
 	"wss://pay.openai.com/c/pay/cs_live_abc",
 	"https://%70ay.openai.com/c/pay/cs_live_abc",
+	"https://chatgpt.com/checkout/openai_llc",
+	"https://chatgpt.com/checkout/a/b/c",
+	"https://chatgpt.com/backend-api/x/y",
+	"https://chatgpt.com/checkout/openai_llc/cs_live_abc?x=1",
+	"https://chatgpt.com/checkout/openai_llc/cs_live_abc#f",
+	"https://www.chatgpt.com/checkout/openai_llc/cs_live_abc",
+	"https://chatgpt.com.evil.example/checkout/openai_llc/cs_live_abc",
+	"http://chatgpt.com/checkout/openai_llc/cs_live_abc",
+	"https://chatgpt.com:443/checkout/openai_llc/cs_live_abc",
+	"https://chatgpt.com/checkout/OpenAI/cs_live_abc",
+	"https://chatgpt.com/checkout/openai_llc/cs%2Flive",
+	"https://chatgpt.com:/checkout/openai_llc/cs_live_abc",
+	// 主机名含非 ASCII 字符：转小写会把 İ（U+0130）折成 i、开尔文符号（U+212A）折成 k，浏览器做国际化域名转换后去的是别的域名
+	"https://pay.openaİ.com/c/pay/cs_live_abc",
+	"https://checkout.strİpe.com/c/pay/cs_live_abc",
+	"https://chec\u212aout.stripe.com/c/pay/cs_live_abc",
+	"https://pay.opena%C4%B0.com/c/pay/cs_live_abc",
 }
 
 func TestCheckCheckoutURL(t *testing.T) {
@@ -35,6 +54,7 @@ func TestCheckCheckoutURL(t *testing.T) {
 		"https://checkout.stripe.com/c/pay/cs_live_abc?k=v",
 		"HTTPS://PAY.OPENAI.COM/c/pay/cs_live_abc",
 		" https://pay.openai.com/c/pay/cs_live_abc ",
+		"https://chatgpt.com/checkout/openai_llc/cs_live_abc",
 	} {
 		if err := checkCheckoutURL(ok); err != nil {
 			t.Errorf("%q 应通过: %v", ok, err)
@@ -102,4 +122,89 @@ func TestOpenPageRechecksCheckoutURL(t *testing.T) {
 		}
 	}
 	j.closeBrowser()
+}
+
+func TestCheckoutPageKind(t *testing.T) {
+	cases := []struct {
+		url  string
+		want paybrowser.PageKind
+	}{
+		{"https://chatgpt.com/checkout/openai_llc/cs_live_abc", paybrowser.PageEmbedded},
+		{"HTTPS://CHATGPT.COM/checkout/a/b", paybrowser.PageEmbedded},
+		{" https://chatgpt.com/checkout/openai_llc/cs_live_abc", paybrowser.PageEmbedded},
+		{"\nhttps://chatgpt.com/checkout/openai_llc/cs_live_abc", paybrowser.PageEmbedded},
+		{"https://pay.openai.com/c/pay/x", paybrowser.PageHosted},
+		{"https://checkout.stripe.com/c/pay/x", paybrowser.PageHosted},
+		{"", paybrowser.PageHosted},
+		{"::bad", paybrowser.PageHosted},
+	}
+	for _, c := range cases {
+		if got := checkoutPageKind(c.url); got != c.want {
+			t.Errorf("checkoutPageKind(%q) = %v，期望 %v", c.url, got, c.want)
+		}
+	}
+}
+
+// 内嵌结账页链接由 processor_entity 和会话号拼出。两样带路径字符、大写（processor_entity）、空白或为空的一律不拼，
+// 以 checkout_failed 放弃，说明里不写会话号。拼出来的链接要能通过白名单。
+func TestEmbeddedCheckoutURL(t *testing.T) {
+	got, err := embeddedCheckoutURL("openai_llc", "cs_live_abc")
+	if err != nil || got != "https://chatgpt.com/checkout/openai_llc/cs_live_abc" {
+		t.Fatalf("应拼出内嵌页链接: %q %v", got, err)
+	}
+	if err := checkCheckoutURL(got); err != nil {
+		t.Fatalf("拼出的链接应通过白名单: %v", err)
+	}
+	for _, c := range []struct{ entity, session string }{
+		{"", "cs_live_abc"},
+		{"a/b", "cs_live_abc"},
+		{"..", "cs_live_abc"},
+		{"OpenAI", "cs_live_abc"},
+		{"openai_llc", "cs/1"},
+		{"openai_llc", "cs?1"},
+		{"openai_llc", "cs#1"},
+		{"openai_llc", "cs 1"},
+		{"openai_llc", ""},
+	} {
+		got, err := embeddedCheckoutURL(c.entity, c.session)
+		var f *stepFailure
+		if !errors.As(err, &f) || f.code != "checkout_failed" || got != "" {
+			t.Errorf("(%q, %q) 应以 checkout_failed 放弃: %q %v", c.entity, c.session, got, err)
+			continue
+		}
+		if c.session != "" && strings.Contains(f.msg, c.session) {
+			t.Errorf("(%q, %q) 的说明带出了会话号: %s", c.entity, c.session, f.msg)
+		}
+	}
+}
+
+// chatgpt.com 的规则要严格：空的「?」「#」、末尾或开头多斜杠、转义过的普通字符、「..」段、大小写不对的固定段、超长的段，都不放行；
+// 两段取到长度上限时照样放行。
+func TestCheckCheckoutURLEmbeddedStrict(t *testing.T) {
+	long := "https://chatgpt.com/checkout/" + strings.Repeat("a", 64) + "/" + strings.Repeat("A", 255)
+	if err := checkCheckoutURL(long); err != nil {
+		t.Fatalf("两段在长度上限内应通过: %v", err)
+	}
+	for _, bad := range []string{
+		"https://chatgpt.com/checkout/openai_llc/cs_live_abc?",
+		"https://chatgpt.com/checkout/openai_llc/cs_live_abc#",
+		"https://chatgpt.com/checkout/openai_llc/cs_live_abc/",
+		"https://chatgpt.com//checkout/openai_llc/cs_live_abc",
+		"https://chatgpt.com/checkout/openai_llc/cs%5Flive_abc",
+		"https://chatgpt.com/checkout/openai_llc/cs_live_abc%20",
+		"https://chatgpt.com/checkout/../cs_live_abc",
+		"https://chatgpt.com/Checkout/openai_llc/cs_live_abc",
+		"https://chatgpt.com/checkout/" + strings.Repeat("a", 65) + "/cs_live_abc",
+		"https://chatgpt.com/checkout/openai_llc/cs_live_abc" + strings.Repeat("A", 245),
+	} {
+		err := checkCheckoutURL(bad)
+		var f *stepFailure
+		if !errors.As(err, &f) || f.code != "checkout_url_untrusted" {
+			t.Errorf("%q 应以 checkout_url_untrusted 拒绝: %v", bad, err)
+			continue
+		}
+		if strings.Contains(f.msg, "cs_live_abc") || strings.Contains(f.msg, "openai_llc") {
+			t.Errorf("%q 的说明带出了链接内容: %s", bad, f.msg)
+		}
+	}
 }

@@ -13,7 +13,7 @@ func TestSavePlanTableRejectsFundOverLimit(t *testing.T) {
 	dbtest.Open(t)
 	build := func(fund int64) []PlanConf {
 		tbl := DefaultPlanTable()
-		tbl[1].Regions["PH"] = RegionConf{Enabled: true, Currency: "PHP", CapMinor: 1234, FundCents: fund}
+		tbl[1].Regions["PH"] = RegionConf{Enabled: true, Currency: "PHP", CapMinor: 1234, FloorMinor: 1000, FundCents: fund}
 		return tbl
 	}
 	if err := SavePlanTable(build(cardpool.DefaultMaxFundCents + 1)); !errors.Is(err, ErrBadRequest) {

@@ -763,11 +763,13 @@ func truncateMessage(s string) string {
 // 托管页不变。
 //
 // 验证码只接受 4–12 位数字或字母（终审二 Minor-1）：验证码是逐字发键的，夹着的 Tab 会把焦点移出验证码框，
-// 之后的空格、回车可能落到别处的按钮上（包括主页面的支付按钮）。格式不对就报错，一个键都不发；错误里不带验证码。
-// 不先去首尾空白：「1234\n」这种也拒，不替人猜。
+// 之后的空格、回车可能落到别处的按钮上（包括主页面的支付按钮）。先删掉普通空格和横线（otpStrip，短信里常见的分组写法，
+// 如「123 456」「12-34-56」），再查格式；格式不对就报错，一个键都不发，错误里不带验证码。只把删过之后的值打进页面。
+// Tab、回车、换行、全角空格、不换行空格等不删，照旧拒绝：「1234\n」这种不替人猜。
 func (b *Browser) EnterOTP(ctx context.Context, otp string) error {
+	otp = otpStrip.Replace(otp)
 	if !otpFormat.MatchString(otp) {
-		return errors.New("验证码格式不对（只接受 4–12 位数字或字母），没有填写")
+		return errors.New("验证码格式不对（删掉空格、横线后只接受 4–12 位数字或字母），没有填写")
 	}
 	embedded := b.pageKind() == PageEmbedded
 	return b.do(ctx, func(ctx context.Context) error {
@@ -922,8 +924,12 @@ func (b *Browser) onlyTextInput(ctx context.Context, scope []frameRef) *elem {
 	return found
 }
 
-// otpFormat 是 EnterOTP 接受的验证码格式。Go 的 $ 在非多行模式下只匹配文本末尾，结尾带换行的不会被放过。
+// otpFormat 是 EnterOTP 接受的验证码格式（删掉空格、横线之后）。Go 的 $ 在非多行模式下只匹配文本末尾，结尾带换行的不会被放过。
 var otpFormat = regexp.MustCompile(`^[0-9A-Za-z]{4,12}$`)
+
+// otpStrip 只删普通空格（U+0020）和横线（-）。不用 strings.Fields、unicode.IsSpace 之类：那会把 Tab、换行、全角空格也当空白删掉，
+// 这些照旧要拒绝。
+var otpStrip = strings.NewReplacer(" ", "", "-", "")
 
 var shotName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$`)
 

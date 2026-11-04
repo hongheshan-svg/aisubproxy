@@ -1211,8 +1211,9 @@ func TestEmbeddedEnterOTP(t *testing.T) {
 	}
 }
 
-// 验证码格式不对（终审二 Minor-1）：只接受 4–12 位数字或字母。夹着 Tab、空白、换行的验证码逐字键入时，Tab 会把焦点移出验证码框，
+// 验证码格式不对（终审二 Minor-1）：只接受 4–12 位数字或字母。夹着 Tab、换行等的验证码逐字键入时，Tab 会把焦点移出验证码框，
 // 之后的空格、回车可能触发别处的按钮——包括主页面的支付按钮。格式不对就报错，一个键都不发，错误里不带验证码。
+// 普通空格和横线先删掉再查（用户决定，见 TestEnterOTPStripsSpacesAndDashes）；全角空格、不换行空格、Tab、回车、换行不删，照旧拒绝。
 // 格式对的（纯数字、数字加字母）照常键入、提交。
 func TestEnterOTPRejectsMalformed(t *testing.T) {
 	t.Run("格式不对都拒绝", func(t *testing.T) {
@@ -1229,7 +1230,8 @@ func TestEnterOTPRejectsMalformed(t *testing.T) {
 		if err != nil {
 			t.Fatalf("读主页面按键次数: %v", err)
 		}
-		for _, otp := range []string{"123\t 456", "12 34", "1234\n", "\n1234", "123", "1234567890123", "12\x0734", "１２３４５６", ""} {
+		for _, otp := range []string{"123\t 456", "123\t456", "1234\n", "\n1234", "12\r34", "123\u3000456", "123\u00a0456", "1 2 3", "- - -",
+			"123", "1234567890123", "12\x0734", "１２３４５６", ""} {
 			err := b.EnterOTP(ctx, otp)
 			if err == nil || !strings.Contains(err.Error(), "验证码") {
 				t.Errorf("EnterOTP(%q) = %v，期望报错", otp, err)
@@ -1278,6 +1280,35 @@ func TestEnterOTPRejectsMalformed(t *testing.T) {
 			t.Fatalf("验证码框 = %q, %v，期望 AB12CD", v, err)
 		}
 	})
+}
+
+// 验证码里的普通空格和横线（短信里常见的分组写法）先删掉再查格式，打进页面的是删过之后的值（用户决定）。
+func TestEnterOTPStripsSpacesAndDashes(t *testing.T) {
+	for _, otp := range []string{"123 456", "12-34-56", " 123456 "} {
+		t.Run(otp, func(t *testing.T) {
+			needChrome(t)
+			t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+			f := newFakeEmbedded(t)
+			b, ctx := openEmbedded(t, f, "challenge=1&payclicks=1")
+
+			fillSubmitEmbedded(t, b, ctx)
+			if out, msg, err := b.WaitOutcome(ctx, 15*time.Second); err != nil || out != paybrowser.OutcomeChallenge {
+				t.Fatalf("WaitOutcome = %q, %q, %v，期望 challenge", out, msg, err)
+			}
+			if err := b.EnterOTP(ctx, otp); err != nil {
+				t.Fatalf("EnterOTP(%q): %v", otp, err)
+			}
+			if r := otpResult(t, ctx, b); r != "ok" {
+				t.Fatalf("3DS 验证结果 = %q，期望 ok", r)
+			}
+			if v, err := paybrowser.FieldValue(ctx, b, "#acs-code"); err != nil || v != "123456" {
+				t.Fatalf("验证码框 = %q, %v，期望删掉空格、横线后的 123456", v, err)
+			}
+			if n := payClicks(t, ctx, b); n != "1" {
+				t.Fatalf("支付按钮收到 %s 次可信点击，期望只有点支付那 1 次", n)
+			}
+		})
+	}
 }
 
 // 验证框不是全屏遮罩（嵌在结账 form 里、紧贴支付按钮上方），验证码框和提交按钮在验证框可视区外、滚不过来（仿造页 challenge=inline）：

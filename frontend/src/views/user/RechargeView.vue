@@ -1065,6 +1065,13 @@ function startPoll() {
           redemptionToken.value = data.redemption_token
         }
       }
+      if (r.status === 404) {
+        // 没有这笔单（例如兑换没有建单）：停止轮询，不再对不存在的单一直转圈
+        polling.value = false
+        if (pollTimer) clearInterval(pollTimer)
+        dialog.toast('没有找到这笔兑换记录，请回到上一步重新确认兑换码', 'warn')
+        return
+      }
       if (r.ok) {
         applyResultPayload(data)
         saveProgress()

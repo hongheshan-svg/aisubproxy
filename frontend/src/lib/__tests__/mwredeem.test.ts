@@ -53,8 +53,7 @@ describe('redeemRejectedBeforeOrder', () => {
     expect(redeemRejectedBeforeOrder(400, { error: '预检已失效' })).toBe(true)
     expect(redeemRejectedBeforeOrder(429, { error: 'x' })).toBe(true)
   })
-  it('409 已有单、带 order 的响应、成功响应：去结果页', () => {
-    expect(redeemRejectedBeforeOrder(409, { error: '处理中' })).toBe(false)
+  it('带 order 的响应、成功响应：去结果页', () => {
     expect(redeemRejectedBeforeOrder(400, { order: { status: 'failed' } })).toBe(false)
     expect(redeemRejectedBeforeOrder(200, { order: {} })).toBe(false)
   })

@@ -44,8 +44,8 @@ func SecurityHeadersMiddleware() gin.HandlerFunc {
 		h.Set("Cross-Origin-Opener-Policy", "same-origin")
 		h.Set("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
 
-		// 仅当确实走 HTTPS 时才下发 HSTS（直连 TLS 或反代标记 X-Forwarded-Proto=https）
-		if c.Request.TLS != nil || strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https") {
+		// 仅当确实走 HTTPS 时才下发 HSTS：直连 TLS，或可信反代（TRUSTED_PROXIES）标了 X-Forwarded-Proto=https
+		if auth.RequestIsHTTPS(c.Request) {
 			h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		}
 		c.Next()

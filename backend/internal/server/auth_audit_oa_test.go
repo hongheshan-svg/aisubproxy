@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -369,5 +370,59 @@ func TestOASetupTokenOnlyFromHeader(t *testing.T) {
 	}
 	if got := redactQuery("/api/v1/setup/bootstrap?setup_token=" + oaSetupToken + "&x=1"); strings.Contains(got, oaSetupToken) {
 		t.Fatalf("访问日志应遮掉 setup_token：%s", got)
+	}
+}
+
+// A-14：X-Forwarded-Proto 只在请求来自 TRUSTED_PROXIES 里的反代时才算数；直连客户端自带这个头
+// 既拿不到 HSTS，也不会让 cookie 带 Secure。直连 TLS 总算 HTTPS。
+func TestOAForwardedProtoTrustedOnlyFromProxies(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	hsts := func(remote string, viaTLS bool) bool {
+		r := gin.New()
+		r.Use(SecurityHeadersMiddleware())
+		r.GET("/x", func(c *gin.Context) { c.Status(http.StatusNoContent) })
+		req := httptest.NewRequest("GET", "/x", nil)
+		req.RemoteAddr = remote + ":40000"
+		req.Header.Set("X-Forwarded-Proto", "https")
+		if viaTLS {
+			req.TLS = &tls.ConnectionState{}
+		}
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return w.Header().Get("Strict-Transport-Security") != ""
+	}
+
+	t.Setenv("TRUSTED_PROXIES", "")
+	if hsts("198.51.100.50", false) {
+		t.Error("没有可信反代时，客户端自带 X-Forwarded-Proto 不应拿到 HSTS")
+	}
+	if !hsts("198.51.100.50", true) {
+		t.Error("直连 TLS 应下发 HSTS")
+	}
+	t.Setenv("TRUSTED_PROXIES", "127.0.0.1, 198.51.100.0/24")
+	if !hsts("198.51.100.50", false) {
+		t.Error("可信反代标了 https 应下发 HSTS")
+	}
+	if hsts("203.0.113.9", false) {
+		t.Error("不在可信反代名单里的来源不应拿到 HSTS")
+	}
+
+	// 登录 cookie 的 Secure 同一口径
+	r := oaRouter(t)
+	oaCreateAdmin(t, "oa_secure")
+	login := func(ip string) *http.Cookie {
+		w := oaDo(r, oaReq{method: "POST", path: "/api/v1/auth/admin/login", body: oaLoginBody("oa_secure", oaPassword), ip: ip,
+			header: map[string]string{"X-Forwarded-Proto": "https"}})
+		if w.Code != http.StatusOK {
+			t.Fatalf("登录应 200，实际 %d", w.Code)
+		}
+		return oaCookie(w.Result().Cookies(), "auth_token")
+	}
+	if c := login("198.51.100.51"); !c.Secure {
+		t.Error("经可信反代的 HTTPS 登录 cookie 应带 Secure")
+	}
+	t.Setenv("TRUSTED_PROXIES", "")
+	if c := login("198.51.100.51"); c.Secure {
+		t.Error("没有可信反代时，客户端自带 X-Forwarded-Proto 不应让 cookie 带 Secure")
 	}
 }

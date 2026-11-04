@@ -4,9 +4,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"net/http"
-	"strings"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tuzi/cdk-recharge-system/internal/auth"
 )
 
 const (
@@ -14,9 +14,10 @@ const (
 	csrfCookieName = "csrf_token"
 )
 
-// isSecureRequest 判断当前请求是否走 HTTPS（直连 TLS 或反代标记）。
+// isSecureRequest 判断当前请求是否走 HTTPS：直连 TLS，或 TRUSTED_PROXIES 里的反代标了 X-Forwarded-Proto=https。
+// 直连客户端自带的 X-Forwarded-Proto 不算数（审计 A-14）。
 func isSecureRequest(c *gin.Context) bool {
-	return c.Request.TLS != nil || strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https")
+	return auth.RequestIsHTTPS(c.Request)
 }
 
 // newCSRFToken 生成随机 CSRF token。

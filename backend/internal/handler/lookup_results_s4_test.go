@@ -49,8 +49,9 @@ func TestS4ResultsBatchReturnsPerTokenInOrder(t *testing.T) {
 	if res[1].Status != single.Code {
 		t.Fatalf("批量里的状态码 %d 应与单查 %d 一致", res[1].Status, single.Code)
 	}
-	if one := e.result("no-such-token"); res[0].Status != one.Code {
-		t.Fatalf("第一个令牌的状态码 %d 应与单查 %d 一致", res[0].Status, one.Code)
+	// 本站没有绑定记录的上游令牌：批量里本地回 404、不打卡台（审计 money N-1），不再和单查一致
+	if res[0].Status != http.StatusNotFound {
+		t.Fatalf("没有绑定记录的令牌应 404，实际 %d", res[0].Status)
 	}
 }
 

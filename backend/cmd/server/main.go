@@ -17,12 +17,25 @@ import (
 )
 
 func main() {
-	// 命令行子命令在加载配置、连数据库之前处理：在线更新的自检会运行 `--version`，
+	// 命令行子命令在加载配置、连数据库之前处理：在线更新的自检会运行 `--version` 和 `--check`，
 	// 新版本起不来时用 `rollback` 恢复上一个版本。
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "--version", "version":
 			fmt.Println(handler.LocalVersion())
+			return
+		case "--check":
+			// 启动检查：按当前环境变量和数据库（只读打开）跑一遍启动时会拒绝启动的检查，和启动用同一个函数。
+			// 不建表、不迁移、不写库，不启动任何后台任务。在线更新换文件之前用它确认新版本起得来。
+			cfg, err := config.Load()
+			if err == nil {
+				err = server.Check(cfg)
+			}
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "启动检查未通过:", err)
+				os.Exit(1)
+			}
+			fmt.Println("启动检查通过")
 			return
 		case "rollback":
 			if err := handler.Rollback(os.Stdout); err != nil {

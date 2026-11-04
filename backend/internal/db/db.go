@@ -28,13 +28,17 @@ const (
 	legacyDefaultPassword = "admin123456"
 )
 
-func Init(cfg *config.DatabaseConfig) error {
-	// 使用 SQLite。默认 ../data/cdk_recharge.db（相对于backend目录）；
-	// 部署/容器内可用环境变量 DB_PATH 覆盖（如 /app/data/cdk_recharge.db）。
-	dbPath := "../data/cdk_recharge.db"
+// ResolvePath 是数据库文件的位置：默认 ../data/cdk_recharge.db（相对于工作目录，即 backend 目录）；
+// 部署/容器内可用环境变量 DB_PATH 覆盖（如 /app/data/cdk_recharge.db）。启动和 --check 用同一个规则。
+func ResolvePath() string {
 	if p := strings.TrimSpace(os.Getenv("DB_PATH")); p != "" {
-		dbPath = p
+		return p
 	}
+	return "../data/cdk_recharge.db"
+}
+
+func Init(cfg *config.DatabaseConfig) error {
+	dbPath := ResolvePath()
 	log.Printf("使用数据库: %s", dbPath)
 	// WAL 让读不阻塞写；busy_timeout 让并发写等待锁而不是立刻报 database is locked。
 	// 参数写在 DSN 里，对连接池里每一个连接都生效（busy_timeout 是连接级设置）。
@@ -632,6 +636,49 @@ func IsWeakPassword(p string) bool {
 	return false
 }
 
+// defaultAdminPlan 是启动时对默认管理员的判定。
+type defaultAdminPlan struct {
+	username     string
+	exists       bool   // 这个用户名的管理员已存在
+	existingHash string // exists 时的密码哈希
+	create       bool   // 要在启动时建号
+	password     string // create 时用的 ADMIN_PASSWORD；为空表示随机生成
+}
+
+// planDefaultAdmin 只读：判断启动时要不要建默认管理员、ADMIN_PASSWORD 够不够强。
+// ensureDefaultAdmin 按它建号，CheckDefaultAdmin（命令行 --check）只取它的错误：两边是同一套规则。
+func planDefaultAdmin() (defaultAdminPlan, error) {
+	p := defaultAdminPlan{username: os.Getenv("ADMIN_USERNAME")}
+	if strings.TrimSpace(p.username) == "" {
+		p.username = DefaultAdminUsername
+	}
+	var count int
+	if err := DB.QueryRow(`SELECT COUNT(*), COALESCE(MAX(password_hash), '') FROM admin_users WHERE username = ?`, p.username).Scan(&count, &p.existingHash); err != nil {
+		return p, err
+	}
+	if count > 0 {
+		p.exists = true
+		return p, nil
+	}
+	// wizard：无 ADMIN_PASSWORD 时不自动建号，等 Web bootstrap
+	password := strings.TrimSpace(os.Getenv("ADMIN_PASSWORD"))
+	if InstallMode() == "wizard" && password == "" {
+		return p, nil
+	}
+	if password != "" && (IsWeakPassword(password) || strings.EqualFold(password, p.username)) {
+		// 和安装向导同样的强度要求（审计 A-12）。拒绝启动，错误信息里不带口令本身。
+		return p, fmt.Errorf("ADMIN_PASSWORD 太弱：至少 12 位、不能是常见弱口令、不能和用户名相同。请换成强口令，或删掉 ADMIN_PASSWORD 改用安装向导 /ops/setup")
+	}
+	p.create, p.password = true, password
+	return p, nil
+}
+
+// CheckDefaultAdmin 只读检查启动时按 ADMIN_PASSWORD 建管理员能不能通过（口令太弱会拒绝启动）。
+func CheckDefaultAdmin() error {
+	_, err := planDefaultAdmin()
+	return err
+}
+
 func ensureDefaultAdmin() error {
 	// 先确保有安装令牌（wizard 模式、未安装时）
 	if !IsInstalled() && InstallMode() == "wizard" {
@@ -648,21 +695,15 @@ func ensureDefaultAdmin() error {
 		}
 	}
 
-	username := os.Getenv("ADMIN_USERNAME")
-	if strings.TrimSpace(username) == "" {
-		username = DefaultAdminUsername
-	}
-
-	var count int
-	var existingHash string
-	err := DB.QueryRow(`SELECT COUNT(*), COALESCE(MAX(password_hash), '') FROM admin_users WHERE username = ?`, username).Scan(&count, &existingHash)
+	plan, err := planDefaultAdmin()
 	if err != nil {
 		return err
 	}
+	username := plan.username
 
-	if count > 0 {
+	if plan.exists {
 		// 已存在：若仍是历史弱口令，则在启动时大声告警，提示尽快改密。
-		if ok, _ := VerifyAdminPassword(existingHash, legacyDefaultPassword); ok {
+		if ok, _ := VerifyAdminPassword(plan.existingHash, legacyDefaultPassword); ok {
 			log.Printf("⚠️  管理员 %s 仍在使用历史默认密码（admin123456），存在严重风险，请立刻登录后台修改密码！", username)
 		}
 		// 补写 install 标记（从旧库升级）
@@ -672,21 +713,15 @@ func ensureDefaultAdmin() error {
 		}
 		return nil
 	}
-
-	// wizard：无 ADMIN_PASSWORD 时不自动建号，等 Web bootstrap
-	password := strings.TrimSpace(os.Getenv("ADMIN_PASSWORD"))
-	if InstallMode() == "wizard" && password == "" {
+	if !plan.create {
 		return nil
 	}
 
 	// auto 或显式 ADMIN_PASSWORD：启动时建管理员
-	generated := false
+	password, generated := plan.password, false
 	if password == "" {
 		password = randomPassword(16)
 		generated = true
-	} else if IsWeakPassword(password) || strings.EqualFold(password, username) {
-		// 和安装向导同样的强度要求（审计 A-12）。拒绝启动，错误信息里不带口令本身。
-		return fmt.Errorf("ADMIN_PASSWORD 太弱：至少 12 位、不能是常见弱口令、不能和用户名相同。请换成强口令，或删掉 ADMIN_PASSWORD 改用安装向导 /ops/setup")
 	}
 
 	hash, err := HashAdminPassword(password)
@@ -867,6 +902,38 @@ func FindCodeByRedemptionToken(redemptionToken string) (string, error) {
 		return "", nil
 	}
 	return code, err
+}
+
+// KnownRedemptionTokens 返回 tokens 里本站有绑定记录（cdk_session_bindings.redemption_token）的那些。
+// 批量查结果用：只有本站兑换预览时写过绑定的上游令牌才转发上游（审计 money N-1）。
+func KnownRedemptionTokens(tokens []string) (map[string]bool, error) {
+	out := make(map[string]bool, len(tokens))
+	args := make([]any, 0, len(tokens))
+	for _, t := range tokens {
+		if t = strings.TrimSpace(t); t != "" {
+			args = append(args, t)
+		}
+	}
+	if len(args) == 0 {
+		return out, nil
+	}
+	if DB == nil {
+		return nil, fmt.Errorf("db not ready")
+	}
+	rows, err := DB.Query(`SELECT DISTINCT redemption_token FROM cdk_session_bindings
+		WHERE redemption_token IN (?`+strings.Repeat(",?", len(args)-1)+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var tok string
+		if err := rows.Scan(&tok); err != nil {
+			return nil, err
+		}
+		out[tok] = true
+	}
+	return out, rows.Err()
 }
 
 func migrateCDKPlanTypes() error {

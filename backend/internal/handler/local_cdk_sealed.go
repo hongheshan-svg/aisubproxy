@@ -42,6 +42,9 @@ func openLocalCDKCode(ctx context.Context, id int64) (code string, ok bool) {
 		return "", false
 	}
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "", false // 客户断开或超时是正常情况，不记日志
+		}
 		log.Printf("[local-cdk] 码 %d 读取新码密文失败: %s", id, secretErrKind(err))
 		return "", false
 	}

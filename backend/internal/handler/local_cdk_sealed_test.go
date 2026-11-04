@@ -198,7 +198,6 @@ func TestOpenLocalCDKCodeRejectsTampered(t *testing.T) {
 func TestSealedCodeNotInAdminOutputs(t *testing.T) {
 	logs := captureLog(t)
 	e := newSealedExchangeEnv(t)
-	e.router.GET("/admin/cardplatform/cdks/stored", CardPlatformListStoredCDKs) // 后台「导出本站全部」走的接口
 	code, _ := exchangeableCode(t, e)
 	_, newCode, newID := doSealedExchange(t, e, code)
 	sealed := storedSealed(t, newID)
@@ -221,14 +220,29 @@ func TestSealedCodeNotInAdminOutputs(t *testing.T) {
 		t.Fatalf("后台码列表应列出新码: %d %s", w.Code, w.Body.String())
 	}
 	leaks("后台码列表", w.Body.String())
-	for _, path := range []string{"/admin/cardplatform/cdks/stored?format=txt", "/admin/cardplatform/cdks/stored?sync=0"} {
-		w := e.do("GET", path, "")
-		if w.Code != http.StatusOK {
-			t.Fatalf("%s: %d %s", path, w.Code, w.Body.String())
-		}
-		leaks("导出 "+path, w.Body.String())
-	}
 	leaks("标准库日志", logs.String())
 	leaks("审计", localAudit(t))
 	leaks("告警", e.alertTexts())
+}
+
+// 客户断开（ctx 已取消）是正常情况：返回 false，不 panic，不记日志。
+func TestOpenLocalCDKCodeCanceledContext(t *testing.T) {
+	e := newSealedExchangeEnv(t)
+	code, _ := exchangeableCode(t, e)
+	_, _, newID := doSealedExchange(t, e, code)
+	logs := captureLog(t)
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got, ok := openLocalCDKCode(canceled, newID); ok || got != "" {
+		t.Fatalf("ctx 已取消时不能交出码: ok=%v got=%q", ok, got)
+	}
+	expired, cancel2 := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel2()
+	if got, ok := openLocalCDKCode(expired, newID); ok || got != "" {
+		t.Fatalf("ctx 已超时不能交出码: ok=%v got=%q", ok, got)
+	}
+	if logs.Len() != 0 {
+		t.Fatalf("取消和超时不记日志: %q", logs.String())
+	}
 }

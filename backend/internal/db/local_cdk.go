@@ -55,7 +55,7 @@ var (
 	ErrLocalCDKIssueKeyUsed = errors.New("这个幂等键已经发过码")
 )
 
-// LocalCDK 是 local_cdks 的一行。没有完整码，也没有哈希：哈希只用来查询，不出这个包。
+// LocalCDK 是 local_cdks 的一行。没有完整码，也没有哈希：哈希只用来查询和售后解密时核对，不进响应、日志。
 type LocalCDK struct {
 	ID              int64
 	Provider        string
@@ -86,6 +86,9 @@ type LocalCDKOrder struct {
 	SubmittedAt  *int64
 	CreatedAt    int64
 	FinishedAt   *int64
+	Kind         string // subscription | credit
+	RenewalState string // 关闭续费的进度，见 payengine
+	AccessUntil  *int64 // 关闭续费核实时 ChatGPT 给的权益到期时间（Unix 秒）
 }
 
 // CleanFailure 这张单能确定没有点过支付（failed + not_submitted + 没有提交时间）。只有它能重兑。
@@ -387,15 +390,15 @@ func LocalCDKSealedCode(ctx context.Context, id int64) (codeHash, sealed string,
 	return codeHash, sealed, err
 }
 
-const localCDKOrderColumns = `order_no, source_ref, state, failure, error_code, account_email, fund_cents, card_id, submitted_at, created_at, finished_at`
+const localCDKOrderColumns = `order_no, source_ref, state, failure, error_code, account_email, fund_cents, card_id, submitted_at, created_at, finished_at, kind, renewal_state, access_until`
 
 func collectLocalCDKOrders(rows *sql.Rows) ([]LocalCDKOrder, error) {
 	defer rows.Close()
 	out := []LocalCDKOrder{}
 	for rows.Next() {
 		var o LocalCDKOrder
-		var sub, fin sql.NullInt64
-		if err := rows.Scan(&o.OrderNo, &o.SourceRef, &o.State, &o.Failure, &o.ErrorCode, &o.AccountEmail, &o.FundCents, &o.CardID, &sub, &o.CreatedAt, &fin); err != nil {
+		var sub, fin, acc sql.NullInt64
+		if err := rows.Scan(&o.OrderNo, &o.SourceRef, &o.State, &o.Failure, &o.ErrorCode, &o.AccountEmail, &o.FundCents, &o.CardID, &sub, &o.CreatedAt, &fin, &o.Kind, &o.RenewalState, &acc); err != nil {
 			return nil, err
 		}
 		if sub.Valid {
@@ -403,6 +406,9 @@ func collectLocalCDKOrders(rows *sql.Rows) ([]LocalCDKOrder, error) {
 		}
 		if fin.Valid {
 			o.FinishedAt = &fin.Int64
+		}
+		if acc.Valid {
+			o.AccessUntil = &acc.Int64
 		}
 		out = append(out, o)
 	}

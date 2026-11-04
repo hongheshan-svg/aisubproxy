@@ -116,8 +116,7 @@ func factsFor(ctx context.Context, code, device string) (f afterSaleFacts, err e
 		}
 	}()
 	if cs, ok := provider.AsCardSupply(p); ok {
-		// 过渡：Task 4 换成供卡型共用的 cardSupplyFacts(ctx, cs, code)
-		return factsFromLegacy(localCDKLookup(ctx, cs, code)), nil
+		return cardSupplyFacts(ctx, cs, code)
 	}
 	if a, ok := upstreamAdapterFor(p.Name()); ok {
 		if l, ok := a.(upstreamLookuper); ok {

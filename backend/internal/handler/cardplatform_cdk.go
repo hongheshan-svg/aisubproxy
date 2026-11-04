@@ -1117,21 +1117,23 @@ func zovoCardResult(c *gin.Context, token string) {
 		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
 		return
 	}
-	// 卡健康观察（best-effort，不阻断用户）
-	if st >= 200 && st < 300 {
-		var payload map[string]any
-		if json.Unmarshal(raw, &payload) == nil {
-			cdkCode := ""
-			if found, err := db.FindCodeByRedemptionToken(token); err == nil {
-				cdkCode = found
-			}
-			if isCompletedOrderStatus(publicResultStatus(payload)) {
-				clearSessionAfterCompleted("", token)
-			}
-			safego.Go("观察卡健康（结果查询）", func() { observeFromPublicResult(context.Background(), payload, cdkCode) })
-		}
+	var payload map[string]any
+	if json.Unmarshal(raw, &payload) != nil || payload == nil {
+		proxyPublicJSON(c, st, raw)
+		return
 	}
-	proxyPublicJSON(c, st, raw)
+	// 卡健康观察（best-effort，不阻断用户）。它要用完整邮箱归因，响应另做一份打码的副本
+	if st >= 200 && st < 300 {
+		cdkCode := ""
+		if found, err := db.FindCodeByRedemptionToken(token); err == nil {
+			cdkCode = found
+		}
+		if isCompletedOrderStatus(publicResultStatus(payload)) {
+			clearSessionAfterCompleted("", token)
+		}
+		safego.Go("观察卡健康（结果查询）", func() { observeFromPublicResult(context.Background(), payload, cdkCode) })
+	}
+	writePublicResult(c, st, raw, payload)
 }
 
 // zovoCardResultByCode 是 ZovoCard 按码查结果：用卡密反查本站绑定的 redemption_token，再转发卡台 result（刷新进度 / 任务查询用）。
@@ -1177,26 +1179,58 @@ func zovoCardResultByCode(c *gin.Context, code string) {
 		clearSessionAfterCompleted(bind.CDKCode, bind.RedemptionToken)
 	}
 
-	// 已完成的订单：从 accounthub 获取账单 URL
-	if orderStatus == "completed" {
-		email := ""
-		if order, ok := payload["order"].(map[string]any); ok {
-			email = strAny(order["account_email"])
-		}
-		if email == "" {
-			email = strAny(payload["account_email"])
-		}
-		if email == "" {
-			email = bind.AccountEmail
-		}
-		if email != "" {
-			if inv, err := queryAccounthubInvoices(email); err == nil {
-				payload["invoice_url"] = inv.InvoiceURL
-			}
-		}
-	}
+	// 不再附带 accounthub 的账单链接（审计 F-1）：凭卡密就能调这个接口，账单链接只在用户当场粘贴 session 查账单时给。
+	// 邮箱同样打码：完整邮箱只留给上面的卡健康观察做归因。这里加过本站字段，不能透传原字节。
+	writePublicResult(c, st, nil, payload)
+}
 
-	c.JSON(st, payload)
+// publicResultEmailKeys 是公开结果响应里要打码的邮箱字段（任意层级）。
+var publicResultEmailKeys = map[string]bool{"email": true, "account_email": true, "customer_email": true}
+
+// maskPublicResultEmails 返回 payload 的深拷贝，其中所有邮箱字段按 maskEmailForAdmin 打码（与售后查询一致）；
+// 第二个返回值表示有没有字段被打码。不改 payload 本身：原件还要交给卡健康观察的协程用完整邮箱归因，
+// 原地改会和它并发读写同一个 map。
+func maskPublicResultEmails(payload map[string]any) (map[string]any, bool) {
+	out, changed := maskEmailsDeep(payload)
+	m, _ := out.(map[string]any)
+	return m, changed
+}
+
+func maskEmailsDeep(v any) (any, bool) {
+	changed := false
+	switch t := v.(type) {
+	case map[string]any:
+		m := make(map[string]any, len(t))
+		for k, x := range t {
+			if s, ok := x.(string); ok && publicResultEmailKeys[k] && strings.TrimSpace(s) != "" {
+				m[k], changed = maskEmailForAdmin(s), true
+				continue
+			}
+			var c bool
+			m[k], c = maskEmailsDeep(x)
+			changed = changed || c
+		}
+		return m, changed
+	case []any:
+		l := make([]any, len(t))
+		for i, x := range t {
+			var c bool
+			l[i], c = maskEmailsDeep(x)
+			changed = changed || c
+		}
+		return l, changed
+	}
+	return v, false
+}
+
+// writePublicResult 写公开结果响应：没有邮箱字段时原样透传卡台的字节，有就写打码后的副本。
+func writePublicResult(c *gin.Context, st int, raw json.RawMessage, payload map[string]any) {
+	masked, changed := maskPublicResultEmails(payload)
+	if !changed && raw != nil {
+		proxyPublicJSON(c, st, raw)
+		return
+	}
+	c.JSON(st, masked)
 }
 
 // publicResultStatus 取公开 result 响应里的订单状态（顶层优先，其次 order.status）。

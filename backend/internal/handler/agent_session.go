@@ -2,6 +2,8 @@ package handler
 
 import (
 	"crypto/subtle"
+	"errors"
+	"log"
 	"net/http"
 	"sync"
 	"time"
@@ -132,6 +134,99 @@ func agentPendingSecretGet(nonce string) ([]byte, bool) {
 	return p.secret, ok
 }
 
+// 账号级动态码限流：先占名额再校验。「已失败 + 在途」达到上限就拒绝，所以并发也不会超过 5 次。
+const (
+	agentTOTPAcctMax  = 5
+	agentTOTPAcctLock = 15 * time.Minute
+)
+
+type agentTOTPGate struct {
+	fails, inflight int
+	windowStart     time.Time
+	lockedUntil     time.Time
+}
+
+var (
+	agentGateMu sync.Mutex
+	agentGates  = map[int64]*agentTOTPGate{}
+)
+
+// agentTOTPReserve 占一个名额，返回是否放行。
+func agentTOTPReserve(id int64) bool {
+	agentGateMu.Lock()
+	defer agentGateMu.Unlock()
+	now := agentNow()
+	for k, g := range agentGates { // 顺手清掉空闲过期的项
+		if g.inflight == 0 && !now.Before(g.lockedUntil) && now.Sub(g.windowStart) > agentTOTPAcctLock {
+			delete(agentGates, k)
+		}
+	}
+	g := agentGates[id]
+	if g == nil {
+		g = &agentTOTPGate{windowStart: now}
+		agentGates[id] = g
+	}
+	if now.Before(g.lockedUntil) {
+		return false
+	}
+	if !g.lockedUntil.IsZero() || now.Sub(g.windowStart) > agentTOTPAcctLock { // 锁或窗口已过：重新计
+		g.fails, g.lockedUntil, g.windowStart = 0, time.Time{}, now
+	}
+	if g.fails+g.inflight >= agentTOTPAcctMax {
+		return false
+	}
+	g.inflight++
+	return true
+}
+
+// agentTOTPSlot 是一次已占用的账号级名额。用 defer slot.release() 兜底，没结算就退回。
+type agentTOTPSlot struct {
+	id   int64
+	done bool
+}
+
+// fail 码错：占用转成一次失败。
+func (s *agentTOTPSlot) fail() {
+	if s.done {
+		return
+	}
+	s.done = true
+	agentGateMu.Lock()
+	defer agentGateMu.Unlock()
+	if g := agentGates[s.id]; g != nil {
+		now := agentNow()
+		g.inflight--
+		g.fails++
+		if g.fails >= agentTOTPAcctMax {
+			g.lockedUntil = now.Add(agentTOTPAcctLock)
+		}
+	}
+}
+
+// ok 码对：账号键清零。
+func (s *agentTOTPSlot) ok() {
+	if s.done {
+		return
+	}
+	s.done = true
+	agentGateMu.Lock()
+	delete(agentGates, s.id)
+	agentGateMu.Unlock()
+}
+
+// release 内部错误或没走到校验：退回名额，不计失败。
+func (s *agentTOTPSlot) release() {
+	if s.done {
+		return
+	}
+	s.done = true
+	agentGateMu.Lock()
+	defer agentGateMu.Unlock()
+	if g := agentGates[s.id]; g != nil && g.inflight > 0 {
+		g.inflight--
+	}
+}
+
 // agentError 统一的错误响应：error 是编号，message 是中文提示。
 func agentError(c *gin.Context, status int, code, message string) {
 	c.AbortWithStatusJSON(status, gin.H{"error": code, "message": message})
@@ -186,6 +281,11 @@ func AgentAuthMiddleware() gin.HandlerFunc {
 			}
 		}
 		a, err := db.GetAgent(c.Request.Context(), claims.AgentID)
+		if err != nil && !errors.Is(err, db.ErrAgentNotFound) {
+			log.Printf("[agent] 会话校验读库失败: %v", err)
+			agentError(c, http.StatusServiceUnavailable, "busy", "服务繁忙，请稍后再试")
+			return
+		}
 		if err != nil || a.Status != db.AgentActive || a.SessionVersion != claims.SV {
 			agentError(c, http.StatusUnauthorized, "unauthorized", "未登录或登录已过期")
 			return

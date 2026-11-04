@@ -132,6 +132,12 @@ func issueAgentPre(c *gin.Context, a db.Agent, stage string) {
 }
 
 // agentPreCheck 校验临时凭证：stage 对、账号启用、会话版本一致、动态码错误没超限。
+// agentDBBusy 读库失败：记日志（只写错误），返回 503，不是认证失败。
+func agentDBBusy(c *gin.Context, err error) {
+	log.Printf("[agent] 读库失败: %v", err)
+	agentError(c, http.StatusServiceUnavailable, "busy", "服务繁忙，请稍后再试")
+}
+
 func agentPreCheck(c *gin.Context, stage string) (agent.Claims, db.Agent, bool) {
 	gone := func() (agent.Claims, db.Agent, bool) {
 		agentError(c, http.StatusUnauthorized, "pre_expired", agentMsgPreGone)
@@ -149,6 +155,10 @@ func agentPreCheck(c *gin.Context, stage string) (agent.Claims, db.Agent, bool) 
 		return gone()
 	}
 	a, err := db.GetAgent(c.Request.Context(), cl.AgentID)
+	if err != nil && !errors.Is(err, db.ErrAgentNotFound) {
+		agentDBBusy(c, err)
+		return agent.Claims{}, db.Agent{}, false
+	}
 	if err != nil || a.Status != db.AgentActive || a.SessionVersion != cl.SV {
 		return gone()
 	}
@@ -187,8 +197,12 @@ func AgentPasswordInitial(c *gin.Context) {
 		return
 	}
 	sec, err := db.GetAgentSecrets(c.Request.Context(), a.ID)
-	if err != nil {
+	if errors.Is(err, db.ErrAgentNotFound) {
 		agentError(c, http.StatusUnauthorized, "pre_expired", agentMsgPreGone)
+		return
+	}
+	if err != nil {
+		agentDBBusy(c, err)
 		return
 	}
 	if msg, ok := checkNewAgentPassword(req.NewPassword, sec.PasswordHash); !ok {
@@ -253,24 +267,21 @@ func AgentTOTPSetup(c *gin.Context) {
 	})
 }
 
-// agentTOTPRateKey 是账号级的动态码限流键：不管换多少 IP、签多少张临时凭证，一个账号每 15 分钟最多错 5 次。
-func agentTOTPRateKey(id int64) string { return "agent-totp:" + strconv.FormatInt(id, 10) }
-
-// agentTOTPAllowed 密码限流键和账号级动态码限流键任一被锁就拒绝，并写 429。
-func agentTOTPAllowed(c *gin.Context, a db.Agent) bool {
+// agentTOTPAllowed 先查密码限流键，再占账号级动态码名额；任一不通过就写 429。
+// 放行时返回名额，调用方必须 defer slot.release()，并在校验后调 fail/ok。
+func agentTOTPAllowed(c *gin.Context, a db.Agent) (*agentTOTPSlot, bool) {
 	okPw, _ := loginAllowed(agentRateKey(c, a.Username))
-	okTOTP, _ := loginAllowed(agentTOTPRateKey(a.ID))
-	if okPw && okTOTP {
-		return true
+	if !okPw || !agentTOTPReserve(a.ID) {
+		agentError(c, http.StatusTooManyRequests, "rate_limited", agentMsgRate)
+		return nil, false
 	}
-	agentError(c, http.StatusTooManyRequests, "rate_limited", agentMsgRate)
-	return false
+	return &agentTOTPSlot{id: a.ID}, true
 }
 
-// agentCodeFailed 记一次动态码错误（调用时已经占了第 n 次机会）：账号级限流计一次；
-// 这张凭证的机会用完就作废，并给密码限流也计一次。
-func agentCodeFailed(c *gin.Context, a db.Agent, n int) {
-	loginFailed(agentTOTPRateKey(a.ID))
+// agentCodeFailed 记一次动态码错误（调用时已经占了这张凭证的第 n 次机会和账号级名额）：
+// 名额转成一次失败；这张凭证的机会用完就作废，并给密码限流也计一次。
+func agentCodeFailed(c *gin.Context, a db.Agent, slot *agentTOTPSlot, n int) {
+	slot.fail()
 	agentAuditRaw(c, a.Username, "agent_login_failed", "动态码错误")
 	if n >= agentTOTPMaxFails {
 		loginFailed(agentRateKey(c, a.Username))
@@ -291,7 +302,6 @@ func finishAgentLogin(c *gin.Context, cl agent.Claims, a db.Agent) {
 	}
 	agentForgetNonce(cl.Nonce)
 	loginSucceeded(agentRateKey(c, a.Username))
-	loginSucceeded(agentTOTPRateKey(a.ID))
 	setAgentSessionCookies(c, tok, csrf)
 	clearAgentPreCookie(c)
 	c.Set("agent_username", a.Username)
@@ -314,9 +324,11 @@ func AgentTOTPConfirm(c *gin.Context) {
 		agentError(c, http.StatusBadRequest, "invalid_request", agentBodyFailText)
 		return
 	}
-	if !agentTOTPAllowed(c, a) {
+	slot, ok := agentTOTPAllowed(c, a)
+	if !ok {
 		return
 	}
+	defer slot.release()
 	key, ok := agentMasterKey(c)
 	if !ok {
 		return
@@ -339,7 +351,7 @@ func AgentTOTPConfirm(c *gin.Context) {
 	}
 	step, good := agent.VerifyTOTP(secret, req.Code, agentNow(), sec.TOTPLastStep)
 	if !good {
-		agentCodeFailed(c, a, n)
+		agentCodeFailed(c, a, slot, n)
 		return
 	}
 	sealed, err := secretbox.Seal(key, agentTOTPAAD(a.ID), agent.EncodeSecret(secret))
@@ -359,6 +371,7 @@ func AgentTOTPConfirm(c *gin.Context) {
 		agentError(c, http.StatusServiceUnavailable, "busy", "服务繁忙，请稍后再试")
 		return
 	}
+	slot.ok()
 	c.Set("agent_username", a.Username)
 	auditAgent(c, "agent_totp_bind", "绑定两步验证")
 	finishAgentLogin(c, cl, a)
@@ -429,9 +442,11 @@ func AgentTOTPLogin(c *gin.Context) {
 		agentError(c, http.StatusBadRequest, "invalid_request", agentBodyFailText)
 		return
 	}
-	if !agentTOTPAllowed(c, a) {
+	slot, ok := agentTOTPAllowed(c, a)
+	if !ok {
 		return
 	}
+	defer slot.release()
 	n, allowed := agentTakeAttempt(cl.Nonce) // 先占次数再校验，并发的错码也不会超过上限
 	if !allowed {
 		agentError(c, http.StatusUnauthorized, "pre_expired", agentMsgPreGone)
@@ -441,8 +456,9 @@ func AgentTOTPLogin(c *gin.Context) {
 	case totpErrorSent:
 		agentRefundAttempt(cl.Nonce)
 	case totpRejected:
-		agentCodeFailed(c, a, n)
+		agentCodeFailed(c, a, slot, n)
 	default:
+		slot.ok()
 		finishAgentLogin(c, cl, a)
 	}
 }
@@ -456,8 +472,12 @@ func AgentLogout(c *gin.Context) {
 // AgentMe 当前代理商的资料和余额。
 func AgentMe(c *gin.Context) {
 	a, err := db.GetAgent(c.Request.Context(), agentID(c))
-	if err != nil {
+	if errors.Is(err, db.ErrAgentNotFound) {
 		agentError(c, http.StatusUnauthorized, "unauthorized", "未登录或登录已过期")
+		return
+	}
+	if err != nil {
+		agentDBBusy(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -481,17 +501,26 @@ func AgentChangePassword(c *gin.Context) {
 		return
 	}
 	a, err := db.GetAgent(c.Request.Context(), agentID(c))
-	if err != nil {
+	if errors.Is(err, db.ErrAgentNotFound) {
 		agentError(c, http.StatusUnauthorized, "unauthorized", "未登录或登录已过期")
+		return
+	}
+	if err != nil {
+		agentDBBusy(c, err)
 		return
 	}
 	sec, err := db.GetAgentSecrets(c.Request.Context(), a.ID)
-	if err != nil {
+	if errors.Is(err, db.ErrAgentNotFound) {
 		agentError(c, http.StatusUnauthorized, "unauthorized", "未登录或登录已过期")
 		return
 	}
+	if err != nil {
+		agentDBBusy(c, err)
+		return
+	}
 	key := agentRateKey(c, a.Username)
-	if !agentTOTPAllowed(c, a) {
+	if okPw, _ := loginAllowed(key); !okPw {
+		agentError(c, http.StatusTooManyRequests, "rate_limited", agentMsgRate)
 		return
 	}
 	if bcrypt.CompareHashAndPassword([]byte(sec.PasswordHash), []byte(req.CurrentPassword)) != nil {
@@ -505,12 +534,17 @@ func AgentChangePassword(c *gin.Context) {
 		agentError(c, http.StatusBadRequest, "weak_password", msg)
 		return
 	}
+	slot, ok := agentTOTPAllowed(c, a)
+	if !ok {
+		return
+	}
+	defer slot.release()
 	switch verifyAgentTOTP(c, a, req.Code) {
 	case totpErrorSent:
 		return
 	case totpRejected:
+		slot.fail()
 		loginFailed(key)
-		loginFailed(agentTOTPRateKey(a.ID))
 		auditAgent(c, "agent_password_change_failed", "动态码错误")
 		agentError(c, http.StatusBadRequest, "totp_invalid", agentMsgBadTOTP)
 		return
@@ -525,8 +559,8 @@ func AgentChangePassword(c *gin.Context) {
 		agentError(c, http.StatusInternalServerError, "internal", "服务异常，请稍后再试")
 		return
 	}
+	slot.ok()
 	loginSucceeded(key)
-	loginSucceeded(agentTOTPRateKey(a.ID))
 	auditAgent(c, "agent_password_change", "在账号页改密码")
 	clearAgentCookies(c)
 	c.JSON(http.StatusOK, gin.H{"ok": true})

@@ -464,19 +464,19 @@ func TestAgentTOTPConcurrentWrongCodes(t *testing.T) {
 	pre := e.startTOTPStage("alice", pw)
 	bad := wrongCode(agent.TOTPCode(secret, agent.TOTPStep(e.clock)))
 	var wg sync.WaitGroup
-	var mu sync.Mutex
-	counts := map[string]int{}
-	for i := 0; i < 10; i++ {
+	bodies := make([]string, 10)
+	for i := range bodies {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			w := e.send("POST", agentBase+"/auth/totp", `{"code":"`+bad+`"}`, liveCookiesOne(pre), nil)
-			mu.Lock()
-			counts[jsonField(t, w.Body.String(), "error")]++
-			mu.Unlock()
+			bodies[i] = e.send("POST", agentBase+"/auth/totp", `{"code":"`+bad+`"}`, liveCookiesOne(pre), nil).Body.String()
 		}()
 	}
 	wg.Wait()
+	counts := map[string]int{}
+	for _, b := range bodies {
+		counts[jsonField(t, b, "error")]++
+	}
 	if counts["totp_invalid"] != 5 {
 		t.Fatalf("应恰有 5 个走到校验: %v", counts)
 	}
@@ -662,5 +662,90 @@ func TestAgentChangePasswordFailureAudited(t *testing.T) {
 	var n int
 	if err := db.DB.QueryRow(`SELECT COUNT(*) FROM admin_audit_logs WHERE action = 'agent_password_change_failed'`).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("n=%d err=%v", n, err)
+	}
+}
+
+// 多张凭证、每张并发发多个错码：账号级上限是 5，走到校验的总数不能超过 5，其余 429。
+func TestAgentTOTPAccountLevelConcurrent(t *testing.T) {
+	e := newAgentEnv(t)
+	_, pw, secret := e.seedAgent("alice", e.seedTier("普通"))
+	e.clock = e.clock.Add(30 * time.Second)
+	bad := wrongCode(agent.TOTPCode(secret, agent.TOTPStep(e.clock)))
+	const tokens, per = 8, 5
+	pres := make([]*http.Cookie, tokens)
+	for i := range pres {
+		pres[i] = e.startTOTPStage("alice", pw)
+	}
+	bodies := make([]string, tokens*per)
+	var wg sync.WaitGroup
+	for i := range bodies {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			bodies[i] = e.send("POST", agentBase+"/auth/totp", `{"code":"`+bad+`"}`, liveCookiesOne(pres[i/per]), nil).Body.String()
+		}()
+	}
+	wg.Wait()
+	counts := map[string]int{}
+	for _, b := range bodies {
+		counts[jsonField(t, b, "error")]++
+	}
+	if counts["totp_invalid"] != 5 || counts["rate_limited"] != tokens*per-5 {
+		t.Fatalf("走到校验的应恰有 5 个，其余 429: %v", counts)
+	}
+}
+
+// 库里的密文坏了（内部错误）不占账号级名额：之后修好，正确的码仍能登录。
+func TestAgentTOTPInternalErrorKeepsAccountQuota(t *testing.T) {
+	e := newAgentEnv(t)
+	id, pw, secret := e.seedAgent("alice", e.seedTier("普通"))
+	e.clock = e.clock.Add(30 * time.Second)
+	good := agent.TOTPCode(secret, agent.TOTPStep(e.clock))
+	var sealed string
+	if err := db.DB.QueryRow(`SELECT totp_sealed FROM agents WHERE id = ?`, id).Scan(&sealed); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.DB.Exec(`UPDATE agents SET totp_sealed = 'garbage' WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	pre := e.startTOTPStage("alice", pw)
+	for i := 0; i < 6; i++ {
+		if w := e.send("POST", agentBase+"/auth/totp", `{"code":"`+good+`"}`, liveCookiesOne(pre), nil); w.Code != 500 {
+			t.Fatalf("第 %d 次: %d %s", i+1, w.Code, w.Body)
+		}
+	}
+	if _, err := db.DB.Exec(`UPDATE agents SET totp_sealed = ? WHERE id = ?`, sealed, id); err != nil {
+		t.Fatal(err)
+	}
+	if w := e.send("POST", agentBase+"/auth/totp", `{"code":"`+good+`"}`, liveCookiesOne(pre), nil); w.Code != 200 {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+}
+
+// 读库失败不是认证失败：返回 503 busy，而不是会把用户踢回登录页的 401。
+func TestAgentDBReadErrorIs503(t *testing.T) {
+	e := newAgentEnv(t)
+	_, pw, secret := e.seedAgent("alice", e.seedTier("普通"))
+	s := e.login("alice", pw, secret)
+	_, pre := e.setupStagePre("bob")
+	hash, _ := bcrypt.GenerateFromPassword([]byte("InitPass-12345"), bcrypt.MinCost)
+	if _, err := db.CreateAgent(context.Background(), db.NewAgent{Username: "newbie", PasswordHash: string(hash), TierID: e.seedTier("T2")}, e.clock); err != nil {
+		t.Fatal(err)
+	}
+	w := e.send("POST", agentBase+"/auth/login", `{"username":"newbie","password":"InitPass-12345"}`, nil, nil)
+	cpre := findCookie(liveCookies(w), agentPreCookie)
+	_ = pre
+	// 让只读 password_hash 等敏感字段的查询失败，其余查询不受影响
+	if _, err := db.DB.Exec(`ALTER TABLE agents RENAME COLUMN totp_last_step TO totp_last_step_x`); err != nil {
+		t.Skip("SQLite 不支持改列名: ", err)
+	}
+	w = e.send("POST", agentBase+"/auth/password/initial", `{"new_password":"BrandNew-Pass-9876"}`, liveCookiesOne(cpre), nil)
+	if w.Code != 503 || jsonField(t, w.Body.String(), "error") != "busy" {
+		t.Fatalf("initial: %d %s", w.Code, w.Body)
+	}
+	body := `{"current_password":"` + pw + `","new_password":"Another-Pass-4321","code":"000000"}`
+	w = e.agentDo(s, "POST", agentBase+"/me/password", body)
+	if w.Code != 503 || jsonField(t, w.Body.String(), "error") != "busy" {
+		t.Fatalf("me/password: %d %s", w.Code, w.Body)
 	}
 }

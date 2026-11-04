@@ -29,6 +29,9 @@ func resetAgentAuthState() {
 	agentPending = map[string]agentPendingSecret{}
 	agentTOTPFails = map[string]agentFailCount{}
 	agentStateMu.Unlock()
+	agentGateMu.Lock()
+	agentGates = map[int64]*agentTOTPGate{}
+	agentGateMu.Unlock()
 	loginMu.Lock()
 	loginAttempts = make(map[string]*loginAttempt)
 	loginMu.Unlock()

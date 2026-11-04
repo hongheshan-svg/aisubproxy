@@ -427,8 +427,9 @@ func TestLookupKeepsEmailAndStatusAfterClear(t *testing.T) {
 		t.Fatal(err)
 	}
 	after := lookupOneCDK(context.Background(), cdkSessCode, "")
-	if after.AccountEmail != cdkSessEmail {
-		t.Fatalf("清空后邮箱应还在: %+v", after)
+	// 售后查询公共层一律给打码后的邮箱（有意的行为变化：以前这里给完整邮箱）
+	if after.AccountEmail != "bu***@example.com" {
+		t.Fatalf("清空后邮箱应还在（打码）: %+v", after)
 	}
 	if before.Status != after.Status || before.Used != after.Used || before.CanResubmit != after.CanResubmit {
 		t.Fatalf("清空前后状态不应变化: %+v -> %+v", before, after)

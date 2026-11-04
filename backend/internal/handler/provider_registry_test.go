@@ -413,8 +413,8 @@ func TestTestCardPublicFlowCarriesProviderFields(t *testing.T) {
 	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "该服务商不支持宽限期处理") {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}
-	if m := localJSON(t, e.do("GET", "/lookup/cdk?code=TU-AAAA-BBBB-CCCC", "")); m["status"] != "unknown" {
-		t.Fatalf("没实现查询能力的上游按未找到: %v", m)
+	if m := localJSON(t, e.do("GET", "/lookup/cdk?code=TU-AAAA-BBBB-CCCC", "")); m["status"] != "unsupported" {
+		t.Fatalf("没实现查询能力的上游按暂不支持在线查询: %v", m)
 	}
 	if e.zovo.count() != 0 {
 		t.Fatalf("不应发往卡台: %v", e.zovo.paths)

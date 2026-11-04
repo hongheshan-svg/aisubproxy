@@ -531,16 +531,17 @@ func maskEmailForAdmin(em string) string {
 	}
 	at := strings.LastIndex(em, "@")
 	if at <= 0 {
-		if len(em) <= 3 {
+		r := []rune(em)
+		if len(r) <= 3 {
 			return em
 		}
-		return em[:2] + "***"
+		return string(r[:2]) + "***"
 	}
-	local := em[:at]
+	local := []rune(em[:at]) // 按字符截，中文等多字节的本地部分不会截出乱码
 	if len(local) > 2 {
 		local = local[:2]
 	}
-	return local + "***" + em[at:]
+	return string(local) + "***" + em[at:]
 }
 
 func adminName(c *gin.Context) string {

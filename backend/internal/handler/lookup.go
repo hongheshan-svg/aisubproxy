@@ -15,7 +15,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
-	"github.com/tuzi/cdk-recharge-system/internal/provider"
 	"github.com/tuzi/cdk-recharge-system/internal/safego"
 )
 
@@ -23,16 +22,27 @@ import (
 const lookupBatchMax = 100
 const lookupBatchWorkers = 4
 
+// cdkLookupResult 是查询接口每张码的结果。字段是白名单：只增不删，新增字段要想清楚能不能给用户看。
 type cdkLookupResult struct {
-	CDKCode      string  `json:"cdk_code"`
-	Status       string  `json:"status"` // unused | used | failed | disabled | expired | processing | unknown
-	Used         bool    `json:"used"`
-	CanResubmit  bool    `json:"can_resubmit"`
-	AccountEmail string  `json:"account_email,omitempty"`
-	Plan         string  `json:"plan,omitempty"`
-	UsedAt       *string `json:"used_at,omitempty"`
-	Notes        string  `json:"notes,omitempty"`
-	Message      string  `json:"message"`
+	CDKCode         string             `json:"cdk_code"`
+	Status          string             `json:"status"` // unused | used | failed | disabled | expired | processing | replaced | unsupported | unknown
+	Used            bool               `json:"used"`
+	CanResubmit     bool               `json:"can_resubmit"`
+	AccountEmail    string             `json:"account_email,omitempty"` // 一律打码
+	Plan            string             `json:"plan,omitempty"`
+	UsedAt          *string            `json:"used_at,omitempty"`
+	Notes           string             `json:"notes,omitempty"` // 清洗后的服务商原文，同 provider_note
+	Message         string             `json:"message"`
+	PlanKind        string             `json:"plan_kind,omitempty"`
+	ExpiresAt       *string            `json:"expires_at,omitempty"` // RFC3339 UTC
+	Renewal         string             `json:"renewal,omitempty"`
+	Guide           string             `json:"guide,omitempty"`
+	ProviderNote    string             `json:"provider_note,omitempty"`
+	Replacement     *lookupReplacement `json:"replacement,omitempty"`
+	ReplacedUnknown bool               `json:"replaced_unknown,omitempty"`
+
+	// queryFailed：服务商查询出错（不是找不到）。单条接口据此回 200 和「暂时查不到」，不回 404。
+	queryFailed bool `json:"-"`
 }
 
 // LookupCDKStatus GET /api/v1/lookup/cdk?code=  或兼容 ?cdk_code=
@@ -48,7 +58,7 @@ func LookupCDKStatus(c *gin.Context) {
 	}
 
 	resp := lookupOneCDK(c.Request.Context(), code, deviceFrom(c))
-	if resp.Status == "unknown" {
+	if resp.Status == "unknown" && !resp.queryFailed {
 		c.JSON(http.StatusNotFound, gin.H{
 			"error":    "未找到该卡密记录",
 			"cdk_code": code,
@@ -92,7 +102,7 @@ func LookupCDKStatusBatch(c *gin.Context) {
 	device := deviceFrom(c)
 	for i, code := range codes {
 		// 先放一个「查询出错」的结果：子协程 panic 时（safego 兜住）这一条就是它，不会是空记录
-		results[i] = cdkLookupResult{CDKCode: code, Status: "unknown", Message: "查询出错，请稍后再试"}
+		results[i] = cdkLookupResult{CDKCode: code, Status: "unknown", Message: afterSaleUnknownText, queryFailed: true}
 		wg.Add(1)
 		safego.Go("批量查询卡密", func() {
 			defer wg.Done()
@@ -154,21 +164,9 @@ func applyLookupFailure(resp *cdkLookupResult, notes string, reusable bool) {
 	}
 }
 
-// lookupOneCDK 查一张码：按码分派，供卡型查本地，上游型交给它的查询能力，没有这个能力的按「未找到」。
+// lookupOneCDK 查一张码，交给售后查询公共层（见 aftersale.go）。
 func lookupOneCDK(ctx context.Context, code, deviceID string) cdkLookupResult {
-	p, err := provider.ForCode(code)
-	if err != nil {
-		return cdkLookupResult{CDKCode: code, Status: "unknown", Message: "未找到该卡密记录"}
-	}
-	if cs, ok := provider.AsCardSupply(p); ok {
-		return localCDKLookup(ctx, cs, code)
-	}
-	if a, ok := upstreamAdapterFor(p.Name()); ok {
-		if l, ok := a.(upstreamLookuper); ok {
-			return l.Lookup(ctx, code, deviceID)
-		}
-	}
-	return cdkLookupResult{CDKCode: code, Status: "unknown", Message: "未找到该卡密记录"}
+	return lookupAfterSale(ctx, code, deviceID)
 }
 
 // zovoCardLookup 是 ZovoCard 的卡密查询：本站的码表、绑定和卡台订单。

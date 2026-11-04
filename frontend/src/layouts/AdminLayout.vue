@@ -277,7 +277,10 @@ async function submitPwd() {
       return
     }
     pwdOpen.value = false
-    dialog.toast('密码已修改', 'ok')
+    // 改密后服务端已作废所有旧会话（含本机）并清了 cookie：本地也退出，回登录页用新密码登录
+    auth.logout()
+    dialog.toast('密码已修改，请用新密码重新登录', 'ok')
+    router.push('/ops/login')
   } finally {
     pwdLoading.value = false
   }

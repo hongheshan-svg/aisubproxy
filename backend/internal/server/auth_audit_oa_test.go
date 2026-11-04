@@ -207,3 +207,61 @@ func TestOASetupResponseHasNoToken(t *testing.T) {
 		t.Fatalf("安装后的 cookie 应能访问 /me，实际 %d", me.Code)
 	}
 }
+
+// A-2：改密码后，改密前签发的所有会话（包括别处登录的）立刻失效；改密成功同时清掉本机 cookie。
+func TestOAChangePasswordRevokesOldSessions(t *testing.T) {
+	r := oaRouter(t)
+	oaCreateAdmin(t, "oa_chpwd")
+	a := oaLogin(t, r, "198.51.100.3", "oa_chpwd", oaPassword)
+	b := oaLogin(t, r, "198.51.100.4", "oa_chpwd", oaPassword) // 另一处（例如入侵者）的会话
+
+	const newPwd = "An0therStr0ngPass"
+	w := oaDo(r, oaReq{method: "POST", path: "/api/v1/auth/admin/change-password", cookies: a, header: oaCSRF(a),
+		body: fmt.Sprintf(`{"old_password":%q,"new_password":%q}`, oaPassword, newPwd)})
+	if w.Code != http.StatusOK {
+		t.Fatalf("改密应 200，实际 %d：%s", w.Code, w.Body.String())
+	}
+	if c := oaCookie(w.Result().Cookies(), "auth_token"); c == nil || c.MaxAge >= 0 {
+		t.Fatalf("改密成功应清掉本机 auth_token：%+v", c)
+	}
+	for name, cs := range map[string][]*http.Cookie{"本机旧会话": a, "别处会话": b} {
+		if me := oaDo(r, oaReq{method: "GET", path: "/api/v1/auth/admin/me", cookies: cs}); me.Code != http.StatusUnauthorized {
+			t.Errorf("%s改密后应 401，实际 %d", name, me.Code)
+		}
+	}
+	// Bearer 头同样作废
+	tok := oaCookie(b, "auth_token").Value
+	if me := oaDo(r, oaReq{method: "GET", path: "/api/v1/auth/admin/me", header: map[string]string{"Authorization": "Bearer " + tok}}); me.Code != http.StatusUnauthorized {
+		t.Errorf("改密前的 Bearer 令牌应 401，实际 %d", me.Code)
+	}
+	// 新密码重新登录可用
+	c := oaLogin(t, r, "198.51.100.3", "oa_chpwd", newPwd)
+	if me := oaDo(r, oaReq{method: "GET", path: "/api/v1/auth/admin/me", cookies: c}); me.Code != http.StatusOK {
+		t.Fatalf("新会话应 200，实际 %d", me.Code)
+	}
+}
+
+// A-2：账号被禁用后，已签发的令牌立刻失效；账号被删也一样。
+func TestOADisabledOrDeletedAdminTokenRejected(t *testing.T) {
+	r := oaRouter(t)
+	oaCreateAdmin(t, "oa_disable")
+	cs := oaLogin(t, r, "198.51.100.5", "oa_disable", oaPassword)
+	if _, err := db.DB.Exec(`UPDATE admin_users SET is_active = 0 WHERE username = 'oa_disable'`); err != nil {
+		t.Fatal(err)
+	}
+	if me := oaDo(r, oaReq{method: "GET", path: "/api/v1/auth/admin/me", cookies: cs}); me.Code != http.StatusUnauthorized {
+		t.Fatalf("禁用后应 401，实际 %d", me.Code)
+	}
+	if _, err := db.DB.Exec(`UPDATE admin_users SET is_active = 1 WHERE username = 'oa_disable'`); err != nil {
+		t.Fatal(err)
+	}
+	if me := oaDo(r, oaReq{method: "GET", path: "/api/v1/auth/admin/me", cookies: cs}); me.Code != http.StatusOK {
+		t.Fatalf("重新启用后同一令牌应恢复 200，实际 %d", me.Code)
+	}
+	if _, err := db.DB.Exec(`DELETE FROM admin_users WHERE username = 'oa_disable'`); err != nil {
+		t.Fatal(err)
+	}
+	if me := oaDo(r, oaReq{method: "GET", path: "/api/v1/admin/settings", cookies: cs}); me.Code != http.StatusUnauthorized {
+		t.Fatalf("账号删除后应 401，实际 %d", me.Code)
+	}
+}

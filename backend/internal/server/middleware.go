@@ -2,6 +2,9 @@ package server
 
 import (
 	"crypto/subtle"
+	"database/sql"
+	"errors"
+	"log"
 	"net/http"
 	"os"
 	"strings"
@@ -10,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/tuzi/cdk-recharge-system/internal/auth"
+	"github.com/tuzi/cdk-recharge-system/internal/db"
 )
 
 // allowedOrigins 来自环境变量 CORS_ALLOWED_ORIGINS（逗号分隔），默认仅本地开发端口。
@@ -120,6 +124,21 @@ func JWTAuthMiddleware() gin.HandlerFunc {
 		})
 		if err != nil || !token.Valid {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token"})
+			c.Abort()
+			return
+		}
+
+		// 每个请求都查库核对令牌版本号和账号状态（审计 A-2）：改密码后旧令牌立刻作废，禁用、删除账号立刻生效。
+		// SQLite 本地主键查询，代价可以接受。
+		version, active, err := db.AdminTokenState(claims.UserID)
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && (!active || version != claims.TokenVersion)) {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token"})
+			c.Abort()
+			return
+		}
+		if err != nil {
+			log.Printf("鉴权查询管理员状态失败: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "系统错误"})
 			c.Abort()
 			return
 		}

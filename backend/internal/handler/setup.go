@@ -189,7 +189,7 @@ func SetupBootstrap(c *gin.Context) {
 		return
 	}
 
-	sess, err := issueAdminSession(c, userID, username, "System Admin")
+	sess, err := issueAdminSession(c, userID, username, "System Admin", 0) // 新建账号的版本号是 0
 	if err != nil {
 		log.Printf("setup bootstrap session error: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "setup failed"})

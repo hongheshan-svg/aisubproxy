@@ -144,7 +144,8 @@ func createTables() error {
 			display_name TEXT,
 			is_active INTEGER DEFAULT 1,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			token_version INTEGER NOT NULL DEFAULT 0
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_admin_users_username ON admin_users(username)`,
 
@@ -293,6 +294,9 @@ func createTables() error {
 	if err := migrateCardplatformCDKRegionCol(); err != nil {
 		return fmt.Errorf("migrate cardplatform CDK region: %w", err)
 	}
+	if err := migrateAdminTokenVersion(); err != nil {
+		return fmt.Errorf("migrate admin token version: %w", err)
+	}
 	if err := ensureDefaultAdmin(); err != nil {
 		return err
 	}
@@ -340,6 +344,27 @@ func migrateCardplatformCDKStatusCol() error {
 	return err
 }
 
+// migrateAdminTokenVersion 给旧库的管理员表补令牌版本号（审计 A-2）。可重复执行：列已在就跳过。
+// 版本号签进 JWT，改密码时加一，之前签发的令牌随之作废；老账号从 0 开始，升级前签发的令牌（不带版本号，按 0 算）照常可用到过期。
+func migrateAdminTokenVersion() error {
+	var n int
+	if err := DB.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('admin_users') WHERE name='token_version'`).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	_, err := DB.Exec(`ALTER TABLE admin_users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0`)
+	return err
+}
+
+// AdminTokenState 返回管理员当前的令牌版本号和是否启用，鉴权中间件每个请求查一次。账号不存在返回 sql.ErrNoRows。
+func AdminTokenState(id int64) (version int64, active bool, err error) {
+	var isActive int
+	err = DB.QueryRow(`SELECT token_version, COALESCE(is_active, 0) FROM admin_users WHERE id = ?`, id).Scan(&version, &isActive)
+	return version, isActive == 1, err
+}
+
 // legacySHA256 是旧的（不安全）哈希算法，仅用于兼容历史数据并在登录时升级为 bcrypt。
 func legacySHA256(password string) string {
 	hash := sha256.Sum256([]byte(password))
@@ -384,13 +409,13 @@ func VerifyAdminPassword(stored, plain string) (bool, string) {
 	return false, ""
 }
 
-// SetAdminPassword 更新指定管理员的密码（bcrypt）。
+// SetAdminPassword 更新指定管理员的密码（bcrypt），同时令牌版本号加一：改密前签发的所有令牌立刻失效。
 func SetAdminPassword(username, newPlain string) error {
 	hash, err := HashAdminPassword(newPlain)
 	if err != nil {
 		return err
 	}
-	_, err = DB.Exec(`UPDATE admin_users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE username = ?`, hash, username)
+	_, err = DB.Exec(`UPDATE admin_users SET password_hash = ?, token_version = token_version + 1, updated_at = CURRENT_TIMESTAMP WHERE username = ?`, hash, username)
 	return err
 }
 

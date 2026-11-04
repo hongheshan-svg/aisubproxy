@@ -67,12 +67,13 @@ func AdminLogin(c *gin.Context) {
 	var passwordHash string
 	var displayName sql.NullString
 	var isActive int
+	var tokenVersion int64
 
 	err := db.DB.QueryRow(`
-		SELECT id, username, password_hash, display_name, is_active
+		SELECT id, username, password_hash, display_name, is_active, token_version
 		FROM admin_users
 		WHERE username = ?
-	`, strings.TrimSpace(req.Username)).Scan(&userID, &username, &passwordHash, &displayName, &isActive)
+	`, strings.TrimSpace(req.Username)).Scan(&userID, &username, &passwordHash, &displayName, &isActive, &tokenVersion)
 	if err == sql.ErrNoRows {
 		loginFailed(rateKey)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户名或密码错误"})
@@ -104,7 +105,7 @@ func AdminLogin(c *gin.Context) {
 	if displayName.Valid && strings.TrimSpace(displayName.String) != "" {
 		name = displayName.String
 	}
-	sess, err := issueAdminSession(c, userID, username, name)
+	sess, err := issueAdminSession(c, userID, username, name, tokenVersion)
 	if err != nil {
 		log.Printf("admin login session error: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "系统错误"})
@@ -116,12 +117,14 @@ func AdminLogin(c *gin.Context) {
 // issueAdminSession 签发 JWT + HttpOnly cookie，供登录与安装向导共用。
 // 令牌只放在 HttpOnly cookie 里，不进响应 JSON：前端 JS 拿不到，XSS 偷不走（审计 A-1）。
 // 脚本和命令行仍可用 Authorization: Bearer，令牌另行签发，不经浏览器。
-func issueAdminSession(c *gin.Context, userID int64, username, displayName string) (gin.H, error) {
+// tokenVersion 是校验密码时一并读出的令牌版本号，签进令牌，之后改密码就会让它作废（审计 A-2）。
+func issueAdminSession(c *gin.Context, userID int64, username, displayName string, tokenVersion int64) (gin.H, error) {
 	expiration := time.Now().Add(24 * time.Hour)
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, auth.CustomClaims{
-		UserID:   userID,
-		IsAdmin:  true,
-		Username: username,
+		UserID:       userID,
+		IsAdmin:      true,
+		Username:     username,
+		TokenVersion: tokenVersion,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(expiration),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -223,6 +226,8 @@ func AdminChangePassword(c *gin.Context) {
 	}
 
 	auditAdmin(c, "change_password", "")
+	// 版本号已加一，包括本机在内的所有旧会话都已作废；顺手清掉本机 cookie
+	clearAuthCookies(c)
 	c.JSON(http.StatusOK, gin.H{"message": "密码已修改，请用新密码重新登录"})
 }
 

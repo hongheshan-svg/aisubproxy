@@ -24,7 +24,8 @@ var (
 )
 
 // failLimiter 是按键计失败次数的内存限流表：窗口内失败到上限就锁定一个窗口长的时间。
-// 未鉴权的请求就能往表里写键（随机用户名、换 IP），所以表有上限：满了再来新键就淘汰最久没有失败的那个；
+// 未鉴权的请求就能往表里写键（随机用户名、换 IP），所以表有上限：满了再来新键就淘汰最久没有失败、且不在锁定中的那个；
+// 锁定中的键绝不淘汰（否则灌一批随机用户名的失败就能解除别人的锁定），全在锁定中时新键不记录。
 // 窗口和锁都过了的键在记失败时顺带清掉（最多每分钟扫一次）。不另起清理协程。
 type failLimiter struct {
 	maxFailures int
@@ -90,10 +91,9 @@ func (l *failLimiter) failed(key string) {
 		e = nil
 	}
 	if e == nil {
-		if len(l.entries) >= l.maxKeys {
-			if oldest := l.order.Front(); oldest != nil {
-				l.remove(oldest.Value.(*failEntry))
-			}
+		if len(l.entries) >= l.maxKeys && !l.evictUnlocked(now) {
+			// 表满且全是锁定中的键：这次失败不记录，也不挤掉任何锁定键（审计 auth N-1）
+			return
 		}
 		e = &failEntry{key: key, windowStart: now}
 		e.elem = l.order.PushBack(e)
@@ -105,6 +105,17 @@ func (l *failLimiter) failed(key string) {
 	if e.failures >= l.maxFailures {
 		e.lockedUntil = now.Add(l.window)
 	}
+}
+
+// evictUnlocked 表满时腾出一个位置：从最久没失败的键往后找，淘汰第一个不在锁定中的键。全在锁定中时返回 false。
+func (l *failLimiter) evictUnlocked(now time.Time) bool {
+	for el := l.order.Front(); el != nil; el = el.Next() {
+		if e := el.Value.(*failEntry); !now.Before(e.lockedUntil) {
+			l.remove(e)
+			return true
+		}
+	}
+	return false
 }
 
 // succeeded 成功后清除该 key 的失败计数。

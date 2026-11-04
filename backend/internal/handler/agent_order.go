@@ -118,6 +118,69 @@ func resetAgentOrderRate() {
 	agentOrderRateMu.Unlock()
 }
 
+// ---- 同一个请求号串行 ----
+
+type agentOrderKeyLock struct {
+	ch   chan struct{}
+	refs int // 持有者加等待者；归零时从表里删掉
+}
+
+var (
+	agentOrderLocksMu sync.Mutex
+	agentOrderLocks   = map[string]*agentOrderKeyLock{}
+)
+
+func agentOrderLockKey(agentID int64, requestNo string) string {
+	return strconv.FormatInt(agentID, 10) + "|" + requestNo
+}
+
+// agentOrderLock 拿「代理商 + 请求号」的锁（裁定 P26）。测试可以替换成空锁，模拟多进程时锁不共享。
+var agentOrderLock = lockAgentOrderRequest
+
+// lockAgentOrderRequest 让同一个代理商的同一个请求号在进程内串行通过「查请求号 → 商品检查 → 生成码 → 建单」：
+// 否则请求 A 已过检查、还没提交时，管理员恰好改价、下架或熔断，同号重试 B 会拿到明确失败，
+// 前端随后换新请求号重下，而 A 照常扣款，用户就买了两单。
+// 等锁时请求被取消返回 ok=false。release 可以重复调用；没人持有也没人等待时这一项从表里删掉，表不会越长越大。
+// 多进程部署时锁不共享，靠 (agent_id, request_no) 唯一约束兜底（撞上后回到查请求号重放）。
+func lockAgentOrderRequest(ctx context.Context, agentID int64, requestNo string) (release func(), ok bool) {
+	k := agentOrderLockKey(agentID, requestNo)
+	agentOrderLocksMu.Lock()
+	l := agentOrderLocks[k]
+	if l == nil {
+		l = &agentOrderKeyLock{ch: make(chan struct{}, 1)}
+		agentOrderLocks[k] = l
+	}
+	l.refs++
+	agentOrderLocksMu.Unlock()
+	drop := func() {
+		agentOrderLocksMu.Lock()
+		l.refs--
+		if l.refs == 0 {
+			delete(agentOrderLocks, k)
+		}
+		agentOrderLocksMu.Unlock()
+	}
+	select {
+	case l.ch <- struct{}{}:
+	case <-ctx.Done():
+		drop()
+		return nil, false
+	}
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			<-l.ch
+			drop()
+		})
+	}, true
+}
+
+// 测试钩子，生产环境都是 nil。
+var (
+	agentOrderPausePoint func() // 第 5 步检查全部通过之后、生成码之前
+	agentOrderCollided   func() // 建单撞上同号唯一约束、转回第 4 步之前
+)
+
 // ---- 取回完整码 ----
 
 // exportedCode 是交给代理商的一张完整码。解不开的码 Code 为空串、Unavailable 为 true。
@@ -127,12 +190,15 @@ type exportedCode struct {
 	Unavailable bool   `json:"unavailable,omitempty"`
 }
 
-// errAgentCodesNoKey 主密钥不可用，一张码也解不开：调用方返回 503 maintenance，而不是把每张码都标成取不回。
-var errAgentCodesNoKey = errors.New("主密钥不可用")
+// agentCodesNoKeyError 主密钥不可用，一张码也解不开：调用方返回 503 maintenance，而不是把每张码都标成取不回。
+// kind 是 secretErrKind 给出的错误类型。
+type agentCodesNoKeyError struct{ kind string }
+
+func (e *agentCodesNoKeyError) Error() string { return "主密钥不可用: " + e.kind }
 
 // openAgentCodes 取这个代理商名下这些码的完整码。只读 LocalCDKSealedForAgent（条件固定带 agent_id，别人的 ID 不会返回），
 // 按 id 升序逐张解密并核对哈希，失败的标 Unavailable，其余照常；有失败时告警一次，告警只写码的 ID。
-// 读库失败原样返回错误（调用方 503 busy）；主密钥不可用返回包着 errAgentCodesNoKey 的错误（调用方 503 maintenance）。
+// 读库失败原样返回错误（调用方 503 busy）；主密钥不可用返回 *agentCodesNoKeyError（调用方 503 maintenance）。
 func openAgentCodes(ctx context.Context, agentID int64, ids []int64) ([]exportedCode, error) {
 	rows, err := db.LocalCDKSealedForAgent(ctx, agentID, ids)
 	if err != nil {
@@ -144,7 +210,7 @@ func openAgentCodes(ctx context.Context, agentID int64, ids []int64) ([]exported
 	}
 	key, err := secretbox.LoadKey()
 	if err != nil {
-		return nil, fmt.Errorf("%w: %s", errAgentCodesNoKey, secretErrKind(err))
+		return nil, &agentCodesNoKeyError{kind: secretErrKind(err)}
 	}
 	var bad []int64
 	for _, r := range rows {
@@ -228,8 +294,9 @@ func agentOrderCodes(c *gin.Context, o db.AgentOrder, maintMsg string) ([]export
 		log.Printf("[agent-order] 订单 %d 现有 %d 张码，和订单数量 %d 不一致", o.ID, len(ids), o.Quantity)
 	}
 	codes, err := openAgentCodes(ctx, agentID(c), ids)
-	if errors.Is(err, errAgentCodesNoKey) {
-		agentOrderNoKey(c, err.Error(), maintMsg)
+	var noKey *agentCodesNoKeyError
+	if errors.As(err, &noKey) {
+		agentOrderNoKey(c, noKey.kind, maintMsg)
 		return nil, false
 	}
 	if err != nil {
@@ -242,7 +309,8 @@ func agentOrderCodes(c *gin.Context, o db.AgentOrder, maintMsg string) ([]export
 // ---- 商品 ----
 
 // agentProductReady 这个商品现在能不能出码：服务商是供卡型、支持这个套餐，并且就绪检查（含发码硬门槛）全部通过。
-// 和后台发码共用 checkCardSupply。
+// 和后台发码共用 checkCardSupply，但按公开接口检查（裁定 P25）：代理商在外部，商品列表和下单都不能每次实时同步
+// MarsWallex 主钱包，30 秒内只同步一次、不跟请求的 ctx，和客户兑换码一样。
 func agentProductReady(ctx context.Context, p db.AgentProduct) (provider.CardSupply, bool) {
 	pr, ok := provider.Get(provider.Name(p.Provider))
 	if !ok {
@@ -252,7 +320,7 @@ func agentProductReady(ctx context.Context, p db.AgentProduct) (provider.CardSup
 	if !ok || !cs.Supports(p.Product, p.PlanKey) {
 		return nil, false
 	}
-	return cs, checkCardSupply(ctx, cs, p.PlanKey, p.Region, false).Readiness.OK
+	return cs, checkCardSupply(ctx, cs, p.PlanKey, p.Region, true).Readiness.OK
 }
 
 // AgentListProducts GET /products：这个代理商能买的商品（已上架、取得到价格），每项带上现在能否出码。
@@ -357,6 +425,8 @@ func agentOrderReplay(c *gin.Context, req agentOrderRequest) bool {
 //  5. 商品已上架、取得到价格、价格和代理商确认时看到的一致、现在能出码；
 //  6. 生成码并逐张加密；7. 一个事务里建单、扣款、写流水、写码；8. 返回码，写审计。
 //
+// 第 4–7 步按「代理商 + 请求号」在进程内串行（见 lockAgentOrderRequest）。
+//
 // 1–6 步的拒绝都在写库之前，第 7 步失败整体回滚，所以除了成功和重放，任何响应都没有扣款、没有建单：
 // 前端遇到明确失败可以换新请求号重下，遇到限流可以保留原请求号重试。
 func AgentPlaceOrder(c *gin.Context) {
@@ -373,6 +443,13 @@ func AgentPlaceOrder(c *gin.Context) {
 		agentOrderNoKey(c, secretErrKind(err), agentMsgOrderMaint)
 		return
 	}
+	// 第 4–7 步同号串行：锁在查请求号之前拿，建单返回后放（提前返回由 defer 放）
+	release, locked := agentOrderLock(c.Request.Context(), aid, req.RequestNo)
+	if !locked {
+		agentOrderBusy(c, "等同号请求", c.Request.Context().Err())
+		return
+	}
+	defer release()
 	if agentOrderReplay(c, req) {
 		return
 	}
@@ -408,6 +485,9 @@ func AgentPlaceOrder(c *gin.Context) {
 		agentError(c, http.StatusConflict, "product_not_ready", agentMsgNotReady)
 		return
 	}
+	if agentOrderPausePoint != nil {
+		agentOrderPausePoint()
+	}
 
 	issuedBy := "agent:" + user
 	plain := make([]string, 0, req.Quantity)
@@ -434,9 +514,13 @@ func AgentPlaceOrder(c *gin.Context) {
 	ord, ids, err := db.CreateAgentOrder(ctx, db.NewAgentOrder{
 		AgentID: aid, Product: p, UnitPriceCents: price, RequestNo: req.RequestNo, Note: req.Note, Operator: issuedBy, Codes: rows,
 	}, agentNow())
+	release()
 	var short *db.InsufficientBalanceError
 	switch {
 	case errors.Is(err, db.ErrAgentOrderExists): // 同一个请求号的并发请求先提交了：回到第 4 步
+		if agentOrderCollided != nil {
+			agentOrderCollided()
+		}
 		if !agentOrderReplay(c, req) {
 			agentOrderBusy(c, "下单", err)
 		}

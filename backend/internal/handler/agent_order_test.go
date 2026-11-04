@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -443,10 +444,8 @@ func TestAgentOrderUnpricedProduct(t *testing.T) {
 	f.expectRefused(f.s, f.aid, orderReq("no-such-product", 1, "", "req-unpriced-3", 500), 404, "product_unavailable")
 }
 
-func TestAgentOrderConcurrentSameRequestNo(t *testing.T) {
-	f := newOrderFix(t, newAgentEnvFileDB(t), true)
-	req := orderReq("mw-plus-ph", 2, "", "req-concurrent-1", 500)
-	const n = 8
+// postConcurrently 让 n 个 goroutine 同时发同一个下单请求。
+func (f *orderFix) postConcurrently(n int, req map[string]any) []*httptest.ResponseRecorder {
 	res := make([]*httptest.ResponseRecorder, n)
 	var wg sync.WaitGroup
 	start := make(chan struct{})
@@ -460,7 +459,13 @@ func TestAgentOrderConcurrentSameRequestNo(t *testing.T) {
 	}
 	close(start)
 	wg.Wait()
+	return res
+}
 
+// checkOneOrder 要求同一个请求号的这些响应全部 200、码完全相同、恰好 1 个新建，并且只扣了一次钱、只有一笔订单。
+func (f *orderFix) checkOneOrder(res []*httptest.ResponseRecorder, qty int, total int64) {
+	t := f.t
+	t.Helper()
 	var first []orderCode
 	fresh := 0
 	for i, w := range res {
@@ -471,7 +476,7 @@ func TestAgentOrderConcurrentSameRequestNo(t *testing.T) {
 		if !r.Replayed {
 			fresh++
 		}
-		if len(r.Codes) != 2 {
+		if len(r.Codes) != qty {
 			t.Fatalf("第 %d 个请求的码: %+v", i, r.Codes)
 		}
 		if first == nil {
@@ -483,17 +488,181 @@ func TestAgentOrderConcurrentSameRequestNo(t *testing.T) {
 	if fresh != 1 {
 		t.Fatalf("应恰好 1 个请求新建订单: %d", fresh)
 	}
-	if b := balanceOf(t, f.aid); b != 0 {
-		t.Fatalf("只应扣一次: 余额 %d", b)
+	if n := countRows(t, `SELECT COUNT(*) FROM agent_ledger WHERE kind = 'purchase' AND agent_id = ? AND amount_cents = ?`, f.aid, -total); n != 1 {
+		t.Fatalf("应只扣一次: %d 条下单流水", n)
 	}
 	if c := countRows(t, `SELECT COUNT(*) FROM agent_orders`); c != 1 {
 		t.Fatalf("应只有 1 笔订单: %d", c)
 	}
-	if c := countRows(t, `SELECT COUNT(*) FROM agent_ledger WHERE kind = 'purchase'`); c != 1 {
-		t.Fatalf("应只有 1 条下单流水: %d", c)
+	if c := countRows(t, `SELECT COUNT(*) FROM local_cdks WHERE agent_id = ?`, f.aid); c != qty {
+		t.Fatalf("应只有 %d 张码: %d", qty, c)
 	}
-	if c := countRows(t, `SELECT COUNT(*) FROM local_cdks WHERE agent_id = ?`, f.aid); c != 2 {
-		t.Fatalf("应只有 2 张码: %d", c)
+}
+
+// agentOrderLockRefs 这个「代理商 + 请求号」的锁现在有几个持有者和等待者。
+func agentOrderLockRefs(agentID int64, requestNo string) int {
+	agentOrderLocksMu.Lock()
+	defer agentOrderLocksMu.Unlock()
+	if l := agentOrderLocks[agentOrderLockKey(agentID, requestNo)]; l != nil {
+		return l.refs
+	}
+	return 0
+}
+
+func agentOrderLockCount() int {
+	agentOrderLocksMu.Lock()
+	defer agentOrderLocksMu.Unlock()
+	return len(agentOrderLocks)
+}
+
+// 同一进程里同号请求按锁串行：只有第一个建单，其余都在第 4 步查到订单后重放，不会撞上唯一约束。
+func TestAgentOrderConcurrentSameRequestNo(t *testing.T) {
+	f := newOrderFix(t, newAgentEnvFileDB(t), true)
+	var collided atomic.Int32
+	agentOrderCollided = func() { collided.Add(1) }
+	t.Cleanup(func() { agentOrderCollided = nil })
+
+	f.checkOneOrder(f.postConcurrently(8, orderReq("mw-plus-ph", 2, "", "req-concurrent-1", 500)), 2, 1000)
+	if n := collided.Load(); n != 0 {
+		t.Fatalf("进程内同号请求应排队，不应撞唯一约束: %d 次", n)
+	}
+	if b := balanceOf(t, f.aid); b != 0 {
+		t.Fatalf("只应扣一次: 余额 %d", b)
+	}
+	if n := agentOrderLockCount(); n != 0 {
+		t.Fatalf("锁用完应回收: 还剩 %d 个", n)
+	}
+}
+
+// 锁不共享时（多进程）的兜底：8 个请求都过了第 5 步才一起放行，必然都没在第 4 步查到订单；
+// 只有 1 个建单成功，其余 7 个撞上唯一约束后回到第 4 步重放同一批码。
+func TestAgentOrderConcurrentCollisionFallback(t *testing.T) {
+	f := newOrderFix(t, newAgentEnvFileDB(t), true)
+	const n = 8
+	oldLock := agentOrderLock
+	agentOrderLock = func(context.Context, int64, string) (func(), bool) { return func() {}, true }
+	gate := make(chan struct{})
+	var arrived, collided atomic.Int32
+	agentOrderPausePoint = func() {
+		if arrived.Add(1) == n {
+			close(gate)
+		}
+		select {
+		case <-gate:
+		case <-time.After(10 * time.Second): // 有请求没走到这里时不卡死，由下面的断言报错
+		}
+	}
+	agentOrderCollided = func() { collided.Add(1) }
+	t.Cleanup(func() { agentOrderLock, agentOrderPausePoint, agentOrderCollided = oldLock, nil, nil })
+
+	f.checkOneOrder(f.postConcurrently(n, orderReq("mw-plus-ph", 2, "", "req-collide-1", 500)), 2, 1000)
+	if got := collided.Load(); got != n-1 {
+		t.Fatalf("应有 %d 个请求撞上唯一约束后重放: %d", n-1, got)
+	}
+	if b := balanceOf(t, f.aid); b != 0 {
+		t.Fatalf("只应扣一次: 余额 %d", b)
+	}
+}
+
+// 请求 A 已过第 5 步还没提交时，管理员改了价；同号重试 B 要等 A 提交后拿到重放，而不是 price_changed。
+func TestAgentOrderSameRequestNoWaitsForInflight(t *testing.T) {
+	f := newOrderFix(t, newAgentEnv(t), true)
+	const no = "req-inflight-1"
+	req := orderReq("mw-plus-ph", 2, "", no, 500)
+	reached, proceed := make(chan struct{}), make(chan struct{})
+	release := sync.OnceFunc(func() { close(proceed) })
+	var first atomic.Bool
+	agentOrderPausePoint = func() {
+		if first.CompareAndSwap(false, true) {
+			close(reached)
+			<-proceed
+		}
+	}
+	t.Cleanup(func() { release(); agentOrderPausePoint = nil })
+
+	var wa, wb *httptest.ResponseRecorder
+	doneA, doneB := make(chan struct{}), make(chan struct{})
+	go func() { defer close(doneA); wa = f.post(f.s, req) }()
+	select {
+	case <-reached:
+	case <-doneA:
+		t.Fatalf("A 没停在第 5 步之后: %d %s", wa.Code, wa.Body.String())
+	case <-time.After(10 * time.Second):
+		t.Fatal("A 没走到第 5 步之后")
+	}
+	f.setPrice(f.pid, 600) // A 已经按 500 通过检查
+	go func() { defer close(doneB); wb = f.post(f.s, req) }()
+	deadline := time.Now().Add(10 * time.Second)
+	for agentOrderLockRefs(f.aid, no) < 2 {
+		select {
+		case <-doneB:
+			release()
+			<-doneA
+			t.Fatalf("A 还没提交，同号的 B 就返回了: %d %s", wb.Code, wb.Body.String())
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("B 没有在等同号的锁")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	release()
+	<-doneA
+	<-doneB
+	if wa.Code != 200 || wb.Code != 200 {
+		t.Fatalf("A、B 都应 200: A %d %s / B %d %s", wa.Code, wa.Body.String(), wb.Code, wb.Body.String())
+	}
+	ra, rb := readOrder(t, wa), readOrder(t, wb)
+	if ra.Replayed || !rb.Replayed || rb.Order.ID != ra.Order.ID || rb.Order.UnitPriceCents != 500 || !sameCodes(ra.Codes, rb.Codes) {
+		t.Fatalf("B 应重放 A 的订单: A %+v / B %+v", ra, rb)
+	}
+	if b := balanceOf(t, f.aid); b != 0 {
+		t.Fatalf("只应扣一次: 余额 %d", b)
+	}
+	if n := agentOrderLockCount(); n != 0 {
+		t.Fatalf("锁用完应回收: 还剩 %d 个", n)
+	}
+}
+
+// 商品列表和下单的就绪检查走限频的钱包同步，代理商不能带着打 MarsWallex 的账户接口。
+func TestAgentOrderWalletSyncThrottled(t *testing.T) {
+	f := newOrderFix(t, newAgentEnv(t), true)
+	other := f.seedProduct("mw-pro-20x-us", "pro_20x", "US")
+	f.setPrice(other, 800)
+	resetWalletSyncThrottle()
+	base := len(f.mw.Requests("GET", mwPathAccounts))
+	for i := 0; i < 2; i++ {
+		w := f.agentDo(f.s, "GET", agentBase+"/products", "")
+		if w.Code != 200 || len(decodeMap(t, w.Body.String())["items"].([]any)) != 2 {
+			t.Fatalf("商品列表: %d %s", w.Code, w.Body.String())
+		}
+	}
+	f.mustOrder(f.s, orderReq("mw-plus-ph", 1, "", "req-sync-1", 500))
+	if n := len(f.mw.Requests("GET", mwPathAccounts)) - base; n > 1 {
+		t.Fatalf("两次商品列表（2 个组合）加一次下单，上游钱包最多同步 1 次: %d", n)
+	}
+}
+
+// 导出时主密钥不可用：503 maintenance，日志里「主密钥不可用」只出现一次。
+func TestAgentOrderExportNoMasterKey(t *testing.T) {
+	var buf bytes.Buffer
+	oldOut := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(oldOut) })
+
+	f := newOrderFix(t, newAgentEnv(t), true)
+	r := f.mustOrder(f.s, orderReq("mw-plus-ph", 1, "", "req-export-nokey", 500))
+	t.Setenv("APP_MASTER_KEY", "")
+	w := f.agentDo(f.s, "POST", fmt.Sprintf("%s/%d/export", orderPath, r.Order.ID), "")
+	if w.Code != 503 || jsonField(t, w.Body.String(), "error") != "maintenance" || jsonField(t, w.Body.String(), "message") != "系统维护中，暂不能导出码" {
+		t.Fatalf("应 503 maintenance: %d %s", w.Code, w.Body.String())
+	}
+	logs := buf.String()
+	if strings.Count(logs, "主密钥不可用") != 1 || !strings.Contains(logs, "主密钥不可用: secretbox.ErrNoMasterKey") {
+		t.Fatalf("日志里主密钥不可用应只出现一次:\n%s", logs)
+	}
+	if strings.Contains(logs, r.Codes[0].Code) {
+		t.Fatal("日志里出现了完整码")
 	}
 }
 

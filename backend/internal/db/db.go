@@ -320,6 +320,9 @@ func createTables() error {
 	if err := MigrateLocalCDKs(); err != nil {
 		return fmt.Errorf("migrate local cdks: %w", err)
 	}
+	if err := MigrateAgents(); err != nil {
+		return fmt.Errorf("migrate agents: %w", err)
+	}
 	return nil
 }
 

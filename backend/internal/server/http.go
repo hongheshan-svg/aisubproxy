@@ -40,7 +40,7 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	}
 	// 拒绝启动的检查（ADMIN_PASSWORD、明文卡台密钥要有主密钥、JWT_SECRET、服务商适配器）：只读，
 	// 在改数据之前做；命令行 --check 跑的是同一个函数（在线更新换版本前的预检）
-	if err := startupChecks(cfg.Server.Mode); err != nil {
+	if err := startupChecks(cfg.Server.Mode, false); err != nil {
 		return nil, err
 	}
 	// 卡台 API Key、webhook 密钥：旧版明文加密迁移；webhook 原文里的卡号、CVV、有效期清洗。失败就不启动，不静默留着明文

@@ -30,9 +30,9 @@ func (zovoCardAdapter) GraceRecovery(c *gin.Context, body graceRecoveryRequest) 
 	zovoCardGraceRecovery(c, body)
 }
 
-// Lookup 卡密查询：本站的码表、绑定和卡台订单。
-func (zovoCardAdapter) Lookup(ctx context.Context, code, device string) cdkLookupResult {
-	return zovoCardLookup(ctx, code, device)
+// Lookup 售后查询：本站的码表、换码记录、绑定和卡台订单。
+func (zovoCardAdapter) Lookup(ctx context.Context, code, device string) (afterSaleFacts, error) {
+	return zovoCardFacts(ctx, code, device)
 }
 
 // Check 是卡台的就绪检查，附带卡台余额。卡台余额接口不带币种，这里原样展示数字。

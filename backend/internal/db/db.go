@@ -1068,6 +1068,23 @@ func LookupCardplatformCDKCode(upstreamID int64, prefix string) (string, bool) {
 	return "", false
 }
 
+// CardplatformCDKCodeByUpstreamID 严格按上游 id 取完整码，不退回前缀匹配（前缀可能撞上别的客户的码）。
+// 没有记录或码为空时返回 sql.ErrNoRows。
+func CardplatformCDKCodeByUpstreamID(upstreamID int64) (string, error) {
+	if DB == nil {
+		return "", fmt.Errorf("db not init")
+	}
+	var code string
+	if err := DB.QueryRow(`SELECT code FROM cardplatform_cdk_codes WHERE upstream_id = ? ORDER BY created_at DESC LIMIT 1`, upstreamID).Scan(&code); err != nil {
+		return "", err
+	}
+	code = strings.TrimSpace(code)
+	if code == "" {
+		return "", sql.ErrNoRows
+	}
+	return code, nil
+}
+
 // ---- CDK 备注（本站）----
 
 const maxCDKNoteLen = 200

@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	fhttp "github.com/bogdanfinn/fhttp"
 )
@@ -63,6 +64,8 @@ func requireAccountID(accountID string) (string, error) {
 type RenewalInfo struct {
 	WillRenew    *bool
 	IsDelinquent *bool
+	// ActiveUntil 是当前权益的到期时间（active_until）。接口没给或解析不出合理值时为 nil。
+	ActiveUntil *time.Time
 }
 
 // SubscriptionStatus 只读查询账号当前订阅的续费与欠费状态：GET /backend-api/subscriptions?account_id=。
@@ -80,7 +83,11 @@ func (c *Client) SubscriptionStatus(ctx context.Context, s Session, accountID st
 	if json.Unmarshal(b, &data) != nil {
 		return RenewalInfo{}, errors.New("订阅查询返回非 JSON")
 	}
-	return RenewalInfo{WillRenew: optBool(data["will_renew"]), IsDelinquent: optBool(data["is_delinquent"])}, nil
+	return RenewalInfo{
+		WillRenew:    optBool(data["will_renew"]),
+		IsDelinquent: optBool(data["is_delinquent"]),
+		ActiveUntil:  parseActiveUntil(data["active_until"]),
+	}, nil
 }
 
 // CancelRenewal 取消下期续费：POST /backend-api/subscriptions/cancel，请求体只有 {account_id}，
@@ -219,6 +226,42 @@ func (c *Client) CreditBalance(ctx context.Context, s Session, accountID string)
 		return CreditBalanceInfo{}, nil
 	}
 	return CreditBalanceInfo{Available: true, Balance: strings.TrimSpace(*data.Credits.Balance)}, nil
+}
+
+// parseActiveUntil 解析到期时间：RFC3339（可带小数秒）、Unix 秒或毫秒（数字或数字文本）。
+// 大于 1e12 的数按毫秒算；结果不在 2020–2100 年之间一律当作没给（nil），避免把 0 或乱值写进单据。
+func parseActiveUntil(v any) *time.Time {
+	var t time.Time
+	switch x := v.(type) {
+	case string:
+		s := strings.TrimSpace(x)
+		if s == "" {
+			return nil
+		}
+		if p, err := time.Parse(time.RFC3339Nano, s); err == nil {
+			t = p
+		} else if n, err := strconv.ParseFloat(s, 64); err == nil {
+			t = unixToTime(n)
+		} else {
+			return nil
+		}
+	case float64:
+		t = unixToTime(x)
+	default:
+		return nil
+	}
+	if y := t.UTC().Year(); y < 2020 || y > 2100 {
+		return nil
+	}
+	t = t.UTC()
+	return &t
+}
+
+func unixToTime(n float64) time.Time {
+	if n > 1e12 {
+		return time.UnixMilli(int64(n))
+	}
+	return time.Unix(int64(n), 0)
 }
 
 // optBool 取 JSON 布尔值；不是布尔（含缺失、null）返回 nil。

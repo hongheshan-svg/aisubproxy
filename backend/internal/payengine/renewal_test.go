@@ -419,3 +419,45 @@ func TestResolveFailedNotSubmitted(t *testing.T) {
 		t.Fatalf("不能计入熔断: %+v", st)
 	}
 }
+
+// 核实到不续费时，把 /subscriptions 给的到期时间记进单据。
+func TestRenewalCancelledStoresAccessUntil(t *testing.T) {
+	h := newRenewalHarness(t)
+	until := time.Date(2026, 12, 4, 10, 0, 0, 0, time.UTC)
+	h.gpt.subStatusFn = func(int) (chatgpt.RenewalInfo, error) {
+		return chatgpt.RenewalInfo{WillRenew: boolPtr(false), ActiveUntil: &until}, nil
+	}
+	o := presetSucceeded(t, h, "until@example.com", nil)
+	h.start(t)
+	g := waitRenewal(t, o.OrderNo, RenewalCancelled)
+	if g.AccessUntil == nil || *g.AccessUntil != until.Unix() {
+		t.Fatalf("AccessUntil 应为 %d: %v", until.Unix(), g.AccessUntil)
+	}
+}
+
+// 接口没给到期时间：仍判 cancelled，AccessUntil 留空。
+func TestRenewalCancelledWithoutActiveUntil(t *testing.T) {
+	h := newRenewalHarness(t)
+	h.gpt.subStatusFn = func(int) (chatgpt.RenewalInfo, error) {
+		return chatgpt.RenewalInfo{WillRenew: boolPtr(false)}, nil
+	}
+	o := presetSucceeded(t, h, "nountil@example.com", nil)
+	h.start(t)
+	g := waitRenewal(t, o.OrderNo, RenewalCancelled)
+	if g.AccessUntil != nil {
+		t.Fatalf("AccessUntil 应为空: %v", *g.AccessUntil)
+	}
+}
+
+// /subscriptions 出错、改走账号接口判为关闭：拿不到到期时间，AccessUntil 留空。
+func TestRenewalFallbackAccountKeepsNil(t *testing.T) {
+	h := newRenewalHarness(t)
+	h.gpt.subStatusFn = func(int) (chatgpt.RenewalInfo, error) { return chatgpt.RenewalInfo{}, errors.New("HTTP 500") }
+	h.gpt.account = chatgpt.Account{AccountID: "acc-1", PlanType: "plus", HasActiveSubscription: true, WillRenew: boolPtr(false)}
+	o := presetSucceeded(t, h, "fbnil@example.com", nil)
+	h.start(t)
+	g := waitRenewal(t, o.OrderNo, RenewalCancelled)
+	if g.AccessUntil != nil {
+		t.Fatalf("AccessUntil 应为空: %v", *g.AccessUntil)
+	}
+}

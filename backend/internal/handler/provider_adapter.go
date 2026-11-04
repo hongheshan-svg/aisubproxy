@@ -110,9 +110,10 @@ type upstreamGraceRecoverer interface {
 	GraceRecovery(c *gin.Context, body graceRecoveryRequest)
 }
 
-// upstreamLookuper 是可选能力：卡密查询页。没实现时查询结果是「未找到」。
+// upstreamLookuper 是可选能力：售后查询。返回原样的 facts，打码、清洗、跟换码链由公共层做。
+// 没实现时查询结果是 unsupported（「这张卡密暂不支持在线查询，请联系售卖方」）。
 type upstreamLookuper interface {
-	Lookup(ctx context.Context, code, device string) cdkLookupResult
+	Lookup(ctx context.Context, code, device string) (afterSaleFacts, error)
 }
 
 var (

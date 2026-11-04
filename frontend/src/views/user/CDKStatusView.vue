@@ -89,65 +89,10 @@
 
       <div v-if="mode === 'single' && result" class="mt-8 card animate-slideInUp">
         <h2 class="text-xl font-bold text-ink mb-6">{{ t('cdkLookup.resultTitle') }}</h2>
-        <div class="rounded-xl bg-soft p-6 space-y-4">
-          <div class="flex justify-between items-center gap-3">
-            <span class="text-muted shrink-0">{{ t('cdkLookup.cdkCode') }}</span>
-            <span class="font-mono text-ink text-right break-all">{{ result.cdk_code }}</span>
-          </div>
-          <div class="flex justify-between items-center">
-            <span class="text-muted">{{ t('cdkLookup.useStatus') }}</span>
-            <span class="font-semibold" :style="{ color: statusColor(result.status) }">{{ statusText(result.status) }}</span>
-          </div>
-          <div class="flex justify-between items-center gap-3">
-            <span class="text-muted shrink-0">{{ t('cdkLookup.rechargeEmail') }}</span>
-            <span class="font-mono text-ink text-right break-all">
-              {{ result.account_email || t('cdkLookup.emailEmpty') }}
-            </span>
-          </div>
-          <div v-if="result.plan" class="flex justify-between items-center">
-            <span class="text-muted">{{ t('cdkLookup.plan') }}</span>
-            <span class="text-ink">{{ result.plan }}</span>
-          </div>
-          <div v-if="result.used_at" class="flex justify-between items-center text-sm">
-            <span class="text-muted">{{ t('cdkLookup.usedAt') }}</span>
-            <span class="text-muted">{{ result.used_at }}</span>
-          </div>
-        </div>
+        <AfterSaleResult :result="result" />
 
-        <div
-          v-if="result.status === 'failed'"
-          class="alert alert-error mt-6"
-        >{{ result.message || t('cdkLookup.msgFailed') }}</div>
-        <div
-          v-else-if="result.used"
-          class="alert alert-success mt-6"
-        >{{ result.message || t('cdkLookup.msgUsed') }}</div>
-        <div
-          v-else-if="result.status === 'processing'"
-          class="alert alert-info mt-6"
-        >{{ result.message || t('cdkLookup.msgProcessing') }}</div>
-        <div
-          v-else-if="result.status === 'disabled' || result.status === 'expired'"
-          class="alert mt-6"
-          style="background: var(--warn-soft); color: var(--warn); border-color: var(--warn)"
-        >{{ result.message }}</div>
-        <div
-          v-else
-          class="alert alert-info mt-6"
-        >{{ result.message || t('cdkLookup.msgUnused') }}</div>
-
-        <div class="flex flex-col sm:flex-row gap-3 mt-6">
-          <button
-            v-if="result.can_resubmit"
-            class="btn-primary flex-1"
-            @click="goRedeem(result.cdk_code)"
-          >{{ t('cdkLookup.resubmit') }}</button>
-          <button
-            v-else-if="result.status === 'unused'"
-            class="btn-primary flex-1"
-            @click="goRedeem(result.cdk_code)"
-          >{{ t('cdkLookup.goRedeem') }}</button>
-          <button @click="reset" class="btn-secondary flex-1">{{ t('cdkLookup.queryOther') }}</button>
+        <div class="mt-6">
+          <button @click="reset" class="btn-secondary w-full">{{ t('cdkLookup.queryOther') }}</button>
         </div>
       </div>
 
@@ -179,6 +124,12 @@
           <div class="rounded-lg py-2" style="background: color-mix(in srgb, var(--warn, #d97706) 12%, transparent)">
             {{ t('cdkLookup.summaryUnknown', { n: batchSummary.unknown }) }}
           </div>
+          <div v-if="batchSummary.replaced" class="rounded-lg py-2" style="background: color-mix(in srgb, var(--primary) 12%, transparent)">
+            {{ t('cdkLookup.summaryReplaced', { n: batchSummary.replaced }) }}
+          </div>
+          <div v-if="batchSummary.unsupported" class="rounded-lg bg-soft py-2">
+            {{ t('cdkLookup.summaryUnsupported', { n: batchSummary.unsupported }) }}
+          </div>
         </div>
         <div class="overflow-x-auto rounded-xl border bd">
           <table class="w-full text-sm">
@@ -202,7 +153,7 @@
                 </td>
                 <td class="px-3 py-2 font-mono break-all">{{ row.account_email || t('cdkLookup.emailEmpty') }}</td>
                 <td class="px-3 py-2">{{ row.plan || t('cdkLookup.emailEmpty') }}</td>
-                <td class="px-3 py-2 text-muted whitespace-nowrap">{{ row.used_at || t('cdkLookup.emailEmpty') }}</td>
+                <td class="px-3 py-2 text-muted whitespace-nowrap">{{ fmtLookupTime(row.used_at) || row.used_at || t('cdkLookup.emailEmpty') }}</td>
                 <td class="px-3 py-2 text-right whitespace-nowrap">
                   <button
                     v-if="row.can_resubmit"
@@ -235,45 +186,25 @@ import RedeemModeTabs from '../../components/RedeemModeTabs.vue'
 import { parseCdks } from '../../lib/batch-session'
 import { copyToClipboard } from '../../lib/clipboard'
 import { toast } from '../../lib/ui'
+import AfterSaleResult from '../../components/AfterSaleResult.vue'
+import { batchSummary as summarize, csvRow, fmtLookupTime, type LookupResult } from '../../lib/aftersale'
 
 const { t } = useI18n({ useScope: 'global' })
 const router = useRouter()
 
 const LOOKUP_BATCH_MAX = 100
 
-interface CDKStatusResult {
-  cdk_code: string
-  status: string
-  used: boolean
-  can_resubmit?: boolean
-  account_email?: string
-  plan?: string
-  used_at?: string
-  notes?: string
-  message?: string
-}
-
 const mode = ref<'single' | 'batch'>('single')
 const cdkCode = ref('')
 const batchText = ref('')
 const querying = ref(false)
 const error = ref('')
-const result = ref<CDKStatusResult | null>(null)
-const batchResults = ref<CDKStatusResult[]>([])
+const result = ref<LookupResult | null>(null)
+const batchResults = ref<LookupResult[]>([])
 
 const parsedCodes = computed(() => parseCdks(batchText.value))
 
-const batchSummary = computed(() => {
-  const s = { used: 0, failed: 0, unused: 0, processing: 0, unknown: 0 }
-  for (const row of batchResults.value) {
-    if (row.status === 'used') s.used++
-    else if (row.status === 'failed') s.failed++
-    else if (row.status === 'unused') s.unused++
-    else if (row.status === 'processing') s.processing++
-    else s.unknown++
-  }
-  return s
-})
+const batchSummary = computed(() => summarize(batchResults.value))
 
 function statusText(status: string) {
   const key = `cdkLookup.status.${status}`
@@ -307,7 +238,7 @@ async function query() {
       error.value = data.error || data.message || t('cdkLookup.errNotFound')
       return
     }
-    result.value = data as CDKStatusResult
+    result.value = data as LookupResult
   } catch {
     error.value = t('cdkLookup.errNetwork')
   } finally {
@@ -362,18 +293,7 @@ async function copyUsedEmails() {
 function exportCsv() {
   const header = ['cdk_code', 'status', 'can_resubmit', 'account_email', 'plan', 'used_at', 'message']
   const lines = [header.join(',')]
-  for (const row of batchResults.value) {
-    const cells = [
-      row.cdk_code,
-      row.status,
-      row.can_resubmit ? '1' : '0',
-      row.account_email || '',
-      row.plan || '',
-      row.used_at || '',
-      row.message || '',
-    ].map((v) => `"${String(v).replace(/"/g, '""')}"`)
-    lines.push(cells.join(','))
-  }
+  for (const row of batchResults.value) lines.push(csvRow(row))
   const blob = new Blob([`\uFEFF${lines.join('\n')}`], { type: 'text/csv;charset=utf-8' })
   const a = document.createElement('a')
   a.href = URL.createObjectURL(blob)

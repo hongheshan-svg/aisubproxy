@@ -727,53 +727,94 @@ func localCDKResultByCode(c *gin.Context, cs provider.CardSupply, code string) {
 	})
 }
 
-// localCDKLookup 是卡密查询页的本地分支。库里码行的服务商对不上时按未找到处理。
-func localCDKLookup(ctx context.Context, cs provider.CardSupply, code string) cdkLookupResult {
-	norm := provider.NormalizeCode(code)
-	resp := cdkLookupResult{CDKCode: code, Status: "unknown", Message: "未找到该卡密记录"}
-	row, err := db.GetLocalCDKByCode(ctx, norm)
+// localGuideByErrorCode 把干净失败的错误码对到售后查询的指引编号（设计文档 §4）；对不上的用 retry_later。
+var localGuideByErrorCode = map[string]string{
+	"session_invalid":          "session_invalid",
+	"already_subscribed":       "already_subscribed",
+	"plan_unavailable":         "plan_unavailable",
+	"credit_no_subscription":   "credit_needs_subscription",
+	"credit_plan_ineligible":   "credit_needs_subscription",
+	"credit_not_personal":      "credit_not_personal",
+	"credit_delinquent":        "credit_delinquent",
+	"credit_currency_mismatch": "credit_region_mismatch",
+}
+
+// cardSupplyFacts 是所有供卡型服务商共用的售后查询：从本站库里的码和付款单推出状态。
+// 没有这张码、或码属于别的服务商，返回 Found=false；读库出错返回 error（公共层据此回「暂时查不到」，不当成未找到）。
+// 邮箱原样给，由公共层打码。Status 只用 used/processing/failed/replaced/disabled/unused。
+func cardSupplyFacts(ctx context.Context, cs provider.CardSupply, code string) (afterSaleFacts, error) {
+	row, err := db.GetLocalCDKByCode(ctx, provider.NormalizeCode(code))
+	if errors.Is(err, db.ErrLocalCDKNotFound) {
+		return afterSaleFacts{}, nil
+	}
 	if err != nil {
-		if !errors.Is(err, db.ErrLocalCDKNotFound) {
-			log.Printf("[local-cdk] 查询码失败: %v", err)
-		}
-		return resp
+		return afterSaleFacts{}, fmt.Errorf("查询本站码: %w", err)
 	}
 	if row.Provider != string(cs.Name()) {
-		return resp
+		return afterSaleFacts{}, nil
 	}
 	v, err := db.LocalCDKViewOf(ctx, row)
 	if err != nil {
-		log.Printf("[local-cdk] 码 %d 派生状态失败: %v", row.ID, err)
-		return resp
+		return afterSaleFacts{}, fmt.Errorf("派生本站码状态: %w", err)
 	}
-	resp.Plan = row.PlanKey
-	_, _, resp.Message = localPublicState(v)
+	f := afterSaleFacts{Found: true, Plan: row.PlanKey, PlanKind: payengine.PlanKind(row.PlanKey)}
 	if v.Latest != nil {
-		resp.AccountEmail = maskEmailForAdmin(v.Latest.AccountEmail)
+		f.AccountEmail = v.Latest.AccountEmail
 	}
+	_, _, f.Message = localPublicState(v)
 	switch v.Status {
 	case db.LocalCDKConsumed:
-		resp.Status, resp.Used = "used", true
-		resp.Message = "卡密使用成功"
-		if v.Latest != nil && v.Latest.FinishedAt != nil {
-			at := time.Unix(*v.Latest.FinishedAt, 0).UTC().Format(time.RFC3339)
-			resp.UsedAt = &at
+		f.Status = "used"
+		f.Message = "" // 用公共层的默认文字「卡密使用成功」
+		if l := v.Latest; l != nil {
+			if l.FinishedAt != nil {
+				t := time.Unix(*l.FinishedAt, 0)
+				f.UsedAt = &t
+			}
+			if l.AccessUntil != nil {
+				t := time.Unix(*l.AccessUntil, 0)
+				f.ExpiresAt = &t
+			}
+			switch l.RenewalState {
+			case "cancelled":
+				f.Renewal = "off"
+			case "pending":
+				f.Renewal = "closing"
+			}
 		}
 	case db.LocalCDKReserved:
-		resp.Status = "processing"
+		f.Status = "processing"
+		if v.Reason == db.LocalReasonNeedsReview {
+			f.Guide = "manual_review"
+		}
 	case db.LocalCDKFailed:
-		resp.Status = "failed"
+		f.Status, f.Guide = "failed", "manual_review"
 	case db.LocalCDKDisabled:
-		resp.Status = "disabled"
+		if v.Reason != db.LocalReasonExchanged {
+			f.Status = "disabled"
+			break
+		}
+		f.Status = "replaced"
+		if row.ReplacedBy != nil {
+			if newCode, ok := openLocalCDKCode(ctx, *row.ReplacedBy); ok {
+				f.Replacement = newCode
+				break
+			}
+		}
+		f.ReplacedButUnknown = true
 	default:
-		resp.Status = "unused"
+		f.Status = "unused"
 		if v.Latest == nil {
-			resp.Message = "卡密未使用"
-		} else {
-			resp.CanResubmit = true
+			f.Message = "" // 没有单：用公共层的默认文字「卡密未使用」
+			break
+		}
+		f.Reusable = true
+		f.Guide = "retry_later"
+		if g, ok := localGuideByErrorCode[v.Latest.ErrorCode]; ok {
+			f.Guide = g
 		}
 	}
-	return resp
+	return f, nil
 }
 
 // localCDKExchange 是代理换码的本地分支，调用前已通过限流和密码校验。新码是同一家服务商的码。
@@ -860,10 +901,12 @@ func localCDKExchange(c *gin.Context, cs provider.CardSupply, code, ip string) {
 		localReply(c, http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试"})
 		return
 	}
+	// 新码加密存一份，客户查旧码时售后查询靠它显示新码；主密钥有问题时留空，不挡换码
+	sealed := sealLocalCDKCode(fresh.Code, fresh.CodeHash)
 	newID, err := db.ExchangeLocalCDK(context.WithoutCancel(ctx), row.ID, db.NewLocalCDK{
 		Provider: row.Provider, CodeHash: fresh.CodeHash, TokenHash: fresh.TokenHash, CodePrefix: fresh.Prefix,
 		Product: row.Product, PlanKey: row.PlanKey, Region: row.Region, IssuedBy: "agent-swap", Note: row.Note,
-		ExchangedFrom: &row.ID, AttemptsCarried: v.FundedFailures,
+		ExchangedFrom: &row.ID, AttemptsCarried: v.FundedFailures, CodeSealed: sealed,
 	}, time.Now())
 	if err != nil {
 		// 事务回滚，什么都没发生：本地发码不存在结果不明，放掉占位就好

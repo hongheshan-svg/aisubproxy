@@ -2,6 +2,9 @@
   <div class="u-page">
     <UserPageHeader :eyebrow="t('hero.redeemEyebrow')" :title="t('home.heroTitle')" :subtitle="t('home.heroSub')" badges />
     <div class="u-main max-w-6xl space-y-16">
+      <!-- 售后查询 -->
+      <AfterSaleLookup />
+
       <!-- 三步充值 -->
       <section class="card animate-slideInUp" data-testid="quick-steps" aria-labelledby="quick-title">
         <div class="text-center">
@@ -100,6 +103,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import UserPageHeader from '../components/UserPageHeader.vue'
 import SessionHelp from '../components/SessionHelp.vue'
+import AfterSaleLookup from '../components/AfterSaleLookup.vue'
 
 const { t } = useI18n({ useScope: 'global' })
 

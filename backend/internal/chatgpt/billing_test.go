@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"sort"
 	"testing"
+	"time"
 )
 
 // recorded 是测试服务器收到的一次请求。
@@ -225,5 +226,58 @@ func TestAccountParsesCreditFields(t *testing.T) {
 	got, err = c.Account(context.Background(), testSess)
 	if err != nil || got.Structure != "" || got.BillingCurrency != "" || got.IsDelinquent != nil || got.WillRenew != nil {
 		t.Fatalf("缺字段应为空: %+v %v", got, err)
+	}
+}
+
+func TestParseActiveUntil(t *testing.T) {
+	want := time.Date(2026, 12, 4, 10, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name string
+		in   any
+		want *time.Time
+	}{
+		{"RFC3339", "2026-12-04T10:00:00Z", &want},
+		{"带小数和偏移", "2026-12-04T10:00:00.123456+00:00", func() *time.Time { w := want.Add(123456 * time.Microsecond); return &w }()},
+		{"Unix 秒", float64(want.Unix()), &want},
+		{"Unix 毫秒", float64(want.Unix() * 1000), &want},
+		{"数字文本", "1796378400", &want},
+		{"nil", nil, nil},
+		{"空串", "", nil},
+		{"乱码", "abc", nil},
+		{"零", float64(0), nil},
+		{"1970 年", float64(86400), nil},
+		{"2200 年", float64(7258118400), nil},
+		{"2200 年毫秒", float64(7258118400000), nil},
+		{"布尔", true, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := parseActiveUntil(c.in)
+			if c.want == nil {
+				if got != nil {
+					t.Fatalf("应为 nil: %v", got)
+				}
+				return
+			}
+			if got == nil || !got.Equal(*c.want) {
+				t.Fatalf("得到 %v，期望 %v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestSubscriptionStatusReadsActiveUntil(t *testing.T) {
+	c, _ := recordServer(t, 200, `{"will_renew":false,"active_until":"2026-12-04T10:00:00Z"}`)
+	st, err := c.SubscriptionStatus(context.Background(), testSess, "acc-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.ActiveUntil == nil || !st.ActiveUntil.Equal(time.Date(2026, 12, 4, 10, 0, 0, 0, time.UTC)) {
+		t.Fatalf("ActiveUntil 不符: %v", st.ActiveUntil)
+	}
+	c, _ = recordServer(t, 200, `{"will_renew":false}`)
+	st, err = c.SubscriptionStatus(context.Background(), testSess, "acc-1")
+	if err != nil || st.ActiveUntil != nil {
+		t.Fatalf("缺字段应为 nil: %v %v", st.ActiveUntil, err)
 	}
 }

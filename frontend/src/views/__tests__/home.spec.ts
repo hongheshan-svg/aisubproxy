@@ -14,15 +14,18 @@ vi.mock('../../components/UserPageHeader.vue', () => ({
 
 import HomeView from '../HomeView.vue'
 import SessionHelp from '../../components/SessionHelp.vue'
+import AfterSaleResult from '../../components/AfterSaleResult.vue'
+import { lookupAftersale } from '../../lib/aftersaleClient'
+import { batchMessage, csvRow } from '../../lib/aftersale'
 
 const SESSION_TEXT = '先在浏览器中登录需要操作的 ChatGPT 账号，再打开 chatgpt.com/api/auth/session，复制完整 JSON。Session 包含账号凭据，请仅在你确认可信的对应服务页使用，并按页面提示核对目标账号。'
 const CLAUDE_TEXT = '填写目标组织的 Organization ID，格式为 UUID。两次输入必须一致，并确认目标账号目前为免费账号。该流程使用 Organization ID。'
 
-async function render(comp: any, locale: 'zh' | 'en' = 'zh') {
+async function render(comp: any, locale: 'zh' | 'en' = 'zh', props: Record<string, unknown> = {}) {
   const router = createRouter({ history: createMemoryHistory(), routes: [{ path: '/:p(.*)*', component: { render: () => null } }] })
   router.push('/')
   await router.isReady()
-  const app = createSSRApp(defineComponent({ render: () => h(comp) }))
+  const app = createSSRApp(defineComponent({ render: () => h(comp, props) }))
   app.use(router)
   app.use(createI18n({ legacy: false, globalInjection: true, locale, fallbackLocale: 'zh', messages: { zh, en } }))
   return renderToString(app)
@@ -96,5 +99,124 @@ describe('首页', () => {
     expect(s).toContain('Organization ID')
     expect(s).toContain('chatgpt.com/api/auth/session')
     expect(s).not.toMatch(/[一-鿿]/)
+  })
+})
+
+describe('首页售后查询', () => {
+  const base = { cdk_code: 'SXC-AAAA', used: false }
+
+  it('首页有售后查询区块，并链接到批量查询', async () => {
+    const html = await render(HomeView)
+    expect(html).toContain('data-testid="aftersale-lookup"')
+    expect(html).toContain('data-testid="aftersale-batch-link"')
+    expect(html).toContain('href="/history"')
+    expect(text(html)).toContain('售后查询')
+  })
+
+  it('已使用：显示打码邮箱和开通时间，不显示到期时间', async () => {
+    const html = await render(AfterSaleResult, 'zh', {
+      result: { ...base, status: 'used', used: true, plan: 'Plus', account_email: 'a***@x.com', used_at: '2026-11-04T09:22:37Z', expires_at: '2026-12-04T09:22:37Z' },
+    })
+    const s = text(html)
+    expect(s).toContain('a***@x.com')
+    expect(s).toContain('2026-11-04 17:22:37')
+    expect(s).not.toContain('到期时间')
+    expect(s).not.toContain('2026-12-04')
+  })
+
+  it('已换发：显示新码、复制按钮；新码未使用时有去兑换按钮', async () => {
+    const html = await render(AfterSaleResult, 'zh', {
+      result: { ...base, status: 'replaced', replacement: { code: 'SXC-NEW1', status: 'unused', depth: 1 } },
+    })
+    expect(text(html)).toContain('SXC-NEW1')
+    expect(html).toContain('data-testid="copy-replacement"')
+    expect(html).toContain('data-testid="redeem-replacement"')
+  })
+
+  it('失败指引后紧跟服务商原因，原因按文本输出不当成 HTML', async () => {
+    const html = await render(AfterSaleResult, 'zh', {
+      result: { ...base, status: 'unused', can_resubmit: true, guide: 'provider_retry', provider_note: '<img src=x onerror=alert(1)>' },
+    })
+    expect(html).not.toContain('<img')
+    expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;')
+    expect(text(html)).toContain('服务商返回的原因如下')
+  })
+
+  it('服务商失败没有原因原文：指引不说「原因如下」，下面也没有空的原因行', async () => {
+    const html = await render(AfterSaleResult, 'zh', {
+      result: { ...base, status: 'failed', can_resubmit: true, guide: 'provider_retry' },
+    })
+    expect(text(html)).not.toContain('如下')
+    expect(html).not.toContain('data-testid="aftersale-note"')
+    const en = text(await render(AfterSaleResult, 'en', { result: { ...base, status: 'failed', guide: 'provider_wait' } }))
+    expect(en).not.toMatch(/below/i)
+    expect(en).not.toMatch(/\baftersale\./)
+  })
+
+  it('换码链停在又换过码的码上：不显示那张码，没有复制、去兑换按钮', async () => {
+    const html = await render(AfterSaleResult, 'zh', {
+      result: { ...base, status: 'replaced', replacement: { code: 'SXC-VOID2', status: 'replaced', depth: 1 } },
+    })
+    expect(html).not.toContain('SXC-VOID2')
+    expect(html).not.toContain('data-testid="copy-replacement"')
+    expect(html).not.toContain('data-testid="redeem-replacement"')
+    expect(text(html)).toContain('新码也已换发')
+  })
+
+  it('英文界面不露出文案键', async () => {
+    const html = await render(AfterSaleResult, 'en', {
+      result: { ...base, status: 'used', used: true, plan: 'Plus', plan_kind: 'subscription', renewal: 'off', account_email: 'a***@x.com' },
+    })
+    expect(text(html)).not.toMatch(/\baftersale\./)
+    expect(text(html)).toContain('Auto-renewal is off')
+  })
+})
+
+describe('首页售后查询的请求', () => {
+  const msgs = { notFound: '找不到', network: '网络错误' }
+  const json = (status: number, body: unknown) => async () => ({ ok: status >= 200 && status < 300, status, json: async () => body }) as Response
+
+  it('空输入不发请求', async () => {
+    const f = vi.fn()
+    expect(await lookupAftersale('  ', msgs, f as any)).toEqual({ error: '' })
+    expect(f).not.toHaveBeenCalled()
+  })
+
+  it('200 返回结果，码做 URL 编码', async () => {
+    const f = vi.fn(json(200, { cdk_code: 'a b', status: 'used', used: true }))
+    const r = await lookupAftersale(' a b ', msgs, f as any)
+    expect(f).toHaveBeenCalledWith('/api/v1/lookup/cdk?code=a%20b')
+    expect(r.result?.status).toBe('used')
+  })
+
+  it('404 一律用语言包的找不到文案，不用后端的中文 message（英文界面不露中文）', async () => {
+    expect((await lookupAftersale('x', msgs, json(404, { error: '未找到该卡密记录', message: '未找到该卡密。请确认输入完整卡密。' }))).error).toBe('找不到')
+    expect((await lookupAftersale('x', { notFound: 'CDK not found', network: 'Network error' }, json(404, { message: '未找到该卡密。请确认输入完整卡密。' }))).error).toBe('CDK not found')
+    expect((await lookupAftersale('x', msgs, json(404, {}))).error).toBe('找不到')
+  })
+
+  it('其他非 2xx 显示响应里的 error 或 message，没有就用网络错误', async () => {
+    expect((await lookupAftersale('x', msgs, json(429, { error: '太频繁了' }))).error).toBe('太频繁了')
+    expect((await lookupAftersale('x', msgs, json(400, { message: '参数错' }))).error).toBe('参数错')
+    expect((await lookupAftersale('x', msgs, json(500, {}))).error).toBe('网络错误')
+  })
+
+  it('fetch 抛错显示网络错误', async () => {
+    const f = async () => { throw new Error('boom') }
+    expect((await lookupAftersale('x', msgs, f as any)).error).toBe('网络错误')
+  })
+})
+
+describe('批量结果的失败原因', () => {
+  const row = { cdk_code: 'C1', status: 'failed', used: false, message: '使用失败', provider_note: 'bad, "quoted"' }
+
+  it('有 provider_note 时 message 追加原因，没有时原样', () => {
+    expect(batchMessage(row)).toBe('使用失败（原因：bad, "quoted"）')
+    expect(batchMessage({ ...row, provider_note: undefined })).toBe('使用失败')
+    expect(batchMessage({ cdk_code: 'C2', status: 'failed', used: false, provider_note: '原因X' })).toBe('（原因：原因X）')
+  })
+
+  it('CSV 行列不变，message 列带原因，引号转义', () => {
+    expect(csvRow(row)).toBe('"C1","failed","0","","","","使用失败（原因：bad, ""quoted""）"')
   })
 })

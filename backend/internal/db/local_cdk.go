@@ -15,7 +15,8 @@ import (
 
 // 本地码（local_cdks）：由本站自己履约的服务商（目前只有 MarsWallex）发的码。
 //
-// 只存哈希和前缀，完整码只在发码响应里出现一次。表里的 status 只有人工态 active / disabled；
+// 只存哈希和前缀，完整码只在发码响应里出现一次；换码换出的新码另用主密钥加密存一份（code_sealed），只给售后查询用。
+// 表里的 status 只有人工态 active / disabled；
 // 码实际处于什么状态一律从 pay_orders 派生（DeriveLocalCDK），不回写：多写一份就多一处和资金单据对不上的可能。
 const (
 	LocalCDKManualActive   = "active"
@@ -54,7 +55,7 @@ var (
 	ErrLocalCDKIssueKeyUsed = errors.New("这个幂等键已经发过码")
 )
 
-// LocalCDK 是 local_cdks 的一行。没有完整码，也没有哈希：哈希只用来查询，不出这个包。
+// LocalCDK 是 local_cdks 的一行。没有完整码，也没有哈希：哈希只用来查询和售后解密时核对，不进响应、日志。
 type LocalCDK struct {
 	ID              int64
 	Provider        string
@@ -85,6 +86,8 @@ type LocalCDKOrder struct {
 	SubmittedAt  *int64
 	CreatedAt    int64
 	FinishedAt   *int64
+	RenewalState string // 关闭续费的进度，见 payengine
+	AccessUntil  *int64 // 关闭续费核实时 ChatGPT 给的权益到期时间（Unix 秒）
 }
 
 // CleanFailure 这张单能确定没有点过支付（failed + not_submitted + 没有提交时间）。只有它能重兑。
@@ -195,7 +198,8 @@ func MigrateLocalCDKs() error {
 	issued_by TEXT NOT NULL DEFAULT '',
 	note TEXT NOT NULL DEFAULT '',
 	created_at INTEGER NOT NULL,
-	updated_at INTEGER NOT NULL
+	updated_at INTEGER NOT NULL,
+	code_sealed TEXT NOT NULL DEFAULT ''
 )`,
 		`CREATE INDEX IF NOT EXISTS idx_local_cdks_exchanged_from ON local_cdks(exchanged_from) WHERE exchanged_from IS NOT NULL`,
 		// 发码幂等：同一次点击只发一批。和码在同一个事务里写，主键保证重复点击、并发重试都发不出第二批
@@ -215,6 +219,22 @@ func MigrateLocalCDKs() error {
 	for _, s := range stmts {
 		if _, err := DB.Exec(s); err != nil {
 			return err
+		}
+	}
+	// 旧库补列（列已存在就跳过）
+	cols := []struct{ name, def string }{
+		{"code_sealed", `TEXT NOT NULL DEFAULT ''`},
+	}
+	for _, c := range cols {
+		var n int
+		if err := DB.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('local_cdks') WHERE name = ?`, c.name).Scan(&n); err != nil {
+			return fmt.Errorf("检查 local_cdks.%s: %w", c.name, err)
+		}
+		if n > 0 {
+			continue
+		}
+		if _, err := DB.Exec(`ALTER TABLE local_cdks ADD COLUMN ` + c.name + ` ` + c.def); err != nil {
+			return fmt.Errorf("补列 local_cdks.%s: %w", c.name, err)
 		}
 	}
 	clearRechargeTaskSessions()
@@ -248,6 +268,8 @@ type NewLocalCDK struct {
 	Provider, CodeHash, TokenHash, CodePrefix, Product, PlanKey, Region, IssuedBy, Note string
 	ExchangedFrom                                                                       *int64
 	AttemptsCarried                                                                     int
+	// CodeSealed 是完整码的密文，只有换码换出的新码才有；后台批量发码留空。
+	CodeSealed string
 }
 
 func insertLocalCDK(ctx context.Context, tx *sql.Tx, n NewLocalCDK, now int64) (int64, error) {
@@ -256,10 +278,10 @@ func insertLocalCDK(ctx context.Context, tx *sql.Tx, n NewLocalCDK, now int64) (
 		from = *n.ExchangedFrom
 	}
 	res, err := tx.ExecContext(ctx, `INSERT INTO local_cdks (provider, code_hash, token_hash, code_prefix, product, plan_key, region,
-		status, exchanged_from, attempts_carried, issued_by, note, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)`,
+		status, exchanged_from, attempts_carried, issued_by, note, created_at, updated_at, code_sealed)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`,
 		n.Provider, n.CodeHash, n.TokenHash, n.CodePrefix, n.Product, n.PlanKey, n.Region,
-		from, n.AttemptsCarried, n.IssuedBy, n.Note, now, now)
+		from, n.AttemptsCarried, n.IssuedBy, n.Note, now, now, n.CodeSealed)
 	if err != nil {
 		return 0, err
 	}
@@ -360,15 +382,22 @@ func GetLocalCDKByTokenHash(ctx context.Context, tokenHash string) (LocalCDK, er
 	return getLocalCDKWhere(ctx, `l.token_hash = ?`, tokenHash)
 }
 
-const localCDKOrderColumns = `order_no, source_ref, state, failure, error_code, account_email, fund_cents, card_id, submitted_at, created_at, finished_at`
+// LocalCDKSealedCode 取这张码的 code_hash 和完整码密文，只给售后查询解密用。没有密文时 sealed 是空串；
+// 没有这一行返回 sql.ErrNoRows。密文不进 localCDKColumns 和 LocalCDK，后台列表、导出永远读不到。
+func LocalCDKSealedCode(ctx context.Context, id int64) (codeHash, sealed string, err error) {
+	err = DB.QueryRowContext(ctx, `SELECT code_hash, code_sealed FROM local_cdks WHERE id = ?`, id).Scan(&codeHash, &sealed)
+	return codeHash, sealed, err
+}
+
+const localCDKOrderColumns = `order_no, source_ref, state, failure, error_code, account_email, fund_cents, card_id, submitted_at, created_at, finished_at, renewal_state, access_until`
 
 func collectLocalCDKOrders(rows *sql.Rows) ([]LocalCDKOrder, error) {
 	defer rows.Close()
 	out := []LocalCDKOrder{}
 	for rows.Next() {
 		var o LocalCDKOrder
-		var sub, fin sql.NullInt64
-		if err := rows.Scan(&o.OrderNo, &o.SourceRef, &o.State, &o.Failure, &o.ErrorCode, &o.AccountEmail, &o.FundCents, &o.CardID, &sub, &o.CreatedAt, &fin); err != nil {
+		var sub, fin, acc sql.NullInt64
+		if err := rows.Scan(&o.OrderNo, &o.SourceRef, &o.State, &o.Failure, &o.ErrorCode, &o.AccountEmail, &o.FundCents, &o.CardID, &sub, &o.CreatedAt, &fin, &o.RenewalState, &acc); err != nil {
 			return nil, err
 		}
 		if sub.Valid {
@@ -376,6 +405,9 @@ func collectLocalCDKOrders(rows *sql.Rows) ([]LocalCDKOrder, error) {
 		}
 		if fin.Valid {
 			o.FinishedAt = &fin.Int64
+		}
+		if acc.Valid {
+			o.AccessUntil = &acc.Int64
 		}
 		out = append(out, o)
 	}

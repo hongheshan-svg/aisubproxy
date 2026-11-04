@@ -77,12 +77,15 @@ var afterSaleDefaultMessages = map[string]string{
 var (
 	// 邮箱：本地部分和域名允许非 ASCII 字母，顶级域名只认 ASCII 字母，免得把紧跟在后面的中文也吞掉。
 	noteEmailRe = regexp.MustCompile(`[\p{L}\p{N}._%+\-]+@[\p{L}\p{N}\-]+(?:\.[\p{L}\p{N}\-]+)*\.[A-Za-z]{2,}`)
-	// 长令牌：20 位以上的连续字母数字。
-	noteTokenRe = regexp.MustCompile(`[A-Za-z0-9]{20,}`)
+	// 长令牌：20 位以上的连续字母、数字、下划线、横线（JWT、sess_ 这类令牌常被 - 或 _ 切成短段）。
+	noteTokenRe = regexp.MustCompile(`[A-Za-z0-9_-]{20,}`)
+	// 卡号形状的数字：13～19 位，中间允许单个空格或横线。日期、11 位手机号位数不够，不受影响。
+	noteCardRe = regexp.MustCompile(`\b(?:\d[ -]?){12,18}\d\b`)
 )
 
-// sanitizeProviderNote 清洗服务商给的原文：像邮箱、长令牌的部分换成 ***，再截到 200 个字符。
-// 先替换再截断，截断不会把邮箱切成认不出的半截漏出去。
+// sanitizeProviderNote 清洗服务商给的原文：像邮箱、长令牌、卡号的部分换成 ***，再截到 200 个字符。
+// 顺序：先邮箱（整个换掉，免得只换掉本地部分的数字、把域名留下），再长令牌（免得卡号规则只吃掉令牌的后半段、留下前缀），
+// 最后卡号。先替换再截断，截断不会把邮箱切成认不出的半截漏出去。
 func sanitizeProviderNote(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -90,6 +93,7 @@ func sanitizeProviderNote(s string) string {
 	}
 	s = noteEmailRe.ReplaceAllString(s, "***")
 	s = noteTokenRe.ReplaceAllString(s, "***")
+	s = noteCardRe.ReplaceAllString(s, "***")
 	if r := []rune(s); len(r) > afterSaleNoteMaxRunes {
 		s = string(r[:afterSaleNoteMaxRunes])
 	}
@@ -210,11 +214,14 @@ func afterSaleTime(t time.Time) *string {
 }
 
 // followAfterSaleChain 从 start 的新码 next 开始跟换码链（新码可能属于别的服务商，每层都重新分派）。
-// 最多跟 afterSaleChainMax 层；遇到走过的码、某一层出错或找不到就停下，返回最后一张能确认的码，一层都确认不了时返回 nil。
+// 最多跟 afterSaleChainMax 层；遇到走过的码、某一层出错或找不到、请求已取消就停下，返回最后一张能确认的码，一层都确认不了时返回 nil。
 func followAfterSaleChain(ctx context.Context, start, next, device string) *lookupReplacement {
 	seen := map[string]bool{start: true}
 	var last *lookupReplacement
 	for depth := 1; depth <= afterSaleChainMax; depth++ {
+		if ctx.Err() != nil {
+			break
+		}
 		code := provider.NormalizeCode(next)
 		if code == "" || seen[code] {
 			break

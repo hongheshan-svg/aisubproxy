@@ -25,6 +25,7 @@ type fakeUp struct {
 	facts  map[string]afterSaleFacts
 	errs   map[string]error
 	panics map[string]bool
+	onAsk  func(code string) // 可选：每次被查时先调它
 
 	mu    *sync.Mutex
 	asked *[]string
@@ -34,6 +35,9 @@ func (u fakeUp) Lookup(_ context.Context, code, _ string) (afterSaleFacts, error
 	u.mu.Lock()
 	*u.asked = append(*u.asked, code)
 	u.mu.Unlock()
+	if u.onAsk != nil {
+		u.onAsk(code)
+	}
 	if u.panics[code] {
 		panic("假上游出错 alice@example.com")
 	}
@@ -174,6 +178,43 @@ func TestAfterSaleSanitizesNote(t *testing.T) {
 	}
 	if !strings.HasPrefix(r.ProviderNote, "卡台返回：账号 *** 处理失败，令牌 *** 已作废。") {
 		t.Fatalf("只替换邮箱和长串，其余原文保留: %q", r.ProviderNote)
+	}
+
+	// 被 - 或 _ 切成短段的令牌也要整个换掉，任何一段都不能漏出去
+	for _, tc := range []struct {
+		in, want string
+		parts    []string
+	}{
+		{"会话 eyJhbGciOi-JkaXIiLCJlbmM_iOiJBMjU2R0NNIn0 失效", "会话 *** 失效", []string{"eyJhbGciOi", "JkaXIiLCJlbmM", "iOiJBMjU2R0NNIn0"}},
+		{"token sess_9fA2kQ7xLm-Pz4Rt8VwYb_N3cHd6JqUe 过期", "token *** 过期", []string{"sess_", "9fA2kQ7xLm", "Pz4Rt8VwYb", "N3cHd6JqUe"}},
+	} {
+		got := sanitizeProviderNote(tc.in)
+		for _, part := range tc.parts {
+			if strings.Contains(got, part) {
+				t.Fatalf("%q 清洗后漏出令牌片段 %q: %q", tc.in, part, got)
+			}
+		}
+		if got != tc.want {
+			t.Fatalf("%q 清洗后应为 %q，实际 %q", tc.in, tc.want, got)
+		}
+	}
+}
+
+func TestAfterSaleSanitizesCardNumber(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"卡号 4111 1111 1111 1111 被拒", "卡号 *** 被拒"},
+		{"卡号 4111-1111-1111-1111 被拒", "卡号 *** 被拒"},
+		{"卡号4111111111111111被拒", "卡号***被拒"},
+		{"卡 4111 1111 1111 1111，邮箱 bob@x.com", "卡 ***，邮箱 ***"},
+		// 本地部分全是数字的邮箱：先按邮箱整个换掉，不会只换掉数字、把域名留下
+		{"邮箱 4111111111111111@x.com 失败", "邮箱 *** 失败"},
+		// 日期、11 位手机号不是卡号
+		{"2026-11-04 失败", "2026-11-04 失败"},
+		{"手机 13812345678 已绑定", "手机 13812345678 已绑定"},
+	} {
+		if got := sanitizeProviderNote(tc.in); got != tc.want {
+			t.Fatalf("%q 清洗后应为 %q，实际 %q", tc.in, tc.want, got)
+		}
 	}
 }
 
@@ -328,6 +369,45 @@ func TestAfterSaleChainStopsOnError(t *testing.T) {
 			t.Fatalf("%s 查不到新码状态不等于库里没有新码: %+v", tc.code, r)
 		}
 	}
+}
+
+func TestAfterSaleChainStopsWhenCanceled(t *testing.T) {
+	chain := map[string]afterSaleFacts{
+		"TU-AAA": {Found: true, Status: "replaced", Replacement: "TU-BBB"},
+		"TU-BBB": {Found: true, Status: "replaced", Replacement: "TU-CCC"},
+		"TU-CCC": {Found: true, Status: "replaced", Replacement: "TU-DDD"},
+		"TU-DDD": {Found: true, Status: "unused"},
+	}
+
+	t.Run("请求已取消：入口查完就不再跟链", func(t *testing.T) {
+		u := useFakeUp(t, fakeUp{facts: chain})
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		r := lookupAfterSale(ctx, "TU-AAA", "")
+		if r.Status != "replaced" || r.Replacement != nil {
+			t.Fatalf("一层都没确认，不带 replacement: %+v", r)
+		}
+		if got := u.calls(); len(got) != 1 {
+			t.Fatalf("只应查入口那张码: %v", got)
+		}
+	})
+
+	t.Run("查到 B 时取消：停在 B", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		u := useFakeUp(t, fakeUp{facts: chain, onAsk: func(code string) {
+			if code == "TU-BBB" {
+				cancel()
+			}
+		}})
+		r := lookupAfterSale(ctx, "TU-AAA", "")
+		if r.Replacement == nil || *r.Replacement != (lookupReplacement{Code: "TU-BBB", Status: "replaced", Depth: 1}) {
+			t.Fatalf("应停在上一张确认的码 B: %+v", r.Replacement)
+		}
+		if got := u.calls(); len(got) != 2 {
+			t.Fatalf("取消之后不应再查 C、D: %v", got)
+		}
+	})
 }
 
 func TestAfterSaleReplacedUnknown(t *testing.T) {

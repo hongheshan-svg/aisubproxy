@@ -8,6 +8,16 @@
 
 ### 新增
 
+- **首页售后查询**：
+  - 首页可以直接查卡密，不用再进「卡密查询」页；批量查询仍在 `/history`，首页有入口。
+  - 开通失败会给出该怎么做的指引，换过码的会显示新码，可以复制，新码没用过时可以直接去兑换。已开通的会显示真实到期时间，关了自动续费也会提示。`/history` 的单条结果也改用同一套显示。
+  - 查询结果和导出里的邮箱改为一律打码；以前上游服务商分支会返回完整邮箱。
+  - 本站码换码时会加密保存新码，要配 `APP_MASTER_KEY`；这个版本之前换出的码查不到新码，仍显示「请联系售卖方获取」。
+  - 卡密查询接口和 `/history` 导出里的 `used_at` 统一为 RFC3339 UTC 时间，如 `2026-11-04T09:22:37Z`。以前 ZovoCard 的码是 `2026-11-04 09:22:37` 这种不带时区的写法，按此解析的外部脚本要调整。
+  - 服务商不支持在线查询的码，以前回「未找到」，现在回 `status: unsupported`「暂不支持在线查询」。
+  - 服务商查询出错时，以前可能回 404「未找到」，现在回 200 + `status: unknown`「暂时查不到，请稍后再试」。
+  - 新增状态 `replaced`（已换发新码），以及字段 `expires_at`、`renewal`、`guide`、`provider_note`、`replacement`、`replaced_unknown`，接口原有字段不变。
+  - 失败原因不再拼在 `message` 里，改放 `provider_note`；`/history` 导出的 message 列会附上「（原因：…）」。
 - **订阅开通支持 chatgpt.com 内嵌结账页**：
   - 以前只认 pay.openai.com 和 checkout.stripe.com 的托管支付页，现在也能处理 `https://chatgpt.com/checkout/...` 的内嵌结账页。
   - 点数单不接受 chatgpt.com 地址。

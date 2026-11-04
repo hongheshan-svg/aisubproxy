@@ -142,3 +142,22 @@ export function afterSaleView(r: LookupResult): AfterSaleView {
   }
   return view
 }
+
+/** 批量表和 CSV 里的 message：有服务商原因时追加「（原因：…）」，失败原因不会因为只在 provider_note 里而丢掉。 */
+export function batchMessage(r: LookupResult): string {
+  const msg = r.message || ''
+  return r.provider_note ? `${msg}（原因：${r.provider_note}）` : msg
+}
+
+/** CSV 的一行（列：cdk_code, status, can_resubmit, account_email, plan, used_at, message）。 */
+export function csvRow(r: LookupResult): string {
+  return [
+    r.cdk_code,
+    r.status,
+    r.can_resubmit ? '1' : '0',
+    r.account_email || '',
+    r.plan || '',
+    r.used_at || '',
+    batchMessage(r),
+  ].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')
+}

@@ -21,7 +21,7 @@ func CardPlatformPing(c *gin.Context) {
 		return
 	}
 
-	client := &http.Client{Timeout: 8 * time.Second}
+	client := &http.Client{Timeout: 8 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	candidates := []string{
 		cfg.OpenAPIBase() + "/balance", // 若无 key 可能 401，仍说明可达
 		base + "/health",
@@ -58,7 +58,7 @@ func CardPlatformPing(c *gin.Context) {
 	}
 
 	egressIP, egressSrc, _ := detectEgressIP(c.Request.Context())
-	keyCfg, _ := db.GetSetting("card_api_key")
+	keyCfg, _ := db.GetCardSecret(db.SettingCardAPIKey)
 
 	if probed == "" {
 		c.JSON(http.StatusBadGateway, gin.H{

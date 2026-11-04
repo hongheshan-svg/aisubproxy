@@ -30,20 +30,15 @@ type Config struct {
 
 func LoadConfig() Config {
 	base, _ := db.GetSetting("card_api_base")
-	key, _ := db.GetSetting("card_api_key")
+	key, _ := db.GetCardSecret(db.SettingCardAPIKey)
 	if strings.TrimSpace(base) == "" {
 		base = os.Getenv("CARD_API_BASE")
 	}
 	if strings.TrimSpace(key) == "" {
 		key = os.Getenv("CARD_API_KEY")
 	}
-	base = strings.TrimRight(strings.TrimSpace(base), "/")
 	// 兼容用户填了 .../openapi/v1
-	base = strings.TrimSuffix(base, "/openapi/v1")
-	base = strings.TrimSuffix(base, "/openapi")
-	if base == "" {
-		base = defaultBase
-	}
+	base = NormalizeBase(base)
 	return Config{SiteBase: base, APIKey: strings.TrimSpace(key)}
 }
 
@@ -72,9 +67,14 @@ func New(cfg Config) *Client {
 		cfg: cfg,
 		client: &http.Client{
 			Timeout: defaultHTTPTimeout,
+			// 不跟随重定向：X-API-Key 不能被带到别的主机
+			CheckRedirect: noRedirect,
 		},
 	}
 }
+
+// noRedirect 不跟随重定向，返回最后一次响应。
+func noRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
 func NewFromSettings() *Client {
 	return New(LoadConfig())
@@ -545,7 +545,7 @@ func (c *Client) IssueCDKs(ctx context.Context, plan string, count int, idem str
 			body.PreferredSegmentType = "product"
 		}
 	}
-	issueClient := &http.Client{Timeout: issueHTTPTimeout, Transport: c.client.Transport}
+	issueClient := &http.Client{Timeout: issueHTTPTimeout, Transport: c.client.Transport, CheckRedirect: noRedirect}
 	data, err := c.doOpenAPIWithClient(ctx, issueClient, http.MethodPost, "/gpt-direct/cdks", body, idem)
 	if err != nil {
 		return nil, err

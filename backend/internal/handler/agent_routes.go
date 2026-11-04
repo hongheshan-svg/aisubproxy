@@ -22,10 +22,14 @@ func RegisterAgentRoutes(api *gin.RouterGroup) {
 	sess.GET("/orders", AgentListOrders)
 	sess.GET("/orders/:id", AgentGetOrder)
 	sess.POST("/orders/:id/export", AgentExportOrder)
+	sess.GET("/codes", AgentListCodes)
+	sess.POST("/codes/export", AgentExportCodes)
+	sess.GET("/overview", AgentOverview)
+	sess.GET("/ledger", AgentLedger)
+	sess.GET("/ledger/export", AgentLedgerExport)
 }
 
 // RegisterAgentAdminRoutes 挂管理员管理代理商的接口（调用方已套好管理员中间件）。
-// /agents/:id/ledger 和 /ledger/export 由任务 8 补。
 func RegisterAgentAdminRoutes(admin *gin.RouterGroup) {
 	admin.GET("/agents", AdminListAgents)
 	admin.POST("/agents", AdminCreateAgent)
@@ -37,6 +41,8 @@ func RegisterAgentAdminRoutes(admin *gin.RouterGroup) {
 	admin.POST("/agents/:id/reset-totp", AdminResetAgentTOTP)
 	admin.POST("/agents/:id/adjust", AdminAdjustAgent)
 	admin.GET("/agents/:id/orders", AdminListAgentOrders)
+	admin.GET("/agents/:id/ledger", AdminAgentLedger)
+	admin.GET("/agents/:id/ledger/export", AdminAgentLedgerExport)
 	admin.GET("/agents/:id/overrides", AdminGetAgentOverrides)
 	admin.PUT("/agents/:id/overrides", AdminPutAgentOverrides)
 	admin.GET("/agent-summary", AdminAgentSummary)

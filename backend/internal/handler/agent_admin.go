@@ -509,12 +509,15 @@ func AdminPutAgentOverrides(c *gin.Context) {
 
 // agentReconcileView 是 site_settings.agent_reconcile_last 的内容，也是 /agent-summary 里 reconcile 的形状。
 type agentReconcileView struct {
-	At         int64 `json:"at"`
-	OK         bool  `json:"ok"`
-	Mismatches []struct {
-		AgentID   int64 `json:"agent_id"`
-		DiffCents int64 `json:"diff_cents"`
-	} `json:"mismatches"`
+	At         int64                    `json:"at"`
+	OK         bool                     `json:"ok"`
+	Mismatches []agentReconcileMismatch `json:"mismatches"`
+}
+
+// agentReconcileMismatch 是一个对不上的代理商和差额（余额减流水）。
+type agentReconcileMismatch struct {
+	AgentID   int64 `json:"agent_id"`
+	DiffCents int64 `json:"diff_cents"`
 }
 
 // AdminAgentSummary GET /agent-summary：余额合计、今天和本月的下单合计（按北京时间）、最近一次对账结果。
@@ -536,13 +539,12 @@ func AdminAgentSummary(c *gin.Context) {
 	if strings.TrimSpace(raw) != "" {
 		var v agentReconcileView
 		if json.Unmarshal([]byte(raw), &v) == nil {
-			if v.Mismatches == nil {
-				v.Mismatches = []struct {
-					AgentID   int64 `json:"agent_id"`
-					DiffCents int64 `json:"diff_cents"`
-				}{}
+			if v.At > 0 { // {}、null 等没有时间的内容按还没对过账处理
+				if v.Mismatches == nil {
+					v.Mismatches = []agentReconcileMismatch{}
+				}
+				rec = v
 			}
-			rec = v
 		} else {
 			log.Printf("[agent-admin] %s 内容无法解析，按没有处理", agentReconcileKey)
 		}

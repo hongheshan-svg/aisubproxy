@@ -70,6 +70,7 @@ func runOpsMaintenance(now time.Time) {
 	sweepCDKSessionsOnce(now)
 	escalateAgentExchanges(now)
 	retryAgentExchangeDisables(now)
+	reconcileAgentBalances(now)
 }
 
 // retryAgentExchangeDisables 重试禁用旧码（MO-08）：新码已发出、旧码还没确认禁用的换码记录（disabling）。

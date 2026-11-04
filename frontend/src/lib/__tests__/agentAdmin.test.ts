@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   adminErrorText, adjustOpenState, adjustPreview, classifyAdjust, matrixChanges, overrideChanges, validProductCode,
   adjustPendings, adjustKeeperFor, USERNAME_TAKEN_HINT,
-  adjustBegin, adjustFinish, adjustReopenBlock, adjustInflight,
+  assemblePricing, adjustBegin, adjustFinish, adjustReopenBlock, adjustInflight,
 } from '../agentAdmin'
 
 describe('matrixChanges', () => {
@@ -194,5 +194,27 @@ describe('adjustPreview 锁定重试提示', () => {
   it('重试时注明可能已入账', () => {
     expect(adjustPreview('a', 1000, 100, true).afterText).toContain('上一次可能已入账，请先核对流水再确认')
     expect(adjustPreview('a', 1000, 100).afterText).not.toContain('可能已入账')
+  })
+})
+
+describe('assemblePricing', () => {
+  const tiersResp = { items: [{ id: 1, name: '普通', note: '默认', agent_count: 3 }, { id: 2, name: 'VIP', note: '', agent_count: 0 }] }
+  const pricesResp = {
+    tiers: [{ id: 1, name: '普通' }, { id: 2, name: 'VIP' }],
+    products: [{ id: 5, product_code: 'p', name: 'P', enabled: true }],
+    cells: [{ tier_id: 1, product_id: 5, price_cents: 500 }],
+  }
+  it('等级表保留 note 和 agent_count，矩阵列只用 id/name', () => {
+    const r = assemblePricing(tiersResp, pricesResp)
+    expect(r.tiers).toEqual(tiersResp.items)
+    expect(r.matrixTiers).toEqual([{ id: 1, name: '普通' }, { id: 2, name: 'VIP' }])
+    expect(r.cells).toEqual(pricesResp.cells)
+    expect(r.products.length).toBe(1)
+  })
+  it('缺字段时兜底，不出 undefined', () => {
+    const r = assemblePricing({ items: [{ id: 1, name: 'a' }] }, { tiers: [{ id: 1, name: 'a', note: 'x' }] })
+    expect(r.tiers[0]).toEqual({ id: 1, name: 'a', note: '', agent_count: 0 })
+    expect(r.matrixTiers).toEqual([{ id: 1, name: 'a' }])
+    expect(assemblePricing(null, null)).toEqual({ tiers: [], matrixTiers: [], products: [], cells: [] })
   })
 })

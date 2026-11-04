@@ -41,18 +41,18 @@
       <p class="text-sm opacity-70">留空或填 0 表示这个等级不卖这个商品。改完统一点保存，整批生效。</p>
       <div class="overflow-x-auto">
         <table class="text-sm" data-testid="price-matrix">
-          <thead><tr><th class="p-2 text-left">商品</th><th v-for="t in tiers" :key="t.id" class="p-2 text-left">{{ t.name }}</th></tr></thead>
+          <thead><tr><th class="p-2 text-left">商品</th><th v-for="t in matrixTiers" :key="t.id" class="p-2 text-left">{{ t.name }}</th></tr></thead>
           <tbody>
             <tr v-for="p in products" :key="p.id" class="border-t">
               <td class="p-2 whitespace-nowrap">{{ p.name }} <span class="opacity-60 mono">{{ p.product_code }}</span><el-tag v-if="!p.enabled" size="small" type="info" class="ml-1">下架</el-tag></td>
-              <td v-for="t in tiers" :key="t.id" class="p-1"><el-input v-model="edited[`${t.id}:${p.id}`]" size="small" class="!w-[100px]" placeholder="不卖" /></td>
+              <td v-for="t in matrixTiers" :key="t.id" class="p-1"><el-input v-model="edited[`${t.id}:${p.id}`]" size="small" class="!w-[100px]" placeholder="不卖" /></td>
             </tr>
-            <tr v-if="!products.length"><td class="p-3 opacity-70" :colspan="tiers.length + 1">还没有商品</td></tr>
+            <tr v-if="!products.length"><td class="p-3 opacity-70" :colspan="matrixTiers.length + 1">还没有商品</td></tr>
           </tbody>
         </table>
       </div>
       <p v-if="matrixErr" class="text-sm text-red-500" role="alert">{{ matrixErr }}</p>
-      <el-button type="primary" :loading="savingMatrix" :disabled="!products.length || !tiers.length" @click="saveMatrix">保存价格</el-button>
+      <el-button type="primary" :loading="savingMatrix" :disabled="!products.length || !matrixTiers.length" @click="saveMatrix">保存价格</el-button>
     </section>
 
     <!-- 等级对话框 -->
@@ -90,35 +90,42 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { adminApi, centsToUsd } from '../../lib/provider'
-import { adminErrorText, matrixChanges, validProductCode, type PriceCell } from '../../lib/agentAdmin'
+import { adminErrorText, assemblePricing, matrixChanges, validProductCode, type PriceCell } from '../../lib/agentAdmin'
 import { dialog } from '../../lib/dialog'
 
 const loading = ref(false)
 const err = ref('')
 const tiers = ref<any[]>([])
+const matrixTiers = ref<{ id: number; name: string }[]>([]) // 矩阵的列，只有 id 和 name
 const products = ref<any[]>([])
 const options = ref<any[]>([])
 const cells = ref<PriceCell[]>([])
 const edited = reactive<Record<string, string>>({})
 
 function fillMatrix(d: any) {
-  tiers.value = d.tiers || []
-  cells.value = d.cells || []
+  matrixTiers.value = assemblePricing(null, d).matrixTiers
+  cells.value = assemblePricing(null, d).cells
   for (const k of Object.keys(edited)) delete edited[k]
-  for (const t of tiers.value) for (const p of d.products || []) edited[`${t.id}:${p.id}`] = ''
+  for (const t of matrixTiers.value) for (const p of d.products || []) edited[`${t.id}:${p.id}`] = ''
   for (const c of cells.value) if (c.price_cents > 0) edited[`${c.tier_id}:${c.product_id}`] = centsToUsd(c.price_cents)
 }
 
 async function loadAll() {
   loading.value = true
   err.value = ''
-  const [t, p, m] = await Promise.all([adminApi<any>('/agent-tiers'), adminApi<any>('/agent-products'), adminApi<any>('/agent-prices')])
-  loading.value = false
-  const bad = [t, p, m].find((r) => !r.ok)
-  if (bad) err.value = '读取失败：' + adminErrorText(bad.data, bad.status)
-  if (t.ok) tiers.value = t.data.items || []
-  if (p.ok) products.value = p.data.items || []
-  if (m.ok) { fillMatrix(m.data); products.value = p.ok ? products.value : (m.data.products || []) }
+  try {
+    const [t, p, m] = await Promise.all([adminApi<any>('/agent-tiers'), adminApi<any>('/agent-products'), adminApi<any>('/agent-prices')])
+    const bad = [t, p, m].find((r) => !r.ok)
+    if (bad) err.value = '读取失败：' + adminErrorText(bad.data, bad.status)
+    if (t.ok) tiers.value = assemblePricing(t.data, null).tiers
+    if (p.ok) products.value = p.data.items || []
+    if (m.ok) {
+      fillMatrix(m.data)
+      if (!p.ok) products.value = m.data.products || []
+    }
+  } finally {
+    loading.value = false
+  }
 }
 
 // ---------- 价格矩阵 ----------
@@ -129,8 +136,8 @@ async function saveMatrix() {
   if (errors.length) { matrixErr.value = errors.join('；'); return }
   if (!changed.length) { matrixErr.value = ''; dialog.toast('没有改动', 'info'); return }
   savingMatrix.value = true
-  const r = await adminApi<any>('/agent-prices', 'PUT', { cells: changed })
-  savingMatrix.value = false
+  let r
+  try { r = await adminApi<any>('/agent-prices', 'PUT', { cells: changed }) } finally { savingMatrix.value = false }
   if (!r.ok) { matrixErr.value = adminErrorText(r.data, r.status); return }
   matrixErr.value = ''
   fillMatrix(r.data)
@@ -143,16 +150,23 @@ const tierBusy = ref(false)
 const tierErr = ref('')
 const tierForm = reactive({ id: 0, name: '', note: '' })
 function openTier(row: any) {
-  Object.assign(tierForm, row ? { id: row.id, name: row.name, note: row.note } : { id: 0, name: '', note: '' })
+  Object.assign(tierForm, row ? { id: row.id, name: row.name, note: row.note ?? '' } : { id: 0, name: '', note: '' })
   tierErr.value = ''
   tierOpen.value = true
 }
 async function saveTier() {
   if (!tierForm.name.trim()) { tierErr.value = '请填写名称'; return }
   tierBusy.value = true
-  const body = { name: tierForm.name.trim(), note: tierForm.note.trim() }
-  const r = tierForm.id ? await adminApi<any>(`/agent-tiers/${tierForm.id}`, 'PUT', body) : await adminApi<any>('/agent-tiers', 'POST', body)
-  tierBusy.value = false
+  let r
+  try {
+    const body = { name: tierForm.name.trim(), note: String(tierForm.note ?? '').trim() }
+    r = tierForm.id ? await adminApi<any>(`/agent-tiers/${tierForm.id}`, 'PUT', body) : await adminApi<any>('/agent-tiers', 'POST', body)
+  } catch (e) {
+    tierErr.value = '保存失败，请稍后再试'
+    return
+  } finally {
+    tierBusy.value = false
+  }
   if (!r.ok) { tierErr.value = adminErrorText(r.data, r.status); return }
   tierOpen.value = false
   loadAll()
@@ -194,17 +208,21 @@ function editProduct(row: any) {
 async function saveProduct() {
   if (!prodForm.name.trim()) { prodErr.value = '请填写名称'; return }
   let r
-  prodBusy.value = true
   if (prodForm.id) {
-    r = await adminApi<any>(`/agent-products/${prodForm.id}`, 'PUT', { name: prodForm.name.trim(), enabled: prodForm.enabled, sort: prodForm.sort })
+    prodBusy.value = true
+    try {
+      r = await adminApi<any>(`/agent-products/${prodForm.id}`, 'PUT', { name: prodForm.name.trim(), enabled: prodForm.enabled, sort: prodForm.sort })
+    } catch { prodErr.value = '保存失败，请稍后再试'; return } finally { prodBusy.value = false }
   } else {
     const o = options.value.find((x) => x.plan + '|' + x.region === prodForm.combo)
-    if (!o) { prodBusy.value = false; prodErr.value = '请选择套餐和地区'; return }
-    const code = prodForm.product_code.trim()
-    if (!validProductCode(code)) { prodBusy.value = false; prodErr.value = '商品编码只能用小写字母、数字、连字符，2-48 位'; return }
-    r = await adminApi<any>('/agent-products', 'POST', { product_code: code, name: prodForm.name.trim(), plan: o.plan, region: o.region, sort: prodForm.sort })
+    if (!o) { prodErr.value = '请选择套餐和地区'; return }
+    const code = String(prodForm.product_code ?? '').trim()
+    if (!validProductCode(code)) { prodErr.value = '商品编码只能用小写字母、数字、连字符，2-48 位'; return }
+    prodBusy.value = true
+    try {
+      r = await adminApi<any>('/agent-products', 'POST', { product_code: code, name: prodForm.name.trim(), plan: o.plan, region: o.region, sort: prodForm.sort })
+    } catch { prodErr.value = '保存失败，请稍后再试'; return } finally { prodBusy.value = false }
   }
-  prodBusy.value = false
   if (!r.ok) { prodErr.value = adminErrorText(r.data, r.status); return }
   prodOpen.value = false
   loadAll()

@@ -175,3 +175,20 @@ export function adjustFinish(agentId: number, payload: PendingAdjust, outcome: A
 export function adjustReopenBlock(agentId: number): string {
   return adjustInflight.has(agentId) ? ADJUST_BUSY_TEXT : ''
 }
+
+export type TierRow = { id: number; name: string; note: string; agent_count: number }
+
+/** 从 /agent-tiers 和 /agent-prices 两份响应组装：等级表用前者（有备注和代理商数），矩阵列只用后者的 {id, name}。 */
+export function assemblePricing(tiersResp: any, pricesResp: any): {
+  tiers: TierRow[]; matrixTiers: { id: number; name: string }[]; products: any[]; cells: PriceCell[]
+} {
+  const tiers: TierRow[] = (Array.isArray(tiersResp?.items) ? tiersResp.items : []).map((t: any) => ({
+    id: t.id, name: t.name, note: typeof t.note === 'string' ? t.note : '', agent_count: Number(t.agent_count) || 0,
+  }))
+  const matrixTiers = (Array.isArray(pricesResp?.tiers) ? pricesResp.tiers : []).map((t: any) => ({ id: t.id, name: t.name }))
+  return {
+    tiers, matrixTiers,
+    products: Array.isArray(pricesResp?.products) ? pricesResp.products : [],
+    cells: Array.isArray(pricesResp?.cells) ? pricesResp.cells : [],
+  }
+}

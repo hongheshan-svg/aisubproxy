@@ -220,6 +220,10 @@ func SavePlanTable(p []PlanConf) error {
 			if !currencyRe.MatchString(rc.Currency) {
 				return fmt.Errorf("%w: %s/%s 币种须为 3 位大写字母", ErrBadRequest, pc.Key, r)
 			}
+			// 美元地区的注资金额与预期金额都是美分，注资不足预期就一定会被支付页拒绝（D-5）
+			if rc.Currency == "USD" && rc.FundCents > 0 && rc.ExpectMinor > 0 && rc.FundCents < rc.ExpectMinor {
+				return fmt.Errorf("%w: %s/%s 美元注资金额 %d 分不能低于预期金额 %d 分", ErrBadRequest, pc.Key, r, rc.FundCents, rc.ExpectMinor)
+			}
 		}
 	}
 	out := make([]PlanConf, len(p))

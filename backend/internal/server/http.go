@@ -173,6 +173,21 @@ func upstreamKeysConfigured() (bool, error) {
 	return false, nil
 }
 
+// isExampleJWTSecret 识别照抄示例文件留下的占位密钥（A-3）：
+// deploy/app.env.example 的占位值，以及带 change-me / changeme / example 字样的值，不区分大小写。
+func isExampleJWTSecret(secret string) bool {
+	lower := strings.ToLower(secret)
+	if lower == "change-me-to-random-32chars-min" {
+		return true
+	}
+	for _, marker := range []string{"change-me", "changeme", "example"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // enforceJWTSecret 拒绝使用空/默认/过短的 JWT 密钥启动：release 模式总是拒绝；
 // 非 release 模式下，只要已配置动钱上游密钥（hasUpstream）也拒绝，防止公开默认密钥伪造管理员 token 调用动钱接口。
 func enforceJWTSecret(mode string, hasUpstream bool) error {
@@ -180,6 +195,7 @@ func enforceJWTSecret(mode string, hasUpstream bool) error {
 	weak := secret == "" ||
 		secret == "your-secret-key-change-in-production" ||
 		secret == "dev-secret-key-change-in-production" ||
+		isExampleJWTSecret(secret) ||
 		len(secret) < 16
 	if mode == "release" && weak {
 		return fmt.Errorf("不安全的 JWT_SECRET：release 模式必须设置至少 16 位的随机 JWT_SECRET 环境变量")

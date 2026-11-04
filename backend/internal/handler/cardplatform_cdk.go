@@ -570,11 +570,11 @@ func CardPlatformDisableCDK(c *gin.Context) {
 		writeCardErr(c, err)
 		return
 	}
-	_ = db.UpdateCardplatformCDKStatus(id, "disabled")
+	localFailed := setLocalCDKStatuses([]int64{id}, "disabled")
 	u, _ := c.Get("username")
 	username, _ := u.(string)
 	db.WriteAudit(username, "cardplatform_disable_cdk", "id="+strconv.FormatInt(id, 10), c.ClientIP())
-	c.JSON(http.StatusOK, gin.H{"ok": true, "id": id, "status": "disabled"})
+	c.JSON(http.StatusOK, gin.H{"ok": true, "id": id, "status": "disabled", "local_failed": localFailed})
 }
 
 // CardPlatformEnableCDK POST /api/v1/admin/cardplatform/cdks/:id/enable — 解除禁用
@@ -589,11 +589,11 @@ func CardPlatformEnableCDK(c *gin.Context) {
 		writeCardErr(c, err)
 		return
 	}
-	_ = db.UpdateCardplatformCDKStatus(id, "unused")
+	localFailed := setLocalCDKStatuses([]int64{id}, "unused")
 	u, _ := c.Get("username")
 	username, _ := u.(string)
 	db.WriteAudit(username, "cardplatform_enable_cdk", "id="+strconv.FormatInt(id, 10), c.ClientIP())
-	c.JSON(http.StatusOK, gin.H{"ok": true, "id": id, "status": "unused"})
+	c.JSON(http.StatusOK, gin.H{"ok": true, "id": id, "status": "unused", "local_failed": localFailed})
 }
 
 // CardPlatformBatchDisableCDKs POST /api/v1/admin/cardplatform/cdks/batch-disable
@@ -616,9 +616,7 @@ func CardPlatformBatchDisableCDKs(c *gin.Context) {
 		writeCardErr(c, err)
 		return
 	}
-	for _, id := range res.Disabled {
-		_ = db.UpdateCardplatformCDKStatus(id, "disabled")
-	}
+	localFailed := setLocalCDKStatuses(res.Disabled, "disabled")
 	u, _ := c.Get("username")
 	username, _ := u.(string)
 	db.WriteAudit(username, "cardplatform_batch_disable_cdk",
@@ -627,6 +625,7 @@ func CardPlatformBatchDisableCDKs(c *gin.Context) {
 		"ok":       true,
 		"disabled": res.Disabled, "failed": res.Failed,
 		"disabled_count": res.DisabledCount, "failed_count": res.FailedCount,
+		"local_failed": localFailed,
 	})
 }
 
@@ -649,9 +648,7 @@ func CardPlatformBatchEnableCDKs(c *gin.Context) {
 		writeCardErr(c, err)
 		return
 	}
-	for _, id := range res.Enabled {
-		_ = db.UpdateCardplatformCDKStatus(id, "unused")
-	}
+	localFailed := setLocalCDKStatuses(res.Enabled, "unused")
 	u, _ := c.Get("username")
 	username, _ := u.(string)
 	db.WriteAudit(username, "cardplatform_batch_enable_cdk",
@@ -660,6 +657,7 @@ func CardPlatformBatchEnableCDKs(c *gin.Context) {
 		"ok":      true,
 		"enabled": res.Enabled, "failed": res.Failed,
 		"enabled_count": res.EnabledCount, "failed_count": res.FailedCount,
+		"local_failed": localFailed,
 	})
 }
 
@@ -1548,4 +1546,17 @@ func CardPlatformBatchClearCDKNote(c *gin.Context) {
 	db.WriteAudit(username, "cardplatform_batch_note_clear",
 		"cleared="+strconv.Itoa(n)+" requested="+strconv.Itoa(len(req.IDs)), c.ClientIP())
 	c.JSON(http.StatusOK, gin.H{"ok": true, "cleared_count": n, "requested": len(req.IDs)})
+}
+
+// setLocalCDKStatuses 把卡台已成功的禁用/启用同步到本地缓存（E-8）。
+// 卡台那边已经生效，这里写库失败不能再报成整单失败，但要记日志并通过 local_failed 返回给调用方。
+func setLocalCDKStatuses(ids []int64, status string) []int64 {
+	failed := []int64{}
+	for _, id := range ids {
+		if err := db.UpdateCardplatformCDKStatus(id, status); err != nil {
+			log.Printf("cardplatform cdk %d: 本地状态同步为 %s 失败: %v", id, status, err)
+			failed = append(failed, id)
+		}
+	}
+	return failed
 }

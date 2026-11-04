@@ -39,6 +39,10 @@ RUN apt-get update \
     && mkdir -p /app/data
 WORKDIR /app
 
+# TRUSTED_PROXIES 默认值（A-18/F-8）：127.0.0.1 加 172.16.0.0/12，给 docker-compose.yml 里的 Caddy 用（compose 会覆盖为 172.16.0.0/12）。
+# 直接 `docker run -p 8080:8080` 发布端口时必须用 -e TRUSTED_PROXIES=127.0.0.1（或置空）覆盖：
+# 否则 Docker userland-proxy 把来源改写成网桥网关，落在可信段内，X-Forwarded-For 可伪造，限流和审计 IP 失效。
+# 这里不直接改默认值，是因为容器里的反代（不在 compose 里）依赖它。
 # 程序以 root 运行，启动 Chrome 时降权到 cdk-chrome 用户并保留沙箱
 ENV DB_PATH=/app/data/cdk_recharge.db \
     WEB_DIR=/app/web \

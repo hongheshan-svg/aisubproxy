@@ -23,6 +23,17 @@ type agentEnv struct {
 	clock time.Time
 }
 
+// resetAgentAuthState 清掉进程内的动态码计数、待绑定密钥和登录限流。
+func resetAgentAuthState() {
+	agentStateMu.Lock()
+	agentPending = map[string]agentPendingSecret{}
+	agentTOTPFails = map[string]agentFailCount{}
+	agentStateMu.Unlock()
+	loginMu.Lock()
+	loginAttempts = make(map[string]*loginAttempt)
+	loginMu.Unlock()
+}
+
 func newAgentEnv(t *testing.T) *agentEnv {
 	t.Helper()
 	e := &agentEnv{localEnv: newLocalEnv(t), clock: time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)}

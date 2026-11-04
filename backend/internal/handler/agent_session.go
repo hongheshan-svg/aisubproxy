@@ -20,7 +20,7 @@ const (
 	agentTokenPath = "/api/v1/agent"
 	agentPrePath   = "/api/v1/agent/auth"
 
-	agentTOTPMaxFails = 5
+	agentTOTPMaxFails = 5 // 每张临时凭证最多错 5 次
 	agentStateTTL     = 5 * time.Minute
 )
 
@@ -43,16 +43,6 @@ var (
 	agentPending   = map[string]agentPendingSecret{} // 待绑定的两步验证密钥，不进日志
 	agentTOTPFails = map[string]agentFailCount{}
 )
-
-func resetAgentAuthState() {
-	agentStateMu.Lock()
-	agentPending = map[string]agentPendingSecret{}
-	agentTOTPFails = map[string]agentFailCount{}
-	agentStateMu.Unlock()
-	loginMu.Lock()
-	loginAttempts = make(map[string]*loginAttempt)
-	loginMu.Unlock()
-}
 
 // sweepAgentStateLocked 清掉过期项，调用方持有 agentStateMu。
 func sweepAgentStateLocked(now time.Time) {
@@ -77,18 +67,37 @@ func agentFailCountOf(nonce string) int {
 	return agentTOTPFails[nonce].n
 }
 
-func agentAddFail(nonce string) int {
+// agentTakeAttempt 先占一次动态码尝试机会：检查和加 1 在同一把锁里，超过上限返回 false（凭证作废）。
+// 返回占用后的次数。校验成功要用 agentForgetNonce 清掉，内部错误要用 agentRefundAttempt 退回。
+func agentTakeAttempt(nonce string) (int, bool) {
 	agentStateMu.Lock()
 	defer agentStateMu.Unlock()
 	now := agentNow()
 	sweepAgentStateLocked(now)
 	f := agentTOTPFails[nonce]
+	if f.n >= agentTOTPMaxFails {
+		return f.n, false
+	}
 	if f.n == 0 {
 		f.exp = now.Add(agentStateTTL)
 	}
 	f.n++
 	agentTOTPFails[nonce] = f
-	return f.n
+	return f.n, true
+}
+
+// agentRefundAttempt 退回一次机会：数据库或解密出错不是用户输错，不计入失败次数。
+func agentRefundAttempt(nonce string) {
+	agentStateMu.Lock()
+	defer agentStateMu.Unlock()
+	if f, ok := agentTOTPFails[nonce]; ok {
+		f.n--
+		if f.n <= 0 {
+			delete(agentTOTPFails, nonce)
+		} else {
+			agentTOTPFails[nonce] = f
+		}
+	}
 }
 
 func agentForgetNonce(nonce string) {

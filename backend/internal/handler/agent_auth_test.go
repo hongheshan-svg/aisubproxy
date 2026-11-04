@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -270,9 +271,9 @@ func TestAgentTOTPFiveFailuresKillPre(t *testing.T) {
 	if w.Code != 401 || jsonField(t, w.Body.String(), "error") != "pre_expired" {
 		t.Fatalf("%d %s", w.Code, w.Body)
 	}
-	// 重新输密码后可以继续
+	// 重新输密码拿到新凭证，但账号级动态码限流已锁，正确的码也要等 15 分钟
 	pre = e.startTOTPStage("alice", pw)
-	if w := e.send("POST", agentBase+"/auth/totp", `{"code":"`+good+`"}`, liveCookiesOne(pre), nil); w.Code != 200 {
+	if w := e.send("POST", agentBase+"/auth/totp", `{"code":"`+good+`"}`, liveCookiesOne(pre), nil); w.Code != 429 {
 		t.Fatalf("%d %s", w.Code, w.Body)
 	}
 }
@@ -321,13 +322,12 @@ func TestAgentWriteNeedsCSRF(t *testing.T) {
 func TestAgentBearerIgnored(t *testing.T) {
 	e := newAgentEnv(t)
 	id, _, _ := e.seedAgent("alice", e.seedTier("普通"))
-	tok, _, err := agent.SignSession(id, 1, e.clock)
+	// 用库里真实的 session_version 签，保证令牌本身有效
+	a, _ := db.GetAgent(context.Background(), id)
+	tok, _, err := agent.SignSession(id, a.SessionVersion, e.clock)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// seedAgent 里改过密码，session_version 已不是 1；取真实值保证令牌本身有效
-	a, _ := db.GetAgent(context.Background(), id)
-	tok, _, _ = agent.SignSession(id, a.SessionVersion, e.clock)
 	w := e.send("GET", agentBase+"/me", "", nil, map[string]string{"Authorization": "Bearer " + tok})
 	if w.Code != 401 {
 		t.Fatalf("%d", w.Code)
@@ -426,7 +426,9 @@ func TestAgentAuthNoSecretsInLogsOrAudit(t *testing.T) {
 	n := 0
 	for rows.Next() {
 		var u, a, d string
-		rows.Scan(&u, &a, &d)
+		if err := rows.Scan(&u, &a, &d); err != nil {
+			t.Fatal(err)
+		}
 		all.WriteString(u + "|" + a + "|" + d + "\n")
 		n++
 	}
@@ -443,5 +445,222 @@ func TestAgentAuthNoSecretsInLogsOrAudit(t *testing.T) {
 		if !strings.Contains(all.String(), want) {
 			t.Fatalf("缺审计 %s:\n%s", want, all.String())
 		}
+	}
+}
+
+// wrongCode 返回一个和 good 不同的 6 位码。
+func wrongCode(good string) string {
+	if good == "000000" {
+		return "111111"
+	}
+	return "000000"
+}
+
+// 同一张临时凭证并发发 10 个错码，只有 5 个能走到校验，其余被拒。
+func TestAgentTOTPConcurrentWrongCodes(t *testing.T) {
+	e := newAgentEnv(t)
+	_, pw, secret := e.seedAgent("alice", e.seedTier("普通"))
+	e.clock = e.clock.Add(30 * time.Second)
+	pre := e.startTOTPStage("alice", pw)
+	bad := wrongCode(agent.TOTPCode(secret, agent.TOTPStep(e.clock)))
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	counts := map[string]int{}
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			w := e.send("POST", agentBase+"/auth/totp", `{"code":"`+bad+`"}`, liveCookiesOne(pre), nil)
+			mu.Lock()
+			counts[jsonField(t, w.Body.String(), "error")]++
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	if counts["totp_invalid"] != 5 {
+		t.Fatalf("应恰有 5 个走到校验: %v", counts)
+	}
+	if counts["totp_invalid"]+counts["pre_expired"]+counts["rate_limited"] != 10 {
+		t.Fatalf("其余应被拒: %v", counts)
+	}
+}
+
+// 两张不同的临时凭证轮流输错，账号级累计 5 次后，正确的码也返回 429。
+func TestAgentTOTPAccountLevelLimit(t *testing.T) {
+	e := newAgentEnv(t)
+	_, pw, secret := e.seedAgent("alice", e.seedTier("普通"))
+	e.clock = e.clock.Add(30 * time.Second)
+	good := agent.TOTPCode(secret, agent.TOTPStep(e.clock))
+	bad := wrongCode(good)
+	a, b := e.startTOTPStage("alice", pw), e.startTOTPStage("alice", pw)
+	for i := 0; i < 5; i++ {
+		pre := a
+		if i%2 == 1 {
+			pre = b
+		}
+		w := e.send("POST", agentBase+"/auth/totp", `{"code":"`+bad+`"}`, liveCookiesOne(pre), nil)
+		if w.Code != 401 || jsonField(t, w.Body.String(), "error") != "totp_invalid" {
+			t.Fatalf("第 %d 次: %d %s", i+1, w.Code, w.Body)
+		}
+	}
+	w := e.send("POST", agentBase+"/auth/totp", `{"code":"`+good+`"}`, liveCookiesOne(b), nil)
+	if w.Code != 429 || jsonField(t, w.Body.String(), "error") != "rate_limited" {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+}
+
+// 库里的密文坏了：500 internal，不计入动态码失败次数。
+func TestAgentTOTPCorruptSealedNotCounted(t *testing.T) {
+	e := newAgentEnv(t)
+	id, pw, secret := e.seedAgent("alice", e.seedTier("普通"))
+	e.clock = e.clock.Add(30 * time.Second)
+	pre := e.startTOTPStage("alice", pw)
+	if _, err := db.DB.Exec(`UPDATE agents SET totp_sealed = 'garbage' WHERE id = ?`, id); err != nil {
+		t.Fatal(err)
+	}
+	code := agent.TOTPCode(secret, agent.TOTPStep(e.clock))
+	for i := 0; i < 7; i++ {
+		w := e.send("POST", agentBase+"/auth/totp", `{"code":"`+code+`"}`, liveCookiesOne(pre), nil)
+		if w.Code != 500 || jsonField(t, w.Body.String(), "error") != "internal" {
+			t.Fatalf("第 %d 次: %d %s", i+1, w.Code, w.Body)
+		}
+	}
+	var n int
+	if err := db.DB.QueryRow(`SELECT COUNT(*) FROM admin_audit_logs WHERE action = 'agent_login_failed'`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("不应记动态码失败: n=%d err=%v", n, err)
+	}
+}
+
+// UseAgentTOTPStep 返回 false 的分支：两张凭证并发提交同一个正确码，只有一个成功。
+func TestAgentTOTPConcurrentSameCode(t *testing.T) {
+	e := newAgentEnv(t)
+	_, pw, secret := e.seedAgent("alice", e.seedTier("普通"))
+	e.clock = e.clock.Add(30 * time.Second)
+	code := agent.TOTPCode(secret, agent.TOTPStep(e.clock))
+	a, b := e.startTOTPStage("alice", pw), e.startTOTPStage("alice", pw)
+	var wg sync.WaitGroup
+	codes := make([]int, 2)
+	for i, pre := range []*http.Cookie{a, b} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			codes[i] = e.send("POST", agentBase+"/auth/totp", `{"code":"`+code+`"}`, liveCookiesOne(pre), nil).Code
+		}()
+	}
+	wg.Wait()
+	if !(codes[0] == 200 && codes[1] == 401) && !(codes[0] == 401 && codes[1] == 200) {
+		t.Fatalf("应恰有一个 200: %v", codes)
+	}
+}
+
+func TestAgentMasterKeyMissingMaintenance(t *testing.T) {
+	e := newAgentEnv(t)
+	_, pw, secret := e.seedAgent("alice", e.seedTier("普通"))
+	e.clock = e.clock.Add(30 * time.Second)
+	pre := e.startTOTPStage("alice", pw)
+	t.Setenv("APP_MASTER_KEY", "")
+	code := agent.TOTPCode(secret, agent.TOTPStep(e.clock))
+	w := e.send("POST", agentBase+"/auth/totp", `{"code":"`+code+`"}`, liveCookiesOne(pre), nil)
+	if w.Code != 503 || jsonField(t, w.Body.String(), "error") != "maintenance" {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+}
+
+// setupStagePre 建一个改过密码、还没绑定两步验证的账号，登录后返回 setup_totp 阶段的凭证。
+func (e *agentEnv) setupStagePre(user string) (int64, *http.Cookie) {
+	e.t.Helper()
+	const pw = "Some-Good-Pass-77"
+	hash, _ := bcrypt.GenerateFromPassword([]byte(pw), bcrypt.MinCost)
+	ctx := context.Background()
+	id, err := db.CreateAgent(ctx, db.NewAgent{Username: user, PasswordHash: string(hash), TierID: e.seedTier("T-" + user)}, e.clock)
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	if _, err := db.SetAgentPassword(ctx, id, string(hash), false, e.clock); err != nil {
+		e.t.Fatal(err)
+	}
+	w := e.send("POST", agentBase+"/auth/login", `{"username":"`+user+`","password":"`+pw+`"}`, nil, nil)
+	pre := findCookie(liveCookies(w), agentPreCookie)
+	if pre == nil || jsonField(e.t, w.Body.String(), "next") != "setup_totp" {
+		e.t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	return id, pre
+}
+
+func TestAgentSetupAfterBoundConflict(t *testing.T) {
+	e := newAgentEnv(t)
+	id, pre := e.setupStagePre("bob")
+	w := e.send("GET", agentBase+"/auth/totp/setup", "", liveCookiesOne(pre), nil)
+	if w.Code != 200 || w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("%d %v", w.Code, w.Header())
+	}
+	if err := db.BindAgentTOTP(context.Background(), id, "sealed-by-someone-else", 1, e.clock); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct{ m, p, b string }{{"GET", "/auth/totp/setup", ""}, {"POST", "/auth/totp/confirm", `{"code":"123456"}`}} {
+		w = e.send(c.m, agentBase+c.p, c.b, liveCookiesOne(pre), nil)
+		if w.Code != 409 || jsonField(t, w.Body.String(), "error") != "totp_bound" {
+			t.Fatalf("%s: %d %s", c.p, w.Code, w.Body)
+		}
+	}
+}
+
+func TestAgentOldPreInvalidAfterInitialPassword(t *testing.T) {
+	e := newAgentEnv(t)
+	hash, _ := bcrypt.GenerateFromPassword([]byte("InitPass-12345"), bcrypt.MinCost)
+	if _, err := db.CreateAgent(context.Background(), db.NewAgent{Username: "newbie", PasswordHash: string(hash), TierID: e.seedTier("普通")}, e.clock); err != nil {
+		t.Fatal(err)
+	}
+	w := e.send("POST", agentBase+"/auth/login", `{"username":"newbie","password":"InitPass-12345"}`, nil, nil)
+	old := liveCookiesOne(findCookie(liveCookies(w), agentPreCookie))
+	if w = e.send("POST", agentBase+"/auth/password/initial", `{"new_password":"BrandNew-Pass-9876"}`, old, nil); w.Code != 200 {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+	for _, c := range []struct{ m, p, b string }{
+		{"POST", "/auth/password/initial", `{"new_password":"Another-Pass-4321"}`},
+		{"GET", "/auth/totp/setup", ""},
+	} {
+		w = e.send(c.m, agentBase+c.p, c.b, old, nil)
+		if w.Code != 401 || jsonField(t, w.Body.String(), "error") != "pre_expired" {
+			t.Fatalf("%s: %d %s", c.p, w.Code, w.Body)
+		}
+	}
+}
+
+func TestAgentTOTPStageCannotChangePassword(t *testing.T) {
+	e := newAgentEnv(t)
+	_, pw, _ := e.seedAgent("alice", e.seedTier("普通"))
+	pre := e.startTOTPStage("alice", pw)
+	w := e.send("POST", agentBase+"/auth/password/initial", `{"new_password":"Another-Pass-4321"}`, liveCookiesOne(pre), nil)
+	if w.Code != 401 || jsonField(t, w.Body.String(), "error") != "pre_expired" {
+		t.Fatalf("%d %s", w.Code, w.Body)
+	}
+}
+
+// 不存在的账号：响应一样，但不写审计（防止密码误填进登录名后进审计、也防刷表）。
+func TestAgentLoginUnknownUserNoAudit(t *testing.T) {
+	e := newAgentEnv(t)
+	w := e.send("POST", agentBase+"/auth/login", `{"username":"nobody","password":"Whatever-Pass-1"}`, nil, nil)
+	if w.Code != 401 {
+		t.Fatal(w.Code)
+	}
+	var n int
+	if err := db.DB.QueryRow(`SELECT COUNT(*) FROM admin_audit_logs`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("n=%d err=%v", n, err)
+	}
+}
+
+func TestAgentChangePasswordFailureAudited(t *testing.T) {
+	e := newAgentEnv(t)
+	_, pw, secret := e.seedAgent("alice", e.seedTier("普通"))
+	s := e.login("alice", pw, secret)
+	e.clock = e.clock.Add(30 * time.Second)
+	body := `{"current_password":"wrong-password-1","new_password":"Another-Pass-4321","code":"000000"}`
+	if w := e.agentDo(s, "POST", agentBase+"/me/password", body); w.Code != 400 {
+		t.Fatalf("%d", w.Code)
+	}
+	var n int
+	if err := db.DB.QueryRow(`SELECT COUNT(*) FROM admin_audit_logs WHERE action = 'agent_password_change_failed'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("n=%d err=%v", n, err)
 	}
 }

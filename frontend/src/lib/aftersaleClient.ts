@@ -17,7 +17,8 @@ export async function lookupAftersale(
     const r = await fetchFn(`/api/v1/lookup/cdk?code=${encodeURIComponent(code)}`)
     const data = await r.json().catch(() => ({}))
     if (r.ok) return { result: data as LookupResult, error: '' }
-    if (r.status === 404) return { error: data.message || msgs.notFound }
+    // 后端 404 的 message 是中文，英文界面也会照搬，所以找不到一律用语言包的文案
+    if (r.status === 404) return { error: msgs.notFound }
     return { error: data.error || data.message || msgs.network }
   } catch {
     return { error: msgs.network }

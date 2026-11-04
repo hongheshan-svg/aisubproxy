@@ -48,6 +48,12 @@ export const GUIDE_CODES = [
   'provider_wait',
 ] as const
 
+/** 设计 §4 指引表里按钮为「无」的编号：码即使已恢复也不给重新兑换。 */
+const NO_RESUBMIT_GUIDES = new Set(['credit_region_mismatch', 'manual_review', 'provider_wait'])
+
+/** 这两条指引的文案说「原因如下」，没有服务商原文时改用不带「如下」的 *_plain 文案。 */
+const NOTE_GUIDES = new Set(['provider_retry', 'provider_wait'])
+
 const KNOWN_STATES = new Set([
   'unused', 'used', 'processing', 'failed', 'replaced', 'unsupported', 'disabled', 'expired', 'unknown',
 ])
@@ -55,8 +61,8 @@ const KNOWN_STATES = new Set([
 /** 状态值对应的语言包键；不认得的用 unknown。 */
 const stateKey = (status: string) => `aftersale.state.${KNOWN_STATES.has(status) ? status : 'unknown'}`
 
-/** RFC3339 字符串转北京时间；空或解析不了返回 undefined。 */
-function fmtTime(s?: string): string | undefined {
+/** RFC3339 字符串转北京时间；空或解析不了返回 undefined。售后结果和 /history 批量表共用。 */
+export function fmtLookupTime(s?: string): string | undefined {
   if (!s) return undefined
   const ms = Date.parse(s)
   if (Number.isNaN(ms)) return undefined
@@ -70,23 +76,26 @@ function usedFields(r: LookupResult): AfterSaleView['fields'] {
     if (value) out.push({ labelKey, value })
   }
   add('aftersale.field.plan', r.plan)
-  add('aftersale.field.usedAt', fmtTime(r.used_at))
-  if (!credit) add('aftersale.field.expiresAt', fmtTime(r.expires_at))
+  add('aftersale.field.usedAt', fmtLookupTime(r.used_at))
+  if (!credit) add('aftersale.field.expiresAt', fmtLookupTime(r.expires_at))
   add('aftersale.field.email', r.account_email)
   return out
 }
 
 export function afterSaleView(r: LookupResult): AfterSaleView {
   const view: AfterSaleView = { tone: 'info', titleKey: 'aftersale.state.unknown', fields: [], actions: [] }
-  if (r.guide && (GUIDE_CODES as readonly string[]).includes(r.guide)) view.guideKey = `aftersale.guide.${r.guide}`
+  if (r.guide && (GUIDE_CODES as readonly string[]).includes(r.guide)) {
+    view.guideKey = `aftersale.guide.${r.guide}${NOTE_GUIDES.has(r.guide) && !r.provider_note ? '_plain' : ''}`
+  }
   if (r.provider_note) view.note = r.provider_note
+  const resubmit: AfterSaleAction[] = r.guide && NO_RESUBMIT_GUIDES.has(r.guide) ? [] : ['resubmit']
 
   switch (r.status) {
     case 'unused':
       if (r.can_resubmit && r.guide) {
         view.tone = 'warn'
         view.titleKey = 'aftersale.state.failed_restored'
-        view.actions = ['resubmit']
+        view.actions = resubmit
       } else {
         view.titleKey = 'aftersale.state.unused'
         view.actions = ['redeem']
@@ -96,7 +105,7 @@ export function afterSaleView(r: LookupResult): AfterSaleView {
       view.tone = 'warn'
       if (r.can_resubmit) {
         view.titleKey = 'aftersale.state.failed_restored'
-        view.actions = ['resubmit']
+        view.actions = resubmit
       } else {
         view.titleKey = 'aftersale.state.failed_manual'
       }
@@ -112,7 +121,11 @@ export function afterSaleView(r: LookupResult): AfterSaleView {
       break
     }
     case 'replaced':
-      if (r.replacement) {
+      if (r.replacement?.status === 'replaced') {
+        // 链停在一张又换过码、但查不到它的新码的码上：那张码已作废，不显示也不给复制、兑换
+        view.tone = 'warn'
+        view.titleKey = 'aftersale.state.replaced_again'
+      } else if (r.replacement) {
         view.titleKey = 'aftersale.state.replaced'
         view.replacement = { code: r.replacement.code, statusKey: stateKey(r.replacement.status) }
         view.actions = ['copy_replacement']
@@ -141,6 +154,36 @@ export function afterSaleView(r: LookupResult): AfterSaleView {
       view.titleKey = 'aftersale.state.unknown'
   }
   return view
+}
+
+export interface BatchSummary {
+  used: number
+  failed: number
+  unused: number
+  processing: number
+  replaced: number
+  unsupported: number
+  unknown: number
+}
+
+/** /history 批量结果顶部的统计。replaced、unsupported 各占一栏；disabled、expired、unknown 和不认得的状态算「未找到」。 */
+export function batchSummary(rows: LookupResult[]): BatchSummary {
+  const s: BatchSummary = { used: 0, failed: 0, unused: 0, processing: 0, replaced: 0, unsupported: 0, unknown: 0 }
+  for (const row of rows) {
+    switch (row.status) {
+      case 'used':
+      case 'failed':
+      case 'unused':
+      case 'processing':
+      case 'replaced':
+      case 'unsupported':
+        s[row.status as Exclude<keyof BatchSummary, 'unknown'>]++
+        break
+      default:
+        s.unknown++
+    }
+  }
+  return s
 }
 
 /** 批量表和 CSV 里的 message：有服务商原因时追加「（原因：…）」，失败原因不会因为只在 provider_note 里而丢掉。 */

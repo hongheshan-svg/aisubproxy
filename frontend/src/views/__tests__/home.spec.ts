@@ -141,6 +141,27 @@ describe('首页售后查询', () => {
     expect(text(html)).toContain('服务商返回的原因如下')
   })
 
+  it('服务商失败没有原因原文：指引不说「原因如下」，下面也没有空的原因行', async () => {
+    const html = await render(AfterSaleResult, 'zh', {
+      result: { ...base, status: 'failed', can_resubmit: true, guide: 'provider_retry' },
+    })
+    expect(text(html)).not.toContain('如下')
+    expect(html).not.toContain('data-testid="aftersale-note"')
+    const en = text(await render(AfterSaleResult, 'en', { result: { ...base, status: 'failed', guide: 'provider_wait' } }))
+    expect(en).not.toMatch(/below/i)
+    expect(en).not.toMatch(/\baftersale\./)
+  })
+
+  it('换码链停在又换过码的码上：不显示那张码，没有复制、去兑换按钮', async () => {
+    const html = await render(AfterSaleResult, 'zh', {
+      result: { ...base, status: 'replaced', replacement: { code: 'SXC-VOID2', status: 'replaced', depth: 1 } },
+    })
+    expect(html).not.toContain('SXC-VOID2')
+    expect(html).not.toContain('data-testid="copy-replacement"')
+    expect(html).not.toContain('data-testid="redeem-replacement"')
+    expect(text(html)).toContain('新码也已换发')
+  })
+
   it('英文界面不露出文案键', async () => {
     const html = await render(AfterSaleResult, 'en', {
       result: { ...base, status: 'used', used: true, plan: 'Plus', plan_kind: 'subscription', renewal: 'off', account_email: 'a***@x.com' },
@@ -167,8 +188,9 @@ describe('首页售后查询的请求', () => {
     expect(r.result?.status).toBe('used')
   })
 
-  it('404 用响应里的 message，没有就用默认文案', async () => {
-    expect((await lookupAftersale('x', msgs, json(404, { message: '没有这张卡密' }))).error).toBe('没有这张卡密')
+  it('404 一律用语言包的找不到文案，不用后端的中文 message（英文界面不露中文）', async () => {
+    expect((await lookupAftersale('x', msgs, json(404, { error: '未找到该卡密记录', message: '未找到该卡密。请确认输入完整卡密。' }))).error).toBe('找不到')
+    expect((await lookupAftersale('x', { notFound: 'CDK not found', network: 'Network error' }, json(404, { message: '未找到该卡密。请确认输入完整卡密。' }))).error).toBe('CDK not found')
     expect((await lookupAftersale('x', msgs, json(404, {}))).error).toBe('找不到')
   })
 

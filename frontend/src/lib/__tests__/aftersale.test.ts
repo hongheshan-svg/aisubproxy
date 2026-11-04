@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { afterSaleView, GUIDE_CODES, type LookupResult } from '../aftersale'
+import { afterSaleView, batchSummary, fmtLookupTime, GUIDE_CODES, type LookupResult } from '../aftersale'
 
 const base = (o: Partial<LookupResult>): LookupResult => ({ cdk_code: 'CDK-1', status: 'unused', used: false, ...o })
 
@@ -138,10 +138,10 @@ describe('afterSaleView', () => {
     expect(afterSaleView(base({ status: 'unknown', message: '暂时查不到，请稍后再试' })).titleKey).toBe('aftersale.state.unknown')
   })
 
-  it('guide 的 11 个编号逐个产出 aftersale.guide.<编号>', () => {
+  it('guide 的 11 个编号逐个产出 aftersale.guide.<编号>（带服务商原文时）', () => {
     expect(GUIDE_CODES).toHaveLength(11)
     for (const g of GUIDE_CODES) {
-      expect(afterSaleView(base({ status: 'failed', guide: g })).guideKey).toBe(`aftersale.guide.${g}`)
+      expect(afterSaleView(base({ status: 'failed', guide: g, provider_note: 'x' })).guideKey).toBe(`aftersale.guide.${g}`)
     }
   })
 
@@ -168,5 +168,76 @@ describe('afterSaleView', () => {
 
   it('processing 带 guide 时照给 guideKey', () => {
     expect(afterSaleView(base({ status: 'processing', guide: 'manual_review' })).guideKey).toBe('aftersale.guide.manual_review')
+  })
+
+  it('provider_retry、provider_wait 没有服务商原文：改用不带「如下」的文案键', () => {
+    const r = afterSaleView(base({ status: 'failed', can_resubmit: true, guide: 'provider_retry' }))
+    expect(r.guideKey).toBe('aftersale.guide.provider_retry_plain')
+    expect(r.note).toBeUndefined()
+    const w = afterSaleView(base({ status: 'failed', can_resubmit: false, guide: 'provider_wait', provider_note: '' }))
+    expect(w.guideKey).toBe('aftersale.guide.provider_wait_plain')
+  })
+
+  it('provider_retry、provider_wait 有服务商原文：仍用「原因如下」的文案键', () => {
+    expect(afterSaleView(base({ status: 'failed', can_resubmit: true, guide: 'provider_retry', provider_note: 'bad' })).guideKey).toBe('aftersale.guide.provider_retry')
+    expect(afterSaleView(base({ status: 'failed', guide: 'provider_wait', provider_note: 'bad' })).guideKey).toBe('aftersale.guide.provider_wait')
+  })
+
+  it('其他编号没有原文时照旧用本编号的文案键', () => {
+    expect(afterSaleView(base({ status: 'failed', guide: 'manual_review' })).guideKey).toBe('aftersale.guide.manual_review')
+  })
+
+  it('换码链停在又换过码的码上：不显示那张作废的码，不给复制、去兑换', () => {
+    const v = afterSaleView(base({ status: 'replaced', replacement: { code: 'OLD-B', status: 'replaced', depth: 1 } }))
+    expect(v.titleKey).toBe('aftersale.state.replaced_again')
+    expect(v.replacement).toBeUndefined()
+    expect(v.actions).toEqual([])
+    expect(JSON.stringify(v)).not.toContain('OLD-B')
+  })
+
+  describe('按钮按设计 §4 指引表：标「无」的编号不给重新兑换', () => {
+    const noButton = ['credit_region_mismatch', 'manual_review', 'provider_wait']
+    for (const g of GUIDE_CODES) {
+      const want = noButton.includes(g) ? [] : ['resubmit']
+      it(`${g}：${want.length ? '重新兑换' : '无'}`, () => {
+        // 码已恢复（can_resubmit=true）是最容易误给按钮的情形，unused 和 failed 两种状态都要看
+        expect(afterSaleView(base({ status: 'unused', can_resubmit: true, guide: g })).actions).toEqual(want)
+        expect(afterSaleView(base({ status: 'failed', can_resubmit: true, guide: g })).actions).toEqual(want)
+      })
+    }
+  })
+
+  it('credit_region_mismatch 码已恢复：标题照旧是码已恢复，指引是联系售卖方换码，没有按钮', () => {
+    const v = afterSaleView(base({ status: 'unused', can_resubmit: true, guide: 'credit_region_mismatch' }))
+    expect(v.titleKey).toBe('aftersale.state.failed_restored')
+    expect(v.guideKey).toBe('aftersale.guide.credit_region_mismatch')
+    expect(v.actions).toEqual([])
+  })
+})
+
+describe('fmtLookupTime', () => {
+  it('RFC3339 转北京时间', () => {
+    expect(fmtLookupTime('2026-11-04T09:22:37Z')).toBe('2026-11-04 17:22:37')
+    expect(fmtLookupTime('2026-11-04T17:22:37+08:00')).toBe('2026-11-04 17:22:37')
+    expect(fmtLookupTime('2026-11-04T09:22:37.999Z')).toBe('2026-11-04 17:22:37')
+  })
+
+  it('空或解析不了返回 undefined', () => {
+    expect(fmtLookupTime(undefined)).toBeUndefined()
+    expect(fmtLookupTime('')).toBeUndefined()
+    expect(fmtLookupTime('not-a-time')).toBeUndefined()
+  })
+})
+
+describe('batchSummary', () => {
+  const row = (status: string): LookupResult => ({ cdk_code: status, status, used: status === 'used' })
+
+  it('replaced、unsupported 各有一栏，不算进「未找到」', () => {
+    const s = batchSummary(['used', 'failed', 'unused', 'processing', 'replaced', 'replaced', 'unsupported', 'unknown', 'disabled', 'expired', 'weird'].map(row))
+    expect(s).toEqual({ used: 1, failed: 1, unused: 1, processing: 1, replaced: 2, unsupported: 1, unknown: 4 })
+  })
+
+  it('空列表全是 0', () => {
+    expect(batchSummary([])).toEqual({ used: 0, failed: 0, unused: 0, processing: 0, replaced: 0, unsupported: 0, unknown: 0 })
   })
 })

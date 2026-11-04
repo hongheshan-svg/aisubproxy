@@ -124,6 +124,12 @@
           <div class="rounded-lg py-2" style="background: color-mix(in srgb, var(--warn, #d97706) 12%, transparent)">
             {{ t('cdkLookup.summaryUnknown', { n: batchSummary.unknown }) }}
           </div>
+          <div v-if="batchSummary.replaced" class="rounded-lg py-2" style="background: color-mix(in srgb, var(--primary) 12%, transparent)">
+            {{ t('cdkLookup.summaryReplaced', { n: batchSummary.replaced }) }}
+          </div>
+          <div v-if="batchSummary.unsupported" class="rounded-lg bg-soft py-2">
+            {{ t('cdkLookup.summaryUnsupported', { n: batchSummary.unsupported }) }}
+          </div>
         </div>
         <div class="overflow-x-auto rounded-xl border bd">
           <table class="w-full text-sm">
@@ -147,7 +153,7 @@
                 </td>
                 <td class="px-3 py-2 font-mono break-all">{{ row.account_email || t('cdkLookup.emailEmpty') }}</td>
                 <td class="px-3 py-2">{{ row.plan || t('cdkLookup.emailEmpty') }}</td>
-                <td class="px-3 py-2 text-muted whitespace-nowrap">{{ row.used_at || t('cdkLookup.emailEmpty') }}</td>
+                <td class="px-3 py-2 text-muted whitespace-nowrap">{{ fmtLookupTime(row.used_at) || row.used_at || t('cdkLookup.emailEmpty') }}</td>
                 <td class="px-3 py-2 text-right whitespace-nowrap">
                   <button
                     v-if="row.can_resubmit"
@@ -181,7 +187,7 @@ import { parseCdks } from '../../lib/batch-session'
 import { copyToClipboard } from '../../lib/clipboard'
 import { toast } from '../../lib/ui'
 import AfterSaleResult from '../../components/AfterSaleResult.vue'
-import { csvRow, type LookupResult } from '../../lib/aftersale'
+import { batchSummary as summarize, csvRow, fmtLookupTime, type LookupResult } from '../../lib/aftersale'
 
 const { t } = useI18n({ useScope: 'global' })
 const router = useRouter()
@@ -198,17 +204,7 @@ const batchResults = ref<LookupResult[]>([])
 
 const parsedCodes = computed(() => parseCdks(batchText.value))
 
-const batchSummary = computed(() => {
-  const s = { used: 0, failed: 0, unused: 0, processing: 0, unknown: 0 }
-  for (const row of batchResults.value) {
-    if (row.status === 'used') s.used++
-    else if (row.status === 'failed') s.failed++
-    else if (row.status === 'unused') s.unused++
-    else if (row.status === 'processing') s.processing++
-    else s.unknown++
-  }
-  return s
-})
+const batchSummary = computed(() => summarize(batchResults.value))
 
 function statusText(status: string) {
   const key = `cdkLookup.status.${status}`

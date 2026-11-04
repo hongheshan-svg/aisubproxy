@@ -400,18 +400,8 @@ func AdminListAgentOrders(c *gin.Context) {
 	if !ok {
 		return
 	}
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	size, _ := strconv.Atoi(c.DefaultQuery("page_size", "50"))
-	if page < 1 {
-		page = 1
-	}
-	if size < 1 {
-		size = 50
-	}
-	if size > 200 {
-		size = 200
-	}
-	list, total, err := db.ListAgentOrders(c.Request.Context(), a.ID, size, (page-1)*size)
+	limit, offset := agentPaging(c)
+	list, total, err := db.ListAgentOrders(c.Request.Context(), a.ID, limit, offset)
 	if err != nil {
 		adminInternal(c, "列出订单", err)
 		return

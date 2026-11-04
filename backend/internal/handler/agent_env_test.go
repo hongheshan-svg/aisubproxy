@@ -2,8 +2,10 @@ package handler
 
 import (
 	"context"
+	"database/sql"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -39,13 +41,52 @@ func resetAgentAuthState() {
 
 func newAgentEnv(t *testing.T) *agentEnv {
 	t.Helper()
-	e := &agentEnv{localEnv: newLocalEnv(t), clock: time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)}
+	return agentEnvOn(t, newLocalEnv(t))
+}
+
+// newAgentEnvFileDB 和 newAgentEnv 一样，但用临时文件库：DSN 和生产一样带 _txlock=immediate，多连接，测得出并发。
+func newAgentEnvFileDB(t *testing.T) *agentEnv {
+	t.Helper()
+	gin.SetMode(gin.TestMode)
+	c, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "agent.db")+"?_journal_mode=WAL&_busy_timeout=10000&_txlock=immediate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetMaxOpenConns(25)
+	c.SetMaxIdleConns(25)
+	old := db.DB
+	db.DB = c
+	t.Cleanup(func() { db.DB = old; c.Close() })
+	if err := db.Migrate(); err != nil {
+		t.Fatal(err)
+	}
+	// 先把连接开好放进池里：新连接打开时要等正在进行的写事务，不预热的话并发请求会被建连接排成一队，测不到真正的并发
+	ctx := context.Background()
+	conns := make([]*sql.Conn, 0, 16)
+	for i := 0; i < 16; i++ {
+		cn, err := c.Conn(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		conns = append(conns, cn)
+	}
+	for _, cn := range conns {
+		cn.Close()
+	}
+	return agentEnvOn(t, setupLocalEnv(t))
+}
+
+func agentEnvOn(t *testing.T, le *localEnv) *agentEnv {
+	t.Helper()
+	e := &agentEnv{localEnv: le, clock: time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)}
 	old := agentNow
 	agentNow = func() time.Time { return e.clock }
 	resetAgentAuthState()
+	resetAgentOrderRate()
 	t.Cleanup(func() {
 		agentNow = old
 		resetAgentAuthState()
+		resetAgentOrderRate()
 	})
 	r := gin.New()
 	RegisterAgentRoutes(r.Group("/api/v1"))

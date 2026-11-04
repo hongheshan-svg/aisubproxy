@@ -17,6 +17,11 @@ func RegisterAgentRoutes(api *gin.RouterGroup) {
 	sess := g.Group("", AgentAuthMiddleware())
 	sess.GET("/me", AgentMe)
 	sess.POST("/me/password", AgentChangePassword)
+	sess.GET("/products", AgentListProducts)
+	sess.POST("/orders", AgentPlaceOrder)
+	sess.GET("/orders", AgentListOrders)
+	sess.GET("/orders/:id", AgentGetOrder)
+	sess.POST("/orders/:id/export", AgentExportOrder)
 }
 
 // RegisterAgentAdminRoutes 挂管理员管理代理商的接口（调用方已套好管理员中间件）。

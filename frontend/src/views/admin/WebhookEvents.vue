@@ -32,7 +32,15 @@
         </el-form-item>
       </el-form>
       <el-alert
-        v-if="!secretSet"
+        v-if="secretError"
+        type="error"
+        :closable="false"
+        show-icon
+        :title="'Webhook Secret ' + secretError"
+        class="mt-2"
+      />
+      <el-alert
+        v-else-if="!secretSet"
         type="warning"
         :closable="false"
         show-icon
@@ -78,10 +86,12 @@ import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { onMounted, ref } from 'vue'
 import { authFetch } from '../../lib/api'
 import { dialog } from '../../lib/dialog'
+import { secretErrorText, secretPlaceholder } from '../../lib/secretError'
 
 const webhookUrl = ref('https://gptcdk.ai/api/v1/webhooks/cardplatform')
 const secretSet = ref(false)
 const secretHint = ref('未配置')
+const secretError = ref('')
 const secretInput = ref('')
 const events = ref<any[]>([])
 const loading = ref(false)
@@ -114,7 +124,8 @@ async function load() {
     }
     if (d.webhook_url) webhookUrl.value = d.webhook_url
     secretSet.value = !!d.webhook_secret_set
-    secretHint.value = d.webhook_secret_set ? `已配置 ${d.webhook_secret_hint || ''}` : '未配置'
+    secretError.value = secretErrorText(d, 'webhook_secret')
+    secretHint.value = secretPlaceholder(d, 'webhook_secret', '未配置')
     events.value = d.events || []
   } finally {
     loading.value = false

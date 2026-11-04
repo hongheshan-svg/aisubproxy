@@ -199,7 +199,8 @@ describe('isLocalSessionAuthFailure（B-5）：只有鉴权中间件的失败才
   })
   it('卡台上游、网络探测的 401/403 不算失效', () => {
     expect(isLocalSessionAuthFailure('/api/v1/admin/cardplatform/cdks', 401, { error: 'Invalid or expired token' })).toBe(false)
-    expect(isLocalSessionAuthFailure('/api/v1/admin/network/probe', 403, { error_code: 'unauthorized' })).toBe(false)
+    expect(isLocalSessionAuthFailure('/api/v1/admin/network/probe', 403, {})).toBe(false)
+    // 审计 N-3：带本站鉴权错误码的，即使是这些接口也算失效（见 session.s6.test.ts）
   })
   it('其他状态码不算', () => {
     expect(isLocalSessionAuthFailure(admin, 500, { error_code: 'unauthorized' })).toBe(false)

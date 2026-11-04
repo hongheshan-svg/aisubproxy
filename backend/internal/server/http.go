@@ -282,7 +282,8 @@ func setupRoutes(r *gin.Engine) {
 
 		// 账单：粘贴 session 查 ChatGPT 订阅 + hosted_invoice（小助手同款）
 		public.POST("/billing/check", handler.SessionBillingCheck)
-		api.POST("/billing/check", handler.SessionBillingCheck)
+		// 旧路径：和 /public 下的一样先限流、再读请求体（同一个额度）
+		api.POST("/billing/check", handler.PublicGuard(), handler.SessionBillingCheck)
 
 		// Stats routes
 		stats := api.Group("/stats")

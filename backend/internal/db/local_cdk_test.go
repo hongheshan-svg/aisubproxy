@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -578,4 +579,103 @@ func TestMigrateClearsRechargeTaskSessions(t *testing.T) {
 	if err := db.Migrate(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// 加了 code_sealed 列之前的建表语句，旧库升级测试用。
+const legacyLocalCDKsDDL = `CREATE TABLE local_cdks (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	provider TEXT NOT NULL,
+	code_hash TEXT NOT NULL UNIQUE,
+	token_hash TEXT NOT NULL UNIQUE,
+	code_prefix TEXT NOT NULL,
+	product TEXT NOT NULL,
+	plan_key TEXT NOT NULL,
+	region TEXT NOT NULL,
+	status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
+	exchanged_from INTEGER,
+	attempts_carried INTEGER NOT NULL DEFAULT 0,
+	issued_by TEXT NOT NULL DEFAULT '',
+	note TEXT NOT NULL DEFAULT '',
+	created_at INTEGER NOT NULL,
+	updated_at INTEGER NOT NULL
+)`
+
+// 换码新码的密文：写入后按 id 原样取回，和 code_hash 一起；批量发码不带密文时为空。
+// 不存在的 id 返回 sql.ErrNoRows。LocalCDK 结构没有这一列，后台列表读不到它。旧库迁移补上这一列后能读写。
+func TestLocalCDKSealedCodeRoundTrip(t *testing.T) {
+	dbtest.Open(t)
+	now := time.Unix(3000, 0)
+	plain := insertLocalCDK(t, 1)
+	if hash, sealed, err := db.LocalCDKSealedCode(localCtx, plain.ID); err != nil || hash != "code-hash-1" || sealed != "" {
+		t.Fatalf("批量发码不带密文: hash=%q sealed=%q err=%v", hash, sealed, err)
+	}
+
+	n := newLocalCDK(2)
+	n.CodeSealed = "v1:sealed-2"
+	ids, err := db.InsertLocalCDKs(localCtx, "issue-key-sealed-2", []db.NewLocalCDK{n}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hash, sealed, err := db.LocalCDKSealedCode(localCtx, ids[0]); err != nil || hash != "code-hash-2" || sealed != "v1:sealed-2" {
+		t.Fatalf("hash=%q sealed=%q err=%v", hash, sealed, err)
+	}
+
+	// 换码写入的新码同样带上密文
+	addOrder(t, "cdk", db.LocalCDKSourceRef(plain.ID), 0, "", "failed", "not_submitted", false)
+	ex := newLocalCDK(3)
+	ex.ExchangedFrom, ex.CodeSealed = &plain.ID, "v1:sealed-3"
+	newID, err := db.ExchangeLocalCDK(localCtx, plain.ID, ex, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hash, sealed, err := db.LocalCDKSealedCode(localCtx, newID); err != nil || hash != "code-hash-3" || sealed != "v1:sealed-3" {
+		t.Fatalf("换码新码: hash=%q sealed=%q err=%v", hash, sealed, err)
+	}
+
+	if _, _, err := db.LocalCDKSealedCode(localCtx, 99999); !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("不存在的 id 应返回 sql.ErrNoRows: %v", err)
+	}
+	if _, ok := reflect.TypeOf(db.LocalCDK{}).FieldByName("CodeSealed"); ok {
+		t.Fatal("LocalCDK 不能带密文字段，后台列表和导出都从它出")
+	}
+
+	t.Run("旧库补列", func(t *testing.T) {
+		c, err := sql.Open("sqlite3", filepath.Join(t.TempDir(), "legacy-local-cdks.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		old := db.DB
+		db.DB = c
+		t.Cleanup(func() { db.DB = old; c.Close() })
+		for _, s := range []string{
+			legacyLocalCDKsDDL,
+			`INSERT INTO local_cdks (provider, code_hash, token_hash, code_prefix, product, plan_key, region, created_at, updated_at)
+				VALUES ('marswallex', 'legacy-hash', 'legacy-token', 'MW-AAAAA', 'gpt', 'plus', 'PH', 1, 1)`,
+		} {
+			if _, err := c.Exec(s); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for round := 1; round <= 2; round++ {
+			if err := db.Migrate(); err != nil {
+				t.Fatalf("第 %d 次迁移: %v", round, err)
+			}
+		}
+		var cols int
+		if err := c.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('local_cdks') WHERE name = 'code_sealed'`).Scan(&cols); err != nil || cols != 1 {
+			t.Fatalf("应补上 code_sealed 列: n=%d err=%v", cols, err)
+		}
+		if hash, sealed, err := db.LocalCDKSealedCode(localCtx, 1); err != nil || hash != "legacy-hash" || sealed != "" {
+			t.Fatalf("旧行: hash=%q sealed=%q err=%v", hash, sealed, err)
+		}
+		n := newLocalCDK(5)
+		n.CodeSealed = "v1:sealed-5"
+		ids, err := db.InsertLocalCDKs(localCtx, "issue-key-sealed-5", []db.NewLocalCDK{n}, now)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if hash, sealed, err := db.LocalCDKSealedCode(localCtx, ids[0]); err != nil || hash != "code-hash-5" || sealed != "v1:sealed-5" {
+			t.Fatalf("补列后写入: hash=%q sealed=%q err=%v", hash, sealed, err)
+		}
+	})
 }

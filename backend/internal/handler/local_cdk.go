@@ -860,10 +860,12 @@ func localCDKExchange(c *gin.Context, cs provider.CardSupply, code, ip string) {
 		localReply(c, http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试"})
 		return
 	}
+	// 新码加密存一份，客户查旧码时售后查询靠它显示新码；主密钥有问题时留空，不挡换码
+	sealed := sealLocalCDKCode(fresh.Code, fresh.CodeHash)
 	newID, err := db.ExchangeLocalCDK(context.WithoutCancel(ctx), row.ID, db.NewLocalCDK{
 		Provider: row.Provider, CodeHash: fresh.CodeHash, TokenHash: fresh.TokenHash, CodePrefix: fresh.Prefix,
 		Product: row.Product, PlanKey: row.PlanKey, Region: row.Region, IssuedBy: "agent-swap", Note: row.Note,
-		ExchangedFrom: &row.ID, AttemptsCarried: v.FundedFailures,
+		ExchangedFrom: &row.ID, AttemptsCarried: v.FundedFailures, CodeSealed: sealed,
 	}, time.Now())
 	if err != nil {
 		// 事务回滚，什么都没发生：本地发码不存在结果不明，放掉占位就好

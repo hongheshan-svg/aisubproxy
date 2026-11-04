@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/tuzi/cdk-recharge-system/internal/cardpool"
@@ -288,6 +289,7 @@ type browserFactory struct {
 	amountErr  error
 	readAmount func(n int) (int64, string, error) // 非 nil 时按第 n 次（从 1 起）调用取值，覆盖上面三项
 	openGate   chan struct{}                      // 非 nil 时 Open 阻塞到它被关闭
+	blockNew   atomic.Bool                        // true 时 New 阻塞到 ctx 结束（模拟 Chrome 启动卡住），返回 ctx 的错误
 
 	// 付款步骤的替身；未设置时方法返回 errFakeUnset。n 为该浏览器第几次调用 WaitOutcome（从 1 起）。
 	fill        func(paybrowser.Card, paybrowser.Billing) error
@@ -310,7 +312,11 @@ type browserFactory struct {
 	maxOpening int
 }
 
-func (f *browserFactory) New(_ context.Context, proxyURL, shotDir string) (Browser, error) {
+func (f *browserFactory) New(ctx context.Context, proxyURL, shotDir string) (Browser, error) {
+	if f.blockNew.Load() {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.proxies = append(f.proxies, proxyURL)

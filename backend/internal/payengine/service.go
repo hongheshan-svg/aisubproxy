@@ -76,9 +76,11 @@ type Browser interface {
 // Timeouts 是各步骤的超时；测试可缩短。VerifyTick 是确认协程扫描到期单据的间隔；
 // OutcomeMargin 是等页面结果时外层时限比 SubmitResult 多出的余量；Backfill 是定论失败前补拉一次交易的时限。
 // RenewalTick 是续费协程的扫描间隔；SessionKeep 是单据结束后会话最长保留多久（关闭续费要用）。
+// Launch 是创建浏览器（启动 Chrome）的时限，这一步在取卡之前，不计入 MaxPayDuration。
 type Timeouts struct {
 	PageLoad, Fill, SubmitResult, OTP, Fund, Verify, VerifyEvery, DeclineGrace, VerifyTick, OutcomeMargin, Backfill time.Duration
 	RenewalTick, SessionKeep                                                                                        time.Duration
+	Launch                                                                                                          time.Duration
 }
 
 // DefaultTimeouts 返回引擎默认超时：页面加载 60 秒、填表 2 分钟、提交后等待页面结果 2 分钟、
@@ -101,6 +103,8 @@ func DefaultTimeouts() Timeouts {
 
 		RenewalTick: defaultRenewalTick,
 		SessionKeep: defaultSessionKeep,
+
+		Launch: 90 * time.Second,
 	}
 }
 
@@ -189,6 +193,9 @@ func New(o Options) *Service {
 	}
 	if t.RenewalTick <= 0 {
 		t.RenewalTick = defaultRenewalTick
+	}
+	if t.Launch <= 0 {
+		t.Launch = DefaultTimeouts().Launch
 	}
 	// 会话保留不能比默认更长：到点一律清空（设计 §3.1 最长 1 小时）
 	if t.SessionKeep <= 0 || t.SessionKeep > defaultSessionKeep {

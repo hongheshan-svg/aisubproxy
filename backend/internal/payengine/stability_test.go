@@ -216,3 +216,30 @@ func TestRenewalPanicMarksFailed(t *testing.T) {
 		t.Fatalf("每张单只应处理一次: %d", n)
 	}
 }
+
+// S4：启动浏览器卡住（工厂一直阻塞、尊重 ctx）：到时限按 browser_failed 放弃并告警，名额归还；还没取卡，不涉及资金。
+func TestBrowserLaunchTimeout(t *testing.T) {
+	h := newPayHarness(t, func(tm *Timeouts) { tm.Launch = 100 * time.Millisecond })
+	h.br.blockNew.Store(true)
+	h.start(t)
+	o := h.submit(t, false)
+	g := waitDone(t, o.OrderNo)
+	assertNotSubmitted(t, g, "browser_failed")
+	if !strings.Contains(g.ErrorMessage, "没有启动完成") {
+		t.Fatalf("说明应写明启动超时: %q", g.ErrorMessage)
+	}
+	waitNotRunning(t, h, o.OrderNo)
+	if a := waitAlerts(t, h, 1); !strings.Contains(a[0], o.OrderNo) || !strings.Contains(a[0], "浏览器") {
+		t.Fatalf("应告警并带单号: %v", a)
+	}
+	if n := h.pool.count("Acquire"); n != 0 {
+		t.Fatalf("启动浏览器失败时还没取卡: Acquire %d 次", n)
+	}
+	assertReleases(t, h)
+	// 名额已归还：下一张单照常处理
+	h.br.blockNew.Store(false)
+	next := h.submitAs(t, sessionFor("next@example.com"), true)
+	if g := waitDone(t, next.OrderNo); g.State != StatePreviewed {
+		t.Fatalf("超时之后下一张单应照常处理: %+v", g)
+	}
+}

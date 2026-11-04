@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"time"
 
@@ -19,6 +20,12 @@ import (
 const (
 	breakerThreshold    = 3
 	settingBreakerReset = "pay_breaker_reset"
+
+	// breakerWindow：只看最近这段时间内结束的单，单据表越积越多时每轮派发的查询不随之变慢。
+	breakerWindow = 24 * time.Hour
+	// breakerScanLimit 是每次最多取的单据数（最近结束的）。暂停之后不再派发，暂停后还会结束的只有当时在途、确认中的几张，
+	// 远少于这个数，所以触发与否、触发单号都和全量扫描一样；只够阈值的话，暂停后结束的单会把触发的那几单挤出去。
+	breakerScanLimit = 500
 )
 
 // 暂停原因。
@@ -90,8 +97,9 @@ func (o breakerOrder) submittedFailed() bool {
 	return o.state == StateNeedsReview || o.resolvedBy != "" || (o.state == StateFailed && o.failure == FailureDeclined)
 }
 
-// computeBreaker 按结束时间顺序扫恢复点之后的真实付款单（试运行不算）。
-// 暂停是粘性的：任一时刻连续失败达到阈值就算触发，之后在途单成功也不解除，只有管理员恢复才解除。
+// computeBreaker 按结束时间顺序扫恢复点之后、最近 24 小时内结束的真实付款单（试运行不算），最多取最近的 breakerScanLimit 张。
+// 暂停是粘性的：窗口内任一时刻连续失败达到阈值就算触发，之后在途单成功也不解除，只有管理员恢复才解除；
+// 触发的那几单结束超过 24 小时后不再计入（见 CHANGELOG）。finished_at 由 store 按真实时钟写，这里也按真实时钟算窗口。
 func computeBreaker(ctx context.Context) (BreakerStatus, error) {
 	st := BreakerStatus{Threshold: breakerThreshold, OrderNos: []string{}}
 	reset, err := loadBreakerReset()
@@ -106,12 +114,11 @@ func computeBreaker(ctx context.Context) (BreakerStatus, error) {
 	for _, no := range reset.Skip {
 		skip[no] = true
 	}
-	rows, err := db.DB.QueryContext(ctx, `SELECT order_no, state, failure, error_code, resolved_by, submitted_at IS NOT NULL, finished_at
-		FROM pay_orders WHERE dry_run = 0 AND finished_at IS NOT NULL AND finished_at >= ? ORDER BY finished_at, id`, reset.At)
+	since := max(reset.At, time.Now().Add(-breakerWindow).Unix())
+	list, err := recentFinished(ctx, since)
 	if err != nil {
 		return st, err
 	}
-	defer rows.Close()
 
 	var submitRun, fillRun []string
 	trip := func(reason string, run []string, at int64) {
@@ -122,11 +129,7 @@ func computeBreaker(ctx context.Context) (BreakerStatus, error) {
 		st.Paused, st.Reason, st.TrippedAt = true, reason, &tripped
 		st.OrderNos = append([]string{}, run...)
 	}
-	for rows.Next() {
-		var o breakerOrder
-		if err := rows.Scan(&o.no, &o.state, &o.failure, &o.code, &o.resolvedBy, &o.submitted, &o.finishedAt); err != nil {
-			return st, err
-		}
+	for _, o := range list {
 		if skip[o.no] {
 			continue
 		}
@@ -150,12 +153,33 @@ func computeBreaker(ctx context.Context) (BreakerStatus, error) {
 			trip(BreakerReasonFill, fillRun, o.finishedAt)
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return st, err
-	}
 	st.SubmittedFailureStreak, st.FillFailureStreak = len(submitRun), len(fillRun)
 	st.ReasonText = breakerReasonText(st.Reason)
 	return st, nil
+}
+
+// recentFinished 取 since（含）之后结束的真实付款单，最多最近的 breakerScanLimit 张，按结束时间从早到晚返回。
+func recentFinished(ctx context.Context, since int64) ([]breakerOrder, error) {
+	rows, err := db.DB.QueryContext(ctx, `SELECT order_no, state, failure, error_code, resolved_by, submitted_at IS NOT NULL, finished_at
+		FROM pay_orders WHERE dry_run = 0 AND finished_at IS NOT NULL AND finished_at >= ? ORDER BY finished_at DESC, id DESC LIMIT ?`,
+		since, breakerScanLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var list []breakerOrder
+	for rows.Next() {
+		var o breakerOrder
+		if err := rows.Scan(&o.no, &o.state, &o.failure, &o.code, &o.resolvedBy, &o.submitted, &o.finishedAt); err != nil {
+			return nil, err
+		}
+		list = append(list, o)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	slices.Reverse(list)
+	return list, nil
 }
 
 func breakerReasonText(reason string) string {

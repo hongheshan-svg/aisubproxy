@@ -381,3 +381,44 @@ func TestBreakerDoesNotStopVerification(t *testing.T) {
 		t.Fatalf("新单不应派发: %s", cur.State)
 	}
 }
+
+// G5：熔断只看最近 24 小时内结束的单：24 小时前的失败不计入，也不和之后的失败连起来。
+func TestBreakerIgnoresOrdersOlderThan24h(t *testing.T) {
+	dbtest.Open(t)
+	old := time.Now().Add(-25 * time.Hour).Unix()
+	feedBO(t, old, boDeclined, boDeclined, boDeclined, boFill, boFill, boFill)
+	if st := breakerNow(t); st.Paused || st.SubmittedFailureStreak != 0 || st.FillFailureStreak != 0 {
+		t.Fatalf("24 小时前的失败不应计入: %+v", st)
+	}
+	recent := feedBO(t, time.Now().Unix()-100, boDeclined, boDeclined)
+	if st := breakerNow(t); st.Paused || st.SubmittedFailureStreak != 2 {
+		t.Fatalf("只应算最近的 2 单: %+v", st)
+	}
+	more := feedBO(t, time.Now().Unix()-50, boDeclined)
+	st := breakerNow(t)
+	if !st.Paused || st.Reason != BreakerReasonSubmit || len(st.OrderNos) != 3 ||
+		st.OrderNos[0] != recent[0] || st.OrderNos[2] != more[0] {
+		t.Fatalf("最近连续 3 单被拒应触发: %+v", st)
+	}
+}
+
+// G5：查询带 LIMIT（只取最近 breakerScanLimit 张），取回来以后仍按结束时间从早到晚计算：触发单号、触发时刻和全量扫描一致。
+func TestBreakerScansRecentOrdersInOrder(t *testing.T) {
+	dbtest.Open(t)
+	base := time.Now().Unix() - 3*breakerScanLimit
+	list := make([]bo, 0, breakerScanLimit+8)
+	for i := 0; i < breakerScanLimit+5; i++ {
+		list = append(list, boSuccess)
+	}
+	list = append(list, boDeclined, boDeclined, boDeclined)
+	nos := feedBO(t, base, list...)
+	st := breakerNow(t)
+	last := len(list) - 1
+	if !st.Paused || st.Reason != BreakerReasonSubmit || st.SubmittedFailureStreak != 3 {
+		t.Fatalf("最近连续 3 单被拒应触发: %+v", st)
+	}
+	if st.TrippedAt == nil || *st.TrippedAt != base+int64(last) || len(st.OrderNos) != 3 ||
+		st.OrderNos[0] != nos[last-2] || st.OrderNos[2] != nos[last] {
+		t.Fatalf("触发单号和时刻应按结束时间顺序: %+v %v", st.OrderNos, st.TrippedAt)
+	}
+}

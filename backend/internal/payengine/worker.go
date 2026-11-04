@@ -706,9 +706,19 @@ func (s *Service) openPage(ctx context.Context, j *job) error {
 	if err := s.advance(ctx, j, StateOpening, "启动浏览器，打开支付页", nil); err != nil {
 		return err
 	}
-	b, err := s.opts.Browser(ctx, j.proxy, filepath.Join(s.opts.ShotDir, j.o.OrderNo))
+	// 启动 Chrome 加时限：卡住时不能一直占着付款名额。浏览器工厂只用这个 ctx 约束启动过程，返回后浏览器照常存活到 Close。
+	lctx, cancelLaunch := context.WithTimeout(ctx, s.t.Launch)
+	b, err := s.opts.Browser(lctx, j.proxy, filepath.Join(s.opts.ShotDir, j.o.OrderNo))
+	timedOut := errors.Is(lctx.Err(), context.DeadlineExceeded) && ctx.Err() == nil
+	cancelLaunch()
 	if err != nil {
 		msg := j.scrub(err.Error())
+		if timedOut {
+			msg = fmt.Sprintf("%d 秒内没有启动完成", int(s.t.Launch/time.Second))
+			if s.t.Launch < time.Second {
+				msg = fmt.Sprintf("%v 内没有启动完成", s.t.Launch)
+			}
+		}
 		s.opts.Alert(fmt.Sprintf("付款单 %s 浏览器无法启动：%s", j.o.OrderNo, msg))
 		return abort("browser_failed", "浏览器无法启动：%s", msg)
 	}

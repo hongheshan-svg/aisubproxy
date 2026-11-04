@@ -17,7 +17,7 @@
 1. **配置合法的 `APP_MASTER_KEY`。**
    - 已保存过卡台 API Key 或 Webhook 密钥的部署，没配或不合法会**拒绝启动**并提示原因。启动时要把旧的明文密钥加密保存，不会留着明文继续运行。
    - 没配时售后查询照常换码，但新码不会保存，客户查旧码只能看到「请联系售卖方获取」，系统每天告警一次。
-2. **`JWT_SECRET` 不能是示例占位值**（含 `change-me`、`example`），否则正式模式**拒绝启动**。`deploy/app.env.example` 里的占位值已改成 `REPLACE_ME`。
+2. **`JWT_SECRET` 要是至少 16 位的随机值，不能是示例占位值**（含 `change-me`、`changeme`、`example`）。不满足时：正式模式（`SERVER_MODE=release`）一律**拒绝启动**；非正式模式只要已保存过卡台 API Key 或 MarsWallex 凭证，也**拒绝启动**。`deploy/app.env.example` 里的占位值已改成 `REPLACE_ME`。
 3. **还没有管理员、要靠 `ADMIN_PASSWORD` 建号的部署：口令不能太弱**（常见弱口令、和用户名相同），否则**拒绝启动**。
 4. **服务器前面有 Nginx、Caddy 这类反向代理提供 HTTPS 的：把反代的地址（IP 或 CIDR）写进 `TRUSTED_PROXIES`。**
    - 本版起，程序只信任 `TRUSTED_PROXIES` 里列出的代理转来的 `X-Forwarded-Proto`。不配的话，程序会把所有访问都当成普通 HTTP：后台登录 cookie 不再带 `Secure`（只能走 HTTPS）标记，也不再下发 HSTS（要求浏览器一律用 HTTPS 访问）。
@@ -29,22 +29,21 @@
 6. **更新服务配置：停止服务最多会等 3 分钟。**
    - 原生部署：`install.sh` 写的 systemd 服务文件已加 `TimeoutStopSec=240` 和 `KillMode=mixed`（停止时 SIGTERM 只发给主程序，不会同时杀掉在途单的 Chrome、Xvfb，否则等不到单子走完）。已有部署要重新运行 `install.sh`，或者手动在服务文件的 `[Service]` 段加上这两行（照 `deploy/cdk-recharge.service`），再执行 `systemctl daemon-reload`。
    - Docker 部署：`docker-compose.yml` 已加 `stop_grace_period: 240s`。重新运行 `deploy/docker-deploy.sh` 会下载新的 compose 文件并生效；自己维护 compose 文件的，加上这一行后执行 `docker compose up -d`。
-7. **自己维护 Caddyfile 的：加上请求体上限。** `docker-deploy.sh` 带 `--domain` 时会按新模板重新生成 Caddyfile；沿用已有 Caddyfile 的（包括原生部署自己配的 Caddy），请照 `deploy/Caddyfile.docker.tmpl` 或 `deploy/Caddyfile.snippet` 手工加上 `request_body` 那一段。
-8. **日本、智利、埃及地区要手填「最低金额」。**
+7. **日本、智利、埃及地区要手填「最低金额」。**
    - 美国、菲律宾不用填，已内置，升级后会自动补上空着的金额。
    - 没填「最低金额」的地区不能真实下单，也不能发码（会提示「套餐 X 在地区 Y 未配置最低金额」）。升级前已经在排队的日本、智利、埃及单，在补好最低金额之前会以 `plan_unavailable` 失败（没有注资）。
    - 填写时注意：
      - 最低金额、预期金额、上限都按该地区币种填（PH 填比索），系统不做汇率换算。
      - 价格随汇率浮动的地区，最低金额填低位价，上限填高位价。
      - 注资金额是美元。付非美元金额时，要按高位汇率加手续费留出余量。
-9. **确认 GPT 码由哪家卡服务商处理。** 如果从没保存过「卡服务商」配置，升级后新发的 GPT 码会改由 MarsWallex 处理：
+8. **确认 GPT 码由哪家卡服务商处理。** 如果从没保存过「卡服务商」配置，升级后新发的 GPT 码会改由 MarsWallex 处理：
    - MarsWallex 没就绪时，GPT 发码会被拒绝，并提示原因。想继续用 ZovoCard，到「卡服务商」页把全局默认选回 ZovoCard 并保存。
    - 如果已经填了 MarsWallex 凭证，并在卡池策略里设了补卡目标，升级后会开始自动补卡（开卡要花钱）。不想补卡，就把目标改成 0，或把全局默认选回 ZovoCard。
-10. **用脚本登录后台的：改成读 `Set-Cookie`。**
-    - 登录接口、首次安装接口返回的 JSON 里**不再有 `token` 字段**。前端也不再把令牌存进浏览器本地存储，只靠 HttpOnly cookie 加 CSRF 头。
-    - `Authorization: Bearer` 仍然可用，给 API Key、脚本用。
-    - 首次安装向导的 Setup Token 只认请求头 `X-Setup-Token`，不再认查询串里的 `setup_token`。
-11. **上线售后查询前，在生产库检查数据。** ZovoCard 的码按本站库里的记录判断状态，有异常先修数据：
+9. **用脚本登录后台的：改成读 `Set-Cookie`。**
+   - 登录接口、首次安装接口返回的 JSON 里**不再有 `token` 字段**。前端也不再把令牌存进浏览器本地存储，只靠 HttpOnly cookie 加 CSRF 头。
+   - `Authorization: Bearer` 仍然可用，给 API Key、脚本用。
+   - 首次安装向导的 Setup Token 只认请求头 `X-Setup-Token`，不再认查询串里的 `setup_token`。
+10. **上线售后查询前，在生产库检查数据。** ZovoCard 的码按本站库里的记录判断状态，有异常先修数据：
     - `SELECT DISTINCT status FROM cd_keys;`：认得的只有 `active`、`used`、`disabled`、`expired` 和空（不分大小写）。其他值的码查询会显示「暂时查不到」。
     - `SELECT COUNT(*) FROM cd_keys WHERE used_at IS NOT NULL AND datetime(used_at) IS NULL;`，把 `used_at` 换成 `expires_at` 再查一遍，再查 `SELECT COUNT(*) FROM recharge_tasks WHERE completed_at IS NOT NULL AND datetime(completed_at) IS NULL;`。
       - 数出来的是认不出的时间文字：查询不报错，但开通时间会显示成 0001 年；`expires_at` 认不出的未用码会显示「已过期」（以前也是这样）。
@@ -57,12 +56,12 @@
 - **已保存的卡台地址是 http 的**（本机回环除外）：升级后仍能读到，但下次在后台保存时会被拒绝。请改成 https，并重新填写 API Key。
 - **更换过主密钥的**：ZovoCard 配置页和 Webhook 页会提示「已保存的值解不开」，需要重新填写。
 - **美元地区「预期金额」留空（用内置价）的**：注资金额不能低于内置预期金额。已保存的这类配置不会自动改，下次在后台保存套餐时会提示调高注资。
+- **建议：自己维护 Caddyfile 的，加上请求体上限。** 后端已经把公开接口的请求体限制在 256 KB，这一项是在反代层多一道保护。`docker-deploy.sh` 带 `--domain` 时会按新模板重新生成 Caddyfile；沿用已有 Caddyfile 的（包括原生部署自己配的 Caddy），请照 `deploy/Caddyfile.docker.tmpl` 或 `deploy/Caddyfile.snippet` 手工加上 `request_body` 那一段。
 - **共用换码口令（后台「代理换码」设置）短于 12 位的**：已有的短口令继续可用，代理用短口令成功换码后，设置页会提示尽快更换。新保存的口令至少 12 位。
-- **第一次改密码之后，所有旧登录令牌（包括本机的）全部作废**，改密成功会回到登录页，用新密码重新登录。
 
 #### 行为变化（无需操作）
 
-- 后台登录令牌：升级前签发的令牌没有版本号，按 0 算，照常能用到过期。管理员被禁用、删除后令牌立即失效。登录失败限流表满时，不再挤掉正在锁定中的账号。
+- 后台登录令牌：升级前签发的令牌没有版本号，按 0 算，照常能用到过期。**第一次改密码之后，所有旧令牌（包括本机的）全部作废**，改密成功会回到登录页，用新密码重新登录。管理员被禁用、删除后令牌立即失效。登录失败限流表满时，不再挤掉正在锁定中的账号。
 - 数据库：SQLite 同步方式由 NORMAL 改成 **FULL**。断电时付款状态不会回退（以前可能因此重复付款），代价是写入稍慢；本系统写入量小，可以接受。
 - 共用换码口令输错会按天计数并写日志（只记 IP 和次数，不含口令）。换码限流表有数量上限，IPv6 按 /64 合并计数。代理换码禁用旧码后，如果本站缓存的码状态没能更新，会发一条 CDK 告警（每张码每天一次）；卡台侧禁用已生效，不影响资金。
 - 批量兑换与卡池：

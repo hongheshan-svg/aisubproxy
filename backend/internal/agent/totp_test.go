@@ -64,17 +64,31 @@ func TestSecretEncodeDecode(t *testing.T) {
 
 func TestOtpauthURIFormat(t *testing.T) {
 	secret := []byte("12345678901234567890")
+	enc := agent.EncodeSecret(secret)
 	got := agent.OtpauthURI("My App", "a@b.c", secret)
-	want := "otpauth://totp/My%20App:a@b.c?secret=" + agent.EncodeSecret(secret) + "&issuer=My%20App&algorithm=SHA1&digits=6&period=30"
+	want := "otpauth://totp/My%20App:a%40b.c?secret=" + enc + "&issuer=My%20App&algorithm=SHA1&digits=6&period=30"
+	if got != want {
+		t.Fatalf("got %s want %s", got, want)
+	}
+
+	got = agent.OtpauthURI("A&B+C:D", "x y", secret)
 	u, err := url.Parse(got)
 	if err != nil || u.Scheme != "otpauth" || u.Host != "totp" {
 		t.Fatalf("格式不对: %s", got)
 	}
 	q := u.Query()
-	if q.Get("secret") != agent.EncodeSecret(secret) || q.Get("issuer") != "My App" || q.Get("algorithm") != "SHA1" || q.Get("digits") != "6" || q.Get("period") != "30" {
+	if q.Get("issuer") != "A&B+C:D" || q.Get("secret") != enc || q.Get("algorithm") != "SHA1" || q.Get("digits") != "6" || q.Get("period") != "30" {
 		t.Fatalf("参数不对: %s", got)
 	}
-	if !strings.HasPrefix(got, "otpauth://totp/") || !strings.Contains(got, "&algorithm=SHA1&digits=6&period=30") {
-		t.Fatalf("got %s want like %s", got, want)
+	// 标签：issuer:account，两段内部的冒号必须已被转义
+	label := strings.TrimPrefix(u.EscapedPath(), "/")
+	parts := strings.Split(label, ":")
+	if len(parts) != 2 {
+		t.Fatalf("标签分隔被打乱: %s", label)
+	}
+	iss, _ := url.PathUnescape(parts[0])
+	acc, _ := url.PathUnescape(parts[1])
+	if iss != "A&B+C:D" || acc != "x y" {
+		t.Fatalf("标签解码不对: %q %q", iss, acc)
 	}
 }

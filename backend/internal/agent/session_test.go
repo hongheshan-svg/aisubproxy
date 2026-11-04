@@ -1,6 +1,8 @@
 package agent_test
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"strings"
 	"testing"
 	"time"
@@ -36,11 +38,17 @@ func TestSessionRoundTrip(t *testing.T) {
 
 func TestSessionAudienceSeparated(t *testing.T) {
 	now := time.Now()
-	pre, _, _ := agent.SignPre(1, 1, agent.StageTOTP, now)
+	pre, _, err := agent.SignPre(1, 1, agent.StageTOTP, now)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := agent.ParseSession(pre, now); err == nil {
 		t.Fatal("pre 令牌不应通过 ParseSession")
 	}
-	s, _, _ := agent.SignSession(1, 1, now)
+	s, _, err := agent.SignSession(1, 1, now)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := agent.ParsePre(s, now); err == nil {
 		t.Fatal("会话令牌不应通过 ParsePre")
 	}
@@ -63,6 +71,9 @@ func TestSessionNotSignedWithJWTSecret(t *testing.T) {
 }
 
 func TestSessionExpiry(t *testing.T) {
+	if agent.SessionTTL != 12*time.Hour || agent.PreTTL != 5*time.Minute {
+		t.Fatal("TTL 常量被改动")
+	}
 	now := time.Now()
 	tok, _, _ := agent.SignSession(1, 1, now)
 	if _, err := agent.ParseSession(tok, now.Add(agent.SessionTTL-time.Second)); err != nil {
@@ -86,5 +97,66 @@ func TestParseGarbageErrorHasNoToken(t *testing.T) {
 	_, err := agent.ParseSession(tok, time.Now())
 	if err == nil || strings.Contains(err.Error(), tok) {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func derivedKey() []byte {
+	m := hmac.New(sha256.New, []byte(auth.JWTSecret()))
+	m.Write([]byte("aisubproxy/agent-session/v1"))
+	return m.Sum(nil)
+}
+
+func goodClaims(now time.Time, withExp bool) agent.Claims {
+	c := agent.Claims{AgentID: 1, SV: 1, RegisteredClaims: jwt.RegisteredClaims{
+		Audience: jwt.ClaimStrings{agent.AudSession},
+		IssuedAt: jwt.NewNumericDate(now),
+	}}
+	if withExp {
+		c.ExpiresAt = jwt.NewNumericDate(now.Add(time.Hour))
+	}
+	return c
+}
+
+func TestSessionDerivedKeyAccepted(t *testing.T) {
+	now := time.Now()
+	tok, err := jwt.NewWithClaims(jwt.SigningMethodHS256, goodClaims(now, true)).SignedString(derivedKey())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c, err := agent.ParseSession(tok, now); err != nil || c.AgentID != 1 {
+		t.Fatalf("派生密钥签的 HS256 令牌应通过: %v", err)
+	}
+}
+
+func TestSessionRejectsHS512(t *testing.T) {
+	now := time.Now()
+	tok, err := jwt.NewWithClaims(jwt.SigningMethodHS512, goodClaims(now, true)).SignedString(derivedKey())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.ParseSession(tok, now); err == nil {
+		t.Fatal("HS512 必须被拒绝")
+	}
+}
+
+func TestSessionRejectsAlgNone(t *testing.T) {
+	now := time.Now()
+	tok, err := jwt.NewWithClaims(jwt.SigningMethodNone, goodClaims(now, true)).SignedString(jwt.UnsafeAllowNoneSignatureType)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.ParseSession(tok, now); err == nil {
+		t.Fatal("alg=none 必须被拒绝")
+	}
+}
+
+func TestSessionRejectsMissingExp(t *testing.T) {
+	now := time.Now()
+	tok, err := jwt.NewWithClaims(jwt.SigningMethodHS256, goodClaims(now, false)).SignedString(derivedKey())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := agent.ParseSession(tok, now); err == nil {
+		t.Fatal("没有 exp 必须被拒绝")
 	}
 }

@@ -74,8 +74,13 @@ func VerifyTOTP(secret []byte, code string, now time.Time, lastStep int64) (int6
 
 // OtpauthURI 生成给验证器扫码的 otpauth 地址。
 func OtpauthURI(issuer, account string, secret []byte) string {
-	iss := url.PathEscape(issuer)
-	return "otpauth://totp/" + iss + ":" + url.PathEscape(account) +
+	iss := otpEscape(issuer)
+	return "otpauth://totp/" + iss + ":" + otpEscape(account) +
 		"?secret=" + EncodeSecret(secret) + "&issuer=" + iss +
 		"&algorithm=SHA1&digits=6&period=30"
+}
+
+// otpEscape 按查询串规则转义，并把空格写成 %20（验证器不认 +）。
+func otpEscape(s string) string {
+	return strings.ReplaceAll(url.QueryEscape(s), "+", "%20")
 }

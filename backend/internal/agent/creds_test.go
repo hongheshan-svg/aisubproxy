@@ -17,6 +17,11 @@ func TestGeneratePasswordAlphabet(t *testing.T) {
 		if strings.ContainsAny(p, "0Oo1lI") {
 			t.Fatalf("含易混字符: %s", p)
 		}
+		for _, ch := range p {
+			if !strings.ContainsRune("ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789", ch) {
+				t.Fatalf("字符 %q 不在字符集内", ch)
+			}
+		}
 	}
 }
 
@@ -29,13 +34,16 @@ func TestNormalizeUsername(t *testing.T) {
 			t.Fatalf("%q 应为 false", bad)
 		}
 	}
+	if u, ok := agent.NormalizeUsername("abc"); !ok || u != "abc" {
+		t.Fatal("3 位应通过")
+	}
 	if _, ok := agent.NormalizeUsername(strings.Repeat("a", 32)); !ok {
 		t.Fatal("32 位应通过")
 	}
 }
 
 func TestValidProductCode(t *testing.T) {
-	for s, want := range map[string]bool{"mw-pro-5x-ph": true, "ab": true, "a": false, "A-b": false, "a_b": false, strings.Repeat("a", 49): false} {
+	for s, want := range map[string]bool{"mw-pro-5x-ph": true, "ab": true, "a": false, "A-b": false, "a_b": false, strings.Repeat("a", 49): false, strings.Repeat("a", 48): true} {
 		if agent.ValidProductCode(s) != want {
 			t.Fatalf("%q want %v", s, want)
 		}
@@ -49,7 +57,7 @@ func TestDefaultProductCode(t *testing.T) {
 }
 
 func TestValidRequestNo(t *testing.T) {
-	for s, want := range map[string]bool{"": false, strings.Repeat("a", 65): false, "a b": false, "order-1:2.x_y": true, strings.Repeat("a", 64): true} {
+	for s, want := range map[string]bool{"": false, strings.Repeat("a", 65): false, "a": true, "a b": false, "order-1:2.x_y": true, strings.Repeat("a", 64): true} {
 		if agent.ValidRequestNo(s) != want {
 			t.Fatalf("%q want %v", s, want)
 		}

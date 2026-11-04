@@ -18,10 +18,10 @@ var (
 
 // GeneratePassword 生成 16 位随机初始密码（rand.Int 保证均匀）。
 func GeneratePassword() (string, error) {
-	max := big.NewInt(int64(len(passwordAlphabet)))
+	limit := big.NewInt(int64(len(passwordAlphabet)))
 	out := make([]byte, 16)
 	for i := range out {
-		n, err := rand.Int(rand.Reader, max)
+		n, err := rand.Int(rand.Reader, limit)
 		if err != nil {
 			return "", err
 		}

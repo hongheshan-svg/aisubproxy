@@ -101,3 +101,19 @@ export function isLocalSessionAuthFailure(url: string, status: number, body: any
   const err = String(body?.error || '').trim().toLowerCase()
   return AUTH_FAILURE_TEXTS.includes(err)
 }
+
+const ADMIN_HOME = '/ops'
+
+/**
+ * 登录后的跳转目标只接受站内后台路径（/ops、/ops/...、/ops?...），其余一律回 /ops（审计 B-6）。
+ * 现在 vue-router 会把 //evil.com 拼成同源路径，但不依赖库的行为：协议相对、反斜杠、控制字符都拒绝。
+ */
+export function safeAdminRedirect(raw: unknown): string {
+  if (typeof raw !== 'string') return ADMIN_HOME
+  const v = raw.trim()
+  const inAdmin = v === ADMIN_HOME || v.startsWith(ADMIN_HOME + '/') || v.startsWith(ADMIN_HOME + '?') || v.startsWith(ADMIN_HOME + '#')
+  if (!inAdmin) return ADMIN_HOME
+  const path = v.split(/[?#]/, 1)[0]
+  if (v.includes('\\') || path.includes('//') || /[\u0000-\u001f\u007f]/.test(v)) return ADMIN_HOME
+  return v
+}

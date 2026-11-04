@@ -38,7 +38,7 @@
 import { reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
-import { clearSetupLeftovers } from '../../lib/session'
+import { clearSetupLeftovers, safeAdminRedirect } from '../../lib/session'
 import ThemeToggle from '../../components/ThemeToggle.vue'
 import zh from '../../i18n/locales/zh'
 
@@ -89,8 +89,8 @@ const submit = async () => {
       expiresAt: data.expires_at,
     })
 
-    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/ops'
-    router.push(redirect)
+    // 只跳回后台内的路径，外站、协议相对地址一律回 /ops（审计 B-6）
+    router.push(safeAdminRedirect(route.query.redirect))
   } catch (error) {
     errorMessage.value = t('login.errNetwork')
   }

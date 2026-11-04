@@ -18,7 +18,7 @@ import { useAuthStore } from '../../stores/auth'
 import { authFetch } from '../api'
 import {
   AUTH_STORAGE_KEY, LEGACY_SETUP_KEYS, clearSetupLeftovers, isLocalSessionAuthFailure, parseStoredAuth, probeAdminSession,
-  type SessionProbe,
+  safeAdminRedirect, type SessionProbe,
 } from '../session'
 
 const future = () => new Date(Date.now() + 3600_000).toISOString()
@@ -229,5 +229,22 @@ describe('authFetch 遇到业务性 403 不登出（B-5）', () => {
       vi.unstubAllGlobals()
     }
     expect(auth.isLoggedIn).toBe(false)
+  })
+})
+
+describe('safeAdminRedirect（B-6）：登录后只跳回后台内的路径', () => {
+  it('后台路径原样保留', () => {
+    expect(safeAdminRedirect('/ops')).toBe('/ops')
+    expect(safeAdminRedirect('/ops/cdkeys?tab=local')).toBe('/ops/cdkeys?tab=local')
+    expect(safeAdminRedirect('/ops?x=1')).toBe('/ops?x=1')
+    expect(safeAdminRedirect('/ops/orders?q=https://a.example')).toBe('/ops/orders?q=https://a.example')
+  })
+  it('外站、协议相对、反斜杠、其他前缀、非字符串一律回 /ops', () => {
+    for (const bad of [
+      'https://evil.example', '//evil.example', '/\\evil.example', '/ops\\..\\x', 'javascript:alert(1)',
+      '/opsx', '/history', '/ops//evil.example', '', '  ', '/ops/\u0000x', undefined, null, ['/ops/cdkeys'], 42,
+    ]) {
+      expect(safeAdminRedirect(bad as any), String(bad)).toBe('/ops')
+    }
   })
 })

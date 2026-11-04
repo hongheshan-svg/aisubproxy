@@ -4,8 +4,9 @@
     <div class="card p-4 flex flex-wrap items-end gap-3">
       <label class="block"><span class="block text-sm mb-1">开始日期</span><input v-model="from" type="date" class="input" /></label>
       <label class="block"><span class="block text-sm mb-1">结束日期</span><input v-model="to" type="date" class="input" /></label>
-      <button class="btn-primary" type="button" @click="go(1)">查询</button>
-      <a class="btn-ghost" :href="exportHref" download>导出 CSV</a>
+      <button class="btn-primary" type="button" @click="search">查询</button>
+      <a v-if="exportHref && inputValid" class="btn-ghost" :href="exportHref" download>导出 CSV</a>
+      <button v-else type="button" class="btn-ghost" disabled>导出 CSV</button>
     </div>
     <p v-if="err" class="text-sm text-red-500" role="alert">{{ err }}</p>
     <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -55,13 +56,22 @@ const err = ref('')
 const summary = ref({ opening_cents: 0, closing_cents: 0, income_cents: 0, expense_cents: 0 })
 
 // 同源下载，cookie 自动带上；CSV 由后端生成
+// 导出和翻页都用上次查询时的日期快照；输入框里的日期不合法时禁用导出
+const snap = ref({ from: def.from, to: def.to })
+const inputValid = computed(() => !!beijingRange(from.value, to.value))
 const exportHref = computed(() => {
-  const r = beijingRange(from.value, to.value)
-  return r ? `/api/v1/agent/ledger/export?${ledgerQuery(r.from, r.to)}` : '#'
+  const r = beijingRange(snap.value.from, snap.value.to)
+  return r ? `/api/v1/agent/ledger/export?${ledgerQuery(r.from, r.to)}` : ''
 })
 
+function search() {
+  if (!beijingRange(from.value, to.value)) { err.value = '日期范围不正确'; return }
+  snap.value = { from: from.value, to: to.value }
+  go(1)
+}
+
 async function go(p: number) {
-  const r0 = beijingRange(from.value, to.value)
+  const r0 = beijingRange(snap.value.from, snap.value.to)
   if (!r0) { err.value = '日期范围不正确'; return }
   page.value = p
   try {

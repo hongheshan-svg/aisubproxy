@@ -1,4 +1,5 @@
 // 代理商后台页面用到的纯函数：标签、下单预览、日期范围、查询串、导出请求体。
+import { IdempotencyKeeper } from './idempotency'
 
 export const CODE_STATUS_LABELS: Record<string, string> = {
   unused: '未使用', processing: '处理中', used: '已开通', failed: '失败', disabled: '已禁用',
@@ -16,14 +17,33 @@ export function orderPreview(unitCents: number, qty: number, balanceCents: numbe
   return { totalCents, afterCents, enough: afterCents >= 0 }
 }
 
-/** 只接受 1–200 的整数（数字或纯数字字符串）。 */
+/** 只接受 1–200 的整数：字符串必须是纯数字（不接受 1e2、0x10、空白、符号），数字类型按整数判断。 */
 export function validQuantity(input: unknown): number | null {
-  const s = typeof input === 'string' ? input.trim() : input
-  if (s === '' || s === null || s === undefined || typeof s === 'boolean') return null
-  const n = Number(s)
+  let n: number
+  if (typeof input === 'string') {
+    if (!/^\d+$/.test(input)) return null
+    n = Number(input)
+  } else if (typeof input === 'number') n = input
+  else return null
   if (!Number.isInteger(n) || n < 1 || n > ORDER_MAX_QTY) return null
   return n
 }
+
+const DEFINITE_ORDER_FAILURES = new Set(['insufficient_balance', 'invalid_request', 'product_unavailable', 'product_not_ready', 'price_changed', 'request_no_conflict'])
+/** 服务端明确拒绝、不会有同请求号结果的错误：可以换新请求号。网络异常、503、未知错误都不算。 */
+export function isDefiniteOrderFailure(code: string): boolean {
+  return DEFINITE_ORDER_FAILURES.has(code)
+}
+
+/** 下单页的锁定状态：请求中、确认框打开、有待重试的未知结果时，输入都禁用；有待重试且没在请求才算「结果未知」。 */
+export function orderLockState(s: { busy: boolean; confirming: boolean; hasPending: boolean }) {
+  return { inputsDisabled: s.busy || s.confirming || s.hasPending, unknown: s.hasPending && !s.busy }
+}
+
+export type PendingOrder = { product_code: string; quantity: number; note: string; expected_unit_price_cents: number }
+/** 模块级：只存请求号和待重试的请求内容（不存码），切换页面后仍可原样重试。不写 localStorage / sessionStorage。 */
+export const orderKeeper = new IdempotencyKeeper()
+export const orderRetry: { pending: PendingOrder | null } = { pending: null }
 
 const DAY = 86400
 function ymdToBeijingSec(d: string): number | null {

@@ -12,8 +12,9 @@
       <div class="sm:col-span-2 lg:col-span-5 flex flex-wrap gap-2 items-center">
         <button class="btn-primary" type="submit">查询</button>
         <select v-model="fmt" class="input"><option value="txt">.txt</option><option value="csv">.csv</option></select>
-        <button type="button" class="btn-ghost" :disabled="busy || !selected.size" @click="doExport({ ids: [...selected] })">导出勾选（{{ selected.size }}）</button>
-        <button type="button" class="btn-ghost" :disabled="busy || !total" @click="exportFiltered">按当前筛选导出全部（{{ total }}）</button>
+        <span class="text-sm">已勾选 {{ selected.size }} 张</span>
+        <button type="button" class="btn-ghost" :disabled="busy || !selected.size" @click="doExport({ ids: [...selected] })">导出勾选</button>
+        <button type="button" class="btn-ghost" :disabled="busy || !total" @click="exportFiltered">按上次查询的筛选导出全部（{{ total }}）</button>
       </div>
     </form>
     <p v-if="err" class="text-sm text-red-500" role="alert">{{ err }}</p>
@@ -47,11 +48,13 @@
 import { computed, onMounted, reactive, ref } from 'vue'
 import { agentApi, agentErrorText } from '../../lib/agentApi'
 import { codesCsv, codesTxt, downloadText } from '../../lib/agentExport'
-import { beijingRange, CODE_STATUS_LABELS, codesQuery, EXPORT_MAX, exportBody, type CodeFilter } from '../../lib/agentViews'
+import { beijingRange, CODE_STATUS_LABELS, codesQuery, EXPORT_MAX, exportBody, ymdBeijing, type CodeFilter } from '../../lib/agentViews'
 import { fmtBeijing } from '../../lib/mwwebhook'
 
 const PAGE = 50
 const f = reactive<CodeFilter>({ product: '', status: '', orderId: '', from: '', to: '' })
+// 查询时的筛选快照：翻页、导出、上限检查都用它，不用输入框里尚未查询的值
+let snap: CodeFilter = { ...f }
 const products = ref<any[]>([])
 const items = ref<any[]>([])
 const total = ref(0)
@@ -79,12 +82,18 @@ function dateOk(): boolean {
   if ((f.from || f.to) && !(f.from && f.to && beijingRange(f.from, f.to))) { err.value = '请同时填写正确的开始和结束日期'; return false }
   return true
 }
-function search() { err.value = ''; if (dateOk()) go(1) }
+function search() {
+  err.value = ''
+  if (!dateOk()) return
+  snap = { ...f }
+  selected.value = new Set()
+  go(1)
+}
 
 async function go(p: number) {
   page.value = p
   try {
-    const r = await agentApi('/codes' + codesQuery(f, p, PAGE))
+    const r = await agentApi('/codes' + codesQuery(snap, p, PAGE))
     if (r.ok) { items.value = r.data.items || []; total.value = r.data.total || 0; err.value = '' }
     else err.value = agentErrorText(r.data, r.status)
   } catch { err.value = '网络异常，请稍后再试' }
@@ -92,8 +101,7 @@ async function go(p: number) {
 
 function exportFiltered() {
   err.value = ''
-  if (!dateOk()) return
-  doExport({ filter: { ...f } })
+  doExport({ filter: { ...snap } })
 }
 
 async function doExport(src: { ids: number[] } | { filter: CodeFilter }) {
@@ -105,7 +113,7 @@ async function doExport(src: { ids: number[] } | { filter: CodeFilter }) {
     const r = await agentApi('/codes/export', 'POST', exportBody(src))
     if (!r.ok) { err.value = r.data?.error === 'export_too_large' ? `一次最多导出 ${EXPORT_MAX} 张，请缩小范围后分批导出` : agentErrorText(r.data, r.status); return }
     const codes = r.data.codes || []
-    const stamp = new Date().toISOString().slice(0, 10)
+    const stamp = ymdBeijing(Math.floor(Date.now() / 1000))
     if (fmt.value === 'txt') {
       const t = codesTxt(codes)
       downloadText(`codes-${stamp}.txt`, t.text, 'text/plain')

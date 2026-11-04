@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   CODE_STATUS_LABELS, LEDGER_KIND_LABELS, orderPreview, validQuantity, beijingRange,
   codesQuery, exportBody, EXPORT_MAX, ledgerQuery, defaultLedgerRange, ymdBeijing,
+  isDefiniteOrderFailure, orderLockState, orderRetry, orderKeeper,
 } from '../agentViews'
 
 describe('agentViews', () => {
@@ -43,5 +44,29 @@ describe('agentViews', () => {
     const r = defaultLedgerRange(1793808000 + 3600)
     expect(r.to).toBe(ymdBeijing(1793808000 + 3600))
     expect(r.from).toBe('2026-10-06')
+  })
+  it('validQuantity 严格匹配字符串', () => {
+    for (const bad of ['1e2', '0x10', ' 3', '3 ', '+3', '-1', '1.0', '٣']) expect(validQuantity(bad), bad).toBeNull()
+    expect(validQuantity('007')).toBe(7)
+    expect(validQuantity(5)).toBe(5)
+  })
+  it('isDefiniteOrderFailure', () => {
+    for (const c of ['insufficient_balance', 'invalid_request', 'product_unavailable', 'product_not_ready', 'price_changed', 'request_no_conflict']) expect(isDefiniteOrderFailure(c), c).toBe(true)
+    for (const c of ['busy', 'maintenance', 'rate_limited', '', 'whatever']) expect(isDefiniteOrderFailure(c), c).toBe(false)
+  })
+  it('orderLockState：结果未知时锁定', () => {
+    expect(orderLockState({ busy: false, confirming: false, hasPending: false })).toEqual({ inputsDisabled: false, unknown: false })
+    expect(orderLockState({ busy: true, confirming: false, hasPending: false }).inputsDisabled).toBe(true)
+    expect(orderLockState({ busy: false, confirming: true, hasPending: false }).inputsDisabled).toBe(true)
+    expect(orderLockState({ busy: true, confirming: false, hasPending: true })).toEqual({ inputsDisabled: true, unknown: false })
+    expect(orderLockState({ busy: false, confirming: false, hasPending: true })).toEqual({ inputsDisabled: true, unknown: true })
+  })
+  it('模块级请求号与待重试内容', () => {
+    const p = { product_code: 'a', quantity: 1, note: '', expected_unit_price_cents: 100 }
+    const k1 = orderKeeper.keyFor({ product_code: 'a', quantity: 1, note: '' })
+    orderRetry.pending = p
+    expect(orderKeeper.keyFor({ product_code: 'a', quantity: 1, note: '' })).toBe(k1)
+    orderKeeper.done(); orderRetry.pending = null
+    expect(orderKeeper.keyFor({ product_code: 'a', quantity: 1, note: '' })).not.toBe(k1)
   })
 })

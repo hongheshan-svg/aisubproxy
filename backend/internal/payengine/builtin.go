@@ -76,9 +76,9 @@ func BuiltinRegionPrice(planKey, region string) (RegionConf, bool) {
 // 币种与内置币种不同（且不为空）时不补，因为金额单位不同。补完的结果仍能通过 SavePlanTable 的校验：
 //   - 内置上限放不下管理员的非 0 预期或最低时，上限不补；
 //   - 内置预期会大于非 0 上限、或小于非 0 最低时，预期不补，留 0；
-//   - 最低只按上限拉低：补出来的最低高于非 0 的上限时，降到上限。
-//   - 管理员的非 0 预期低于内置最低时，最低不补、留 0，真实付款由 ResolvePlan 以「未配置最低金额」拒绝。
-//     预期多半是填错了（比如 pro_5x 填成 Plus 的 $20）：按它拉低最低，会让便宜档的页面过得了下限。
+//   - 最低从不往下拉：管理员的非 0 预期、或非 0 上限低于内置最低时，最低不补、留 0，
+//     真实付款由 ResolvePlan 以「未配置最低金额」拒绝（试运行不受影响）。
+//     这两个数多半是填错了（比如 pro_5x 的预期或上限填成 Plus 的 $20）：按它拉低最低，会让便宜档的页面过得了下限。
 func fillBuiltin(planKey, region string, rc RegionConf) RegionConf {
 	b, ok := BuiltinRegionPrice(planKey, region)
 	if !ok || (rc.Currency != "" && rc.Currency != b.Currency) {
@@ -90,12 +90,9 @@ func fillBuiltin(planKey, region string, rc RegionConf) RegionConf {
 	if rc.ExpectMinor == 0 && (rc.CapMinor == 0 || b.ExpectMinor <= rc.CapMinor) && b.ExpectMinor >= rc.FloorMinor {
 		rc.ExpectMinor = b.ExpectMinor
 	}
-	if rc.FloorMinor == 0 && (rc.ExpectMinor == 0 || rc.ExpectMinor >= b.FloorMinor) {
-		// 预期为 0 或不低于内置最低：最低 ≤ 预期自然成立，只需不高于上限
+	if rc.FloorMinor == 0 && (rc.ExpectMinor == 0 || rc.ExpectMinor >= b.FloorMinor) && (rc.CapMinor == 0 || rc.CapMinor >= b.FloorMinor) {
+		// 预期、上限都为 0 或不低于内置最低：最低 ≤ 预期、最低 ≤ 上限自然成立
 		rc.FloorMinor = b.FloorMinor
-		if rc.CapMinor > 0 && rc.FloorMinor > rc.CapMinor {
-			rc.FloorMinor = rc.CapMinor
-		}
 	}
 	return rc
 }

@@ -114,8 +114,8 @@ func TestLoadPlanTableFillsZeroAmounts(t *testing.T) {
 	if rc := get("pro_5x", "US"); rc != (RegionConf{Currency: "USD", ExpectMinor: 10000, FloorMinor: 10000, CapMinor: 10500}) {
 		t.Fatalf("pro_5x/US: %+v", rc)
 	}
-	// 预期补 2000 会大于管理员的上限 1500，不补；最低降到上限
-	if rc := get("plus", "US"); rc != (RegionConf{Enabled: true, Currency: "USD", ExpectMinor: 0, FloorMinor: 1500, CapMinor: 1500}) {
+	// 预期补 2000 会大于管理员的上限 1500，不补；上限低于内置最低 2000，最低不补、留 0（终审二 Minor-2，以前降到上限）
+	if rc := get("plus", "US"); rc != (RegionConf{Enabled: true, Currency: "USD", ExpectMinor: 0, FloorMinor: 0, CapMinor: 1500}) {
 		t.Fatalf("plus/US: %+v", rc)
 	}
 	// 币种被管理员改了：不补
@@ -143,8 +143,8 @@ func TestLoadPlanTableFillKeepsSaveable(t *testing.T) {
 		{"最低金额高于内置预期", `{"currency":"USD","floor_minor":2500}`, RegionConf{Currency: "USD", FloorMinor: 2500}},
 		// 内置上限放不下预期 9000：上限不补；最低照常补内置值
 		{"预期金额高于内置上限", `{"currency":"USD","expect_minor":9000}`, RegionConf{Currency: "USD", ExpectMinor: 9000, FloorMinor: 2000}},
-		// 内置预期 2000 大于上限 500：预期不补；最低降到上限
-		{"只填上限且低于内置最低", `{"currency":"USD","cap_minor":500}`, RegionConf{Currency: "USD", FloorMinor: 500, CapMinor: 500}},
+		// 内置预期 2000 大于上限 500：预期不补；上限低于内置最低 2000：最低不补、留 0（终审二 Minor-2，以前降到上限）
+		{"只填上限且低于内置最低", `{"currency":"USD","cap_minor":500}`, RegionConf{Currency: "USD", CapMinor: 500}},
 		// 空币种只补金额、不补币种
 		{"币种为空", `{"currency":""}`, RegionConf{ExpectMinor: 2000, FloorMinor: 2000, CapMinor: 2200}},
 	}
@@ -239,6 +239,59 @@ func TestFillBuiltinWrongExpectLeavesFloorZero(t *testing.T) {
 	}
 	if _, rc, err = ResolvePlan("pro_5x", "US", false); err != nil || rc.FloorMinor != 10000 || rc.CapMinor != 11000 {
 		t.Fatalf("预期 10500 时最低应补 10000: %+v %v", rc, err)
+	}
+}
+
+// 终审二 Minor-2：管理员只填了上限、且上限低于内置最低时（比如 pro_5x 的上限错填成 Plus 的 $20），最低不能降到上限——
+// 那样 $20 的 Plus 页也能过下限。最低不补、留 0，真实单在 ResolvePlan 以「未配置最低金额」拒绝，在建单、注资之前。
+func TestFillBuiltinLowCapLeavesFloorZero(t *testing.T) {
+	h := newHarness(t)
+	raw := `[{"key":"pro_5x","label":"Pro 5x","chatgpt_plan_name":"chatgptprolite","expect_plan_type":"pro","regions":{"US":{"enabled":true,"currency":"USD","cap_minor":2000,"fund_cents":2500}}}]`
+	if err := db.SetSetting("pay_plan_table", raw); err != nil {
+		t.Fatal(err)
+	}
+	tbl, err := LoadPlanTable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rc RegionConf
+	for _, p := range tbl {
+		if p.Key == "pro_5x" {
+			rc = p.Regions["US"]
+		}
+	}
+	// 内置预期 10000 大于上限 2000：预期不补；上限 2000 低于内置最低 10000：最低不补
+	want := RegionConf{Enabled: true, Currency: "USD", CapMinor: 2000, FundCents: 2500}
+	if rc != want {
+		t.Fatalf("pro_5x/US 只填低上限时最低应留 0: %+v 期望 %+v", rc, want)
+	}
+	if err := SavePlanTable(tbl); err != nil {
+		t.Fatalf("补完应能保存: %v", err)
+	}
+	if _, _, err := ResolvePlan("pro_5x", "US", false); !errors.Is(err, ErrPlanUnavailable) || !strings.Contains(err.Error(), "最低金额") {
+		t.Fatalf("最低金额为 0 时真实付款应以未配置最低金额拒绝: %v", err)
+	}
+	_, err = h.svc.Submit(ctx, Request{Provider: testProvider, PlanKey: "pro_5x", Region: "US", Session: testSession, Source: "admin_test"})
+	if !errors.Is(err, ErrPlanUnavailable) {
+		t.Fatalf("真实单应在建单前以套餐不可用拒绝: %v", err)
+	}
+	if _, total, _ := listOrders(ctx, "", 1, 0); total != 0 {
+		t.Fatalf("被拒时不应建单: %d", total)
+	}
+	if n := h.pool.count("Acquire") + h.pool.count("Fund"); n != 0 {
+		t.Fatalf("被拒时不应取卡、注资: %d 次", n)
+	}
+	// 试运行只读金额，不受最低金额影响
+	if _, _, err := ResolvePlan("pro_5x", "US", true); err != nil {
+		t.Fatalf("试运行应可用: %v", err)
+	}
+	// 上限不低于内置最低时照常补最低
+	raw = `[{"key":"pro_5x","label":"Pro 5x","chatgpt_plan_name":"chatgptprolite","expect_plan_type":"pro","regions":{"US":{"enabled":true,"currency":"USD","cap_minor":10500,"fund_cents":2500}}}]`
+	if err := db.SetSetting("pay_plan_table", raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, rc, err = ResolvePlan("pro_5x", "US", false); err != nil || rc.FloorMinor != 10000 || rc.ExpectMinor != 10000 || rc.CapMinor != 10500 {
+		t.Fatalf("上限 10500 时最低、预期应补 10000: %+v %v", rc, err)
 	}
 }
 

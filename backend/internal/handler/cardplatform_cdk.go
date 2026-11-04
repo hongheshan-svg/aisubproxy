@@ -685,7 +685,9 @@ func CardPlatformListCDKs(c *gin.Context) {
 	out := make([]rowOut, 0, len(res.List))
 	withFull := 0
 	for _, it := range res.List {
-		full, ok := db.LookupCardplatformCDKCode(it.ID, it.CodePrefix)
+		// 只按上游 id 精确取完整码，不按前缀兜底：前缀可能撞上别的码，会把另一张码的完整码展示出来
+		full, err := db.CardplatformCDKCodeByUpstreamID(it.ID)
+		ok := err == nil
 		if !ok {
 			if up := it.FullCodeText(); up != "" {
 				full, ok = up, true

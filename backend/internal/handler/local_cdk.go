@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -49,10 +50,11 @@ const (
 const (
 	localRateMutate = "mutate"
 	localRateQuery  = "query"
+	localRateSwap   = "swap" // 代理换码接口，每 IP 每小时 20 次
 	localRateWindow = time.Hour
 )
 
-var localRateLimits = map[string]int{localRateMutate: 300, localRateQuery: 6000}
+var localRateLimits = map[string]int{localRateMutate: 300, localRateQuery: 6000, localRateSwap: 20}
 
 // localRateMaxKeys 是限流表最多记多少个键。满了再来新键就淘汰窗口开始得最早的那个（O(1)），
 // 不在请求路径里遍历整张表；一小时以前的键由 sweepLocalRate 每分钟清一次。测试可调小。
@@ -78,7 +80,7 @@ var (
 // localRateAllow 固定窗口计数，请求路径里只做 O(1) 的操作。结果接口的额度大，存时间戳太占内存。
 func localRateAllow(kind, ip string) bool {
 	now := localRateNow()
-	key := kind + "|" + ip
+	key := kind + "|" + rateIPKey(ip)
 	localRateMu.Lock()
 	defer localRateMu.Unlock()
 	w := localRateHits[key]
@@ -122,6 +124,19 @@ func sweepLocalRate(now time.Time) int {
 	return n
 }
 
+// rateIPKey 限流用的来源键：IPv6 按 /64 聚合（一个客户端通常拿到整段 /64，逐地址计数等于没限），IPv4 和解析不了的原样。
+func rateIPKey(ip string) string {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil || addr.Is4() || addr.Is4In6() {
+		return ip
+	}
+	p, err := addr.Prefix(64)
+	if err != nil {
+		return ip
+	}
+	return p.String()
+}
+
 func resetLocalRate() {
 	localRateMu.Lock()
 	localRateHits = map[string]*localRateEntry{}
@@ -138,7 +153,7 @@ func localRateKeys() int {
 func localRateHas(kind, ip string) bool {
 	localRateMu.Lock()
 	defer localRateMu.Unlock()
-	return localRateHits[kind+"|"+ip] != nil
+	return localRateHits[kind+"|"+rateIPKey(ip)] != nil
 }
 
 // 同一张码同一时刻只有一个请求能往下走：状态检查和建单之间不能插进别的兑换或换码。

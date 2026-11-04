@@ -91,8 +91,7 @@ func TestDrainGivesUpAtLimit(t *testing.T) {
 
 // S1：在途状态是离开排队之后、进入确认之前的那几个；排队、确认中和终态不算。
 func TestCountProcessing(t *testing.T) {
-	h := newPayHarness(t, nil)
-	_ = h
+	newPayHarness(t, nil) // 只用它建好的内存库和主密钥
 	for i, st := range []string{StateQueued, StateChecking, StateLinkCreated, StateOpening, StateFunding, StateFilling,
 		StateSubmitted, StateRequires3DS, StateVerifying, StateSucceeded, StateFailed, StateNeedsReview, StatePreviewed} {
 		presetOrder(t, "u"+string(rune('a'+i))+"@example.com", st, nil)

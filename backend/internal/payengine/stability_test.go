@@ -10,6 +10,7 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/cardpool"
 	"github.com/tuzi/cdk-recharge-system/internal/chatgpt"
 	"github.com/tuzi/cdk-recharge-system/internal/paybrowser"
+	"github.com/tuzi/cdk-recharge-system/internal/safego"
 )
 
 // panicSecret 混进 panic 的值里：日志、告警、单据说明都不能带出来。
@@ -241,5 +242,84 @@ func TestBrowserLaunchTimeout(t *testing.T) {
 	next := h.submitAs(t, sessionFor("next@example.com"), true)
 	if g := waitDone(t, next.OrderNo); g.State != StatePreviewed {
 		t.Fatalf("超时之后下一张单应照常处理: %+v", g)
+	}
+}
+
+// 修复第 1 轮：接管已提交单时一单 panic，只跳过这一单（记日志），后面的单照常接管，整轮不中断。
+func TestAdoptSubmittedIsolatesPanic(t *testing.T) {
+	h := newPayHarness(t, nil)
+	now := h.clock.Now().Unix()
+	bad := presetOrder(t, "bad@example.com", StateSubmitted, map[string]any{"submitted_at": now})
+	good := presetOrder(t, "good@example.com", StateRequires3DS, map[string]any{"submitted_at": now})
+	var calls atomic.Int32
+	clock := h.svc.opts.Now
+	h.svc.opts.Now = func() time.Time {
+		if calls.Add(1) == 1 { // 第一单转确认时读时钟就 panic
+			panicNow()
+		}
+		return clock()
+	}
+	if safego.Run("测试接管", func() { h.svc.adoptSubmitted(ctx) }) {
+		t.Fatal("一单 panic 不应让整轮接管中断")
+	}
+	if g := mustOrder(t, bad.OrderNo); g.State != StateSubmitted {
+		t.Fatalf("panic 的那单应原样留着，下一轮再试: %+v", g)
+	}
+	if g := mustOrder(t, good.OrderNo); g.State != StateVerifying {
+		t.Fatalf("后面的单应照常接管: %+v", g)
+	}
+	// 下一轮那单照常接管
+	h.svc.adoptSubmitted(ctx)
+	if g := mustOrder(t, bad.OrderNo); g.State != StateVerifying {
+		t.Fatalf("下一轮应接管: %+v", g)
+	}
+}
+
+// 修复第 1 轮：扫描停滞单时一单 panic，只跳过这一单（记日志），后面的单照常收尾。
+func TestSweepStaleIsolatesPanic(t *testing.T) {
+	h := newPayHarness(t, nil)
+	bad := presetStale(t, "bad@example.com", StateFilling, 10*time.Minute, map[string]any{"card_id": "card-b", "lease_token": "tok-b"})
+	good := presetStale(t, "good@example.com", StateFunding, 10*time.Minute, map[string]any{"card_id": "card-g", "lease_token": "tok-g"})
+	h.pool.release = func(l *cardpool.Lease, _ cardpool.Outcome) error {
+		if l.OrderRef == bad.OrderNo {
+			panicNow()
+		}
+		return nil
+	}
+	h.svc.recovered.Store(true)
+	if safego.Run("测试扫描", func() { h.svc.sweepStale(ctx) }) {
+		t.Fatal("一单 panic 不应让整轮扫描中断")
+	}
+	if g := mustOrder(t, bad.OrderNo); g.State != StateFilling {
+		t.Fatalf("panic 的那单应原样留着，下一轮再试: %+v", g)
+	}
+	assertNotSubmitted(t, mustOrder(t, good.OrderNo), "stale_order")
+	assertNoPanicValue(t, h, bad.OrderNo)
+}
+
+// 修复第 1 轮：单据协程 panic 后先收尾、再告警；告警函数自己 panic，单据也照样收尾，名额归还。
+func TestHandlePanicSettlesEvenIfAlertPanics(t *testing.T) {
+	h := newPayHarness(t, nil)
+	h.br.fill = func(paybrowser.Card, paybrowser.Billing) error {
+		panicNow()
+		return nil
+	}
+	h.br.lockSubmit = func() bool { return false }
+	var alertCalls atomic.Int32
+	h.svc.opts.Alert = func(string) {
+		alertCalls.Add(1)
+		panic("告警坏了")
+	}
+	h.start(t)
+	o := h.submit(t, false)
+	g := waitDone(t, o.OrderNo)
+	assertNotSubmitted(t, g, "internal_error")
+	assertReleases(t, h, cardpool.ResultAborted)
+	waitNotRunning(t, h, o.OrderNo)
+	if b := theBrowser(t, h); b.count("Close") == 0 {
+		t.Fatal("浏览器应关闭")
+	}
+	if alertCalls.Load() == 0 {
+		t.Fatal("收尾之后仍应尝试告警")
 	}
 }

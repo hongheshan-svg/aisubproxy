@@ -132,17 +132,23 @@ func (s *Service) handle(ctx context.Context, o *Order) {
 	kick = s.process(ctx, j)
 }
 
-// recoverJob 收尾处理中 panic 的单据（见 settlePanic），最后关浏览器。panic 的值可能带卡号、会话，只记类型和位置。
-// 收尾本身再出错只记日志：单据留在中间状态，由确认协程（已提交的）或周期扫描（提交前的，见 sweepStale）接管。
+// recoverJob 收尾处理中 panic 的单据（见 settlePanic），再发告警，最后关浏览器。panic 的值可能带卡号、会话，只记类型和位置。
+// 先收尾再告警：告警出错（包括告警函数自己 panic）不能让单据停在中间状态。收尾和告警各自兜住，出错只记日志；
+// 收尾没做成的单留在中间状态，由确认协程（已提交的）或周期扫描（提交前的，见 sweepStale）接管。
 func (s *Service) recoverJob(ctx context.Context, j *job, r any) {
 	desc := safego.Describe(r)
+	state := j.o.State // 收尾会改 j.o.State，告警写出错时的状态
 	defer closeBrowserQuietly(j)
-	defer safego.RecoverNoAlert("付款单 " + j.o.OrderNo + " 内部错误后的收尾")
-	log.Printf("[payengine] 单据 %s 在 %s 时内部错误（panic）：%s", j.o.OrderNo, j.o.State, desc)
-	if ctx.Err() == nil {
-		s.opts.Alert(fmt.Sprintf("付款单 %s 在 %s 时内部错误（panic）：%s。已按规则收尾：写过提交时间或不能证明没点支付的转确认，其余按提交前放弃。", j.o.OrderNo, j.o.State, desc))
+	log.Printf("[payengine] 单据 %s 在 %s 时内部错误（panic）：%s", j.o.OrderNo, state, desc)
+	func() {
+		defer safego.RecoverNoAlert("付款单 " + j.o.OrderNo + " 内部错误后的收尾")
+		s.settlePanic(ctx, j)
+	}()
+	if ctx.Err() != nil {
+		return
 	}
-	s.settlePanic(ctx, j)
+	defer safego.RecoverNoAlert("付款单 " + j.o.OrderNo + " 内部错误的告警")
+	s.opts.Alert(fmt.Sprintf("付款单 %s 在 %s 时内部错误（panic）：%s。已按规则收尾：写过提交时间或不能证明没点支付的转确认，其余按提交前放弃。", j.o.OrderNo, state, desc))
 }
 
 // closeBrowserQuietly 关浏览器，关的时候 panic 只记日志。

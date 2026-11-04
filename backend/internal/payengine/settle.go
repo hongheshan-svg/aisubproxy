@@ -173,11 +173,22 @@ func (s *Service) adoptSubmitted(ctx context.Context) {
 		if s.isRunning(list[i].OrderNo) {
 			continue
 		}
-		j := &job{o: &list[i]}
-		err := s.beginVerify(ctx, j, paybrowser.OutcomeUnknown, "", "转确认曾失败，由确认协程接管，确认是否开通")
-		if err != nil && ctx.Err() == nil && !errors.Is(err, ErrStateChanged) {
-			log.Printf("[payengine] 单据 %s 接管失败，下一轮再试: %s", j.o.OrderNo, j.scrub(err.Error()))
+		s.adoptOne(ctx, &list[i])
+	}
+}
+
+// adoptOne 接管一张已提交的单。panic 时只记日志、跳过这一单（单据原样留着，下一轮再试），不影响同一轮的其他单。
+// panic 的值可能带会话等，只记类型和位置。
+func (s *Service) adoptOne(ctx context.Context, o *Order) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[payengine] 单据 %s 接管时内部错误（panic），跳过，下一轮再试：%s", o.OrderNo, safego.Describe(r))
 		}
+	}()
+	j := &job{o: o}
+	err := s.beginVerify(ctx, j, paybrowser.OutcomeUnknown, "", "转确认曾失败，由确认协程接管，确认是否开通")
+	if err != nil && ctx.Err() == nil && !errors.Is(err, ErrStateChanged) {
+		log.Printf("[payengine] 单据 %s 接管失败，下一轮再试: %s", j.o.OrderNo, j.scrub(err.Error()))
 	}
 }
 
@@ -743,18 +754,29 @@ func (s *Service) sweepStale(ctx context.Context) {
 		if o.UpdatedAt > cutoff || s.isRunning(o.OrderNo) {
 			continue
 		}
-		j := &job{o: o}
-		from := o.State
-		escalated, err := s.abandonPreSubmit(ctx, j, &stepFailure{code: staleCode, msg: staleMessage}, "单据长时间没有进展，")
-		if err != nil {
-			log.Printf("[payengine] 收敛停滞单据 %s 失败: %v", o.OrderNo, err)
-			continue
-		}
-		if escalated {
-			continue // escalateUnpooled 已告警
-		}
-		s.opts.Alert(fmt.Sprintf("付款单 %s 停在「%s」超过 %v 没有进展，已按提交前放弃收尾（没有点支付）", o.OrderNo, from, staleAfter))
+		s.sweepOne(ctx, o)
 	}
+}
+
+// sweepOne 收尾一张停滞单。panic 时只记日志、跳过这一单（下一轮再试），不影响同一轮的其他单。
+// panic 的值可能带会话等，只记类型和位置。
+func (s *Service) sweepOne(ctx context.Context, o *Order) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[payengine] 收敛停滞单据 %s 时内部错误（panic），跳过，下一轮再试：%s", o.OrderNo, safego.Describe(r))
+		}
+	}()
+	j := &job{o: o}
+	from := o.State
+	escalated, err := s.abandonPreSubmit(ctx, j, &stepFailure{code: staleCode, msg: staleMessage}, "单据长时间没有进展，")
+	if err != nil {
+		log.Printf("[payengine] 收敛停滞单据 %s 失败: %v", o.OrderNo, err)
+		return
+	}
+	if escalated {
+		return // escalateUnpooled 已告警
+	}
+	s.opts.Alert(fmt.Sprintf("付款单 %s 停在「%s」超过 %v 没有进展，已按提交前放弃收尾（没有点支付）", o.OrderNo, from, staleAfter))
 }
 
 // cleanProfiles 只在用真实浏览器时清理：注入假浏览器的测试不该碰系统临时目录，

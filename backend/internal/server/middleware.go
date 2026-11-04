@@ -2,13 +2,18 @@ package server
 
 import (
 	"crypto/subtle"
+	"database/sql"
+	"errors"
+	"log"
 	"net/http"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/tuzi/cdk-recharge-system/internal/auth"
+	"github.com/tuzi/cdk-recharge-system/internal/db"
 )
 
 // allowedOrigins 来自环境变量 CORS_ALLOWED_ORIGINS（逗号分隔），默认仅本地开发端口。
@@ -39,8 +44,8 @@ func SecurityHeadersMiddleware() gin.HandlerFunc {
 		h.Set("Cross-Origin-Opener-Policy", "same-origin")
 		h.Set("Permissions-Policy", "geolocation=(), microphone=(), camera=()")
 
-		// 仅当确实走 HTTPS 时才下发 HSTS（直连 TLS 或反代标记 X-Forwarded-Proto=https）
-		if c.Request.TLS != nil || strings.EqualFold(c.GetHeader("X-Forwarded-Proto"), "https") {
+		// 仅当确实走 HTTPS 时才下发 HSTS：直连 TLS，或可信反代（TRUSTED_PROXIES）标了 X-Forwarded-Proto=https
+		if auth.RequestIsHTTPS(c.Request) {
 			h.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		}
 		c.Next()
@@ -80,6 +85,14 @@ func CORSMiddleware() gin.HandlerFunc {
 	}
 }
 
+// 鉴权失败统一带的错误码（审计 B-5）：前端只凭这几个码（或对应的固定文案）判断本站登录失效，
+// 其他 401/403 当业务结果原样显示，不踢人。改这里要同步 frontend/src/lib/session.ts。
+const (
+	authErrUnauthorized  = "unauthorized"
+	authErrCSRF          = "csrf_failed"
+	authErrAdminRequired = "admin_required"
+)
+
 func isUnsafeMethod(method string) bool {
 	switch method {
 	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
@@ -96,7 +109,7 @@ func JWTAuthMiddleware() gin.HandlerFunc {
 		if authHeader := c.GetHeader("Authorization"); authHeader != "" {
 			parts := strings.Split(authHeader, " ")
 			if len(parts) != 2 || parts[0] != "Bearer" {
-				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid authorization header"})
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid authorization header", "error_code": authErrUnauthorized})
 				c.Abort()
 				return
 			}
@@ -105,7 +118,7 @@ func JWTAuthMiddleware() gin.HandlerFunc {
 			tokenStr = ck
 			fromCookie = true
 		} else {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Missing authorization"})
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Missing authorization", "error_code": authErrUnauthorized})
 			c.Abort()
 			return
 		}
@@ -118,7 +131,22 @@ func JWTAuthMiddleware() gin.HandlerFunc {
 			return []byte(auth.JWTSecret()), nil
 		})
 		if err != nil || !token.Valid {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token"})
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token", "error_code": authErrUnauthorized})
+			c.Abort()
+			return
+		}
+
+		// 每个请求都查库核对令牌版本号和账号状态（审计 A-2）：改密码后旧令牌立刻作废，禁用、删除账号立刻生效。
+		// SQLite 本地主键查询，代价可以接受。
+		version, active, err := db.AdminTokenState(claims.UserID)
+		if errors.Is(err, sql.ErrNoRows) || (err == nil && (!active || version != claims.TokenVersion)) {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token", "error_code": authErrUnauthorized})
+			c.Abort()
+			return
+		}
+		if err != nil {
+			log.Printf("鉴权查询管理员状态失败: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "系统错误"})
 			c.Abort()
 			return
 		}
@@ -129,7 +157,7 @@ func JWTAuthMiddleware() gin.HandlerFunc {
 			csrfCookie, _ := c.Cookie("csrf_token")
 			if csrfHeader == "" || csrfCookie == "" ||
 				subtle.ConstantTimeCompare([]byte(csrfHeader), []byte(csrfCookie)) != 1 {
-				c.JSON(http.StatusForbidden, gin.H{"error": "CSRF 校验失败"})
+				c.JSON(http.StatusForbidden, gin.H{"error": "CSRF 校验失败", "error_code": authErrCSRF})
 				c.Abort()
 				return
 			}
@@ -138,6 +166,9 @@ func JWTAuthMiddleware() gin.HandlerFunc {
 		c.Set("user_id", claims.UserID)
 		c.Set("is_admin", claims.IsAdmin)
 		c.Set("username", claims.Username)
+		if claims.ExpiresAt != nil {
+			c.Set("token_expires_at", claims.ExpiresAt.Time.Format(time.RFC3339))
+		}
 		c.Next()
 	}
 }
@@ -146,7 +177,7 @@ func AdminAuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		isAdmin, ok := c.Get("is_admin")
 		if !ok || isAdmin != true {
-			c.JSON(http.StatusForbidden, gin.H{"error": "Admin access required"})
+			c.JSON(http.StatusForbidden, gin.H{"error": "Admin access required", "error_code": authErrAdminRequired})
 			c.Abort()
 			return
 		}

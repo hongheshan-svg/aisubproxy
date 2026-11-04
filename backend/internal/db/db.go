@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"strings"
@@ -144,7 +145,8 @@ func createTables() error {
 			display_name TEXT,
 			is_active INTEGER DEFAULT 1,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			token_version INTEGER NOT NULL DEFAULT 0
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_admin_users_username ON admin_users(username)`,
 
@@ -273,7 +275,13 @@ func createTables() error {
 
 	for _, query := range queries {
 		if _, err := DB.Exec(query); err != nil {
-			log.Printf("警告: 创建表时出错 (可能已存在): %v", err)
+			// 语句都带 IF NOT EXISTS，正常不会失败；失败多半是磁盘满、库文件损坏或表结构不对，
+			// 带病启动只会在后面以更难懂的方式出错，这里直接终止（审计 A-16）。
+			if strings.Contains(err.Error(), "already exists") {
+				log.Printf("创建表时提示已存在，跳过: %v", err)
+				continue
+			}
+			return fmt.Errorf("建表失败（%s）: %w", ddlHead(query), err)
 		}
 	}
 
@@ -292,6 +300,9 @@ func createTables() error {
 	}
 	if err := migrateCardplatformCDKRegionCol(); err != nil {
 		return fmt.Errorf("migrate cardplatform CDK region: %w", err)
+	}
+	if err := migrateAdminTokenVersion(); err != nil {
+		return fmt.Errorf("migrate admin token version: %w", err)
 	}
 	if err := ensureDefaultAdmin(); err != nil {
 		return err
@@ -323,6 +334,15 @@ func createTables() error {
 	return nil
 }
 
+// ddlHead 把建表语句压成一行、截前 80 个字符，放进错误信息里指明是哪一条。
+func ddlHead(q string) string {
+	h := strings.Join(strings.Fields(q), " ")
+	if r := []rune(h); len(r) > 80 {
+		h = string(r[:80]) + "…"
+	}
+	return h
+}
+
 // Migrate 是 createTables 的导出入口，供测试在内存库上建表。
 func Migrate() error { return createTables() }
 
@@ -338,6 +358,27 @@ func migrateCardplatformCDKStatusCol() error {
 	}
 	_, err = DB.Exec(`ALTER TABLE cardplatform_cdk_codes ADD COLUMN status TEXT DEFAULT ''`)
 	return err
+}
+
+// migrateAdminTokenVersion 给旧库的管理员表补令牌版本号（审计 A-2）。可重复执行：列已在就跳过。
+// 版本号签进 JWT，改密码时加一，之前签发的令牌随之作废；老账号从 0 开始，升级前签发的令牌（不带版本号，按 0 算）照常可用到过期。
+func migrateAdminTokenVersion() error {
+	var n int
+	if err := DB.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('admin_users') WHERE name='token_version'`).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	_, err := DB.Exec(`ALTER TABLE admin_users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0`)
+	return err
+}
+
+// AdminTokenState 返回管理员当前的令牌版本号和是否启用，鉴权中间件每个请求查一次。账号不存在返回 sql.ErrNoRows。
+func AdminTokenState(id int64) (version int64, active bool, err error) {
+	var isActive int
+	err = DB.QueryRow(`SELECT token_version, COALESCE(is_active, 0) FROM admin_users WHERE id = ?`, id).Scan(&version, &isActive)
+	return version, isActive == 1, err
 }
 
 // legacySHA256 是旧的（不安全）哈希算法，仅用于兼容历史数据并在登录时升级为 bcrypt。
@@ -384,13 +425,13 @@ func VerifyAdminPassword(stored, plain string) (bool, string) {
 	return false, ""
 }
 
-// SetAdminPassword 更新指定管理员的密码（bcrypt）。
+// SetAdminPassword 更新指定管理员的密码（bcrypt），同时令牌版本号加一：改密前签发的所有令牌立刻失效。
 func SetAdminPassword(username, newPlain string) error {
 	hash, err := HashAdminPassword(newPlain)
 	if err != nil {
 		return err
 	}
-	_, err = DB.Exec(`UPDATE admin_users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE username = ?`, hash, username)
+	_, err = DB.Exec(`UPDATE admin_users SET password_hash = ?, token_version = token_version + 1, updated_at = CURRENT_TIMESTAMP WHERE username = ?`, hash, username)
 	return err
 }
 
@@ -404,17 +445,34 @@ func UpgradeAdminHash(username, newHash string) {
 	}
 }
 
+// randomPassword 生成管理员初始密码和安装令牌。crypto/rand 读不出来时直接 panic：
+// 宁可启动失败，也不能退回一个可预测的口令（Go 1.24 起 crypto/rand 本身也不会返回错误）。
 func randomPassword(n int) string {
+	p, err := randomPasswordFrom(rand.Reader, n)
+	if err != nil {
+		panic(fmt.Sprintf("生成随机口令失败: %v", err))
+	}
+	return p
+}
+
+// randomPasswordFrom 用拒绝采样从字母表里取 n 个字符：只用小于 224（56 的最大整数倍）的字节，
+// 每个字符等概率。原来直接取模，256 % 56 = 32，前 32 个字符的概率高出 25%（审计 A-17）。
+func randomPasswordFrom(src io.Reader, n int) (string, error) {
 	const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789"
+	const limit = 256 - 256%len(alphabet)
+	out := make([]byte, 0, n)
 	buf := make([]byte, n)
-	if _, err := rand.Read(buf); err != nil {
-		return "Chg-Me-" + legacySHA256(fmt.Sprintf("%d", time.Now().UnixNano()))[:12]
+	for len(out) < n {
+		if _, err := io.ReadFull(src, buf); err != nil {
+			return "", err
+		}
+		for _, b := range buf {
+			if int(b) < limit && len(out) < n {
+				out = append(out, alphabet[int(b)%len(alphabet)])
+			}
+		}
 	}
-	out := make([]byte, n)
-	for i, b := range buf {
-		out[i] = alphabet[int(b)%len(alphabet)]
-	}
-	return string(out)
+	return string(out), nil
 }
 
 // InstallMode: wizard（推荐，等 Web 安装）| auto（启动时建管理员，兼容旧行为）
@@ -517,6 +575,30 @@ func VerifySetupToken(plain string) bool {
 	return subtle.ConstantTimeCompare([]byte(got), []byte(stored)) == 1
 }
 
+// RollbackAdminBootstrap 撤销一次没通过自检的安装：删掉刚建的管理员和安装完成标记，
+// 并把安装令牌恢复成这次用的那个（CreateAdminUser 已把它删了），管理员不用重启就能用同一个令牌重试（审计 A-11）。
+func RollbackAdminBootstrap(userID int64, setupToken string) error {
+	tx, err := DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`DELETE FROM admin_users WHERE id = ?`, userID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM site_settings WHERE key = 'install_completed_at'`); err != nil {
+		return err
+	}
+	sum := sha256.Sum256([]byte(setupToken))
+	if _, err := tx.Exec(`
+		INSERT INTO site_settings (key, value, updated_at) VALUES ('setup_token_hash', ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+	`, hex.EncodeToString(sum[:])); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // MarkInstalled 写安装完成标记并作废 setup token。
 func MarkInstalled(username string) error {
 	if err := SetSetting("install_completed_at", time.Now().UTC().Format(time.RFC3339)); err != nil {
@@ -600,6 +682,9 @@ func ensureDefaultAdmin() error {
 	if password == "" {
 		password = randomPassword(16)
 		generated = true
+	} else if IsWeakPassword(password) || strings.EqualFold(password, username) {
+		// 和安装向导同样的强度要求（审计 A-12）。拒绝启动，错误信息里不带口令本身。
+		return fmt.Errorf("ADMIN_PASSWORD 太弱：至少 12 位、不能是常见弱口令、不能和用户名相同。请换成强口令，或删掉 ADMIN_PASSWORD 改用安装向导 /ops/setup")
 	}
 
 	hash, err := HashAdminPassword(password)

@@ -44,19 +44,11 @@ type AdminLoginRequest struct {
 	Password string `json:"password" binding:"required"`
 }
 
-type AdminLoginResponse struct {
-	Token     string `json:"token"`
-	Username  string `json:"username"`
-	Name      string `json:"name"`
-	ExpiresAt string `json:"expires_at"`
-}
-
 // ===== Recharge Portal APIs =====
 
 func AdminLogin(c *gin.Context) {
 	var req AdminLoginRequest
-	if err := c.BindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+	if !bindAuthJSON(c, &req, "Invalid request") {
 		return
 	}
 
@@ -74,30 +66,31 @@ func AdminLogin(c *gin.Context) {
 	var passwordHash string
 	var displayName sql.NullString
 	var isActive int
+	var tokenVersion int64
 
 	err := db.DB.QueryRow(`
-		SELECT id, username, password_hash, display_name, is_active
+		SELECT id, username, password_hash, display_name, is_active, token_version
 		FROM admin_users
 		WHERE username = ?
-	`, strings.TrimSpace(req.Username)).Scan(&userID, &username, &passwordHash, &displayName, &isActive)
-	if err == sql.ErrNoRows {
-		loginFailed(rateKey)
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户名或密码错误"})
-		return
-	}
-	if err != nil {
+	`, strings.TrimSpace(req.Username)).Scan(&userID, &username, &passwordHash, &displayName, &isActive, &tokenVersion)
+	if err != nil && err != sql.ErrNoRows {
 		log.Printf("admin login lookup error: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "系统错误"})
 		return
 	}
-	if isActive != 1 {
-		c.JSON(http.StatusForbidden, gin.H{"error": "账号已被禁用"})
-		return
+	// 用户名不存在、账号禁用、密码错误三种情况：都跑一次 bcrypt（不存在的用户比一个固定的假哈希），
+	// 都计一次失败，都回同一个 401。响应内容和耗时都不暴露用户名是否存在（审计 A-8）。
+	known := err == nil
+	if !known {
+		passwordHash = dummyAdminHash()
 	}
-	// 密码两侧空白常因复制粘贴产生，校验时 Trim；入库仍按原样（生成口令无空白）
+	// 密码两侧空白常因复制粘贴产生，校验时 Trim；安装（自设密码）和改密入库前也 Trim，口径一致
 	plain := strings.TrimSpace(req.Password)
-	ok, upgradedHash := db.VerifyAdminPassword(passwordHash, plain)
-	if !ok {
+	ok, upgradedHash := verifyAdminPassword(passwordHash, plain)
+	if !known || !ok || isActive != 1 {
+		if known && ok {
+			log.Printf("admin login: 账号 %s 已禁用，按登录失败处理", username)
+		}
 		loginFailed(rateKey)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户名或密码错误"})
 		return
@@ -111,7 +104,7 @@ func AdminLogin(c *gin.Context) {
 	if displayName.Valid && strings.TrimSpace(displayName.String) != "" {
 		name = displayName.String
 	}
-	sess, err := issueAdminSession(c, userID, username, name)
+	sess, err := issueAdminSession(c, userID, username, name, tokenVersion)
 	if err != nil {
 		log.Printf("admin login session error: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "系统错误"})
@@ -121,12 +114,16 @@ func AdminLogin(c *gin.Context) {
 }
 
 // issueAdminSession 签发 JWT + HttpOnly cookie，供登录与安装向导共用。
-func issueAdminSession(c *gin.Context, userID int64, username, displayName string) (gin.H, error) {
+// 令牌只放在 HttpOnly cookie 里，不进响应 JSON：前端 JS 拿不到，XSS 偷不走（审计 A-1）。
+// 脚本和命令行仍可用 Authorization: Bearer，令牌另行签发，不经浏览器。
+// tokenVersion 是校验密码时一并读出的令牌版本号，签进令牌，之后改密码就会让它作废（审计 A-2）。
+func issueAdminSession(c *gin.Context, userID int64, username, displayName string, tokenVersion int64) (gin.H, error) {
 	expiration := time.Now().Add(24 * time.Hour)
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, auth.CustomClaims{
-		UserID:   userID,
-		IsAdmin:  true,
-		Username: username,
+		UserID:       userID,
+		IsAdmin:      true,
+		Username:     username,
+		TokenVersion: tokenVersion,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(expiration),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -143,7 +140,6 @@ func issueAdminSession(c *gin.Context, userID int64, username, displayName strin
 	csrf := newCSRFToken()
 	setAuthCookies(c, signedToken, csrf, int(time.Until(expiration).Seconds()))
 	return gin.H{
-		"token":      signedToken,
 		"username":   username,
 		"name":       displayName,
 		"expires_at": expiration.Format(time.RFC3339),
@@ -157,15 +153,28 @@ func AdminLogout(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "已退出登录"})
 }
 
+// AdminMe 返回当前会话的管理员信息。前端刷新页面后靠它确认登录态、恢复用户名和到期时间。
 func AdminMe(c *gin.Context) {
 	userID, _ := c.Get("user_id")
 	username, _ := c.Get("username")
 	isAdmin, _ := c.Get("is_admin")
+	expiresAt, _ := c.Get("token_expires_at")
+
+	name, _ := username.(string)
+	if id, ok := userID.(int64); ok {
+		var display sql.NullString
+		if err := db.DB.QueryRow(`SELECT display_name FROM admin_users WHERE id = ?`, id).Scan(&display); err == nil &&
+			strings.TrimSpace(display.String) != "" {
+			name = display.String
+		}
+	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"user_id":  userID,
-		"username": username,
-		"is_admin": isAdmin,
+		"user_id":    userID,
+		"username":   username,
+		"name":       name,
+		"is_admin":   isAdmin,
+		"expires_at": expiresAt,
 	})
 }
 
@@ -177,10 +186,12 @@ func AdminChangePassword(c *gin.Context) {
 	}
 
 	var req ChangePasswordRequest
-	if err := c.BindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+	if !bindAuthJSON(c, &req, "Invalid request") {
 		return
 	}
+	// 和登录一样去掉首尾空白再校验、入库（审计 A-9）
+	req.OldPassword = strings.TrimSpace(req.OldPassword)
+	req.NewPassword = strings.TrimSpace(req.NewPassword)
 
 	if len(req.NewPassword) < 12 || db.IsWeakPassword(req.NewPassword) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "新密码至少 12 位，且不能为常见弱口令"})
@@ -204,7 +215,7 @@ func AdminChangePassword(c *gin.Context) {
 		return
 	}
 
-	if ok, _ := db.VerifyAdminPassword(storedHash, req.OldPassword); !ok {
+	if ok, _ := verifyAdminPassword(storedHash, req.OldPassword); !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "旧密码不正确"})
 		return
 	}
@@ -216,6 +227,8 @@ func AdminChangePassword(c *gin.Context) {
 	}
 
 	auditAdmin(c, "change_password", "")
+	// 版本号已加一，包括本机在内的所有旧会话都已作废；顺手清掉本机 cookie
+	clearAuthCookies(c)
 	c.JSON(http.StatusOK, gin.H{"message": "密码已修改，请用新密码重新登录"})
 }
 

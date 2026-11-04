@@ -6,10 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/chromedp/cdproto/cdp"
 	"github.com/chromedp/cdproto/dom"
+	"github.com/chromedp/cdproto/page"
 	"github.com/chromedp/cdproto/runtime"
 )
 
@@ -68,11 +71,15 @@ const embeddedAmountJS = `(() => {
 // countVisibleJS 数本 frame 里 sel 命中的可见元素个数。
 const countVisibleJS = `((sel, visible) => Array.from(document.querySelectorAll(sel)).filter(visible).length)`
 
-// uniquePayButtonJS 在一次求值里看本 frame：路径不以 prefix 开头时返回 'left'（已离开结账页，按钮一律不认）；
+// onCheckoutJS 判断本 frame 是否还在内嵌结账页：主机名是 host，而且路径以 prefix 开头。
+// 只看路径不够：主页面跳到别的域名、路径恰好也以 /checkout/ 开头时，会被当成仍在结账页。
+const onCheckoutJS = `((host, prefix) => location.hostname === host && location.pathname.startsWith(prefix))`
+
+// uniquePayButtonJS 在一次求值里看本 frame：不在结账页（onCheckoutJS）时返回 'left'（已离开结账页，按钮一律不认）；
 // 否则数 sel 命中的可见元素，正好一个且可用（enabled，即 payReadyJS）时返回它，正好一个但不可用时返回 'disabled'，个数不是 1 时返回个数。
-// 核对路径、数和取都在同一次求值里，中间页面插不进别的脚本。
-const uniquePayButtonJS = `((prefix, sel, visible, enabled) => {
-	if (!location.pathname.startsWith(prefix)) return 'left'
+// 核对主机名和路径、数和取都在同一次求值里，中间页面插不进别的脚本。
+const uniquePayButtonJS = `((host, prefix, sel, visible, enabled) => {
+	if (!` + onCheckoutJS + `(host, prefix)) return 'left'
 	const list = Array.from(document.querySelectorAll(sel)).filter(visible)
 	if (list.length !== 1) return list.length
 	return enabled.call(list[0]) ? list[0] : 'disabled'
@@ -80,6 +87,10 @@ const uniquePayButtonJS = `((prefix, sel, visible, enabled) => {
 
 // checkoutPrefix 是内嵌结账页的路径前缀；主页面路径不再以它开头，就是已经离开结账页。
 const checkoutPrefix = "/checkout/"
+
+// checkoutHost 是内嵌结账页的主机名；主页面主机名不是它，也算已经离开结账页。引擎的白名单只放行这个主机名的内嵌页链接。
+// 是变量只为测试：仿造页在 127.0.0.1 上。
+var checkoutHost = "chatgpt.com"
 
 // leftCheckoutMsg 是离开结账页时 WaitOutcome 返回的说明。
 const leftCheckoutMsg = "页面已离开结账页"
@@ -196,7 +207,7 @@ const (
 // *n 记下这次看到的可见按钮个数（唯一但不可用时为 1），或 payButtonUnreadable、payButtonLeft。
 func (b *Browser) embeddedPayButton(ctx context.Context, main frameRef, n *int) *elem {
 	*n = payButtonUnreadable
-	expr := fmt.Sprintf("%s(%s, %s, %s, %s)", uniquePayButtonJS, mustJSON(checkoutPrefix), mustJSON(embeddedPayButtonSel), visibleJS, payReadyJS)
+	expr := fmt.Sprintf("%s(%s, %s, %s, %s, %s)", uniquePayButtonJS, mustJSON(checkoutHost), mustJSON(checkoutPrefix), mustJSON(embeddedPayButtonSel), visibleJS, payReadyJS)
 	r, err := b.eval(ctx, main, expr)
 	switch {
 	case err != nil:
@@ -255,6 +266,9 @@ func (b *Browser) waitPayButton(ctx context.Context, n *int) (*elem, error) {
 //
 // 不先移焦点就点，按下鼠标那一刻焦点才离开 Stripe 的 iframe：页面要是在 iframe 失焦时校验、重算、把按钮短暂设成不可用，
 // 按钮在松开之前就不可用了，点击丢失，而 submitted 已经置位，这一单只能走确认、回收。先移焦点、等页面反应完，这一下就不会再触发。
+//
+// 焦点此后就在支付按钮上：从这里到点击，绝不能再发任何按键（回车、空格都会直接触发支付按钮，绕过落点检查和先置位再点的顺序）。
+// 之后只许读页面、滚动（landPoint）和最后那一下鼠标点击。
 func (b *Browser) readyAfterFocus(ctx context.Context, btn *elem, n *int) (*elem, time.Duration, error) {
 	if err := dom.Focus().WithObjectID(btn.obj).Do(ctx); err != nil {
 		return nil, 0, fmt.Errorf("把焦点移到支付按钮上失败: %w", err)
@@ -267,48 +281,122 @@ func (b *Browser) readyAfterFocus(ctx context.Context, btn *elem, n *int) (*elem
 	return btn, time.Since(start), err
 }
 
-// payClickJS 以支付按钮为 this，在同一次求值里看点它之前的最后状态：按钮可点（payReadyJS）、主页面的焦点不在 iframe 上、
-// 主页面可视区里 (x, y) 那一点是按钮自己或它的后代。返回不通过的原因：'busy'、'iframe'、'offpage'（那一点没有元素），
-// 或者别的元素的标签名（小写，iframe 就是 iframe）；全部通过返回空串。
-const payClickJS = `function (x, y) {
+// visualOnlyProps 是只改样子、不改位置和大小的动画属性（Web Animations 关键帧里的驼峰写法，另含关键帧自带的 offset、easing、composite）。
+// 支付按钮或它的上级上正在跑的动画，只要动了这之外的属性（transform、translate、left、margin、width 等），就当作按钮还在动。
+const visualOnlyProps = `/^(offset|computedOffset|easing|composite|opacity|visibility|color|caretColor|accentColor|background.*|border.*Color|outline.*|boxShadow|textShadow|textDecoration.*|filter|backdropFilter|fill|stroke.*)$/`
+
+// payClickJS 以支付按钮为 this，在同一次求值里看点它之前的最后状态，依次是：
+//   - 'left'：主页面已不在结账页（onCheckoutJS：主机名、路径）；
+//   - 'count:N'：主页面可见的提交按钮（sel）不是正好一个，N 是个数；
+//   - 'busy'：按钮不可点（payReadyJS）；
+//   - 'iframe'：主页面的焦点还在 iframe 上；
+//   - 'moving'：按钮还在动——此刻的中心点和 landPoint 读到的 (x, y) 差了 tol 以上，或者按钮、它的上级上有正在跑的、改位置或大小的
+//     动画（CSS 动画、过渡、Web Animations，见 visualOnlyProps；伪元素上的不算）。后一条不能省：transform 动画由合成线程驱动，
+//     2026-11-04 本机复现过 CDP 隔 50ms 读两次位置读到同一个值（主线程的动画时钟没走），按钮却在屏幕上以 200px/s 移动；
+//   - 'offpage'：主页面可视区里 (x, y) 那一点没有元素；
+//   - 别的元素的标签名（小写，iframe 就是 iframe）：那一点不是按钮自己或它的后代。
+//
+// 全部通过返回空串。离开结账页、按钮个数放在同一次求值里查，scanBeforeClick 之后那次重数到这里的滚动、等稳期间页面变了也能拦住。
+const payClickJS = `function (x, y, tol, host, prefix, sel) {
 	const ready = ` + payReadyJS + `
+	const visible = ` + visibleJS + `
+	const visualOnly = ` + visualOnlyProps + `
 	const doc = this.ownerDocument
+	if (!` + onCheckoutJS + `(host, prefix)) return 'left'
+	const n = Array.from(doc.querySelectorAll(sel)).filter(visible).length
+	if (n !== 1) return 'count:' + n
 	if (!ready.call(this)) return 'busy'
 	if (doc.activeElement && doc.activeElement.tagName === 'IFRAME') return 'iframe'
+	const r = this.getBoundingClientRect()
+	if (Math.abs(r.left + r.width / 2 - x) > tol || Math.abs(r.top + r.height / 2 - y) > tol) return 'moving'
+	for (const a of doc.getAnimations ? doc.getAnimations() : []) {
+		const t = a.effect && a.effect.target
+		// 伪元素（::before、::after）上的动画不挪按钮本身的框，不算
+		if (a.playState !== 'running' || !t || !t.contains || !t.contains(this) || a.effect.pseudoElement) continue
+		for (const k of a.effect.getKeyframes ? a.effect.getKeyframes() : [{ transform: '' }]) {
+			for (const p of Object.keys(k)) if (!visualOnly.test(p)) return 'moving'
+		}
+	}
 	const hit = doc.elementFromPoint(x, y)
 	if (!hit) return 'offpage'
 	return this.contains(hit) ? '' : hit.tagName.toLowerCase()
 }`
 
+// pageChanged 是点支付前最后检查时发现的页面变化：已离开结账页、可见的提交按钮不是正好一个、填表之后整页重新加载过、
+// 卡片 iframe 换了。它不是落点问题，payCheckErr 原样上报，试运行的按钮状态用 state() 的写法。
+type pageChanged struct {
+	n   int    // msg 为空时：payButtonLeft，或可见提交按钮的个数（不是 1）
+	msg string // 填表之后页面或卡片 iframe 换了时的说明，不含「，没有点击」
+}
+
+func (e pageChanged) Error() string {
+	if e.msg != "" {
+		return e.msg + "，没有点击"
+	}
+	return embeddedPayButtonErr(e.n).Error()
+}
+
+// state 是试运行按钮状态里的写法，和 embeddedPayButtonState 等不到按钮时的措辞一致。
+func (e pageChanged) state() string {
+	switch {
+	case e.msg != "":
+		return e.msg
+	case e.n == payButtonLeft:
+		return leftCheckoutMsg
+	case e.n > 1:
+		return fmt.Sprintf("不唯一（%d 个）", e.n)
+	}
+	return "未找到"
+}
+
 // payClickPoint 是内嵌页点支付前的最后检查（设计 §5.8），Submit 和 PayButtonState 共用，只检查、不点击：
-// 先把按钮滚进视野、等它停稳（landPoint），再用 payClickJS 在同一次求值里查可点、焦点、落点。全部通过才返回中心点坐标，
+// 先把按钮滚进视野、等它停稳（landPoint），再核对填表之后页面和卡片 iframe 没换过（checkFillMark），
+// 最后用 payClickJS 在同一次求值里查结账页、按钮个数、可点、焦点、按钮没在动、落点。全部通过才返回中心点坐标，
 // 调用方就点这个坐标，不再重新滚动、求中心；检查和点击之间不再有等待。
-// 按钮不可点返回 errPayNotReady；落点是别的元素返回「落点是 <标签名>，没有点击」；其余原因也以「，没有点击」结尾。
+// 按钮不可点返回 errPayNotReady；页面变了返回 pageChanged；落点是别的元素返回「落点是 <标签名>，没有点击」；其余原因也以「，没有点击」结尾。
 func (b *Browser) payClickPoint(ctx context.Context, btn *elem) (x, y float64, err error) {
 	if x, y, err = b.landPoint(ctx, []frameRef{btn.frame}, btn); err != nil {
 		return 0, 0, err
 	}
+	if b.beforePayCheck != nil {
+		if err := b.beforePayCheck(ctx); err != nil {
+			return 0, 0, err
+		}
+	}
+	if err := b.checkFillMark(ctx); err != nil {
+		return 0, 0, err
+	}
 	var why string
-	if err := callOn(ctx, btn.obj, payClickJS, &why, x, y); err != nil {
+	if err := callOn(ctx, btn.obj, payClickJS, &why, x, y, landTolerance, checkoutHost, checkoutPrefix, embeddedPayButtonSel); err != nil {
 		return 0, 0, err
 	}
 	switch why {
 	case "":
 		return x, y, nil
+	case "left":
+		return 0, 0, pageChanged{n: payButtonLeft}
 	case "busy":
 		return 0, 0, errPayNotReady
 	case "iframe":
 		return 0, 0, errors.New("焦点还在 iframe 里，没有点击")
+	case "moving":
+		return 0, 0, errors.New("位置还在变，没有点击")
 	case "offpage":
 		return 0, 0, errors.New("点击落点不在页面上，没有点击")
+	}
+	if c, ok := strings.CutPrefix(why, "count:"); ok {
+		n, _ := strconv.Atoi(c)
+		return 0, 0, pageChanged{n: n}
 	}
 	return 0, 0, fmt.Errorf("落点是 %s，没有点击", why)
 }
 
-// payCheckErr 把 payClickPoint 的错误写成 Submit 的错误：按钮不可点照原样；落点是别的元素写「支付按钮被挡住（落点是 …），没有点击」；
+// payCheckErr 把 payClickPoint 的错误写成 Submit 的错误：按钮不可点、页面变了（pageChanged）照原样；
+// 落点是别的元素写「支付按钮被挡住（落点是 …），没有点击」；
 // 其余（位置还在变、落点不在页面上、焦点还在 iframe 里、读不出位置）写「支付按钮没过落点检查（原因），没有点击」。
 func payCheckErr(err error) error {
-	if errors.Is(err, errPayNotReady) {
+	var pc pageChanged
+	if errors.Is(err, errPayNotReady) || errors.As(err, &pc) {
 		return err
 	}
 	return fmt.Errorf("支付按钮%s，没有点击", payCheckNote(err))
@@ -324,19 +412,96 @@ func payCheckNote(err error) string {
 	return "没过落点检查（" + why + "）"
 }
 
-// leftCheckout 读主页面的 location.pathname，不再以 /checkout/ 开头时返回 true。
+// fillMark 是内嵌页 Fill 成功时的页面快照：主页面的文档（loaderId）、装着卡号框的 iframe 和它的文档。
+// 填表之后整页重新加载、Payment Element 重新挂载（换了新 iframe）或卡片 iframe 自己重新加载，表单就是空的：
+// 这时点支付会被 Stripe 前端校验拦下、不会扣款，但 submitted 已经置位，这一单要白占一张卡、走完确认才释放，还计入熔断。
+// 所以点之前核对（checkFillMark），变了就不点、不置位。托管页不记、不核对。
+type fillMark struct {
+	mainLoader cdp.LoaderID
+	cardFrame  cdp.FrameID
+	cardLoader cdp.LoaderID
+}
+
+// readFillMark 读此刻的主页面文档，和装着可见卡号框的 iframe 及其文档；找不到卡号框时 cardFrame 为空。只读页面。
+func (b *Browser) readFillMark(ctx context.Context) (fillMark, error) {
+	tree, err := page.GetFrameTree().Do(ctx)
+	if err != nil {
+		return fillMark{}, err
+	}
+	m := fillMark{mainLoader: tree.Frame.LoaderID}
+	frames, err := b.frames(ctx)
+	if err != nil {
+		return fillMark{}, err
+	}
+	if e := b.find(ctx, frames, Sel.CardNumber, false); e != nil {
+		m.cardFrame, m.cardLoader = e.frame.id, loaderOf(tree, e.frame.id)
+	}
+	return m, nil
+}
+
+// loaderOf 在 frame 树里找 id 那个 frame 当前文档的 loaderId，找不到返回空。
+func loaderOf(t *page.FrameTree, id cdp.FrameID) cdp.LoaderID {
+	if t.Frame.ID == id {
+		return t.Frame.LoaderID
+	}
+	for _, ch := range t.ChildFrames {
+		if l := loaderOf(ch, id); l != "" {
+			return l
+		}
+	}
+	return ""
+}
+
+// markFill 是内嵌页 Fill 的最后一步：记下 fillMark。卡号框都找不到时报错（刚核对过字段，不该发生），Fill 失败、不点支付。
+func (b *Browser) markFill(ctx context.Context) error {
+	m, err := b.readFillMark(ctx)
+	if err != nil {
+		return fmt.Errorf("记下填表时的页面失败: %w", err)
+	}
+	if m.cardFrame == "" {
+		return errors.New("记下填表时的页面失败：找不到卡号输入框")
+	}
+	b.mu.Lock()
+	b.fillMark = m
+	b.mu.Unlock()
+	return nil
+}
+
+// checkFillMark 核对此刻的页面还是 Fill 时那一份（fillMark）：主页面文档没换、卡号框还在同一个 iframe 的同一个文档里。
+// 变了返回 pageChanged。没记过（没填过表、只读按钮状态）时不核对；内嵌页 Fill 成功就一定记下了，Submit 要求先 Fill 成功。
+func (b *Browser) checkFillMark(ctx context.Context) error {
+	b.mu.Lock()
+	want := b.fillMark
+	b.mu.Unlock()
+	if want.mainLoader == "" {
+		return nil
+	}
+	got, err := b.readFillMark(ctx)
+	switch {
+	case err != nil:
+		return fmt.Errorf("核对填表之后的页面失败: %w", err)
+	case got.mainLoader != want.mainLoader:
+		return pageChanged{msg: "页面在填表之后重新加载过"}
+	case got.cardFrame != want.cardFrame || got.cardLoader != want.cardLoader:
+		return pageChanged{msg: "卡号输入框在填表之后换过（卡片 iframe 重新挂载或重新加载）"}
+	}
+	return nil
+}
+
+// leftCheckout 看主页面还在不在结账页（onCheckoutJS：主机名是 chatgpt.com、路径以 /checkout/ 开头），不在时返回 true。
 // 读不出（比如页面正在跳转、旧文档的执行环境已失效）时按还在结账页处理，下一轮再读。
 func (b *Browser) leftCheckout(ctx context.Context, main frameRef) bool {
-	r, exc, err := runtime.Evaluate(`location.pathname`).WithContextID(main.ctx).WithReturnByValue(true).Do(ctx)
+	expr := fmt.Sprintf("%s(%s, %s)", onCheckoutJS, mustJSON(checkoutHost), mustJSON(checkoutPrefix))
+	r, exc, err := runtime.Evaluate(expr).WithContextID(main.ctx).WithReturnByValue(true).Do(ctx)
 	if err != nil {
 		b.forgetWorld(main.id)
 		return false
 	}
-	var path string
-	if exc != nil || json.Unmarshal(r.Value, &path) != nil {
+	var on bool
+	if exc != nil || json.Unmarshal(r.Value, &on) != nil {
 		return false
 	}
-	return !strings.HasPrefix(path, checkoutPrefix)
+	return !on
 }
 
 // embeddedAmountText 在各 frame 里找 Payment amount 读屏文字，返回所在父元素的文字；找不到返回空串。读不出的 frame 跳过。

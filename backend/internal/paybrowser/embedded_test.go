@@ -367,8 +367,8 @@ func TestEmbeddedFillWithoutAddress(t *testing.T) {
 			t.Errorf("报告缺少 %q：\n%s", want, lines)
 		}
 	}
-	if st := b.PayButtonState(ctx); !strings.HasPrefix(st, "可点击（等了 ") {
-		t.Fatalf("支付按钮状态 = %q，期望「可点击（等了 N 秒）」", st)
+	if st := b.PayButtonState(ctx); !strings.HasPrefix(st, "可点击（填表后等了 ") || !strings.Contains(st, "，移焦点后等了 ") {
+		t.Fatalf("支付按钮状态 = %q，期望「可点击（填表后等了 X 秒，移焦点后等了 Y 秒）」", st)
 	}
 	if n := len(f.payments()); n != 0 {
 		t.Fatalf("只填表不提交：仿造页收到 %d 次提交", n)
@@ -1171,6 +1171,211 @@ func TestEmbeddedSubmitRechecksAtClick(t *testing.T) {
 	}
 }
 
+// 点支付前的最后检查（payClickPoint）读完按钮位置之后、payClickJS 求值之前页面变了（滚动、等稳那一会儿）：
+// 又冒出第二个提交按钮、SPA 换路由离开结账页、按钮变成忙。payClickJS 在点之前那一次求值里核对结账页、按钮个数、可点，
+// 看到就不点、不置位，LockSubmit 证明没点过；试运行的按钮状态照实报（按钮忙报「存在但不可点击（最后检查时忙）」）。
+// Submit 和试运行各用一个新浏览器：钩子改了页面，同一页上第二次检查在更早的一步就拦下了，测不到最后检查。
+func TestEmbeddedFinalCheckSeesPageChange(t *testing.T) {
+	cases := []struct {
+		name, js, want, state string
+	}{
+		{"又冒出第二个按钮", `(() => {
+			const b = document.createElement('button')
+			b.type = 'submit'
+			b.textContent = '升级至 Pro'
+			document.getElementById('buttons').appendChild(b)
+		})()`, "支付按钮不唯一（找到 2 个），没有点击", "不唯一（2 个）"},
+		{"换路由离开结账页", `history.pushState({}, '', '/auth/login')`, "页面已离开结账页，没有点击", "页面已离开结账页"},
+		{"按钮变成忙", `(() => {
+			const b = document.querySelector('#buttons button[type="submit"]')
+			b.disabled = true
+			b.setAttribute('aria-busy', 'true')
+		})()`, "支付按钮不可点击（可能有字段未通过页面校验），没有点击", "存在但不可点击（最后检查时忙）"},
+	}
+	for _, c := range cases {
+		for _, dry := range []bool{false, true} {
+			name := c.name + "/Submit"
+			if dry {
+				name = c.name + "/试运行"
+			}
+			t.Run(name, func(t *testing.T) {
+				needChrome(t)
+				t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+				f := newFakeEmbedded(t)
+				b, ctx := openEmbedded(t, f, "payclicks=1")
+
+				if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+					t.Fatalf("Fill: %v", err)
+				}
+				paybrowser.RunBeforePayCheck(b, c.js)
+				if dry {
+					if st := b.PayButtonState(ctx); st != c.state {
+						t.Fatalf("支付按钮状态 = %q，期望 %q", st, c.state)
+					}
+				} else {
+					err := b.Submit(ctx)
+					if err == nil || err.Error() != c.want {
+						t.Fatalf("Submit = %v，期望「%s」", err, c.want)
+					}
+					if b.LockSubmit() {
+						t.Fatal("最后检查不通过时没有点击，LockSubmit 应返回 false")
+					}
+				}
+				if n := payClicks(t, ctx, b); n != "0" {
+					t.Fatalf("支付按钮收到 %s 次可信点击，期望 0", n)
+				}
+				if n := len(f.payments()); n != 0 {
+					t.Fatalf("仿造页收到 %d 次提交，期望 0 次", n)
+				}
+			})
+		}
+	}
+}
+
+// 主页面的主机名不是 chatgpt.com（这里把认定的结账页主机名设回 chatgpt.com，仿造页在 127.0.0.1 上）：
+// 路径虽然还在 /checkout/ 下，也算已离开结账页。试运行报「页面已离开结账页」；Submit 不点、不置位；WaitOutcome 立即返回离开。
+func TestEmbeddedOtherHostIsLeft(t *testing.T) {
+	needChrome(t)
+	t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+	t.Cleanup(paybrowser.SetFieldWait(2 * time.Second))
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "")
+
+	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+		t.Fatalf("Fill: %v", err)
+	}
+	t.Cleanup(paybrowser.SetCheckoutHost("chatgpt.com"))
+	if st := b.PayButtonState(ctx); st != "页面已离开结账页" {
+		t.Fatalf("支付按钮状态 = %q，期望「页面已离开结账页」", st)
+	}
+	err := b.Submit(ctx)
+	if err == nil || err.Error() != "页面已离开结账页，没有点击" {
+		t.Fatalf("Submit = %v，期望「页面已离开结账页，没有点击」", err)
+	}
+	if b.LockSubmit() {
+		t.Fatal("不在结账页时没有点击，LockSubmit 应返回 false")
+	}
+	start := time.Now()
+	out, msg, err := b.WaitOutcome(ctx, 10*time.Second)
+	if err != nil || out != paybrowser.OutcomeUnknown || msg != "页面已离开结账页" {
+		t.Fatalf("WaitOutcome = %q, %q, %v，期望 unknown、「页面已离开结账页」、无错误", out, msg, err)
+	}
+	if took := time.Since(start); took > 5*time.Second {
+		t.Fatalf("WaitOutcome 用了 %v，不在结账页应立即返回", took)
+	}
+	time.Sleep(300 * time.Millisecond)
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("仿造页收到 %d 次提交，期望 0 次", n)
+	}
+}
+
+// 填表之后页面换过（设计 §5.8，终审 M3）：整页重新加载、卡片 iframe 被换成新的（Payment Element 重新挂载）、
+// 卡片 iframe 自己重新加载。表单已经是空的，按钮却唯一可用。点支付前核对 Fill 时记下的主页面文档和卡片 iframe，
+// 对不上就不点、不置位，LockSubmit 证明没点过；试运行照实报。
+func TestEmbeddedSubmitRefusesAfterPageSwap(t *testing.T) {
+	cases := []struct {
+		name, js, want string
+	}{
+		{"整页重新加载", `location.reload()`, "页面在填表之后重新加载过"},
+		{"卡片 iframe 换成新的", `(() => {
+			const f = document.getElementById('card-frame')
+			f.replaceWith(f.cloneNode(true))
+		})()`, "卡号输入框在填表之后换过（卡片 iframe 重新挂载或重新加载）"},
+		{"卡片 iframe 重新加载", `(() => {
+			const f = document.getElementById('card-frame')
+			f.src = f.src
+		})()`, "卡号输入框在填表之后换过（卡片 iframe 重新挂载或重新加载）"},
+	}
+	for _, c := range cases {
+		for _, dry := range []bool{false, true} {
+			name := c.name + "/Submit"
+			if dry {
+				name = c.name + "/试运行"
+			}
+			t.Run(name, func(t *testing.T) {
+				needChrome(t)
+				t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+				f := newFakeEmbedded(t)
+				b, ctx := openEmbedded(t, f, "payclicks=1")
+
+				if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+					t.Fatalf("Fill: %v", err)
+				}
+				if err := paybrowser.EvalMain(ctx, b, c.js); err != nil {
+					t.Fatalf("换页面: %v", err)
+				}
+				time.Sleep(2 * time.Second) // 等新文档、新 iframe 加载完
+				if !b.WaitRendered(ctx, 10*time.Second) {
+					t.Fatal("换过之后卡号框应重新出现")
+				}
+				if dry {
+					if st := b.PayButtonState(ctx); st != c.want {
+						t.Fatalf("支付按钮状态 = %q，期望 %q", st, c.want)
+					}
+				} else {
+					err := b.Submit(ctx)
+					if err == nil || err.Error() != c.want+"，没有点击" {
+						t.Fatalf("Submit = %v，期望「%s，没有点击」", err, c.want)
+					}
+					if b.LockSubmit() {
+						t.Fatal("页面换过时没有点击，LockSubmit 应返回 false")
+					}
+				}
+				if n := payClicks(t, ctx, b); n != "0" {
+					t.Fatalf("支付按钮收到 %s 次可信点击，期望 0", n)
+				}
+				if n := len(f.payments()); n != 0 {
+					t.Fatalf("仿造页收到 %d 次提交，期望 0 次", n)
+				}
+			})
+		}
+	}
+}
+
+// 支付按钮或它的上级上有只改样子的动画（透明度、背景色），或者按钮的伪元素在转：按钮本身没动，照常点，只点一次。
+// 最后检查只把改位置、大小的动画当作「还在动」（visualOnlyProps），不能因为装饰动画永远点不下去。
+func TestEmbeddedSubmitIgnoresVisualOnlyAnimation(t *testing.T) {
+	needChrome(t)
+	t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "payclicks=1")
+
+	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+		t.Fatalf("Fill: %v", err)
+	}
+	const js = `(() => {
+		const b = document.querySelector('#buttons button[type="submit"]')
+		const s = document.createElement('style')
+		s.textContent = '#buttons button::before { content: ""; display: inline-block; width: 8px; height: 8px }'
+		document.head.appendChild(s)
+		b.animate([{ opacity: 1, backgroundColor: 'rgb(255, 255, 255)' }, { opacity: 0.9, backgroundColor: 'rgb(240, 240, 240)' }],
+			{ duration: 800, iterations: Infinity, direction: 'alternate' })
+		document.getElementById('buttons').animate([{ boxShadow: 'none' }, { boxShadow: '0 0 4px red' }],
+			{ duration: 800, iterations: Infinity })
+		b.animate([{ transform: 'rotate(0deg)' }, { transform: 'rotate(360deg)' }],
+			{ duration: 600, iterations: Infinity, pseudoElement: '::before' })
+	})()`
+	if err := paybrowser.EvalMain(ctx, b, js); err != nil {
+		t.Fatalf("加装饰动画: %v", err)
+	}
+	if st := b.PayButtonState(ctx); !strings.HasPrefix(st, "可点击（填表后等了 ") {
+		t.Fatalf("支付按钮状态 = %q，期望「可点击（填表后等了 X 秒，移焦点后等了 Y 秒）」", st)
+	}
+	if err := b.Submit(ctx); err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for len(f.payments()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	if n := payClicks(t, ctx, b); n != "1" {
+		t.Fatalf("支付按钮收到 %s 次可信点击，期望 1", n)
+	}
+	if n := len(f.payments()); n != 1 {
+		t.Fatalf("仿造页收到 %d 次提交，期望正好 1 次", n)
+	}
+}
+
 // 找到按钮之后、点击之前按钮被换成另一个，但仍是唯一可用的提交按钮、仍在结账页：点新的那个，只点一次。
 func TestEmbeddedSubmitClicksReplacedButton(t *testing.T) {
 	needChrome(t)
@@ -1284,8 +1489,8 @@ func TestEmbeddedPayButtonStateWaitsBusy(t *testing.T) {
 	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
 		t.Fatalf("Fill: %v", err)
 	}
-	if st := b.PayButtonState(ctx); !strings.HasPrefix(st, "可点击（等了 ") {
-		t.Fatalf("支付按钮状态 = %q，期望「可点击（等了 N 秒）」", st)
+	if st := b.PayButtonState(ctx); !strings.HasPrefix(st, "可点击（填表后等了 ") || !strings.Contains(st, "，移焦点后等了 ") {
+		t.Fatalf("支付按钮状态 = %q，期望「可点击（填表后等了 X 秒，移焦点后等了 Y 秒）」", st)
 	}
 	if err := b.Submit(ctx); err != nil {
 		t.Fatalf("Submit: %v", err)
@@ -1408,6 +1613,11 @@ func TestEmbeddedSubmitRefusesWhenBlurDisablesButton(t *testing.T) {
 	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
 		t.Fatalf("Fill: %v", err)
 	}
+	// 先确认 Fill 之后按钮是可用的：拒绝发生在 Submit 把焦点移到主页面之后（iframe 失焦，按钮才一直不可用），不是一开始就不可用
+	const enabledPay = `#buttons button[type="submit"]:not([disabled]):not([aria-busy="true"])`
+	if n, err := paybrowser.VisibleCount(ctx, b, enabledPay); err != nil || n != 1 {
+		t.Fatalf("Fill 之后可用的支付按钮 = %d, %v，期望 1（拒绝应发生在移焦点之后）", n, err)
+	}
 	mainBefore, frameBefore := keyCounts(t, ctx, b)
 	err := b.Submit(ctx)
 	if err == nil || !strings.Contains(err.Error(), "不可点击") || !strings.Contains(err.Error(), "没有点击") {
@@ -1415,6 +1625,9 @@ func TestEmbeddedSubmitRefusesWhenBlurDisablesButton(t *testing.T) {
 	}
 	if b.LockSubmit() {
 		t.Fatal("按钮一直不可用时没有点击，LockSubmit 应返回 false")
+	}
+	if n, err := paybrowser.VisibleCount(ctx, b, enabledPay); err != nil || n != 0 {
+		t.Fatalf("移焦点之后可用的支付按钮 = %d, %v，期望 0（iframe 失焦后按钮一直不可用）", n, err)
 	}
 	if n := payClicks(t, ctx, b); n != "0" {
 		t.Fatalf("支付按钮收到 %s 次可信点击，期望 0", n)
@@ -1461,8 +1674,11 @@ func TestEmbeddedFillCloseSuggestionsReverts(t *testing.T) {
 	}
 }
 
-// 支付按钮一直在动（这里用动画来回平移）：落点检查读两次位置不一样，试运行报「没过落点检查（位置还在变）」，
+// 支付按钮一直在动（这里用线性动画一直朝一个方向平移，每秒 200px，到头跳回起点再来）：试运行报「没过落点检查（位置还在变）」，
 // Submit 不点、不置位。原因不是「落点是别的元素」，所以不说「被挡住」。
+// 不用来回（alternate）的动画：折返点前后两次读到的位置可能一样。transform 动画由合成线程驱动，CDP 隔 50ms 读两次位置，
+// 主线程的动画时钟常常没走，读到同一个值（2026-11-04 本机 30 次里 15 次如此，见 final-fix 报告 A3）；所以最后检查另看
+// 按钮和上级上有没有正在跑的、改位置的动画（payClickJS），不单靠两次读位置。
 func TestEmbeddedSubmitRefusesMovingButton(t *testing.T) {
 	needChrome(t)
 	t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
@@ -1474,7 +1690,7 @@ func TestEmbeddedSubmitRefusesMovingButton(t *testing.T) {
 	}
 	const js = `document.querySelector('#buttons button[type="submit"]').animate(
 		[{ transform: 'translateX(0px)' }, { transform: 'translateX(200px)' }],
-		{ duration: 1000, iterations: Infinity, direction: 'alternate' })`
+		{ duration: 1000, iterations: Infinity, easing: 'linear' })`
 	if err := paybrowser.EvalMain(ctx, b, js); err != nil {
 		t.Fatalf("让支付按钮动起来: %v", err)
 	}

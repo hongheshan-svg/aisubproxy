@@ -97,6 +97,23 @@ func RunBeforeRecheck(b *Browser, js string) {
 	b.beforeRecheck = func(ctx context.Context) error { return chromedp.Evaluate(js, nil).Do(ctx) }
 }
 
+// RunBeforePayCheck 让内嵌页点支付前的最后检查（payClickPoint）在读完按钮位置之后、payClickJS 求值之前，
+// 在主页面执行一段脚本，模拟滚动、等稳这段时间里页面的变化。
+func RunBeforePayCheck(b *Browser, js string) {
+	b.beforePayCheck = func(ctx context.Context) error { return chromedp.Evaluate(js, nil).Do(ctx) }
+}
+
+// SetBeforePayCheck 同 RunBeforePayCheck，但执行任意动作（比如重新加载页面、等它重新就绪）。
+func SetBeforePayCheck(b *Browser, fn func(ctx context.Context) error) { b.beforePayCheck = fn }
+
+// SetCheckoutHost 设置内嵌结账页的主机名，返回恢复函数。TestMain 设成仿造页的 127.0.0.1；
+// 用例设回 chatgpt.com，模拟主页面停在别的主机上。
+func SetCheckoutHost(h string) (restore func()) {
+	old := checkoutHost
+	checkoutHost = h
+	return func() { checkoutHost = old }
+}
+
 // EvalMain 在主页面执行一段脚本，用来模拟页面在打开之后、填表之前的变化。
 func EvalMain(ctx context.Context, b *Browser, js string) error {
 	return b.do(ctx, func(ctx context.Context) error { return chromedp.Evaluate(js, nil).Do(ctx) })

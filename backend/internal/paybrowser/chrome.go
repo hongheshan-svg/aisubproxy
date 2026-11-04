@@ -139,12 +139,15 @@ type Browser struct {
 	notices      []string             // 还没取走的未识别提示，已脱敏
 	noticeSeen   map[string]bool      // 记过的未识别提示，同一条只给一次
 	lastNotice   string               // 最后一条未识别提示，等到超时时作为说明返回
+	fillMark     fillMark             // 内嵌页 Fill 成功时记下的主页面文档和卡片 iframe，点支付前核对（checkFillMark）
 
 	worldMu sync.Mutex
 	worlds  map[cdp.FrameID]runtime.ExecutionContextID // 各 frame 里本包专用的隔离执行环境
 
 	clickPay      func(context.Context, *elem) error // 仅供测试：替换点支付按钮的动作，用来模拟点击中途出错
 	beforeRecheck func(context.Context) error        // 仅供测试：内嵌页点击前复查按钮之前执行，用来模拟这期间页面重绘
+	// 仅供测试：内嵌页点支付前最后检查里，landPoint 读完位置之后、payClickJS 之前执行，用来模拟这期间页面变化
+	beforePayCheck func(context.Context) error
 }
 
 // Launch 启动一个全新的 Chrome：临时用户目录，不带自动化标记，按 o 配置代理。

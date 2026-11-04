@@ -87,6 +87,7 @@ func (b *Browser) Fill(ctx context.Context, c Card, bl Billing) error {
 	b.mu.Lock() // 正在整页截图时等它截完，再往页面里键入卡号
 	b.cardTouched = true
 	b.filled = false
+	b.fillMark = fillMark{}
 	b.report = FillReport{ManualAddress: "未点击"}
 	b.mu.Unlock()
 
@@ -145,7 +146,13 @@ func (b *Browser) fillForm(ctx context.Context, c Card, bl Billing) error {
 			return err
 		}
 	}
-	return b.recheckFields(ctx, st.done)
+	if err := b.recheckFields(ctx, st.done); err != nil {
+		return err
+	}
+	if b.pageKind() == PageEmbedded {
+		return b.markFill(ctx) // 记下这一份页面，点支付前核对没换过（设计 §5.8）
+	}
+	return nil
 }
 
 // blurActiveJS 让本 frame 里有焦点的元素失焦，返回失焦了没有。iframe 元素不碰：它里面的 frame 由 blurFrames 逐个处理。
@@ -1001,11 +1008,14 @@ func (b *Browser) PayButtonState(ctx context.Context) string {
 // embeddedPayButtonState 是内嵌页的 PayButtonState（设计 §5.8），和 Submit 走同一条路，只检查、绝不点击：
 //   - waitPayButton 最多等 fieldWait，等到仍在结账页、主页面唯一可见、可用（不 disabled、不 aria-busy）的提交按钮；
 //   - readyAfterFocus 把焦点移到主页面（只设焦点）、固定等 payFocusSettle，再最多等 fieldWait 等按钮重新可用；
-//   - payClickPoint 查可点、焦点、落点。
+//   - payClickPoint 查结账页、按钮个数、填表之后页面没换过、可点、焦点、按钮没在动、落点。
 //
 // 2026-11-04 07:23 实测：地址改了，页面重算，Fill 刚返回时按钮 disabled、aria-busy，1 秒后才可用；只读一次会误报「存在但不可点击」。
 // 结果：
-//   - 全过：「可点击（等了 X 秒）」，X 是两段等按钮可用的时间之和（不含固定的 payFocusSettle），用来看实页会不会在失焦时重算；
+//   - 全过：「可点击（填表后等了 X 秒，移焦点后等了 Y 秒）」，X、Y 分别是两段等按钮可用的时间（不含固定的 payFocusSettle）：
+//     X 看 Fill 返回后页面重算要多久，Y 看实页会不会在 iframe 失焦时重算；
+//   - 最后检查时按钮不可点：「存在但不可点击（最后检查时忙）」——前两段都等到了可用，滚动、等稳那一会儿又忙了；
+//   - 最后检查时页面变了：「页面已离开结账页」「不唯一（N 个）」「未找到」「页面在填表之后重新加载过」等（pageChanged.state）；
 //   - 落点是别的元素：「可点击，但落点被挡住（落点是 …）」；其余没过落点检查：「可点击，但没过落点检查（原因）」；
 //   - 等不到时按最后一次看到的情况报：唯一但不可用「存在但不可点击（等了 N 秒）」（N 是 fieldWait），
 //     「不唯一（N 个）」「未找到」「读取失败」措辞不变；看到已离开结账页报「页面已离开结账页」。
@@ -1023,11 +1033,13 @@ func (b *Browser) embeddedPayButtonState(ctx context.Context) string {
 		if err != nil || btn == nil {
 			return err
 		}
-		waited += after
 		if _, _, err := b.payClickPoint(ctx, btn); err != nil {
+			var pc pageChanged
 			switch note := payCheckNote(err); {
 			case errors.Is(err, errPayNotReady):
-				state = "存在但不可点击"
+				state = "存在但不可点击（最后检查时忙）"
+			case errors.As(err, &pc):
+				state = pc.state()
 			case strings.HasPrefix(note, "被挡住"):
 				state = "可点击，但落点" + note
 			default:
@@ -1035,7 +1047,7 @@ func (b *Browser) embeddedPayButtonState(ctx context.Context) string {
 			}
 			return nil
 		}
-		state = fmt.Sprintf("可点击（等了 %.1f 秒）", waited.Seconds())
+		state = fmt.Sprintf("可点击（填表后等了 %.1f 秒，移焦点后等了 %.1f 秒）", waited.Seconds(), after.Seconds())
 		return nil
 	})
 	switch {

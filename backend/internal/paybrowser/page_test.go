@@ -31,6 +31,7 @@ const sessionCookie = "__Secure-next-auth.session-token"
 func TestMain(m *testing.M) {
 	paybrowser.SetDeclineSettle(300 * time.Millisecond)
 	paybrowser.SetEmailSettle(200 * time.Millisecond)
+	paybrowser.SetCheckoutHost("127.0.0.1") // 仿造的内嵌结账页在 127.0.0.1 上
 	os.Exit(m.Run())
 }
 

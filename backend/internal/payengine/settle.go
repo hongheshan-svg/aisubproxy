@@ -240,7 +240,7 @@ const verifyBackoffMax = 60 * time.Second
 // ChatGPT 返回 429 带 Retry-After 时至少推迟这么久。every 为 0（测试）时只看 Retry-After。不晚于到期时间由调用方保证。
 func verifyDelay(every time.Duration, fails int, err error) time.Duration {
 	d := every
-	if err != nil && fails > 1 {
+	if err != nil && fails > 1 && every > 0 {
 		for i := 1; i < fails && d < verifyBackoffMax; i++ {
 			d *= 2
 		}

@@ -21,6 +21,7 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { agentApi, setAgentUnauthorizedHandler } from '../lib/agentApi'
 import { fmtUsd } from '../lib/agentMoney'
+import { resetAgentSession } from '../lib/agentSession'
 
 type Nav = { to: string; label: string; exact?: boolean }
 const nav: Nav[] = [
@@ -59,6 +60,7 @@ async function logout() {
   } catch {
     /* 退出失败也回登录页，cookie 过期后自然失效 */
   }
+  resetAgentSession()
   router.replace('/agent/login')
 }
 

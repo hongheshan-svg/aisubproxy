@@ -26,6 +26,12 @@ export function codesTxt(items: ExportedCode[]): { text: string; skipped: number
   return { text: lines.length ? lines.join('\n') + '\n' : '', skipped }
 }
 
+// 文本列以公式字符开头时前面加单引号，防止 Excel 当公式执行（CSV 公式注入）
+function csvText(v: unknown): string {
+  const s = v === undefined || v === null ? '' : String(v)
+  return /^[=+\-@\t\r]/.test(s) ? `'${s}` : s
+}
+
 function csvField(v: unknown): string {
   const s = v === undefined || v === null ? '' : String(v)
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
@@ -36,16 +42,16 @@ export function codesCsv(items: ExportedCode[]): string {
   for (const it of items) {
     rows.push([
       it.unavailable ? UNAVAILABLE_TEXT : it.code,
-      it.product_code,
-      it.plan,
-      it.region,
-      it.status,
+      csvText(it.product_code),
+      csvText(it.plan),
+      csvText(it.region),
+      csvText(it.status),
       it.created_at ? fmtBeijing(it.created_at) : '',
       it.order_id,
-      it.note,
+      csvText(it.note),
     ].map(csvField).join(','))
   }
-  return '﻿' + rows.join('\n') + '\n'
+  return '\uFEFF' + rows.join('\n') + '\n'
 }
 
 export function downloadText(name: string, text: string, mime: string): void {

@@ -65,8 +65,9 @@
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { agentApi, agentErrorText, safeAgentRedirect } from '../../lib/agentApi'
+import { nextLoginStep, type LoginStep } from '../../lib/agentLoginFlow'
 
-type Step = 'password' | 'change_password' | 'setup_totp' | 'totp'
+type Step = LoginStep
 
 const route = useRoute()
 const router = useRouter()
@@ -106,36 +107,41 @@ function restart() {
   step.value = 'password'
 }
 
-// 按后端返回的 next 进入下一步；没有 next（或 done）表示正式会话已发出
-async function advance(next: unknown) {
+// 按流转结果进入下一步；只有最后两步收到 next === 'done' 才跳转
+async function advance(from: Step, res: { ok: boolean; data: any }) {
+  const out = nextLoginStep(from, res)
+  if (out.kind === 'error') {
+    if (out.restart) restart()
+    errorText.value = out.text
+    return
+  }
   errorText.value = ''
   totpCode.value = ''
-  if (next === 'change_password' || next === 'setup_totp' || next === 'totp') {
-    step.value = next
-    if (next === 'setup_totp') await loadSetup()
+  if (out.kind === 'step') {
+    step.value = out.step
+    if (out.step === 'setup_totp') await loadSetup()
     return
   }
-  if (next === undefined || next === null || next === '' || next === 'done') {
-    clearSecrets()
-    await router.replace(safeAgentRedirect(route.query.redirect))
-    return
-  }
-  errorText.value = '登录流程异常，请重新登录'
-  step.value = 'password'
+  clearSecrets()
+  await router.replace(safeAgentRedirect(route.query.redirect))
 }
 
 async function loadSetup() {
   setupLoading.value = true
   try {
     const r = await agentApi<{ secret?: string; otpauth_uri?: string }>('/auth/totp/setup')
+    if (step.value !== 'setup_totp') return
     if (!r.ok || !r.data.secret || !r.data.otpauth_uri) {
       errorText.value = agentErrorText(r.data)
       return
     }
-    secret.value = r.data.secret
     // 二维码只在浏览器本地生成，otpauth_uri 不发给任何第三方
     const QRCode = (await import('qrcode')).default
-    qrDataUrl.value = await QRCode.toDataURL(r.data.otpauth_uri, { margin: 1, width: 180 })
+    const url = await QRCode.toDataURL(r.data.otpauth_uri, { margin: 1, width: 180 })
+    // 期间用户已返回重新登录：迟到的结果不能把密钥和二维码写回去
+    if (step.value !== 'setup_totp') return
+    secret.value = r.data.secret
+    qrDataUrl.value = url
   } catch {
     errorText.value = '二维码生成失败，请刷新后重试'
   } finally {
@@ -148,12 +154,9 @@ async function call(path: string, body: unknown) {
   busy.value = true
   errorText.value = ''
   try {
+    const from = step.value
     const r = await agentApi<{ next?: string }>(path, 'POST', body)
-    if (!r.ok) {
-      errorText.value = agentErrorText(r.data)
-      return
-    }
-    await advance(r.data?.next)
+    await advance(from, r)
   } catch {
     errorText.value = '网络异常，请稍后再试'
   } finally {

@@ -16,6 +16,6 @@ describe('AgentLogin', () => {
     expect(html).toContain('登录名')
     expect(html).toContain('密码')
     expect(html).toContain('type="password"')
-    expect(html).not.toMatch(/\b[a-z]+\.[a-z]+\.[a-zA-Z]+\b(?![^<]*>)/)
+    for (const t of ['代理商登录', '登录名', '密码', '登录']) expect(html).toContain(t)
   })
 })

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { agentApi, agentErrorText, setAgentUnauthorizedHandler } from '../agentApi'
+import { agentApi, agentErrorText, safeAgentRedirect, setAgentUnauthorizedHandler } from '../agentApi'
 
 function stubFetch(status: number, body: unknown = {}) {
   const f = vi.fn(async () => ({ status, ok: status >= 200 && status < 300, json: async () => body }))
@@ -60,5 +60,37 @@ describe('agentErrorText', () => {
     expect(agentErrorText({ error: 'price_changed' })).toBe('价格已变化，请刷新后重新下单')
     expect(agentErrorText({ error: 'zzz' })).toBe('操作失败，请稍后再试')
     expect(agentErrorText(null)).toBe('操作失败，请稍后再试')
+  })
+})
+
+describe('agentErrorText 补充', () => {
+  it('登录相关编号', () => {
+    expect(agentErrorText({ error: 'invalid_credentials' })).toBe('登录名或密码错误')
+    expect(agentErrorText({ error: 'totp_invalid' })).toBe('动态码错误')
+    expect(agentErrorText({ error: 'pre_expired' })).toBe('登录已过期，请重新输入密码')
+    expect(agentErrorText({ error: 'weak_password' })).toBe('新密码不符合要求')
+    expect(agentErrorText({ error: 'unauthorized' })).toBe('登录已失效，请重新登录')
+    expect(agentErrorText({ error: 'csrf_invalid' })).toBe('页面已过期，请刷新后重试')
+  })
+  it('余额不足无论有没有 message 都用 shortfall_cents', () => {
+    expect(agentErrorText({ error: 'insufficient_balance', message: 'insufficient', shortfall_cents: 250 })).toBe('余额不足，还差 $2.50')
+  })
+})
+
+describe('safeAgentRedirect', () => {
+  it('接受站内 /agent 路径', () => {
+    expect(safeAgentRedirect('/agent')).toBe('/agent')
+    expect(safeAgentRedirect('/agent/codes?x=1')).toBe('/agent/codes?x=1')
+  })
+  it('拒绝开放跳转和奇怪输入', () => {
+    for (const bad of ['//evil.com', '/agent@evil.com', '/agentx', '/\\evil.com', '/agent//x', '/agent\t/x', '/agent\n/x', 'https://evil.com', '']) {
+      expect(safeAgentRedirect(bad), JSON.stringify(bad)).toBe('/agent')
+    }
+  })
+  it('数组取第一个，非字符串回 /agent', () => {
+    expect(safeAgentRedirect(['/agent/ledger', '/x'])).toBe('/agent/ledger')
+    expect(safeAgentRedirect(undefined)).toBe('/agent')
+    expect(safeAgentRedirect(5)).toBe('/agent')
+    expect(safeAgentRedirect(null)).toBe('/agent')
   })
 })

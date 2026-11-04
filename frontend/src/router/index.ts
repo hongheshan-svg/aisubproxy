@@ -1,6 +1,7 @@
 import { defineComponent, h } from 'vue'
 import { createRouter, createWebHistory, RouteRecordRaw } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
+import { agentGuardDecision } from '../lib/agentSession'
 
 // 管理端入口故意不用 /admin，降低扫路径风险。API 仍为 /api/v1/admin/*（服务端鉴权）。
 const OPS_BASE = '/ops'
@@ -171,27 +172,9 @@ async function serverSessionAlive(): Promise<boolean> {
   return true
 }
 
-// 代理商会话：每次页面加载只向服务端确认一次；明确 401 才跳登录页，网络错误不踢人。不读写管理员的 authStore。
-let agentVerified = false
-async function agentSessionAlive(): Promise<boolean> {
-  if (agentVerified) return true
-  try {
-    const r = await fetch('/api/v1/agent/me', { credentials: 'include' })
-    if (r.status === 401) return false
-  } catch {
-    /* 后端不可达：放行，页面自己的请求会再报错 */
-  }
-  agentVerified = true
-  return true
-}
-
 router.beforeEach(async (to) => {
   if (to.matched.some((r) => r.meta.requiresAgent)) {
-    if (!(await agentSessionAlive())) {
-      agentVerified = false
-      return { path: '/agent/login', query: { redirect: to.fullPath } }
-    }
-    return
+    return (await agentGuardDecision(true, to.fullPath, () => fetch('/api/v1/agent/me', { credentials: 'include' }))) ?? undefined
   }
   if (to.path === '/agent/login') return
   const authStore = useAuthStore()

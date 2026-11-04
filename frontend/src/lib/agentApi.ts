@@ -57,18 +57,25 @@ export const AGENT_ERROR_TEXT: Record<string, string> = {
   request_no_conflict: '请求号已用于另一笔订单',
   busy: '系统繁忙，请稍后重试',
   rate_limited: '操作太频繁，请稍后再试',
+  invalid_credentials: '登录名或密码错误',
+  totp_invalid: '动态码错误',
+  pre_expired: '登录已过期，请重新输入密码',
+  weak_password: '新密码不符合要求',
+  unauthorized: '登录已失效，请重新登录',
+  csrf_invalid: '页面已过期，请刷新后重试',
   price_changed: '价格已变化，请刷新后重新下单',
 }
 
 const FALLBACK = '操作失败，请稍后再试'
 
 export function agentErrorText(data: any): string {
-  if (data && typeof data.message === 'string' && data.message) return data.message
   const code = data && typeof data.error === 'string' ? data.error : ''
+  // 余额不足固定用 shortfall_cents 拼，不看 message
   if (code === 'insufficient_balance') {
     const s = Number(data.shortfall_cents)
     return Number.isFinite(s) && s > 0 ? `余额不足，还差 ${fmtUsd(s)}` : AGENT_ERROR_TEXT[code]
   }
+  if (data && typeof data.message === 'string' && data.message) return data.message
   return AGENT_ERROR_TEXT[code] || FALLBACK
 }
 

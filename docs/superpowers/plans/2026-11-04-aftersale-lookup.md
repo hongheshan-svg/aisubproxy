@@ -8,7 +8,7 @@
 - **服务商层**：每家返回统一的 `afterSaleFacts`。
 - **公共层**（`backend/internal/handler/aftersale.go`）：唯一一份，负责分派、邮箱打码、清洗服务商原文、跟换码链（最多 5 层）、输出白名单字段。
 
-供卡型服务商共用一套实现。上游发码型服务商各自实现可选能力 `upstreamLookuper`。到期时间在续费核实时从 `GET /subscriptions` 的 `active_until` 记到 `pay_orders.access_until`。
+供卡型服务商共用一套实现。上游发码型服务商各自实现可选能力 `upstreamLookuper`。到期时间在续费核实时从 `GET /subscriptions` 的 `active_until` 记到 `pay_orders.access_until`。本站码换码时，新码的完整码用 `secretbox` 加密存进 `local_cdks.code_sealed`，查旧码时解开给出新码。
 
 **技术栈：** Go 1.x + gin + SQLite（后端），Vue 3 + vue-i18n + vitest + Tailwind 3（前端）。
 
@@ -19,7 +19,8 @@
 ## 全局约束
 
 - 接口响应和日志里，不能出现完整邮箱、兑换令牌、会话、卡号。邮箱统一用 `maskEmailForAdmin`（`backend/internal/handler/card_health.go:527`）打码，只在公共层打。
-- 不改兑换、付款、注资、换码这些资金逻辑。续费那里只多解析、多保存一个字段 `active_until`。
+- 不改兑换、付款、注资、换码这些资金逻辑。续费那里只多解析、多保存一个字段 `active_until`。换码那里只多写一列新码密文 `code_sealed`，换码条件、事务、响应、审计文字都不变。
+- 新码原文和密文都不进日志、审计、后台列表和导出。
 - `GET /api/v1/lookup/cdk`、`POST /api/v1/lookup/cdk/batch` 的路径、限流（`LookupGuard`）、批量上限（`lookupBatchMax = 100`）不变。现有字段只增不删，含义不变。
 - `status` 新增两个取值：`replaced`（已换发新码）、`unsupported`（服务商不支持在线查询）。
 - 指引编号是固定列表：`session_invalid`、`already_subscribed`、`plan_unavailable`、`credit_needs_subscription`、`credit_not_personal`、`credit_delinquent`、`credit_region_mismatch`、`retry_later`、`manual_review`、`provider_retry`、`provider_wait`。
@@ -41,7 +42,7 @@
 2. **邮箱本地部分是中文、只有 1 个字符、没有 `@`**。期望打码后不出乱码、不泄露原文。测试放在 Task 2：`TestAfterSaleMasksUnicodeEmail`。如果 `maskEmailForAdmin` 是按字节截的，改成按 rune 截。
 3. **服务商查询 panic 或超时**。单条查询期望返回 `unknown` 和「暂时查不到，请稍后再试」，不能是 500；批量查询里其他条照常返回。测试放在 Task 2：`TestAfterSaleProviderPanicIsUnknown`、`TestAfterSaleBatchIsolatesPanic`。
 4. **`active_until` 格式不对**：毫秒数、字符串形式的数字、1970 年、2200 年。期望毫秒能正确换算，离谱的年份不写入，页面上不会出现 1970。测试放在 Task 1：`TestParseActiveUntil`。
-5. **旧前端（浏览器缓存）遇到新状态值 `replaced`、`unsupported`**。期望显示兜底文字，不报错。测试放在 Task 5：`afterSaleView 未知状态兜底`。
+5. **旧前端（浏览器缓存）遇到新状态值 `replaced`、`unsupported`**。期望显示兜底文字，不报错。测试放在 Task 6：`afterSaleView 未知状态兜底`。
 
 ---
 
@@ -139,7 +140,7 @@ type lookupReplacement struct {
 const afterSaleChainMax = 5
 func factsFor(ctx context.Context, code, device string) (afterSaleFacts, error) // 分派，并把 panic 恢复成 error
 func lookupAfterSale(ctx context.Context, code, device string) cdkLookupResult   // 公共层入口；lookupOneCDK 直接调它
-func factsFromLegacy(r cdkLookupResult) afterSaleFacts                          // 过渡用；Task 3、4 之后删掉
+func factsFromLegacy(r cdkLookupResult) afterSaleFacts                          // 过渡用；Task 4、5 之后删掉
 func sanitizeProviderNote(s string) string
 ```
 
@@ -210,7 +211,62 @@ ReplacedUnknown bool               `json:"replaced_unknown,omitempty"`
 
 ---
 
-### Task 3：供卡型服务商的共用实现
+### Task 3：本站码换码时加密保存新码
+
+**文件：**
+- 改：`backend/internal/db/local_cdk.go`
+  - 建表语句加列 `code_sealed TEXT NOT NULL DEFAULT ''`；已有库用 `ALTER TABLE local_cdks ADD COLUMN`，写法照 `db/agent_exchange.go:54` 的补列循环（列已存在就跳过）。
+  - `NewLocalCDK` 加 `CodeSealed string`，`insertLocalCDK` 写入它。
+  - 新增 `LocalCDKSealedCode(ctx context.Context, id int64) (codeHash, sealed string, err error)`，没有这一行返回 `sql.ErrNoRows`。
+  - `localCDKColumns`、`LocalCDK` 结构**不加**这一列，后台列表、导出永远读不到它。
+- 改：`backend/internal/handler/local_cdk.go`（换码处，约 :838-866）
+  - `provider.GenerateCode` 之后、`db.ExchangeLocalCDK` 之前，调 `sealLocalCDKCode(fresh.Code, fresh.CodeHash)`，结果填进 `NewLocalCDK.CodeSealed`。
+- 新建：`backend/internal/handler/local_cdk_sealed.go`，放下面两个函数。
+- 测试：`backend/internal/db/local_cdk_test.go`、`backend/internal/handler/local_cdk_sealed_test.go`
+
+**接口：**
+- 消费：`secretbox.LoadKey`、`secretbox.Seal`、`secretbox.Open`，`db.HashCDKCode`。
+- 产出（Task 4 用）：
+```go
+func sealLocalCDKCode(code, codeHash string) string                       // 主密钥缺失、不合法或加密失败时返回空串，并按下面的规则告警或记日志
+func openLocalCDKCode(ctx context.Context, id int64) (code string, ok bool) // 取密文、解密、核对哈希；任何一步不成立都返回 false
+```
+
+**规则：**
+- AAD（`secretbox.Seal` 的 name 参数）：`"local_cdk_code:" + codeHash`。
+- `openLocalCDKCode` 解开后，用 `db.HashCDKCode(code)` 再算一遍，必须等于这一行的 `code_hash`。
+- 主密钥缺失或不合法（`secretbox.ErrNoMasterKey`、`ErrBadMasterKey`）：换码照常完成，`code_sealed` 留空，并调
+  `opsAlertDaily("local-cdk-code-nokey", "APP_MASTER_KEY 缺失或不合法：本站码换出的新码没有加密保存（不影响换码），客户在首页查旧码时只能看到「请联系售卖方获取」。", time.Now())`。
+- 加密本身失败（如随机源出错）：同样不挡换码，记一条日志，只写错误类型。
+- `openLocalCDKCode` 失败时只记错误类型，不记码、不记密文。
+- 后台批量发码不保存完整码，不变。
+
+- [ ] **Step 1：写失败的测试**
+
+  | 测试 | 断言 |
+  |---|---|
+  | `TestLocalCDKSealedCodeRoundTrip`（db） | 插入带 `CodeSealed` 的码，`LocalCDKSealedCode` 取回相同的 `code_hash` 和密文；不存在的 id 返回 `sql.ErrNoRows`；先用没有 `code_sealed` 列的旧建表语句建库，再跑迁移，能补上列并读写 |
+  | `TestExchangeSealsNewCode` | 设好主密钥（执行时先确认 `newLocalEnv` 是否已设，没设就 `t.Setenv` 一个 32 字节的 base64 值），按 `TestAgentExchangeLocalCDK`（provider_admin_test.go:818）的造数方法换码。`openLocalCDKCode(new_cdk_id)` 返回的码等于响应里的 `new_code`；库里 `code_sealed` 以 `v1:` 开头，不含新码原文 |
+  | `TestExchangeWithoutMasterKeyStillWorks` | `t.Setenv("APP_MASTER_KEY", "")` 后换码，仍是 200，响应带 `new_code`；`code_sealed` 为空；`openLocalCDKCode` 返回 false；`e.alertTexts()` 里有 `APP_MASTER_KEY` |
+  | `TestOpenLocalCDKCodeRejectsTampered` | 三种情况都返回 false 且不 panic：把 A 行的密文拷到 B 行；换一个主密钥；把密文改掉一个字符 |
+  | `TestSealedCodeNotInAdminOutputs` | 换码后，后台码列表接口和导出的响应里不含 `code_sealed` 字段、不含密文、不含新码原文；换码过程中标准库日志和审计里也都没有 |
+
+- [ ] **Step 2：确认测试失败**
+  - 命令：`cd backend && go test ./internal/db/ ./internal/handler/ -run 'SealedCode|SealsNewCode|WithoutMasterKey|RejectsTampered' -v`
+  - 期望：编译失败，报 `LocalCDKSealedCode`、`openLocalCDKCode` 未定义。
+
+- [ ] **Step 3：按上面的接口和规则实现。**
+
+- [ ] **Step 4：确认测试通过**
+  - 同 Step 2 的命令，期望 PASS。
+  - `go test ./internal/handler/ -run 'AgentExchange|LocalIssue|LocalCDK' -v` 也要 PASS（现有的换码和「完整码只在响应里出现一次」测试不能改断言）。
+
+- [ ] **Step 5：跑后端门禁并提交**
+  - `git commit -m "feat(local-cdk): 换码时把新码加密保存，供售后查询显示"`
+
+---
+
+### Task 4：供卡型服务商的共用实现
 
 **文件：**
 - 改：`backend/internal/db/local_cdk.go`
@@ -223,7 +279,7 @@ ReplacedUnknown bool               `json:"replaced_unknown,omitempty"`
 - 测试：`backend/internal/handler/aftersale_cardsupply_test.go`（用 `newLocalEnv`）
 
 **接口：**
-- 消费：Task 1 的 `pay_orders.access_until`；Task 2 的 `afterSaleFacts`。
+- 消费：Task 1 的 `pay_orders.access_until`；Task 2 的 `afterSaleFacts`；Task 3 的 `openLocalCDKCode`。
 - 产出：`cardSupplyFacts`，所有供卡型服务商共用。
 
 **映射规则：**
@@ -235,7 +291,7 @@ ReplacedUnknown bool               `json:"replaced_unknown,omitempty"`
   | `LocalCDKConsumed` | `used`；`UsedAt = Latest.FinishedAt`；`ExpiresAt = Latest.AccessUntil`；`Renewal`：`cancelled` → `off`，`pending` → `closing`，其他 → 空 |
   | `LocalCDKReserved` | `processing`；`Reason == needs_review` 时 `Guide = manual_review` |
   | `LocalCDKFailed` | `failed`；`Reusable = false`；`Guide = manual_review` |
-  | `LocalCDKDisabled`，`Reason == exchanged` | `replaced`；`ReplacedButUnknown = true`（新码的完整码不入库） |
+  | `LocalCDKDisabled`，`Reason == exchanged` | `replaced`；`openLocalCDKCode(ctx, *row.ReplacedBy)` 成功 → `Replacement = 新码`；失败或 `ReplacedBy == nil` → `ReplacedButUnknown = true` |
   | `LocalCDKDisabled`，其他原因 | `disabled` |
   | 其余，`Latest == nil` | `unused` |
   | 其余，`Latest != nil`（干净失败） | `unused`；`Reusable = true`；`Guide` 按 `Latest.ErrorCode` 对照设计文档 §4 的表，对不上的用 `retry_later` |
@@ -251,7 +307,10 @@ ReplacedUnknown bool               `json:"replaced_unknown,omitempty"`
     - `credit_not_personal`、`credit_delinquent` 原样对上；
     - `credit_currency_mismatch` → `credit_region_mismatch`；
     - 未知码 → `retry_later`。
-  - `TestCardSupplyFactsExchanged`：用 `db.ExchangeLocalCDK` 换码后，查旧码得到 `replaced`，`replaced_unknown=true`，并且响应 JSON 里不出现新码的哈希或前缀以外的内容。
+  - `TestCardSupplyFactsExchanged`：
+    - 有主密钥时走换码接口换码，查旧码得到 `replaced`，`replacement=={新码,"unused",1}`；
+    - 直接用 `db.ExchangeLocalCDK` 换码、不带密文（模拟这次改动之前换出的码），查旧码得到 `replaced_unknown=true`，不带 `replacement`；
+    - 两种情况的响应 JSON 里都不出现密文（`v1:`）和 `code_hash`。
   - `TestCardSupplyFactsGenericProvider`：用 `providertest.NewTestCard()`（前缀 `TC-`）造一张码，它不经过任何专门的适配器，也走这套映射，查询结果正确。
 
 - [ ] **Step 2：确认测试失败**
@@ -267,7 +326,7 @@ ReplacedUnknown bool               `json:"replaced_unknown,omitempty"`
 
 ---
 
-### Task 4：ZovoCard（上游发码型）的实现
+### Task 5：ZovoCard（上游发码型）的实现
 
 **文件：**
 - 改：`backend/internal/handler/lookup.go`
@@ -309,7 +368,7 @@ ReplacedUnknown bool               `json:"replaced_unknown,omitempty"`
 
 ---
 
-### Task 5：前端显示模型和语言包
+### Task 6：前端显示模型和语言包
 
 **文件：**
 - 新建：`frontend/src/lib/aftersale.ts`
@@ -368,7 +427,7 @@ export function afterSaleView(r: LookupResult): AfterSaleView
 
 ---
 
-### Task 6：首页售后查询区块，`/history` 也接上显示模型
+### Task 7：首页售后查询区块，`/history` 也接上显示模型
 
 **文件：**
 - 新建：`frontend/src/components/AfterSaleLookup.vue`（输入框、查询按钮，结果按 `afterSaleView` 渲染）
@@ -396,10 +455,11 @@ export function afterSaleView(r: LookupResult): AfterSaleView
   - 期望：FAIL。
 - [ ] **Step 3：实现组件，接到首页和 `/history`。**
 - [ ] **Step 4：确认测试通过**：同 Step 2 的命令，期望 PASS。
-- [ ] **Step 5：CHANGELOG**：在「## 未发布」里加「首页售后查询」一段，写清楚三件事：
+- [ ] **Step 5：CHANGELOG**：在「## 未发布」里加「首页售后查询」一段，写清楚四件事：
   - 首页可以直接查卡密；
   - 失败会给出指引，换过码的会显示新码；
   - 查询结果和导出里的邮箱改为一律打码，以前上游服务商分支会返回完整邮箱。
+  - 本站码换码时会加密保存新码（要配 `APP_MASTER_KEY`）；这个版本之前换出的码查不到新码，仍显示「请联系售卖方获取」。
 - [ ] **Step 6：跑全部门禁并提交**
   - `git commit -m "feat(home): 首页售后查询，卡密查询页单条结果使用同一显示模型"`
 
@@ -408,17 +468,19 @@ export function afterSaleView(r: LookupResult): AfterSaleView
 ## 自查记录
 
 - **设计覆盖：**
-  - §3.1 服务商层：Task 2（接口）、Task 3（供卡型）、Task 4（上游型）；
+  - §3.1 服务商层：Task 2（接口）、Task 4（供卡型）、Task 5（上游型）；
+  - §3.3 新码加密保存：Task 3（保存）、Task 4（查询时解开）；
   - §3.2 公共层：Task 2；
-  - §4 指引：Task 3、4、5；
+  - §4 指引：Task 4、5、6；
   - §5 接口字段：Task 2；
-  - §6 前端：Task 5、6；
-  - §7 出错处理：Task 2；
+  - §6 前端：Task 6、7；
+  - §7 出错处理：Task 2、Task 3（密文解不开）；
   - §8 测试：各任务的 Step 1；
-  - §9 上线（迁移、CHANGELOG）：Task 1、6。
+  - §9 上线（迁移、CHANGELOG）：Task 1、3、7。
 - **类型一致：**
-  - `afterSaleFacts` 和 `cdkLookupResult` 的新字段在 Task 2 定义，Task 3、4 使用；
+  - `afterSaleFacts` 和 `cdkLookupResult` 的新字段在 Task 2 定义，Task 4、5 使用；
+  - `openLocalCDKCode` 在 Task 3 定义，Task 4 使用；
   - 前端的 `LookupResult` 与后端 JSON 字段名逐一对过：`expires_at`、`replacement{code,status,depth}`、`replaced_unknown`。
 - **已知取舍：**
-  - 本站码换码的新码没有完整码，只能显示「请联系售卖方获取」，要等第 5 个子项目解决；
+  - 这次改动之前换出的本站码新码没有密文，补不了，只能显示「请联系售卖方获取」；生产环境没配 `APP_MASTER_KEY` 时也一样；
   - 已有的单没有 `access_until`，不显示到期时间。

@@ -50,6 +50,9 @@ func CreateAgentOrder(ctx context.Context, o NewAgentOrder, now time.Time) (Agen
 	if qty == 0 {
 		return AgentOrder{}, nil, errors.New("下单缺少码")
 	}
+	if o.UnitPriceCents <= 0 {
+		return AgentOrder{}, nil, errors.New("单价必须大于 0")
+	}
 	total := o.UnitPriceCents * int64(qty)
 	tx, err := DB.BeginTx(ctx, nil)
 	if err != nil {
@@ -162,9 +165,9 @@ func LocalCDKSealedForAgent(ctx context.Context, agentID int64, ids []int64) ([]
 	return out, rows.Err()
 }
 
-// LocalCDKIDsForAgentOrder 这笔订单下的码 ID，按 id 升序；订单不属于这个代理商时没有结果。
+// LocalCDKIDsForAgentOrder 这笔订单当时发出的码 ID，按 id 升序（不含换码换出的新码，数量恒等于订单数量）；订单不属于这个代理商时没有结果。
 func LocalCDKIDsForAgentOrder(ctx context.Context, agentID, orderID int64) ([]int64, error) {
-	rows, err := DB.QueryContext(ctx, `SELECT id FROM local_cdks WHERE agent_id = ? AND agent_order_id = ? ORDER BY id`, agentID, orderID)
+	rows, err := DB.QueryContext(ctx, `SELECT id FROM local_cdks WHERE agent_id = ? AND agent_order_id = ? AND exchanged_from IS NULL ORDER BY id`, agentID, orderID)
 	if err != nil {
 		return nil, err
 	}

@@ -88,8 +88,8 @@ func TestCreateAgentOrderAtomic(t *testing.T) {
 		t.Fatalf("别人的订单不能查到码: %v %v", other, err)
 	}
 	g, err := db.GetAgentOrder(ctx, id, o.ID)
-	if err != nil || g.ID != o.ID {
-		t.Fatalf("%+v %v", g, err)
+	if err != nil || g != o {
+		t.Fatalf("读回应与下单返回一致:\n%+v\n%+v %v", g, o, err)
 	}
 	if _, err := db.GetAgentOrder(ctx, id+1, o.ID); !errors.Is(err, sql.ErrNoRows) {
 		t.Fatalf("别人的订单应 ErrNoRows: %v", err)
@@ -302,6 +302,9 @@ func TestLocalCDKSealedForAgentScoped(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if bo, ok, err := db.GetAgentOrderByRequestNo(ctx, b, "r1"); err != nil || !ok || bo.AgentID != b {
+		t.Fatalf("应返回 B 自己的订单: %+v %v %v", bo, ok, err)
+	}
 	got, err := db.LocalCDKSealedForAgent(ctx, a, append(append([]int64{}, idb...), ida...))
 	if err != nil || len(got) != 2 || got[0].ID != ida[0] || got[1].ID != ida[1] || got[0].Sealed != "sealed" || got[0].CodeHash != "a-h0" {
 		t.Fatalf("%+v %v", got, err)
@@ -341,5 +344,40 @@ func TestLoadLocalCDKRowsByAgent(t *testing.T) {
 	all, _ := db.LoadLocalCDKRows(ctx)
 	if len(all) != 4 {
 		t.Fatalf("全部 %d", len(all))
+	}
+}
+
+func TestLocalCDKIDsForAgentOrderIgnoresExchanged(t *testing.T) {
+	dbtest.Open(t)
+	ctx := context.Background()
+	id := newTestAgent(t, "alice")
+	fundAgent(t, id, 1000)
+	o, ids, err := db.CreateAgentOrder(ctx, db.NewAgentOrder{AgentID: id, Product: orderProduct(), UnitPriceCents: 100, RequestNo: "r1", Codes: orderCodes("a", 2)}, acctNow)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := orderCodes("new", 1)[0]
+	n.ExchangedFrom = &ids[0]
+	if _, err := db.ExchangeLocalCDK(ctx, ids[0], n, acctNow.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	got, err := db.LocalCDKIDsForAgentOrder(ctx, id, o.ID)
+	if err != nil || len(got) != 2 || got[0] != ids[0] || got[1] != ids[1] {
+		t.Fatalf("应只返回原来的 2 张: %v %v", got, err)
+	}
+}
+
+func TestCreateAgentOrderRejectsNonPositivePrice(t *testing.T) {
+	dbtest.Open(t)
+	id := newTestAgent(t, "alice")
+	fundAgent(t, id, 1000)
+	for _, price := range []int64{-100, 0} {
+		if _, _, err := db.CreateAgentOrder(context.Background(), db.NewAgentOrder{AgentID: id, Product: orderProduct(), UnitPriceCents: price, RequestNo: "r1", Codes: orderCodes("a", 1)}, acctNow); err == nil {
+			t.Fatalf("单价 %d 应失败", price)
+		}
+	}
+	nothingWritten(t)
+	if agentBalance(t, id) != 1000 {
+		t.Fatalf("余额变了: %d", agentBalance(t, id))
 	}
 }

@@ -270,7 +270,7 @@ type NewLocalCDK struct {
 	Provider, CodeHash, TokenHash, CodePrefix, Product, PlanKey, Region, IssuedBy, Note string
 	ExchangedFrom                                                                       *int64
 	AttemptsCarried                                                                     int
-	// CodeSealed 是完整码的密文，只有换码换出的新码才有；后台批量发码留空。
+	// CodeSealed 是完整码的密文：换码换出的新码和代理商下单买的码都有；后台批量发码留空。
 	CodeSealed string
 	// AgentID、AgentOrderID 只由代理商下单（CreateAgentOrder）填写；换码时由 ExchangeLocalCDK 从旧码继承。
 	AgentID, AgentOrderID int64

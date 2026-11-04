@@ -269,9 +269,11 @@ type localZovoStub struct {
 	body  []string
 }
 
+// zovoPreflightBody 不带 email：真实卡台回的是它核验过的账号邮箱（与会话一致），绑定会按它记（审计 F-2）。
+// 这个桩对所有会话回同一份响应，带上固定邮箱就会把每个测试账号的绑定都记成这一个。
 const (
 	zovoPreviewBody   = `{"redemption_token":"zc-tok-1","plan":"plus","upstream_only":"x"}`
-	zovoPreflightBody = `{"ok":true,"preflight_token":"pf-1","email":"zc@example.com"}`
+	zovoPreflightBody = `{"ok":true,"preflight_token":"pf-1"}`
 	zovoRedeemBody    = `{"status":"queued","order":{"status":"queued"}}`
 	zovoResultBody    = `{"status":"running","order":{"status":"running"}}`
 )

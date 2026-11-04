@@ -21,7 +21,9 @@ import (
 // 核实不了按失败处理。关闭续费的成败不影响单据的成功状态和资金结论。
 //
 // 会话：单据成功时会话不清空，留给续费协程用；关掉了就清空。自动重试最多 3 次（间隔 1、3、10 分钟），用完转 failed 并告警，
-// 会话再留到 SessionKeep（1 小时）给管理员手动重试，到点一律清空。待人工的开通单也留会话到同一时限，人工定论成功时还能关。
+// 会话再留到 SessionKeep（1 小时）给管理员手动重试，到点一律清空。
+// 待人工的开通单在人工定论之前一直留着会话（审计 D-2）：管理员什么时候定论成功都还能关续费，否则用户账号留着自动续费、
+// 下期扣的可能是我们复用中的卡。定论成功之后从定论时刻（resolved_at）起再按 SessionKeep 计时（审计 D-9）；定论失败当场清空。
 const (
 	renewalAutoRetries = 3
 	defaultRenewalTick = 15 * time.Second
@@ -295,6 +297,7 @@ func (s *Service) renewalOff(ctx context.Context, gpt ChatGPT, sess chatgpt.Sess
 }
 
 // sweepSessions 清空保留到点的会话：终态单据结束满 SessionKeep 还留着会话的，一律清空。
+// 人工定论过的单从定论时刻算，待人工的单不清（定论之前不知道要不要关续费）。
 // 续费还在待处理的单转 failed 并告警：关闭续费到点还没结论，只能让用户自己关。
 func (s *Service) sweepSessions(ctx context.Context) {
 	cutoff := s.now().Add(-s.t.SessionKeep).Unix()
@@ -341,11 +344,14 @@ func dueRenewals(ctx context.Context, now int64) ([]Order, error) {
 	return collectOrders(rows)
 }
 
-// expiredSessions 返回已经结束、结束时刻不晚于 cutoff、还留着会话的单据。
+// sessionKeepFrom 是会话保留的起算时刻：人工定论过的单从定论时刻算，其余从结束时刻算。
+const sessionKeepFrom = `COALESCE(resolved_at, finished_at)`
+
+// expiredSessions 返回已经结束、保留起算时刻不晚于 cutoff、还留着会话的终态单据。待人工的单不在其中：会话要留到人工定论。
 func expiredSessions(ctx context.Context, cutoff int64) ([]Order, error) {
 	rows, err := db.DB.QueryContext(ctx, `SELECT `+orderColumns+` FROM pay_orders
-		WHERE session_sealed != '' AND finished_at IS NOT NULL AND finished_at <= ? AND state IN (?, ?, ?, ?) ORDER BY id`,
-		cutoff, StateSucceeded, StateFailed, StateNeedsReview, StatePreviewed)
+		WHERE session_sealed != '' AND finished_at IS NOT NULL AND `+sessionKeepFrom+` <= ? AND state IN (?, ?, ?) ORDER BY id`,
+		cutoff, StateSucceeded, StateFailed, StatePreviewed)
 	if err != nil {
 		return nil, err
 	}
@@ -353,6 +359,7 @@ func expiredSessions(ctx context.Context, cutoff int64) ([]Order, error) {
 }
 
 // clearExpiredSession 清空一张到点单据的会话，记一条事件。续费待处理的单不在这里清（见 sweepSessions）。
+// 条件在同一条 UPDATE 里重查：读列表之后单据刚被人工定论的，起算时刻已经变了，不会被清；待人工的单一律不清。
 func clearExpiredSession(ctx context.Context, no string, cutoff int64) error {
 	now := time.Now().UTC().Unix()
 	tx, err := db.DB.BeginTx(ctx, nil)
@@ -361,7 +368,8 @@ func clearExpiredSession(ctx context.Context, no string, cutoff int64) error {
 	}
 	defer tx.Rollback()
 	res, err := tx.ExecContext(ctx, `UPDATE pay_orders SET session_sealed = '', updated_at = ?
-		WHERE order_no = ? AND session_sealed != '' AND finished_at <= ? AND renewal_state != ?`, now, no, cutoff, RenewalPending)
+		WHERE order_no = ? AND session_sealed != '' AND `+sessionKeepFrom+` <= ? AND renewal_state != ? AND state != ?`,
+		now, no, cutoff, RenewalPending, StateNeedsReview)
 	if err != nil {
 		return err
 	}

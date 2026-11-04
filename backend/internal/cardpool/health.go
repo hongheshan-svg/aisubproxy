@@ -71,6 +71,36 @@ func (s *Service) recordOutcome(ctx context.Context, c *Card, planKey, orderRef,
 	return nil
 }
 
+// RecordOutcome 补记一次用卡结果，不碰租约和卡的池状态。给租约已经释放、之后才有定论的单用：
+// 付款单转待人工时按 aborted 释放了租约（那时还不知道结果），人工定论后用它把结果计入健康度（审计 D-6）。
+// orderRef 必填：同一张单在这张卡上已有记录时什么都不做，重复调用不会多记。aborted 不记录。
+func (s *Service) RecordOutcome(ctx context.Context, cardID, planKey, orderRef, email string, o Outcome) error {
+	switch o.Result {
+	case ResultSuccess, ResultFailed, ResultAborted:
+	default:
+		return badRequest("结果只能是 success、failed 或 aborted")
+	}
+	if strings.TrimSpace(orderRef) == "" {
+		return badRequest("补记用卡结果缺少单号")
+	}
+	if o.Result == ResultAborted {
+		return nil
+	}
+	c, err := getCard(ctx, cardID)
+	if err != nil {
+		return err
+	}
+	var n int
+	if err := db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM mw_card_outcomes WHERE card_id = ? AND order_ref = ?`,
+		c.CardID, orderRef).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	return s.recordOutcome(ctx, c, planKey, orderRef, email, o)
+}
+
 // countFailures 统计满足条件的失败次数与不同已知邮箱数。scopeWhere 形如 "product_id=? AND plan_key=?"。
 // 起算点：created_at > since，且 id 在最近一次成功之后。
 func countFailures(ctx context.Context, scopeWhere string, args []any, since int64) (fails, distinct int, err error) {

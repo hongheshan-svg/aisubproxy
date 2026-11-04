@@ -130,14 +130,14 @@ export type AdjustPreview = {
 }
 
 /** 调账确认文案：对象、方向、金额、调账后余额；扣成负数时给出警告（后端会拒）。 */
-export function adjustPreview(username: string, balanceCents: number, amountCents: number): AdjustPreview {
+export function adjustPreview(username: string, balanceCents: number, amountCents: number, retry = false): AdjustPreview {
   const credit = amountCents > 0
   const after = balanceCents + amountCents
   return {
     direction: credit ? 'credit' : 'debit',
     text: credit ? `将给 ${username} 充值 ${fmtUsd(amountCents)}` : `将从 ${username} 扣除 ${fmtUsd(-amountCents)}`,
     afterCents: after,
-    afterText: `调账后余额 ${fmtUsd(after)}`,
+    afterText: `调账后余额 ${fmtUsd(after)}${retry ? '（上一次可能已入账，请先核对流水再确认）' : ''}`,
     willBeNegative: after < 0,
     warning: after < 0 ? '余额不足，不能扣成负数，提交会被拒绝' : '',
   }
@@ -147,4 +147,31 @@ export function adjustPreview(username: string, balanceCents: number, amountCent
 export const ADJUST_LEAVE_TEXT = '有一笔调账结果未知，离开后请先查流水再决定是否重调'
 export function adjustLeaveWarning(agentId: number): string {
   return adjustPendings.has(agentId) ? ADJUST_LEAVE_TEXT : ''
+}
+
+// ---------- 在途标记：同一个代理商同时只允许一笔调账请求 ----------
+export const adjustInflight = new Set<number>()
+export const ADJUST_BUSY_TEXT = '上一笔调账还在处理，请稍候'
+
+/** 要发请求前调用：已有在途返回 false（不许发）；否则标记在途返回 true。 */
+export function adjustBegin(agentId: number): boolean {
+  if (adjustInflight.has(agentId)) return false
+  adjustInflight.add(agentId)
+  return true
+}
+
+/** 请求返回后调用（不管页面还在不在）：清在途；成功或明确失败清键和未决，结果未知记成未决、保留键。 */
+export function adjustFinish(agentId: number, payload: PendingAdjust, outcome: AdjustOutcome): void {
+  adjustInflight.delete(agentId)
+  if (outcome.clearKey) {
+    adjustKeeperFor(agentId).done()
+    adjustPendings.delete(agentId)
+  } else {
+    adjustPendings.set(agentId, payload)
+  }
+}
+
+/** 重新打开调账对话框时：有在途请求返回提示文案（只显示、不许提交），否则空串。 */
+export function adjustReopenBlock(agentId: number): string {
+  return adjustInflight.has(agentId) ? ADJUST_BUSY_TEXT : ''
 }

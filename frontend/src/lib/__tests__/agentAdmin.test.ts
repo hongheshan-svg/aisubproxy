@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   adminErrorText, adjustOpenState, adjustPreview, classifyAdjust, matrixChanges, overrideChanges, validProductCode,
   adjustPendings, adjustKeeperFor, USERNAME_TAKEN_HINT,
+  adjustBegin, adjustFinish, adjustReopenBlock, adjustInflight,
 } from '../agentAdmin'
 
 describe('matrixChanges', () => {
@@ -148,5 +149,50 @@ describe('adjustOpenState / 未决调账', () => {
 describe('其他文案', () => {
   it('建号重名提示', () => {
     expect(USERNAME_TAKEN_HINT).toContain('重置密码')
+  })
+})
+
+describe('调账在途与未决（第 2 轮）', () => {
+  const payload = { agent_id: 9, amount_cents: 500, note: '补' }
+  const reset = () => { adjustPendings.clear(); adjustInflight.clear(); adjustKeeperFor(9).done() }
+
+  it('发出后组件已切走、返回结果未知：未决照记，键没换', () => {
+    reset()
+    expect(adjustBegin(9)).toBe(true)
+    const key = adjustKeeperFor(9).keyFor(payload)
+    // 此时页面已切到别的代理商；返回结果未知
+    adjustFinish(9, payload, classifyAdjust(0, {}))
+    expect(adjustPendings.get(9)).toEqual(payload)
+    expect(adjustInflight.has(9)).toBe(false)
+    // 再回来：恢复锁定，且不换键
+    expect(adjustOpenState(adjustPendings.get(9)).locked).toBe(true)
+    expect(adjustKeeperFor(9).keyFor(payload)).toBe(key)
+    reset()
+  })
+  it('成功或明确失败：清未决、清键', () => {
+    reset()
+    adjustBegin(9)
+    const key = adjustKeeperFor(9).keyFor(payload)
+    adjustFinish(9, payload, classifyAdjust(200, { replayed: false }))
+    expect(adjustPendings.has(9)).toBe(false)
+    expect(adjustKeeperFor(9).keyFor(payload)).not.toBe(key)
+    reset()
+  })
+  it('在途时重开：不许提交，也不许重复发出', () => {
+    reset()
+    expect(adjustReopenBlock(9)).toBe('')
+    adjustBegin(9)
+    expect(adjustReopenBlock(9)).toBe('上一笔调账还在处理，请稍候')
+    expect(adjustBegin(9)).toBe(false)
+    adjustFinish(9, payload, classifyAdjust(500, {}))
+    expect(adjustReopenBlock(9)).toBe('')
+    reset()
+  })
+})
+
+describe('adjustPreview 锁定重试提示', () => {
+  it('重试时注明可能已入账', () => {
+    expect(adjustPreview('a', 1000, 100, true).afterText).toContain('上一次可能已入账，请先核对流水再确认')
+    expect(adjustPreview('a', 1000, 100).afterText).not.toContain('可能已入账')
   })
 })

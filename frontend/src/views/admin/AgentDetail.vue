@@ -127,8 +127,8 @@
     <el-dialog v-model="adjustOpen" :title="`调账：${agent?.username || ''}`" width="min(480px, 96vw)" append-to-body :show-close="!adjBusy" :close-on-click-modal="false" :close-on-press-escape="false" :before-close="beforeCloseAdjust">
       <div class="space-y-3" data-testid="adjust-dialog">
         <p class="text-sm">代理商 <b>{{ agent?.username }}</b> 当前余额 <b>{{ agent ? fmtUsd(agent.balance_cents) : '' }}</b>。正数充值，负数扣款，不能扣成负数；每笔调账都会记入流水和审计。</p>
-        <label class="block text-sm"><span class="block mb-1">金额（美元，可带负号）</span><el-input v-model="adjAmount" :disabled="adjLocked || adjBusy" placeholder="例如 100 或 -20.5" /></label>
-        <label class="block text-sm"><span class="block mb-1">原因（必填）</span><el-input v-model="adjNote" :disabled="adjLocked || adjBusy" maxlength="200" /></label>
+        <label class="block text-sm"><span class="block mb-1">金额（美元，可带负号）</span><el-input v-model="adjAmount" :disabled="adjLocked || adjBusy || !!adjPending" placeholder="例如 100 或 -20.5" /></label>
+        <label class="block text-sm"><span class="block mb-1">原因（必填）</span><el-input v-model="adjNote" :disabled="adjLocked || adjBusy || !!adjPending" maxlength="200" /></label>
         <div v-if="preview" class="text-sm rounded p-2" :class="preview.direction === 'credit' ? 'adj-credit' : 'adj-debit'" data-testid="adjust-preview">
           <div class="font-semibold">{{ preview.text }}</div>
           <div>{{ preview.afterText }}</div>
@@ -139,7 +139,7 @@
       <template #footer>
         <el-button v-if="adjLocked" type="danger" plain :disabled="adjBusy" @click="abandonAdjust">放弃这次调账</el-button>
         <el-button v-else :disabled="adjBusy" @click="closeAdjust">取消</el-button>
-        <el-button type="primary" :loading="adjBusy" :disabled="adjBusy" @click="submitAdjust">{{ adjLocked ? '原样重试' : '确认调账' }}</el-button>
+        <el-button type="primary" :loading="adjBusy" :disabled="adjBusy || !!adjPending" @click="submitAdjust">{{ adjLocked ? '原样重试' : '确认调账' }}</el-button>
       </template>
     </el-dialog>
 
@@ -154,7 +154,7 @@ import AgentPasswordDialog from './components/AgentPasswordDialog.vue'
 import { adminApi, centsToUsd, localCdkStatusText } from '../../lib/provider'
 import { authFetch } from '../../lib/api'
 import {
-  ADJUST_LEAVE_TEXT, adjustKeeperFor, adjustLeaveWarning, adjustOpenState, adjustPendings, adjustPreview, adminErrorText,
+  ADJUST_LEAVE_TEXT, adjustBegin, adjustFinish, adjustKeeperFor, adjustLeaveWarning, adjustOpenState, adjustPendings, adjustPreview, adjustReopenBlock, adminErrorText,
   classifyAdjust, overrideChanges,
 } from '../../lib/agentAdmin'
 import { fmtUsd, parseSignedUsd } from '../../lib/agentMoney'
@@ -302,6 +302,7 @@ const overridesDirty = () => overrideChanges(
   overrides.value.map((o) => ({ product_id: o.product_id, price_cents: o.override_price_cents || 0 })), { ...overrideEdit },
 ).cells.length > 0
 async function switchTab(key: string) {
+  if (key === tab.value) return
   if (tab.value === 'overrides' && key !== 'overrides' && overridesDirty()) {
     const ok = await dialog.confirm('覆盖价有没保存的修改，切换页签会丢掉这些修改。确认切换？', { title: '有未保存的修改', okText: '丢掉并切换', danger: true })
     if (!ok) return
@@ -365,11 +366,12 @@ const adjNote = ref('')
 const adjBusy = ref(false)
 const adjLocked = ref(false) // 结果未知：锁定金额和原因，只能原样重试或放弃
 const adjMsg = ref('')
+const adjPending = ref('') // 非空：同一代理商有调账请求在途
 
 const preview = computed(() => {
   const p = parseSignedUsd(adjAmount.value)
   if (!p.ok || !agent.value) return null
-  return adjustPreview(agent.value.username, agent.value.balance_cents, p.cents)
+  return adjustPreview(agent.value.username, agent.value.balance_cents, p.cents, adjLocked.value)
 })
 
 function openAdjust() {
@@ -378,7 +380,9 @@ function openAdjust() {
   adjNote.value = st.note
   adjLocked.value = st.locked
   adjMsg.value = st.locked ? '上一次调账结果未知，请原样重试，或放弃后先到「余额流水」确认' : ''
-  if (!st.locked) adjustKeeperFor(id.value).done() // 没有未决调账才换新键
+  adjPending.value = adjustReopenBlock(id.value) // 有请求在途：只显示提示，不许提交
+  if (adjPending.value) { adjLocked.value = false; adjMsg.value = adjPending.value }
+  else if (!st.locked) adjustKeeperFor(id.value).done() // 没有未决、也没有在途才换新键
   adjustOpen.value = true
 }
 function closeAdjust() { if (!adjBusy.value) adjustOpen.value = false }
@@ -400,17 +404,18 @@ function beforeCloseAdjust(done: () => void) {
   done()
 }
 async function submitAdjust() {
-  if (adjBusy.value || !agent.value) return
+  if (adjBusy.value || !agent.value || adjPending.value) return
   const p = parseSignedUsd(adjAmount.value)
   if (!p.ok) { adjMsg.value = p.error; return }
   const note = adjNote.value.trim()
   if (!note) { adjMsg.value = '请填写原因'; return }
-  const pv = adjustPreview(agent.value.username, agent.value.balance_cents, p.cents)
+  const pv = adjustPreview(agent.value.username, agent.value.balance_cents, p.cents, adjLocked.value)
   if (pv.willBeNegative && !adjLocked.value) { adjMsg.value = pv.warning; return }
   const ok = await dialog.confirm(`${pv.text}\n${pv.afterText}\n原因：${note}\n确认调账？`, { title: `确认调账：${agent.value.username}`, okText: pv.direction === 'credit' ? '确认充值' : '确认扣款', danger: pv.direction === 'debit' })
   if (!ok) return
   const aid = id.value
   const keeper = adjustKeeperFor(aid)
+  if (!adjustBegin(aid)) { adjPending.value = adjustReopenBlock(aid); adjMsg.value = adjPending.value; return }
   adjBusy.value = true
   adjMsg.value = ''
   try {
@@ -418,15 +423,18 @@ async function submitAdjust() {
     const key = keeper.keyFor(payload)
     const r = await adminApi<any>(`/agents/${aid}/adjust`, 'POST', { amount_cents: p.cents, note }, { 'Idempotency-Key': key })
     const o = classifyAdjust(r.status, r.data)
-    if (o.clearKey) { keeper.done(); adjustPendings.delete(aid) }
-    if (aid !== id.value) return // 请求期间已切到别的代理商：只处理键和未决状态
-    if (o.kind === 'unknown') { adjustPendings.set(aid, payload); adjLocked.value = true; adjMsg.value = o.message; return }
+    adjustFinish(aid, payload, o) // 不管页面还在不在：先清在途、记未决或清键
+    if (aid !== id.value) return // 请求期间已切到别的代理商：不再动当前页面
+    if (o.kind === 'unknown') { adjLocked.value = true; adjMsg.value = o.message; return }
     adjLocked.value = false
     if (o.kind === 'failed') { adjMsg.value = o.message; return }
     dialog.toast(o.message, o.kind === 'replayed' ? 'info' : 'ok', o.kind === 'replayed' ? 6000 : 2800)
     adjustOpen.value = false
     loadAgent()
     if (tab.value === 'ledger') loadLedger()
+  } catch (e) {
+    adjustFinish(aid, { agent_id: aid, amount_cents: p.cents, note }, classifyAdjust(0, {})) // 意外异常按结果未知处理
+    if (aid === id.value) { adjLocked.value = true; adjMsg.value = classifyAdjust(0, {}).message }
   } finally {
     adjBusy.value = false
   }
@@ -448,6 +456,7 @@ function resetForId() {
   adjNote.value = ''
   adjLocked.value = false
   adjMsg.value = ''
+  adjPending.value = ''
   for (const k of Object.keys(overrideEdit)) delete overrideEdit[k]
   overrides.value = []
   ledger.value = []; orders.value = []; codes.value = []

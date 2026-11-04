@@ -333,3 +333,28 @@ func TestOAAuthEndpointsLimitBodySize(t *testing.T) {
 		t.Errorf("坏 JSON 应 400，实际 %d", w.Code)
 	}
 }
+
+// A-9：安装（自设密码）和改密入库前与登录同样去掉首尾空白，首尾带空格的密码设好后照样登得进。
+func TestOAPasswordWhitespaceConsistent(t *testing.T) {
+	r := oaFreshRouter(t)
+	const spaced = "  Passw0rd-OA-Trim  "
+	w := oaBootstrap(r, "198.51.100.30", oaSetupToken,
+		fmt.Sprintf(`{"mode":"manual","username":"oa_trim","password":%q,"confirm_password":%q}`, spaced, spaced))
+	if w.Code != http.StatusOK {
+		t.Fatalf("安装应 200，实际 %d：%s", w.Code, w.Body.String())
+	}
+	if pw, _ := oaJSON(t, w)["password"].(string); pw != strings.TrimSpace(spaced) {
+		t.Fatalf("回显给管理员保存的密码应是去掉空白后的值，实际 %q", pw)
+	}
+	// 前端登录页会 Trim；直接带空格提交后端也会 Trim
+	cs := oaLogin(t, r, "198.51.100.31", "oa_trim", strings.TrimSpace(spaced))
+	oaLogin(t, r, "198.51.100.31", "oa_trim", spaced)
+
+	const newSpaced = " N3wPassw0rd-Trim\t"
+	w = oaDo(r, oaReq{method: "POST", path: "/api/v1/auth/admin/change-password", cookies: cs, header: oaCSRF(cs),
+		body: fmt.Sprintf(`{"old_password":%q,"new_password":%q}`, spaced, newSpaced)})
+	if w.Code != http.StatusOK {
+		t.Fatalf("改密应 200，实际 %d：%s", w.Code, w.Body.String())
+	}
+	oaLogin(t, r, "198.51.100.32", "oa_trim", strings.TrimSpace(newSpaced))
+}

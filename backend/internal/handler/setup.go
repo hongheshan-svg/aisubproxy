@@ -99,8 +99,9 @@ func SetupBootstrap(c *gin.Context) {
 	if mode == "generate" {
 		password = db.RandomPassword(16)
 	} else {
-		password = req.Password
-		if password != req.ConfirmPassword {
+		// 和登录一样去掉首尾空白再校验、入库（登录时会 Trim，不 Trim 入库的话设好就登不进，审计 A-9）
+		password = strings.TrimSpace(req.Password)
+		if password != strings.TrimSpace(req.ConfirmPassword) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "passwords do not match"})
 			return
 		}

@@ -134,7 +134,7 @@ func AdminLogin(c *gin.Context) {
 	if !known {
 		passwordHash = dummyAdminHash()
 	}
-	// 密码两侧空白常因复制粘贴产生，校验时 Trim
+	// 密码两侧空白常因复制粘贴产生，校验时 Trim；安装（自设密码）和改密入库前也 Trim，口径一致
 	plain := strings.TrimSpace(req.Password)
 	ok, upgradedHash := verifyAdminPassword(passwordHash, plain)
 	if !known || !ok || isActive != 1 {
@@ -239,6 +239,9 @@ func AdminChangePassword(c *gin.Context) {
 	if !bindAuthJSON(c, &req, "Invalid request") {
 		return
 	}
+	// 和登录一样去掉首尾空白再校验、入库（审计 A-9）
+	req.OldPassword = strings.TrimSpace(req.OldPassword)
+	req.NewPassword = strings.TrimSpace(req.NewPassword)
 
 	if len(req.NewPassword) < 12 || db.IsWeakPassword(req.NewPassword) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "新密码至少 12 位，且不能为常见弱口令"})
@@ -262,7 +265,7 @@ func AdminChangePassword(c *gin.Context) {
 		return
 	}
 
-	if ok, _ := db.VerifyAdminPassword(storedHash, req.OldPassword); !ok {
+	if ok, _ := verifyAdminPassword(storedHash, req.OldPassword); !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "旧密码不正确"})
 		return
 	}

@@ -68,6 +68,7 @@ func (s *Service) pollCardStatusOnce(ctx context.Context, lg *loopLog) error {
 
 // pollCard 查一张卡的平台状态并按需处理：
 //   - 只用 GetCard 读状态，不写余额（租用中的卡可能正在注资，写余额会和注资定论互相覆盖），卡详情里的其他字段（含完整卡号）一律不用；
+//   - 查完先重读本地的卡（查询期间租约可能已结束、推送可能已处理），之后都以重读的为准：已不是可用、租用中的就不管（回收等流程自己处理）；
 //   - 平台状态与本地 platform_status 相同就什么都不做（推送已经处理过的也在这里止步）；
 //   - 有我们发起、未定论或刚成功的同目标改状态单（见 ourStatusOrder），留给对账定论；
 //   - 变为 REVOKED、CANCELED 按外部变更处理，与推送是同一个 applyExternalStatus；变为其他值只更新平台状态，不告警。
@@ -89,7 +90,21 @@ func (s *Service) pollCard(ctx context.Context, client *marswallex.Client, c *Ca
 		return errors.New(safeErr(err))
 	}
 	status := normStatus(d.Status)
-	if status == "" || status == normStatus(c.PlatformStatus) {
+	if status == "" {
+		return nil
+	}
+	// 重读：本轮开头读到的卡可能已过时（例如租约结束进了回收），不能拿旧的池状态、持有方去处理和告警
+	c, err = getCard(ctx, c.CardID)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if c.PoolState != PoolAvailable && c.PoolState != PoolLeased {
+		return nil
+	}
+	if status == normStatus(c.PlatformStatus) {
 		return nil
 	}
 	o, err := s.ourStatusOrder(ctx, c.CardID, status)
@@ -108,7 +123,8 @@ func (s *Service) pollCard(ctx context.Context, client *marswallex.Client, c *Ca
 
 // pollCardholdersOnce 查询一轮本地已导入的持卡人：状态不是 DISABLED 的（含 PENDING_REVIEW，以及可能被风控改成 SUSPENDED 的 APPROVED），
 // 每轮最多 50 个，synced_at 最旧的优先。走与后台「刷新持卡人」同一条同步逻辑（refreshCardholder），状态变化按推送同样的规则告警。
-// 本地只有提交记录、还没拿到 card_holder_id 的不在此列。单个出错只记日志（不带平台 message，可能回显资料），不影响其他。
+// 本地只有提交记录、还没拿到 card_holder_id 的不在此列。单个出错只记日志（不带平台 message，可能回显资料），不影响其他，
+// 并记下查询时间（synced_at），排到后面。
 func (s *Service) pollCardholdersOnce(ctx context.Context, lg *loopLog) error {
 	if _, err := s.opts.Client(); err != nil {
 		return err
@@ -141,6 +157,12 @@ func (s *Service) pollCardholdersOnce(ctx context.Context, lg *loopLog) error {
 		}
 		if err != nil {
 			lg.check("定时查询持卡人 "+id, errors.New(safeErr(err)))
+			// 查询失败也记下查询时间（条件更新、只动这一列），一直失败的不会永远排在最前、把其他持卡人饿死
+			now := s.now().Unix()
+			if _, uerr := db.DB.ExecContext(ctx, `UPDATE mw_cardholders SET synced_at = ? WHERE card_holder_id = ? AND (synced_at IS NULL OR synced_at < ?)`,
+				now, id, now); uerr != nil {
+				return uerr
+			}
 		}
 	}
 	return nil

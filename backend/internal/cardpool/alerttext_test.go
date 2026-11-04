@@ -82,11 +82,12 @@ func TestAlertTextSameAcrossSources(t *testing.T) {
 		paths []alertPath
 	}{
 		{"可用卡被外部冻结", "MarsWallex 卡 c1 在平台上被冻结（非本系统发起），已从卡池停用（原因：平台冻结），请到 MarsWallex 后台核查",
-			[]alertPath{pushCardStatus(avail, "REVOKED"), pollCardStatus(avail, "REVOKED"), recycleCardStatus(avail, "REVOKED")}},
+			[]alertPath{pushCardStatus(avail, "REVOKED"), pollCardStatus(avail, "REVOKED"), recycleCardStatus(avail, "REVOKED"),
+				adminRefreshCard(avail, "REVOKED")}},
 		{"租用中的卡被外部冻结", "MarsWallex 卡 c1 租用中（持有方 pay:PO1）在平台上被冻结（非本系统发起），请检查对应订单",
-			[]alertPath{pushCardStatus(leased, "REVOKED"), pollCardStatus(leased, "REVOKED")}},
+			[]alertPath{pushCardStatus(leased, "REVOKED"), pollCardStatus(leased, "REVOKED"), adminRefreshCard(leased, "REVOKED")}},
 		{"租用中的卡被外部注销", "MarsWallex 卡 c1 租用中（持有方 pay:PO1）在平台上被注销（非本系统发起），已退役，请检查对应订单",
-			[]alertPath{pushCardStatus(leased, "CANCELED"), pollCardStatus(leased, "CANCELED")}},
+			[]alertPath{pushCardStatus(leased, "CANCELED"), pollCardStatus(leased, "CANCELED"), adminRefreshCard(leased, "CANCELED")}},
 		{"持卡人通过", "MarsWallex 持卡人 h1 已通过审核，可在策略中加入补卡持卡人",
 			[]alertPath{pushHolderStatus("h1", "PENDING_REVIEW", "APPROVED", ""), pollHolderStatus("h1", "PENDING_REVIEW", "APPROVED", ""),
 				adminRefreshHolder("h1", "PENDING_REVIEW", "APPROVED", "")}},

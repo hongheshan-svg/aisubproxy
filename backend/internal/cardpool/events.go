@@ -492,11 +492,12 @@ func (s *Service) finalizeFundsEvent(ctx context.Context, o *Order, status strin
 }
 
 // refreshBalanceNote 尽力刷新池中卡的详情与余额，返回追加到备注的说明；失败只写备注。
+// 刷新时发现可用、租用中的卡被外部冻结或注销，按推送处理并告警（来源「平台推送」），见 refreshCard。
 func (s *Service) refreshBalanceNote(ctx context.Context, cardID string) string {
 	if cardID == "" {
 		return "，卡不在池中"
 	}
-	_, err := s.RefreshCard(ctx, cardID)
+	_, err := s.refreshCard(ctx, cardID, sourceWebhook)
 	switch {
 	case err == nil:
 		return "，余额已刷新"

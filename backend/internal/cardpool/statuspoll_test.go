@@ -305,14 +305,59 @@ func TestPollCardOnlyAvailableAndLeased(t *testing.T) {
 }
 
 // MarsWallex 未就绪：整轮跳过，不发请求、不告警。
+// 只有本轮开头的就绪检查拿不到客户端，之后再取就能拿到：去掉整轮跳过，查卡、查持卡人就会照样发出请求，这里会失败。
 func TestStatusPollRoundSkipsWhenNotReady(t *testing.T) {
-	s, _, _, alerts := newTestService(t)
+	s, mw, _, alerts := newTestService(t)
 	insertCard(t, Card{CardID: "r1", ProductID: "p1"})
 	insertHolder(t, "h1", "PENDING_REVIEW")
-	s.opts.Client = func() (*marswallex.Client, error) { return nil, errors.New("未配置") }
+	mw.On("GET", detailPath("r1"), mwtest.OK(fullDetailJSON("r1", "0.00", "REVOKED")))
+	mw.On("GET", "/v1/cardholder/h1", mwtest.OK(holderDetailJSON("h1", "", "APPROVED", "")))
+	calls := 0
+	s.opts.Client = func() (*marswallex.Client, error) {
+		calls++
+		if calls == 1 {
+			return nil, errors.New("未配置")
+		}
+		return mw.Client(), nil
+	}
 	s.statusPollRound(context.Background(), pollLog(s))
+	if n := len(mw.Requests("GET", detailPath("r1"))) + len(mw.Requests("GET", "/v1/cardholder/h1")); n != 0 {
+		t.Fatalf("未就绪时整轮跳过，不应发请求: %d", n)
+	}
 	if alerts.Count() != 0 {
 		t.Fatalf("不应告警: %v", alerts.Texts())
+	}
+}
+
+// 查询期间租约已结束、卡进了回收：查完先重读，不再按旧的「租用中（持有方 旧单号）」告警，留给回收处理（清零时查询告警一次）。
+func TestPollCardRereadsCardAfterQuery(t *testing.T) {
+	s, mw, _, alerts := newTestService(t)
+	insertCard(t, Card{CardID: "l1", ProductID: "p1", PoolState: PoolLeased, LeaseToken: "tok", LeaseOwner: "pay:OLD"})
+	slow := mwtest.OK(fullDetailJSON("l1", "0.00", "REVOKED"))
+	slow.Hang = 500 * time.Millisecond
+	mw.On("GET", detailPath("l1"), slow, mwtest.OK(fullDetailJSON("l1", "0.00", "REVOKED")))
+	done := make(chan error, 1)
+	go func() { done <- s.pollCardStatusOnce(context.Background(), pollLog(s)) }()
+	if !waitFor(2*time.Second, func() bool { return len(mw.Requests("GET", detailPath("l1"))) == 1 }) {
+		t.Fatal("没有查卡")
+	}
+	// 查询期间租约结束：卡转入回收
+	if _, err := db.DB.Exec(`UPDATE mw_cards SET pool_state = ?, lease_token = '', lease_owner = '', lease_expires_at = NULL WHERE card_id = 'l1'`,
+		PoolReleasing); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if alerts.Count() != 0 {
+		t.Fatalf("卡已不在租用中，不应按旧租约告警: %v", alerts.Texts())
+	}
+	if c := mustGetCard(t, "l1"); c.PoolState != PoolReleasing {
+		t.Fatalf("回收中的卡留给回收处理: %+v", c)
+	}
+	mustAdvance(t, s)
+	if got := alerts.Texts(); len(got) != 1 || got[0] != extFreezeDisabledText("l1", sourceRecycle) || strings.Contains(got[0], "pay:OLD") {
+		t.Fatalf("回收应告警一次（清零时查询）: %v", got)
 	}
 }
 
@@ -377,6 +422,77 @@ func TestPollCardholders(t *testing.T) {
 	mustPollHolders(t, s)
 	if alerts.Count() != 2 {
 		t.Fatalf("状态没变不应再告警: %v", alerts.Texts())
+	}
+}
+
+// 同步持卡人时（定时查询、后台刷新），调平台期间推送已把状态改成 APPROVED：旧结果不覆盖回去，也不发反向告警。
+func TestHolderSyncDoesNotOverwriteConcurrentChange(t *testing.T) {
+	for _, path := range []struct {
+		name string
+		run  func(s *Service) error
+	}{
+		{"定时查询", func(s *Service) error { return s.pollCardholdersOnce(context.Background(), pollLog(s)) }},
+		{"后台刷新", func(s *Service) error { _, err := s.RefreshCardholder(context.Background(), "hp"); return err }},
+	} {
+		t.Run(path.name, func(t *testing.T) {
+			s, mw, _, alerts := newTestService(t)
+			insertHolder(t, "hp", "PENDING_REVIEW")
+			stale := mwtest.OK(holderDetailJSON("hp", "", "PENDING_REVIEW", ""))
+			stale.Hang = 500 * time.Millisecond
+			mw.On("GET", "/v1/cardholder/hp", stale)
+			done := make(chan error, 1)
+			go func() { done <- path.run(s) }()
+			if !waitFor(2*time.Second, func() bool { return len(mw.Requests("GET", "/v1/cardholder/hp")) == 1 }) {
+				t.Fatal("没有调平台")
+			}
+			e := holderStatusEvent(t, "hp", "", "APPROVED", "")
+			mustProcessEvents(t, s)
+			mustBeProcessed(t, e, "")
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+			if h, err := getCardholder(context.Background(), "hp"); err != nil || h.Status != "APPROVED" {
+				t.Fatalf("推送写入的 APPROVED 不应被旧结果覆盖: %v %+v", err, h)
+			}
+			_, want := holderAlert("hp", "PENDING_REVIEW", "APPROVED", "", sourceWebhook)
+			if got := alerts.Texts(); len(got) != 1 || got[0] != want {
+				t.Fatalf("只应有推送的通过通知，不应有反向告警: %v", got)
+			}
+		})
+	}
+}
+
+// 一直查询失败的持卡人也记下查询时间（只改 synced_at），不会永远排在最前、把别人饿死。
+func TestPollCardholdersFailuresDoNotStarveOthers(t *testing.T) {
+	s, mw, clock, _ := newTestService(t)
+	base := clock.Now().Unix() - 3600
+	for i := 0; i < statusPollBatch; i++ {
+		id := fmt.Sprintf("f%02d", i)
+		insertHolder(t, id, "APPROVED")
+		if _, err := db.DB.Exec(`UPDATE mw_cardholders SET synced_at = ? WHERE card_holder_id = ?`, base+int64(i), id); err != nil {
+			t.Fatal(err)
+		}
+		mw.On("GET", "/v1/cardholder/"+id, mwtest.Rejected(404, "NOT_FOUND"))
+	}
+	insertHolder(t, "hz", "APPROVED")
+	if _, err := db.DB.Exec(`UPDATE mw_cardholders SET synced_at = ? WHERE card_holder_id = 'hz'`, base+100); err != nil {
+		t.Fatal(err)
+	}
+	mw.On("GET", "/v1/cardholder/hz", mwtest.OK(holderDetailJSON("hz", "", "APPROVED", "")))
+	reqs := func(id string) int { return len(mw.Requests("GET", "/v1/cardholder/"+id)) }
+
+	mustPollHolders(t, s)
+	if reqs("f00") == 0 || reqs("hz") != 0 {
+		t.Fatalf("第一轮应查最旧的 50 个（全部失败）: f00=%d hz=%d", reqs("f00"), reqs("hz"))
+	}
+	h, err := getCardholder(context.Background(), "f00")
+	if err != nil || h.SyncedAt == nil || *h.SyncedAt != clock.Now().Unix() || h.Status != "APPROVED" {
+		t.Fatalf("查询失败也应记下查询时间、不改其他字段: %v %+v", err, h)
+	}
+	clock.Advance(time.Minute)
+	mustPollHolders(t, s)
+	if reqs("hz") != 1 {
+		t.Fatal("第二轮应轮到 hz，不应被一直失败的持卡人饿死")
 	}
 }
 

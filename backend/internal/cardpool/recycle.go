@@ -224,7 +224,7 @@ func (s *Service) advanceFrozen(ctx context.Context, c *Card) error {
 // refreshForRecycle 刷新卡详情。出错时 next_action_at = now + 60 并返回错误；
 // 刷新期间卡的池状态已经变化时返回 (nil, nil)，留给下一轮按新状态处理。
 func (s *Service) refreshForRecycle(ctx context.Context, c *Card) (*Card, error) {
-	fresh, err := s.RefreshCard(ctx, c.CardID)
+	fresh, err := s.refreshCard(ctx, c.CardID, sourceRecycle)
 	if err != nil {
 		at := s.now().Unix() + refreshRetrySeconds
 		if uerr := s.setNextAction(ctx, c.CardID, c.PoolState, &at); uerr != nil {

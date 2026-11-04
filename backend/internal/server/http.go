@@ -292,11 +292,15 @@ func setupRoutes(r *gin.Engine) {
 			stats.GET("/system", handler.GetSystemStats)
 		}
 
+		// 代理商接口（独立的登录和会话，不走管理员中间件）
+		handler.RegisterAgentRoutes(api)
+
 		// Admin routes
 		admin := api.Group("/admin")
 		admin.Use(JWTAuthMiddleware())
 		admin.Use(AdminAuthMiddleware())
 		{
+			handler.RegisterAgentAdminRoutes(admin)
 			// 版本：本机 VERSION + GitHub 最新 release/tag
 			admin.GET("/system/version", handler.AdminSystemVersion)
 			admin.GET("/system/update/status", handler.AdminSystemUpdateStatus)

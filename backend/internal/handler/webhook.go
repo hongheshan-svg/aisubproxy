@@ -123,7 +123,8 @@ func clearSessionFromWebhook(payload map[string]interface{}, eventType string) {
 	if !strings.Contains(strings.ToLower(eventType), "completed") {
 		return
 	}
-	if code, ok := db.LookupCardplatformCDKCode(anyToInt64(payload["cdk_id"]), strAny(payload["code_prefix"])); ok {
+	// 只按上游 ID 取码，不按前缀兜底：前缀撞上别的码会清掉别人的会话。
+	if code := exactCDKCodeByID(anyToInt64(payload["cdk_id"])); code != "" {
 		clearSessionAfterCompleted(code, "")
 	}
 }

@@ -286,9 +286,7 @@ func observeFromWebhookPayload(payload map[string]interface{}) {
 			last4 = cn[len(cn)-4:]
 		}
 	}
-	cdkID := anyToInt64(payload["cdk_id"])
-	prefix := strAny(payload["code_prefix"])
-	cdkCode, _ := db.LookupCardplatformCDKCode(cdkID, prefix)
+	cdkCode := exactCDKCodeByID(anyToInt64(payload["cdk_id"]))
 	emailRaw := strAny(payload["account_email"])
 	email, src := resolveEmailForOrder(cdkCode, emailRaw)
 	msg := strAny(payload["message"])
@@ -494,11 +492,7 @@ func AdminReobserveCardOrder(c *gin.Context) {
 		obs.Status = strings.ToLower(strAny(m["status"]))
 		obs.AccountEmail = strAny(m["account_email"])
 		obs.Message = strAny(m["message"])
-		cdkID := anyToInt64(m["cdk_id"])
-		prefix := strAny(m["code_prefix"])
-		if code, ok := db.LookupCardplatformCDKCode(cdkID, prefix); ok {
-			obs.CDKCode = code
-		}
+		obs.CDKCode = exactCDKCodeByID(anyToInt64(m["cdk_id"]))
 	}
 	var wrap map[string]any
 	if json.Unmarshal(raw, &wrap) == nil {
@@ -556,4 +550,17 @@ func adminName(c *gin.Context) string {
 		}
 	}
 	return "admin"
+}
+
+// exactCDKCodeByID 只按上游 ID 取本站保存的完整码，取不到返回空串。
+// 不按前缀兜底：前缀可能撞上别的客户的码，取错了会把别人的码、邮箱写进健康记录。
+func exactCDKCodeByID(upstreamID int64) string {
+	if upstreamID <= 0 {
+		return ""
+	}
+	code, err := db.CardplatformCDKCodeByUpstreamID(upstreamID)
+	if err != nil {
+		return ""
+	}
+	return code
 }

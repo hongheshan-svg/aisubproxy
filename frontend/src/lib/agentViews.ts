@@ -35,6 +35,13 @@ export function isDefiniteOrderFailure(code: string): boolean {
   return DEFINITE_ORDER_FAILURES.has(code)
 }
 
+/** 下单失败分类：definite 换新请求号；rate_limited（含 429）后端没处理订单，保留请求号、不锁表单；其余视为结果未知，锁定并原样重试。 */
+export function orderFailureKind(status: number, code: string): 'definite' | 'rate_limited' | 'unknown' {
+  if (isDefiniteOrderFailure(code)) return 'definite'
+  if (status === 429 || code === 'rate_limited') return 'rate_limited'
+  return 'unknown'
+}
+
 /** 下单页的锁定状态：请求中、确认框打开、有待重试的未知结果时，输入都禁用；有待重试且没在请求才算「结果未知」。 */
 export function orderLockState(s: { busy: boolean; confirming: boolean; hasPending: boolean }) {
   return { inputsDisabled: s.busy || s.confirming || s.hasPending, unknown: s.hasPending && !s.busy }

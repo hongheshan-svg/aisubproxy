@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   CODE_STATUS_LABELS, LEDGER_KIND_LABELS, orderPreview, validQuantity, beijingRange,
   codesQuery, exportBody, EXPORT_MAX, ledgerQuery, defaultLedgerRange, ymdBeijing,
-  isDefiniteOrderFailure, orderLockState, orderRetry, orderKeeper,
+  isDefiniteOrderFailure, orderFailureKind, orderLockState, orderRetry, orderKeeper,
 } from '../agentViews'
 
 describe('agentViews', () => {
@@ -53,6 +53,14 @@ describe('agentViews', () => {
   it('isDefiniteOrderFailure', () => {
     for (const c of ['insufficient_balance', 'invalid_request', 'product_unavailable', 'product_not_ready', 'price_changed', 'request_no_conflict']) expect(isDefiniteOrderFailure(c), c).toBe(true)
     for (const c of ['busy', 'maintenance', 'rate_limited', '', 'whatever']) expect(isDefiniteOrderFailure(c), c).toBe(false)
+  })
+  it('orderFailureKind：429 不是明确失败也不锁定', () => {
+    expect(orderFailureKind(429, 'rate_limited')).toBe('rate_limited')
+    expect(orderFailureKind(429, '')).toBe('rate_limited')
+    expect(orderFailureKind(409, 'price_changed')).toBe('definite')
+    expect(orderFailureKind(503, 'busy')).toBe('unknown')
+    expect(orderFailureKind(0, '')).toBe('unknown')
+    expect(isDefiniteOrderFailure('rate_limited')).toBe(false)
   })
   it('orderLockState：结果未知时锁定', () => {
     expect(orderLockState({ busy: false, confirming: false, hasPending: false })).toEqual({ inputsDisabled: false, unknown: false })

@@ -62,7 +62,7 @@ import { computed, onMounted, ref } from 'vue'
 import { agentApi, agentErrorText } from '../../lib/agentApi'
 import { fmtUsd } from '../../lib/agentMoney'
 import { codesTxt, downloadText } from '../../lib/agentExport'
-import { isDefiniteOrderFailure, NOTE_MAX, orderKeeper as keeper, orderLockState, orderPreview, orderRetry, validQuantity, type PendingOrder } from '../../lib/agentViews'
+import { orderFailureKind, NOTE_MAX, orderKeeper as keeper, orderLockState, orderPreview, orderRetry, validQuantity, type PendingOrder } from '../../lib/agentViews'
 import { copyToClipboard } from '../../lib/clipboard'
 
 const products = ref<any[]>([])
@@ -129,12 +129,15 @@ async function submit() {
       result.value = { order: r.data.order, codes: r.data.codes || [], replayed: !!r.data.replayed }
       keeper.done(); setPending(null); confirming.value = false
       loadAll()
-    } else if (isDefiniteOrderFailure(r.data?.error || '')) {
+    } else if (orderFailureKind(r.status, r.data?.error || '') === 'definite') {
       keeper.done(); setPending(null)
       if (r.data.error === 'price_changed') { confirming.value = false; notice.value = '价格已变化，已刷新'; await loadAll() }
       else fail(agentErrorText(r.data, r.status))
+    } else if (orderFailureKind(r.status, r.data?.error || '') === 'rate_limited') {
+      // 限流时后端没处理订单：保留请求号，不锁表单
+      setPending(null); fail(agentErrorText(r.data, r.status))
     } else {
-      // 503、限流、未知错误：结果未知，保留请求号并锁定
+      // 503、未知错误：结果未知，保留请求号并锁定
       fail(agentErrorText(r.data, r.status))
     }
   } catch {

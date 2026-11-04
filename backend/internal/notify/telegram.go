@@ -280,8 +280,3 @@ func truncateHTML(s string, max int) string {
 	}
 	return s + tail
 }
-
-func escapeHTML(s string) string {
-	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
-	return r.Replace(s)
-}

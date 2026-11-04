@@ -167,7 +167,7 @@ func JWTAuthMiddleware() gin.HandlerFunc {
 		c.Set("is_admin", claims.IsAdmin)
 		c.Set("username", claims.Username)
 		if claims.ExpiresAt != nil {
-			c.Set("token_expires_at", claims.ExpiresAt.Time.Format(time.RFC3339))
+			c.Set("token_expires_at", claims.ExpiresAt.Format(time.RFC3339))
 		}
 		c.Next()
 	}

@@ -290,11 +290,21 @@ const visualOnlyProps = `/^(offset|computedOffset|easing|composite|opacity|visib
 //   - 'count:N'：主页面可见的提交按钮（sel）不是正好一个，N 是个数；
 //   - 'busy'：按钮不可点（payReadyJS）；
 //   - 'iframe'：主页面的焦点还在 iframe 上；
-//   - 'moving'：按钮还在动——此刻的中心点和 landPoint 读到的 (x, y) 差了 tol 以上，或者按钮、它的上级上有正在跑的、改位置或大小的
-//     动画（CSS 动画、过渡、Web Animations，见 visualOnlyProps；伪元素上的不算）。后一条不能省：transform 动画由合成线程驱动，
-//     2026-11-04 本机复现过 CDP 隔 50ms 读两次位置读到同一个值（主线程的动画时钟没走），按钮却在屏幕上以 200px/s 移动；
+//   - 'offset'：中心点偏了——此刻的中心点和 landPoint 读到的 (x, y) 差了 tol 以上；
+//   - 'anim:<属性>@<标签名>'：按钮或它的上级上有正在跑的、改位置或大小的动画（CSS 动画、过渡、Web Animations，见 visualOnlyProps），
+//     属性写成 CSS 的连字符写法，标签名是挂动画的元素（小写），不写值、class、文本。这一条不能省：transform 动画由合成线程驱动，
+//     2026-11-04 本机复现过 CDP 隔 50ms 读两次位置读到同一个值（主线程的动画时钟没走），按钮却在屏幕上以 200px/s 移动。
+//     哪些动画不算，见下文；
 //   - 'offpage'：主页面可视区里 (x, y) 那一点没有元素；
 //   - 别的元素的标签名（小写，iframe 就是 iframe）：那一点不是按钮自己或它的后代。
+//
+// 动画判断里不算的（终审二 Minor-3）：
+//   - 伪元素（::before、::after）上的：不挪按钮本身的框；
+//   - 时间线不是 DocumentTimeline 的（animation-timeline: scroll()/view() 这类滚动驱动的，或没有时间线的）：只随滚动走，
+//     落点检查停稳之后、点击之前不再有人滚动，它就不动；playState 却一直是 running，算上会把每一单都拒掉。
+//     页面自己还在滚动时，前面两次读位置、中心点核对会看出来；
+//   - 关键帧里的 CSS 自定义属性（--x）：自己不改位置和大小。经 var() 带动位置的，这种动画在主线程上跑，
+//     前面两次读位置、中心点核对看得出来（TestEmbeddedPayAnimationKinds）。
 //
 // 全部通过返回空串。离开结账页、按钮个数放在同一次求值里查，scanBeforeClick 之后那次重数到这里的滚动、等稳期间页面变了也能拦住。
 const payClickJS = `function (x, y, tol, host, prefix, sel) {
@@ -308,13 +318,16 @@ const payClickJS = `function (x, y, tol, host, prefix, sel) {
 	if (!ready.call(this)) return 'busy'
 	if (doc.activeElement && doc.activeElement.tagName === 'IFRAME') return 'iframe'
 	const r = this.getBoundingClientRect()
-	if (Math.abs(r.left + r.width / 2 - x) > tol || Math.abs(r.top + r.height / 2 - y) > tol) return 'moving'
+	if (Math.abs(r.left + r.width / 2 - x) > tol || Math.abs(r.top + r.height / 2 - y) > tol) return 'offset'
+	const timeDriven = typeof DocumentTimeline === 'function' ? (a => a.timeline instanceof DocumentTimeline) : (a => true)
 	for (const a of doc.getAnimations ? doc.getAnimations() : []) {
 		const t = a.effect && a.effect.target
-		// 伪元素（::before、::after）上的动画不挪按钮本身的框，不算
-		if (a.playState !== 'running' || !t || !t.contains || !t.contains(this) || a.effect.pseudoElement) continue
+		if (a.playState !== 'running' || !t || !t.contains || !t.contains(this) || a.effect.pseudoElement || !timeDriven(a)) continue
 		for (const k of a.effect.getKeyframes ? a.effect.getKeyframes() : [{ transform: '' }]) {
-			for (const p of Object.keys(k)) if (!visualOnly.test(p)) return 'moving'
+			for (const p of Object.keys(k)) {
+				if (p.startsWith('--') || visualOnly.test(p)) continue
+				return 'anim:' + p.replace(/[A-Z]/g, c => '-' + c.toLowerCase()) + '@' + String(t.tagName).toLowerCase()
+			}
 		}
 	}
 	const hit = doc.elementFromPoint(x, y)
@@ -379,8 +392,8 @@ func (b *Browser) payClickPoint(ctx context.Context, btn *elem) (x, y float64, e
 		return 0, 0, errPayNotReady
 	case "iframe":
 		return 0, 0, errors.New("焦点还在 iframe 里，没有点击")
-	case "moving":
-		return 0, 0, errors.New("位置还在变，没有点击")
+	case "offset":
+		return 0, 0, errors.New("位置还在变，中心点偏了，没有点击")
 	case "offpage":
 		return 0, 0, errors.New("点击落点不在页面上，没有点击")
 	}
@@ -388,12 +401,32 @@ func (b *Browser) payClickPoint(ctx context.Context, btn *elem) (x, y float64, e
 		n, _ := strconv.Atoi(c)
 		return 0, 0, pageChanged{n: n}
 	}
+	if a, ok := strings.CutPrefix(why, "anim:"); ok {
+		return 0, 0, fmt.Errorf("位置还在变，检测到动画：%s，没有点击", animNote(a))
+	}
 	return 0, 0, fmt.Errorf("落点是 %s，没有点击", why)
+}
+
+// animNote 整理 payClickJS 报的「属性@标签名」：只留小写字母、数字、连字符和 @，过长的截断。
+// 两样都来自页面（标签名可以是页面自定义的元素名），整理一下免得说明里混进别的东西。
+func animNote(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '-' || r == '@' {
+			return r
+		}
+		return -1
+	}, s)
+	if len(s) > 80 {
+		s = s[:80]
+	}
+	return s
 }
 
 // payCheckErr 把 payClickPoint 的错误写成 Submit 的错误：按钮不可点、页面变了（pageChanged）照原样；
 // 落点是别的元素写「支付按钮被挡住（落点是 …），没有点击」；
 // 其余（位置还在变、落点不在页面上、焦点还在 iframe 里、读不出位置）写「支付按钮没过落点检查（原因），没有点击」。
+// 位置还在变分三种：landPoint 两次读到的位置不同（「位置还在变」）、最后检查时中心点偏了（「位置还在变，中心点偏了」）、
+// 检测到改位置的动画（「位置还在变，检测到动画：transform@button」）。
 func payCheckErr(err error) error {
 	var pc pageChanged
 	if errors.Is(err, errPayNotReady) || errors.As(err, &pc) {

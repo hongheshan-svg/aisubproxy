@@ -1878,8 +1878,10 @@ func TestEmbeddedFillCloseSuggestionsReverts(t *testing.T) {
 	}
 }
 
-// 支付按钮一直在动（这里用线性动画一直朝一个方向平移，每秒 200px，到头跳回起点再来）：试运行报「没过落点检查（位置还在变）」，
+// 支付按钮一直在动（这里用线性动画一直朝一个方向平移，每秒 200px，到头跳回起点再来）：试运行报「没过落点检查（位置还在变…）」，
 // Submit 不点、不置位。原因不是「落点是别的元素」，所以不说「被挡住」。
+// 哪一道先看出来不固定（终审二 Minor-3 起原因分三种写）：两次读位置不同是「位置还在变」，最后检查时中心点偏了是
+// 「位置还在变，中心点偏了」，检测到动画是「位置还在变，检测到动画：transform@button」，三种都算对。
 // 不用来回（alternate）的动画：折返点前后两次读到的位置可能一样。transform 动画由合成线程驱动，CDP 隔 50ms 读两次位置，
 // 主线程的动画时钟常常没走，读到同一个值（2026-11-04 本机 30 次里 15 次如此，见 final-fix 报告 A3）；所以最后检查另看
 // 按钮和上级上有没有正在跑的、改位置的动画（payClickJS），不单靠两次读位置。
@@ -1898,12 +1900,16 @@ func TestEmbeddedSubmitRefusesMovingButton(t *testing.T) {
 	if err := paybrowser.EvalMain(ctx, b, js); err != nil {
 		t.Fatalf("让支付按钮动起来: %v", err)
 	}
-	if st := b.PayButtonState(ctx); st != "可点击，但没过落点检查（位置还在变）" {
-		t.Fatalf("支付按钮状态 = %q，期望「可点击，但没过落点检查（位置还在变）」", st)
+	reasons := []string{"位置还在变", "位置还在变，中心点偏了", "位置还在变，检测到动画：transform@button"}
+	st := b.PayButtonState(ctx)
+	if !slices.ContainsFunc(reasons, func(r string) bool { return st == "可点击，但没过落点检查（"+r+"）" }) {
+		t.Fatalf("支付按钮状态 = %q，期望「可点击，但没过落点检查（位置还在变…）」", st)
 	}
 	err := b.Submit(ctx)
-	if err == nil || !strings.Contains(err.Error(), "支付按钮没过落点检查（位置还在变），没有点击") {
-		t.Fatalf("Submit = %v，期望「支付按钮没过落点检查（位置还在变），没有点击」", err)
+	if err == nil || !slices.ContainsFunc(reasons, func(r string) bool {
+		return strings.Contains(err.Error(), "支付按钮没过落点检查（"+r+"），没有点击")
+	}) {
+		t.Fatalf("Submit = %v，期望「支付按钮没过落点检查（位置还在变…），没有点击」", err)
 	}
 	if b.LockSubmit() {
 		t.Fatal("按钮还在动时没有点击，LockSubmit 应返回 false")
@@ -1911,6 +1917,105 @@ func TestEmbeddedSubmitRefusesMovingButton(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 	if n := len(f.payments()); n != 0 {
 		t.Fatalf("仿造页收到 %d 次提交，期望 0 次", n)
+	}
+}
+
+// 终审二 Minor-3：点支付前最后检查的动画判断只看按时间走的动画，说明里写出是哪个属性、挂在哪个标签上（不写值、class、文本）。
+//   - 支付按钮的上级挂着滚动驱动的动画（animation-timeline: view()，关键帧改 transform）：它只随滚动走，落点检查停稳之后
+//     不会再动，不拒，只点一次；
+//   - 只改 CSS 自定义属性（--x）的动画：不改按钮的位置和大小，不拒，只点一次；
+//   - 真的位移动画（每秒 2px，慢到两次读位置看不出来，只能靠动画判断）仍拒，试运行和 Submit 的说明里写「检测到动画：transform@button」；
+//   - 自定义属性经 var() 带动 transform 的动画在主线程上跑，两次读位置看得出来，仍拒（说明是「位置还在变」那一类）。
+func TestEmbeddedPayAnimationKinds(t *testing.T) {
+	const btn = `document.querySelector('#buttons button[type="submit"]')`
+	cases := []struct {
+		name, js string
+		probe    string // 动画探针里应出现的一项：时间线类型:播放状态:关键帧属性
+		refuse   string // 空：不拒；否则是试运行按钮状态、Submit 错误里应带的原因
+		exact    bool   // 原因是否固定（慢速位移只可能被动画判断拦下）
+	}{
+		{"滚动驱动的动画不算", `const s = document.createElement('style')
+			s.textContent = '@keyframes cdk-view { from { transform: translateX(0px) } to { transform: translateX(6px) } } ' +
+				'#buttons { animation: cdk-view linear both; animation-timeline: view() }'
+			document.head.appendChild(s)`, "ViewTimeline:running:", "", false},
+		{"只改自定义属性的动画不算", btn + `.animate([{ '--x': '0' }, { '--x': '100' }], { duration: 1000, iterations: Infinity })`,
+			"DocumentTimeline:running:--x", "", false},
+		{"慢速位移动画仍拒", btn + `.animate([{ transform: 'translateX(0px)' }, { transform: 'translateX(200px)' }],
+			{ duration: 100000, iterations: Infinity, easing: 'linear' })`,
+			"DocumentTimeline:running:transform", "位置还在变，检测到动画：transform@button", true},
+		{"自定义属性带动位置的仍拒", `CSS.registerProperty({ name: '--cdk-x', syntax: '<length>', inherits: false, initialValue: '0px' })
+			` + btn + `.style.transform = 'translateX(var(--cdk-x))'
+			` + btn + `.animate([{ '--cdk-x': '0px' }, { '--cdk-x': '200px' }], { duration: 1000, iterations: Infinity, easing: 'linear' })`,
+			"DocumentTimeline:running:--cdk-x", "位置还在变", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			needChrome(t)
+			t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+			f := newFakeEmbedded(t)
+			b, ctx := openEmbedded(t, f, "payclicks=1")
+
+			if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+				t.Fatalf("Fill: %v", err)
+			}
+			if err := paybrowser.EvalMain(ctx, b, c.js); err != nil {
+				t.Fatalf("挂动画: %v", err)
+			}
+			// 探针：确认动画真的挂上了、在跑，时间线类型对
+			const probe = `const i = document.createElement('input'); i.type = 'hidden'; i.id = 'anim-probe'
+				i.value = document.getAnimations().map(a => (a.timeline ? a.timeline.constructor.name : 'null') + ':' + a.playState + ':' +
+					Object.keys((a.effect.getKeyframes()[0]) || {}).filter(k => !/^(offset|computedOffset|easing|composite)$/.test(k)).join('|')).join(',')
+				document.body.appendChild(i)`
+			if err := paybrowser.EvalMain(ctx, b, probe); err != nil {
+				t.Fatalf("探针: %v", err)
+			}
+			if v, err := paybrowser.FieldValue(ctx, b, "#anim-probe"); err != nil || !strings.Contains(v, c.probe) {
+				t.Fatalf("动画探针 = %q, %v，期望含 %q", v, err, c.probe)
+			}
+			st := b.PayButtonState(ctx)
+			if c.refuse == "" {
+				if !strings.HasPrefix(st, "可点击（") {
+					t.Fatalf("支付按钮状态 = %q，期望「可点击（…）」", st)
+				}
+				if err := b.Submit(ctx); err != nil {
+					t.Fatalf("Submit: %v", err)
+				}
+				deadline := time.Now().Add(5 * time.Second)
+				for len(f.payments()) == 0 && time.Now().Before(deadline) {
+					time.Sleep(100 * time.Millisecond)
+				}
+				if n := payClicks(t, ctx, b); n != "1" {
+					t.Fatalf("支付按钮收到 %s 次可信点击，期望 1", n)
+				}
+				if n := len(f.payments()); n != 1 {
+					t.Fatalf("仿造页收到 %d 次提交，期望正好 1 次", n)
+				}
+				return
+			}
+			wantState := "可点击，但没过落点检查（" + c.refuse
+			if c.exact {
+				wantState += "）"
+			}
+			if !strings.HasPrefix(st, wantState) || !strings.HasSuffix(st, "）") {
+				t.Fatalf("支付按钮状态 = %q，期望以「%s」开头", st, wantState)
+			}
+			err := b.Submit(ctx)
+			wantErr := "支付按钮没过落点检查（" + c.refuse
+			if c.exact {
+				wantErr += "），没有点击"
+			}
+			if err == nil || !strings.Contains(err.Error(), wantErr) {
+				t.Fatalf("Submit = %v，期望含「%s」", err, wantErr)
+			}
+			t.Logf("按钮状态：%s；Submit：%v", st, err)
+			if b.LockSubmit() {
+				t.Fatal("没有点击，LockSubmit 应返回 false")
+			}
+			time.Sleep(300 * time.Millisecond)
+			if n := len(f.payments()); n != 0 {
+				t.Fatalf("仿造页收到 %d 次提交，期望 0 次", n)
+			}
+		})
 	}
 }
 

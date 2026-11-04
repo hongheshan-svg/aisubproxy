@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/tuzi/cdk-recharge-system/internal/secretbox"
 )
 
 // 卡台的两项密钥：和 MarsWallex 令牌一样用 APP_MASTER_KEY 加密保存。
@@ -132,40 +134,105 @@ func SanitizeWebhookPayload(raw string) string {
 	return string(out)
 }
 
+// webhookMigrateBatch 历史清洗每批处理的行数，每批一个事务。
+const webhookMigrateBatch = 500
+
 // MigrateWebhookPayloads 对已有 webhook_events.payload 做同样的清洗。可重复运行。
+// 按 id 分批、每批一个事务：不会把全表读进内存；中途失败时已完成的批次保留，下次启动接着清（已干净的行不再改写）。
 func MigrateWebhookPayloads() error {
+	return MigrateWebhookPayloadsBatched(webhookMigrateBatch, nil)
+}
+
+// MigrateWebhookPayloadsBatched 同 MigrateWebhookPayloads，可指定批大小；
+// afterBatch 在每批提交后调用（参数是已完成的批数），返回错误则中止（供测试模拟中途失败）。
+func MigrateWebhookPayloadsBatched(batchSize int, afterBatch func(done int) error) error {
 	if DB == nil {
 		return fmt.Errorf("db not ready")
 	}
-	rows, err := DB.Query(`SELECT id, payload FROM webhook_events`)
-	if err != nil {
-		return fmt.Errorf("读取 webhook_events 失败: %w", err)
+	if batchSize <= 0 {
+		batchSize = webhookMigrateBatch
 	}
 	type upd struct {
 		id int64
 		p  string
 	}
-	var todo []upd
-	for rows.Next() {
-		var id int64
-		var p string
-		if err := rows.Scan(&id, &p); err != nil {
+	var after int64
+	for batch := 1; ; batch++ {
+		rows, err := DB.Query(`SELECT id, payload FROM webhook_events WHERE id > ? ORDER BY id LIMIT ?`, after, batchSize)
+		if err != nil {
+			return fmt.Errorf("读取 webhook_events 失败: %w", err)
+		}
+		var todo []upd
+		n := 0
+		for rows.Next() {
+			var id int64
+			var p string
+			if err := rows.Scan(&id, &p); err != nil {
+				rows.Close()
+				return err
+			}
+			n++
+			after = id
+			if np := SanitizeWebhookPayload(p); np != p {
+				todo = append(todo, upd{id, np})
+			}
+		}
+		if err := rows.Err(); err != nil {
 			rows.Close()
 			return err
 		}
-		if np := SanitizeWebhookPayload(p); np != p {
-			todo = append(todo, upd{id, np})
-		}
-	}
-	if err := rows.Err(); err != nil {
 		rows.Close()
-		return err
-	}
-	rows.Close()
-	for _, u := range todo {
-		if _, err := DB.Exec(`UPDATE webhook_events SET payload = ? WHERE id = ?`, u.p, u.id); err != nil {
-			return fmt.Errorf("清洗 webhook_events(%d) 失败: %w", u.id, err)
+		if n == 0 {
+			return nil
+		}
+		if len(todo) > 0 {
+			tx, err := DB.Begin()
+			if err != nil {
+				return err
+			}
+			for _, u := range todo {
+				if _, err := tx.Exec(`UPDATE webhook_events SET payload = ? WHERE id = ?`, u.p, u.id); err != nil {
+					tx.Rollback()
+					return fmt.Errorf("清洗 webhook_events(%d) 失败: %w", u.id, err)
+				}
+			}
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("清洗 webhook_events 提交失败: %w", err)
+			}
+		}
+		if afterBatch != nil {
+			if err := afterBatch(batch); err != nil {
+				return err
+			}
+		}
+		if n < batchSize {
+			return nil
 		}
 	}
-	return nil
+}
+
+// SetSettingsWithSecrets 把普通设置项和需要加密的密钥项放在同一个事务里写：先全部加密，再一次提交。
+// 任何一步失败都不会留下只写了一部分的结果。
+func SetSettingsWithSecrets(plain, secrets map[string]string) error {
+	kv := make(map[string]string, len(plain)+len(secrets))
+	for k, v := range plain {
+		kv[k] = v
+	}
+	if len(secrets) > 0 {
+		mk, err := secretbox.LoadKey()
+		if err != nil {
+			return err
+		}
+		for k, v := range secrets {
+			sealed, err := secretbox.Seal(mk, k, v)
+			if err != nil {
+				return err
+			}
+			kv[k] = sealed
+		}
+	}
+	if len(kv) == 0 {
+		return nil
+	}
+	return SetSettings(kv)
 }

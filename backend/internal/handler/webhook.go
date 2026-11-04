@@ -72,7 +72,9 @@ func CardPlatformWebhook(c *gin.Context) {
 			c.Status(http.StatusInternalServerError)
 			return
 		}
-		// 唯一冲突视为已处理（幂等）
+		// 唯一冲突：这个事件已处理过，直接回 200，不再回写状态（否则陈旧的重发会把状态改回去）
+		c.Status(http.StatusOK)
+		return
 	} else {
 		// 若是 GPT 直充完成，可写审计
 		if eventType == "gpt_direct.completed" {
@@ -200,13 +202,19 @@ func AdminListWebhooks(c *gin.Context) {
 		}
 		urlHint = scheme + "://" + host + "/api/v1/webhooks/cardplatform"
 	}
-	sec, _ := db.GetCardSecret(db.SettingWebhookSecret)
-	c.JSON(http.StatusOK, gin.H{
+	sec, secErr := db.GetCardSecret(db.SettingWebhookSecret)
+	resp := gin.H{
 		"events":              out,
 		"webhook_url":         urlHint,
 		"webhook_secret_set":  strings.TrimSpace(sec) != "",
 		"webhook_secret_hint": maskSecret(sec),
-	})
+	}
+	if secErr != nil {
+		// 密文还在但解不开（APP_MASTER_KEY 没配或已更换）：告诉前端，别显示成「未配置」
+		resp["webhook_secret_set"] = true
+		resp["webhook_secret_error"] = "已保存的值解不开：APP_MASTER_KEY 没配置或已更换，请重新填写"
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 func sanitizeWebhookPayload(raw string) interface{} {

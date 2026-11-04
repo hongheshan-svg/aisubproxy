@@ -93,11 +93,12 @@ const AUTH_FAILURE_TEXTS = [
  */
 export function isLocalSessionAuthFailure(url: string, status: number, body: any): boolean {
   if (status !== 401 && status !== 403) return false
-  if (/\/api\/v1\/admin\/cardplatform\//i.test(url)) return false
-  if (/\/api\/v1\/admin\/network\//i.test(url)) return false
-
+  // 有本站鉴权错误码就是会话失效，不看 URL（后端已把卡台上游的 401/403 映射成 502）
   const code = String(body?.error_code || '').toLowerCase()
   if (AUTH_FAILURE_CODES.includes(code)) return true
+  // 没有错误码的旧响应：这两类接口的 401/403 可能来自卡台上游或网络探测，不当成本站会话失效
+  if (/\/api\/v1\/admin\/cardplatform\//i.test(url)) return false
+  if (/\/api\/v1\/admin\/network\//i.test(url)) return false
   const err = String(body?.error || '').trim().toLowerCase()
   return AUTH_FAILURE_TEXTS.includes(err)
 }

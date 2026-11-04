@@ -246,17 +246,13 @@ func writeSiteSettings(body adminSettingsBody, texts []struct{ key, val string }
 			return err
 		}
 	}
+	// 地址和密钥放在同一个事务里写，读的一方不会看到「新地址 + 旧 Key」（审计 N-1）
+	plain := map[string]string{}
 	if setBase {
-		if err := db.SetSetting("card_api_base", base); err != nil {
-			return err
-		}
+		plain["card_api_base"] = base
 	}
-	for _, k := range []string{"card_api_key", "webhook_secret"} {
-		if v, ok := secrets[k]; ok {
-			if err := db.SetSecretSetting(k, v); err != nil {
-				return err
-			}
-		}
+	if err := db.SetSettingsWithSecrets(plain, secrets); err != nil {
+		return err
 	}
 	return nil
 }

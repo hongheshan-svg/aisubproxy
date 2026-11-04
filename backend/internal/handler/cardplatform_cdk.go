@@ -881,6 +881,7 @@ func enrichCDKOrderList(c *gin.Context, cli *cardplatform.Client, raw json.RawMe
 				}
 			}
 		}
+		stripOrderCardNumber(m)
 		// 归一化 CDK 生命周期展示字段
 		m["cdk_lifecycle"] = cdkLifecycleLabel(strAny(m["cdk_status"]), strAny(m["status"]), strAny(m["service_fee_status"]))
 		outList = append(outList, m)
@@ -914,7 +915,31 @@ func enrichOneCDKOrder(c *gin.Context, cli *cardplatform.Client, m map[string]an
 			}
 		}
 	}
+	stripOrderCardNumber(m)
 	m["cdk_lifecycle"] = cdkLifecycleLabel(strAny(m["cdk_status"]), strAny(m["status"]), strAny(m["service_fee_status"]))
+}
+
+// stripOrderCardNumber 卡台订单透传给前端前去掉完整卡号（card_number / pan），只在缺 card_last_four 时用后 4 位补上。
+func stripOrderCardNumber(m map[string]any) {
+	for _, k := range []string{"card_number", "pan"} {
+		v, ok := m[k]
+		if !ok {
+			continue
+		}
+		delete(m, k)
+		if strAny(m["card_last_four"]) != "" {
+			continue
+		}
+		digits := make([]byte, 0, 19)
+		for _, ch := range []byte(strAny(v)) {
+			if ch >= '0' && ch <= '9' {
+				digits = append(digits, ch)
+			}
+		}
+		if len(digits) >= 4 {
+			m["card_last_four"] = string(digits[len(digits)-4:])
+		}
+	}
 }
 
 func cdkLifecycleLabel(cdkStatus, orderStatus, feeStatus string) string {

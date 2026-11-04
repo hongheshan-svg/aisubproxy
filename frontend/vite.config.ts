@@ -22,7 +22,6 @@ export default defineConfig({
         manualChunks(id) {
           if (!id.includes('node_modules')) return
           if (id.includes('element-plus') || id.includes('@element-plus')) return 'vendor-element'
-          if (id.includes('chart.js') || id.includes('vue-chartjs')) return 'vendor-chart'
           if (id.includes('xlsx')) return 'vendor-xlsx'
           if (/[\\/]node_modules[\\/](vue|@vue|vue-router|pinia|vue-i18n|@intlify)[\\/]/.test(id)) return 'vendor-vue'
         },

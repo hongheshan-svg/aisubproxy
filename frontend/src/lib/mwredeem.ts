@@ -62,6 +62,11 @@ const STATUS_TEXT: Record<string, string> = {
   failed: '兑换失败',
   review: '待人工核对',
   cancelled: '已取消',
+  // 本站码（卡型供应）的码状态
+  error: '兑换失败',
+  disabled: '已禁用',
+  reserved: '处理中',
+  consumed: '已使用',
 }
 
 export function mwStatusText(status: string): string {
@@ -112,12 +117,18 @@ export function mwOutcome(status: string, order?: OrderLike | null, credit = fal
   }
 }
 
-/** 兑换请求被拒（没有建单）时应停在确认页显示原因，而不是跳去结果页轮询一个不存在的单。 */
+/** 409 里带这些 status 说明已有单（码在途、已使用、已转人工），去结果页按码查进度。 */
+const EXISTING_ORDER_STATUS = new Set(['reserved', 'consumed', 'failed'])
+
+/**
+ * 兑换请求被拒、没有建单时应停在确认页显示原因，而不是跳去结果页轮询一个不存在的单。
+ * 有 order、成功响应，或 409 带进度状态（已有单）时去结果页。
+ */
 export function redeemRejectedBeforeOrder(status: number, data: any): boolean {
-  if (status === 409) return false // 已有在途或已完成的单，去结果页看进度
   if (status >= 200 && status < 300) return false
-  if (data && (data.order || data.status)) return false
-  return status === 400 || status === 403 || status === 404 || status === 429 || status === 503
+  if (data?.order) return false
+  if (status === 409 && EXISTING_ORDER_STATUS.has(String(data?.status || ''))) return false
+  return status === 400 || status === 403 || status === 404 || status === 409 || status === 429 || status === 503
 }
 
 const STAGE_TEXT: Record<string, string> = {

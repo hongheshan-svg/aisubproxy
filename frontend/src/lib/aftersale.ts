@@ -191,15 +191,25 @@ export function batchMessage(r: LookupResult): string {
   return r.provider_note ? `${msg}（原因：${r.provider_note}）` : msg
 }
 
-/** CSV 的一行（列：cdk_code, status, can_resubmit, account_email, plan, used_at, message）。 */
+/**
+ * 文本单元格以 = + - @、制表符或回车开头时前面加单引号，防止 Excel/WPS 把它当公式执行（CSV 公式注入）。
+ * cdk_code 会原样回显用户输入，所以必须处理。
+ */
+export function csvSafe(text: string): string {
+  return /^[=+\-@\t\r]/.test(text) ? `'${text}` : text
+}
+
+const csvCell = (v: unknown) => `"${csvSafe(String(v)).replace(/"/g, '""')}"`
+
+/** CSV 的一行（列：cdk_code, status, can_resubmit, account_email, plan, used_at, message）。can_resubmit 只会是 0/1，值不变。 */
 export function csvRow(r: LookupResult): string {
   return [
-    r.cdk_code,
-    r.status,
-    r.can_resubmit ? '1' : '0',
-    r.account_email || '',
-    r.plan || '',
-    r.used_at || '',
-    batchMessage(r),
-  ].map((v) => `"${String(v).replace(/"/g, '""')}"`).join(',')
+    csvCell(r.cdk_code),
+    csvCell(r.status),
+    csvCell(r.can_resubmit ? '1' : '0'),
+    csvCell(r.account_email || ''),
+    csvCell(r.plan || ''),
+    csvCell(r.used_at || ''),
+    csvCell(batchMessage(r)),
+  ].join(',')
 }

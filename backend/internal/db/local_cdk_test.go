@@ -228,7 +228,7 @@ func TestInsertLocalCDKsIssueKey(t *testing.T) {
 	}
 }
 
-// 判断只看单据有没有选过卡，不看错误码：新错误码不用改这里，也不会漏算。
+// 判断主要看单据有没有选过卡；唯一的例外是「取到卡但注资之前就放弃」的两个错误码（审计 D-4，见 TestS2PreFundCardFailureNotCounted）。新错误码仍按选过卡计，不会漏算。
 func TestLocalCDKFailureCountedByCardNotErrorCode(t *testing.T) {
 	failed := func(code, card string) db.LocalCDKOrder {
 		return db.LocalCDKOrder{State: "failed", Failure: "not_submitted", ErrorCode: code, CardID: card}
@@ -241,7 +241,7 @@ func TestLocalCDKFailureCountedByCardNotErrorCode(t *testing.T) {
 			t.Errorf("%s 没有卡，不该计次数: %+v", code, v)
 		}
 	}
-	for _, code := range []string{"card_info_failed", "card_currency_unsupported", "fund_failed", "fund_timeout", "card_sensitive_failed",
+	for _, code := range []string{"fund_failed", "fund_timeout", "card_sensitive_failed",
 		"card_expiry_invalid", "fill_failed", "amount_changed", "submit_not_clicked", "internal_error", "service_restart"} {
 		v := db.DeriveLocalCDK(db.LocalCDK{Manual: db.LocalCDKManualActive}, []db.LocalCDKOrder{failed(code, "c1")})
 		if v.Status != db.LocalCDKUnused || v.FundedFailures != 1 || v.PrechargeFailures != 0 {

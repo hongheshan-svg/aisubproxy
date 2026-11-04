@@ -34,6 +34,14 @@ describe('展示映射', () => {
     expect(payErrorText('amount_below_floor')).toContain('没有注资')
     expect(payErrorText('something_new')).toBe('')
   })
+  it('稳定性相关错误码有说明', () => {
+    expect(payErrorText('verify_unreachable')).toContain('查不到账号状态')
+    expect(payErrorText('verify_unreachable')).not.toContain('未开通')
+    expect(payErrorText('stale_order')).toContain('没有点支付')
+    // internal_error 既用于提交前放弃，也用于确认阶段转人工，说明要两种都涵盖
+    expect(payErrorText('internal_error')).toContain('没点支付')
+    expect(payErrorText('internal_error')).toContain('人工核对')
+  })
   it('熔断原因优先用后端文案', () => {
     expect(breakerReason({ reason: 'submit_failures', reason_text: '连续 3 单' })).toBe('连续 3 单')
     expect(breakerReason({ reason: 'fill_failures', reason_text: '' })).toContain('填表')

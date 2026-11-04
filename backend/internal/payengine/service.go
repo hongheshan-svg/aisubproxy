@@ -142,6 +142,8 @@ type Service struct {
 	// verifyErrs 记各单上次写入时间线的确认错误（单号 → 来源 → 脱敏后的文本），文本没变就不再写。
 	// 只在内存里，重启后多写一条可以接受；单据定论时删除。
 	verifyErrs map[string]map[string]string
+	// verifyFails 记各单确认阶段查账号连续出错的次数（单号 → 次数），用来退避下次检查；只在内存里，成功一次或单据定论时删除。受 mu 保护。
+	verifyFails map[string]int
 
 	breakerAlerted string // 熔断告警的去重键，见 breakerAlert；受 mu 保护
 
@@ -192,7 +194,7 @@ func New(o Options) *Service {
 	if t.SessionKeep <= 0 || t.SessionKeep > defaultSessionKeep {
 		t.SessionKeep = defaultSessionKeep
 	}
-	return &Service{opts: o, t: t, realBrowser: realBrowser, kick: make(chan struct{}, 1), running: map[string]bool{}, verifyErrs: map[string]map[string]string{},
+	return &Service{opts: o, t: t, realBrowser: realBrowser, kick: make(chan struct{}, 1), running: map[string]bool{}, verifyErrs: map[string]map[string]string{}, verifyFails: map[string]int{},
 		renewing: map[string]bool{}, checkURL: checkCheckoutURL}
 }
 

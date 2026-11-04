@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -202,6 +203,7 @@ func (s *Service) verifyOrder(ctx context.Context, o *Order) {
 	if ctx.Err() != nil {
 		return // 停机：下次启动接着查
 	}
+	fails := s.noteAccountResult(o.OrderNo, accErr)
 	if opened {
 		set := map[string]any{"error_code": "", "error_message": ""}
 		if wantsRenewalCancel(o) {
@@ -220,12 +222,49 @@ func (s *Service) verifyOrder(ctx context.Context, o *Order) {
 	}
 	switch {
 	case now < until:
-		s.verifyReschedule(ctx, j)
+		s.verifyRescheduleAfter(ctx, j, verifyDelay(s.t.VerifyEvery, fails, accErr), until)
 	case isDeclinedOutcome(o.PageOutcome):
 		s.verifyDeclined(ctx, j, accErr, now >= until+declineExtra(s.t, o.PageOutcome))
+	case accErr != nil:
+		// 最后一次是查询出错，不知道开没开通：不能说成「未开通」
+		s.verifyEscalate(ctx, j, "verify_unreachable", "确认超时：一直查不到账号状态（最后一次错误："+j.scrub(accErr.Error())+"），请人工核对是否已开通")
 	default:
 		s.verifyEscalate(ctx, j, "verify_timeout", "确认超时：账号未开通，支付页也没有明确拒绝")
 	}
+}
+
+// verifyBackoffMax 是查账号连续出错时，下次检查最多推迟多久（429 的 Retry-After 不受它限制，只受到期时间限制）。
+const verifyBackoffMax = 60 * time.Second
+
+// verifyDelay 是这次检查之后多久再查：没出错按 every；连续出错第 n 次按 every×2^(n-1)，封顶 verifyBackoffMax（默认 15s → 30s → 60s）；
+// ChatGPT 返回 429 带 Retry-After 时至少推迟这么久。every 为 0（测试）时只看 Retry-After。不晚于到期时间由调用方保证。
+func verifyDelay(every time.Duration, fails int, err error) time.Duration {
+	d := every
+	if err != nil && fails > 1 {
+		for i := 1; i < fails && d < verifyBackoffMax; i++ {
+			d *= 2
+		}
+		if d > verifyBackoffMax {
+			d = max(verifyBackoffMax, every)
+		}
+	}
+	var he *chatgpt.HTTPError
+	if errors.As(err, &he) && he.Status == http.StatusTooManyRequests && he.RetryAfter > 0 {
+		d = max(d, time.Duration(he.RetryAfter)*time.Second)
+	}
+	return d
+}
+
+// noteAccountResult 记下这次查账号的结果，返回连续出错的次数（成功一次清零）。只在内存里，重启后从头算；单据定论时删除。
+func (s *Service) noteAccountResult(no string, err error) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err == nil {
+		delete(s.verifyFails, no)
+		return 0
+	}
+	s.verifyFails[no]++
+	return s.verifyFails[no]
 }
 
 // declineExtra 是 verify_until 之后还能再等证据多久，单位秒。被拒只等了 DeclineGrace，再给一个 Verify；
@@ -469,7 +508,16 @@ func txnTime(t cardpool.Transaction) int64 {
 }
 
 func (s *Service) verifyReschedule(ctx context.Context, j *job) {
-	if err := setNextCheck(ctx, j.o.OrderNo, s.now().Add(s.t.VerifyEvery).Unix()); err != nil && ctx.Err() == nil {
+	s.verifyRescheduleAfter(ctx, j, s.t.VerifyEvery, 0)
+}
+
+// verifyRescheduleAfter 把下次检查定在 delay 之后，但不晚于 deadline（Unix 秒；0 表示不限）：退避不延长确认总时长。
+func (s *Service) verifyRescheduleAfter(ctx context.Context, j *job, delay time.Duration, deadline int64) {
+	at := s.now().Add(delay).Unix()
+	if deadline > 0 && at > deadline {
+		at = deadline
+	}
+	if err := setNextCheck(ctx, j.o.OrderNo, at); err != nil && ctx.Err() == nil {
 		log.Printf("[payengine] 单据 %s 更新下次检查时间失败: %v", j.o.OrderNo, err)
 	}
 }
@@ -501,6 +549,7 @@ func (s *Service) verifyConclude(ctx context.Context, j *job, to, level, msg str
 	}
 	s.mu.Lock()
 	delete(s.verifyErrs, j.o.OrderNo)
+	delete(s.verifyFails, j.o.OrderNo)
 	s.mu.Unlock()
 	return true
 }
@@ -525,14 +574,7 @@ func (s *Service) recoverOrders(ctx context.Context) error {
 	var errs []error
 	for i := range stale {
 		j := &job{o: &stale[i]}
-		if _, ok := s.jobPool(j); !ok && touchedCard(j.o) {
-			if err := s.escalateUnpooled(ctx, j); err != nil {
-				errs = append(errs, fmt.Errorf("单据 %s: %w", j.o.OrderNo, err))
-			}
-			continue
-		}
-		s.release(ctx, j, leaseFromOrder(j.o), cardpool.Outcome{Result: cardpool.ResultAborted})
-		if err := s.fail(ctx, j, &stepFailure{code: "service_restart", msg: restartMessage}); err != nil {
+		if _, err := s.abandonPreSubmit(ctx, j, &stepFailure{code: "service_restart", msg: restartMessage}, "服务重启时"); err != nil {
 			errs = append(errs, fmt.Errorf("单据 %s: %w", j.o.OrderNo, err))
 		}
 	}
@@ -558,6 +600,17 @@ func (s *Service) recoverOrders(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// abandonPreSubmit 收尾一张停在提交前中间状态（checking 到 filling）、没有协程在处理的单，重启恢复和长时间没进展的扫描共用。
+// 这些状态下一定没点过支付：点支付之前必须先把 filling → submitted 写入成功（见 pay）。先释放租约，再记 failed/not_submitted（条件更新）；
+// 已经取卡或注资、但所属服务商没有卡池的，租约放不掉，转待人工并告警（when 写明是什么时候发现的，例如「服务重启时」），escalated 为 true。
+func (s *Service) abandonPreSubmit(ctx context.Context, j *job, f *stepFailure, when string) (escalated bool, err error) {
+	if _, ok := s.jobPool(j); !ok && touchedCard(j.o) {
+		return true, s.escalateUnpooled(ctx, j, when)
+	}
+	s.release(ctx, j, leaseFromOrder(j.o), cardpool.Outcome{Result: cardpool.ResultAborted})
+	return false, s.fail(ctx, j, f)
+}
+
 // touchedCard 判断单据是否已经取卡或提交过注资：这之后放弃就可能有钱留在卡上。
 func touchedCard(o *Order) bool {
 	return o.CardID != "" || o.LeaseToken != "" || o.FundOrderNo != ""
@@ -565,8 +618,8 @@ func touchedCard(o *Order) bool {
 
 // escalateUnpooled 把已经取卡或注资、但所属服务商没有卡池的未提交单转待人工并告警。
 // 没有提交，钱不会被 ChatGPT 扣走，但可能留在卡上，要人工到该服务商的后台处理。
-func (s *Service) escalateUnpooled(ctx context.Context, j *job) error {
-	msg := providerUnavailableText(j.o.Provider) + "：服务重启时这单已经取卡或注资，租约无法释放，请到该服务商的后台核对卡上余额"
+func (s *Service) escalateUnpooled(ctx context.Context, j *job, when string) error {
+	msg := providerUnavailableText(j.o.Provider) + "：" + when + "这单已经取卡或注资，租约无法释放，请到该服务商的后台核对卡上余额"
 	if err := s.end(ctx, j, StateNeedsReview, "error", msg, map[string]any{"error_code": "provider_unavailable", "error_message": msg}); err != nil {
 		return err
 	}
@@ -645,6 +698,8 @@ func (s *Service) cleanLoop(ctx context.Context) {
 	defer shots.Stop()
 	profiles := time.NewTicker(profileCleanEvery)
 	defer profiles.Stop()
+	stale := time.NewTicker(staleSweepEvery)
+	defer stale.Stop()
 	for {
 		select {
 		case <-ctx.Done():
@@ -653,7 +708,52 @@ func (s *Service) cleanLoop(ctx context.Context) {
 			safego.Run("清理付款截图", s.cleanShots)
 		case <-profiles.C:
 			safego.Run("清理浏览器残留", s.cleanProfiles)
+		case <-stale.C:
+			safego.Run("收敛停滞付款单", func() { s.sweepStale(ctx) })
 		}
+	}
+}
+
+const (
+	// staleAfter：提交前的中间状态超过这么久没有进展（updated_at 没变），又没有协程在处理，就当成停滞。
+	staleAfter   = 5 * time.Minute
+	staleCode    = "stale_order"
+	staleMessage = "单据长时间没有进展，已放弃（没有点支付）"
+)
+
+// staleSweepEvery 是扫描停滞单据的间隔；测试可缩短。
+var staleSweepEvery = time.Minute
+
+// sweepStale 收敛停在提交前中间状态（checking、link_created、opening、funding、filling）、不在 s.running 里、
+// 超过 staleAfter 没有进展的单：单据协程已经没了（例如收尾写库失败），没人会再推进它。按重启恢复的同一段逻辑收尾（abandonPreSubmit），
+// 错误码 stale_order，并告警。submitted、requires_3ds 不在范围里：它们已经点过（或可能点过）支付，由确认接管，绝不当成提交前放弃。
+// 重启恢复没做完之前不扫：那时这些单由恢复统一收尾。updated_at 由 store 按真实时钟写，这里也按真实时钟比较。
+func (s *Service) sweepStale(ctx context.Context) {
+	if !s.recovered.Load() {
+		return
+	}
+	orders, err := ordersInStates(ctx, StateChecking, StateLinkCreated, StateOpening, StateFunding, StateFilling)
+	if err != nil {
+		log.Printf("[payengine] 读取停滞单据失败: %v", err)
+		return
+	}
+	cutoff := time.Now().Add(-staleAfter).Unix()
+	for i := range orders {
+		o := &orders[i]
+		if o.UpdatedAt > cutoff || s.isRunning(o.OrderNo) {
+			continue
+		}
+		j := &job{o: o}
+		from := o.State
+		escalated, err := s.abandonPreSubmit(ctx, j, &stepFailure{code: staleCode, msg: staleMessage}, "单据长时间没有进展，")
+		if err != nil {
+			log.Printf("[payengine] 收敛停滞单据 %s 失败: %v", o.OrderNo, err)
+			continue
+		}
+		if escalated {
+			continue // escalateUnpooled 已告警
+		}
+		s.opts.Alert(fmt.Sprintf("付款单 %s 停在「%s」超过 %v 没有进展，已按提交前放弃收尾（没有点支付）", o.OrderNo, from, staleAfter))
 	}
 }
 

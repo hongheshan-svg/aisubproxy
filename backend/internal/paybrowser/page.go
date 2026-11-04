@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -342,11 +343,12 @@ func isDigits(s string, lo, hi int) bool {
 }
 
 // fillField 按字段类型填写并核对。选中输入框用 focusField：内嵌页上点之前先看落点。
-func (b *Browser) fillField(ctx context.Context, e *elem, f field) error {
+// changed 表示这是下拉框，而且值真的改了（chooseOption）：页面会重绘地址表单，调用方给下一个字段留足等待。
+func (b *Browser) fillField(ctx context.Context, e *elem, f field) (changed bool, err error) {
 	if f.kind == kindChoice {
 		var tag string
 		if err := callOn(ctx, e.obj, `function () { return this.tagName }`, &tag); err != nil {
-			return fmt.Errorf("读取「%s」失败: %w", f.label, err)
+			return false, fmt.Errorf("读取「%s」失败: %w", f.label, err)
 		}
 		if tag == "SELECT" {
 			return chooseOption(ctx, e, f)
@@ -355,13 +357,13 @@ func (b *Browser) fillField(ctx context.Context, e *elem, f field) error {
 	}
 	direct, err := b.focusField(ctx, e)
 	if err != nil {
-		return fmt.Errorf("无法选中「%s」输入框: %w", f.label, err)
+		return false, fmt.Errorf("无法选中「%s」输入框: %w", f.label, err)
 	}
 	b.noteDirectFocus(f.label, direct)
 	if f.kind == kindCard {
-		return typeCard(ctx, e, f)
+		return false, typeCard(ctx, e, f)
 	}
-	return typeText(ctx, e, f)
+	return false, typeText(ctx, e, f)
 }
 
 // typeCard 清空后逐字键入，再按数字核对（Stripe 会给卡号加空格、给有效期加斜杠）。
@@ -432,20 +434,22 @@ const chooseOptionJS = `function (want) {
 	return this.value === o.value ? 'changed' : 'rejected'
 }`
 
-func chooseOption(ctx context.Context, e *elem, f field) error {
+// chooseOption 在下拉框里选 f.value。值真的改了时 changed 为 true，并先等 reflowDelay 让页面开始重绘；
+// 重绘可能比这更慢（终审 M4），调用方要给下一个字段留足等待（见 fillEmbeddedAddress）。
+func chooseOption(ctx context.Context, e *elem, f field) (changed bool, err error) {
 	var r string
 	if err := callOn(ctx, e.obj, chooseOptionJS, &r, f.value); err != nil {
-		return fmt.Errorf("选择「%s」失败: %w", f.label, err)
+		return false, fmt.Errorf("选择「%s」失败: %w", f.label, err)
 	}
 	switch r {
 	case "missing":
-		return fmt.Errorf("「%s」下拉框里没有 %s 这一项", f.label, f.value)
+		return false, fmt.Errorf("「%s」下拉框里没有 %s 这一项", f.label, f.value)
 	case "rejected":
-		return fmt.Errorf("「%s」选择后核对不一致", f.label)
+		return false, fmt.Errorf("「%s」选择后核对不一致", f.label)
 	case "changed":
-		return sleep(ctx, reflowDelay)
+		return true, sleep(ctx, reflowDelay)
 	}
-	return nil
+	return false, nil
 }
 
 // payEnabledJS 判断支付按钮能不能点。
@@ -753,11 +757,16 @@ func truncateMessage(s string) string {
 
 // EnterOTP 在 3DS 验证框（含其中各级 iframe）里填验证码并提交。
 // 验证码框优先按 Sel.OTPInput 找（首选 autocomplete="one-time-code"），否则取框内唯一可见的文本或数字输入框。
+//
+// 内嵌页（设计 §5.8，终审 I1）：验证框不一定是全屏遮罩，验证码框、提交按钮可能在验证框可视区外，按坐标点会点到主页面——
+// 可能就是第二次点支付。所以选中验证码框用 focusField（过落点检查才用鼠标点，不过就直接设焦点），提交见 submitOTPEmbedded。
+// 托管页不变。
 func (b *Browser) EnterOTP(ctx context.Context, otp string) error {
 	otp = strings.TrimSpace(otp)
 	if otp == "" {
 		return errors.New("验证码为空")
 	}
+	embedded := b.pageKind() == PageEmbedded
 	return b.do(ctx, func(ctx context.Context) error {
 		var box cdp.FrameID
 		var scope []frameRef
@@ -787,7 +796,11 @@ func (b *Browser) EnterOTP(ctx context.Context, otp string) error {
 		if in == nil {
 			return errors.New("在 3DS 验证框里找不到验证码输入框")
 		}
-		if err := focus(ctx, in); err != nil {
+		if embedded {
+			if _, err := b.focusField(ctx, in); err != nil {
+				return fmt.Errorf("无法选中验证码输入框: %w", err)
+			}
+		} else if err := focus(ctx, in); err != nil {
 			return fmt.Errorf("无法选中验证码输入框: %w", err)
 		}
 		if err := clearInput(ctx, in); err != nil {
@@ -801,11 +814,14 @@ func (b *Browser) EnterOTP(ctx context.Context, otp string) error {
 		if btn == nil {
 			btn = b.otpSubmit(ctx, in, scope)
 		}
-		if btn == nil {
+		switch {
+		case embedded:
+			err = b.submitOTPEmbedded(ctx, box, in, btn)
+		case btn == nil:
 			if err = focus(ctx, in); err == nil {
 				err = chromedp.KeyEvent(kb.Enter).Do(ctx)
 			}
-		} else {
+		default:
 			err = click(ctx, btn)
 		}
 		if err != nil {
@@ -820,6 +836,49 @@ func (b *Browser) EnterOTP(ctx context.Context, otp string) error {
 		b.mu.Unlock()
 		return nil
 	})
+}
+
+// submitOTPEmbedded 是内嵌页上提交验证码的那一步。box 是 3DS 验证框承载的 frame，in、btn 都在它的子树里找到（btn 可以是 nil）。
+//   - 有提交按钮：按钮不能在主页面上、必须在验证框的子树里；过 landsInOwnFrame（主页面上那一点是装着它的 iframe），
+//     再用 DOM.getNodeForLocation 看那一点最深处落在哪个 frame，也必须在验证框的子树里，才用鼠标点。
+//     这里不做「不是提交控件」检查：验证框里的提交按钮本来就该点；它不在主页面上，点它不会是点支付。
+//     任一不过就不点、返回原因（以「，没有点击」结尾），也不改按回车：落点不对时页面的样子没核实过，不赌。
+//   - 没有提交按钮：回车只允许发在 3DS 验证框里（设计 §5.8 的唯一例外）——验证码框在验证框的子树里、
+//     ensureFocus 确认焦点就在它上面，才按回车；否则不按、返回原因。
+func (b *Browser) submitOTPEmbedded(ctx context.Context, box cdp.FrameID, in, btn *elem) error {
+	frames, err := b.frames(ctx)
+	if err != nil {
+		return err
+	}
+	scope := subtree(frames, box)
+	inBox := func(id cdp.FrameID) bool {
+		return id != frames[0].id && slices.ContainsFunc(scope, func(f frameRef) bool { return f.id == id })
+	}
+	if btn == nil {
+		if !inBox(in.frame.id) {
+			return errors.New("验证码输入框不在验证框里，没有按回车")
+		}
+		if _, err := ensureFocus(ctx, in); err != nil {
+			return fmt.Errorf("焦点不在验证码输入框上（%v），没有按回车", err)
+		}
+		return chromedp.KeyEvent(kb.Enter).Do(ctx)
+	}
+	if !inBox(btn.frame.id) {
+		return errors.New("验证码提交按钮不在验证框里，没有点击")
+	}
+	x, y, err := b.landsInOwnFrame(ctx, frames, btn)
+	if err != nil {
+		return err
+	}
+	_, hit, _, err := dom.GetNodeForLocation(int64(math.Round(x)), int64(math.Round(y))).
+		WithIncludeUserAgentShadowDOM(true).WithIgnorePointerEventsNone(false).Do(ctx)
+	if err != nil {
+		return fmt.Errorf("读不出点击落点（%v），没有点击", err)
+	}
+	if !inBox(hit) {
+		return errors.New("点击落点不在验证框里，没有点击")
+	}
+	return chromedp.MouseClickXY(x, y).Do(ctx)
 }
 
 // otpSubmit 找验证码的提交按钮：先在验证码框所在的 frame 里找，再在整个验证框里找。

@@ -83,8 +83,12 @@
     paydisabled=1             支付按钮一直 disabled
     savepay=on|off            多一个「保存付款信息」勾选框（买点数时可能出现），on 为默认勾上；文案照前端包里的 "Save payment details to {merchantName} for future purchases."，DOM 结构是推断
     savepaystuck=1            「保存付款信息」勾选框点了也取消不掉
+    savepay=button            「保存付款信息」做成不写 type 的 <button role="checkbox" aria-checked="true">，放在支付表单里：
+                              表单里不写 type 的 button 默认就是提交按钮，点它（鼠标或脚本 click()）就是提交支付表单
     terms=1|stuck             多一个默认不勾的「同意条款」勾选框（Stripe 要求同意服务条款时才有），不勾就点支付只显示 .FieldError、不发 /pay；
                               stuck 表示点了也勾不上。id、name、链接 class 与文案照 2026-11-03 真实支付页（ChatGPT 点数单）导出的 DOM
+    terms=button              「同意条款」换成不写 type 的 <button id="termsOfServiceConsentCheckbox" role="checkbox" aria-checked="false">，
+                              在支付表单里（同 savepay=button：点它就是提交支付表单）
   每次提交把收到的全部字段 POST 到本服务的 /pay，供测试断言；点到支付按钮就 POST /submit-attempt（前端校验拦下时也算）。
 -->
 <section id="summary">
@@ -307,7 +311,20 @@
   }
 
   if (q.get('nocvc') === '1') $('cardCvc').remove()
-  if (q.get('savepay') === 'on' || q.get('savepay') === 'off') {
+  // submitBox 把一个不写 type、做成勾选框样子的 button 放进 section 里替换原来的勾选框（见 savepay=button、terms=button）
+  function submitBox(section, id, checked, text) {
+    section.style.display = ''
+    section.innerHTML = ''
+    var box = document.createElement('button')
+    if (id) box.id = id
+    box.setAttribute('role', 'checkbox')
+    box.setAttribute('aria-checked', checked ? 'true' : 'false')
+    box.textContent = text
+    section.appendChild(box)
+  }
+  if (q.get('savepay') === 'button') {
+    submitBox($('savepay-section'), '', true, 'Save payment details to OpenAI for future purchases.')
+  } else if (q.get('savepay') === 'on' || q.get('savepay') === 'off') {
     $('savepay-section').style.display = ''
     $('savePaymentDetails').checked = q.get('savepay') === 'on'
     $('savePaymentDetails').addEventListener('click', function (e) {
@@ -316,7 +333,9 @@
   } else {
     $('savepay-section').remove()
   }
-  if (q.get('terms')) {
+  if (q.get('terms') === 'button') {
+    submitBox($('terms-section'), 'termsOfServiceConsentCheckbox', false, 'I agree to the Service Credit Terms')
+  } else if (q.get('terms')) {
     $('terms-section').style.display = ''
     $('termsOfServiceConsentCheckbox').addEventListener('click', function (e) {
       if (q.get('terms') === 'stuck') e.preventDefault()

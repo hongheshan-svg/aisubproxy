@@ -209,6 +209,38 @@ func ClickOption(ctx context.Context, b *Browser, sel string) error {
 	})
 }
 
+// ClickBox 在各 frame 里找 sel 命中的第一个元素（不要求可见），用点勾选框的 clickBox 点它。
+func ClickBox(ctx context.Context, b *Browser, sel string) error {
+	return b.do(ctx, func(ctx context.Context) error {
+		frames, err := b.frames(ctx)
+		if err != nil {
+			return err
+		}
+		e := b.findAny(ctx, frames, []string{sel})
+		if e == nil {
+			return fmt.Errorf("找不到 %s", sel)
+		}
+		return b.clickBox(ctx, e)
+	})
+}
+
+// FocusField 在各 frame 里找 sel 命中的第一个元素（不要求可见），用选中输入框的 focusField 选中它，返回 direct 和错误。
+func FocusField(ctx context.Context, b *Browser, sel string) (direct string, err error) {
+	err = b.do(ctx, func(ctx context.Context) error {
+		frames, err := b.frames(ctx)
+		if err != nil {
+			return err
+		}
+		e := b.findAny(ctx, frames, []string{sel})
+		if e == nil {
+			return fmt.Errorf("找不到 %s", sel)
+		}
+		direct, err = b.focusField(ctx, e)
+		return err
+	})
+	return direct, err
+}
+
 func callOnFirst(ctx context.Context, b *Browser, sel, fn string, res any) error {
 	return b.do(ctx, func(ctx context.Context) error {
 		frames, err := b.frames(ctx)

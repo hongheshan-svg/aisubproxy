@@ -436,6 +436,41 @@ func TestEmbeddedFillStripeAddressRevealsHidden(t *testing.T) {
 	}
 }
 
+// PH 单的地址默认是 PH，填表时改成 US（TaxFreeAddress），地址表单重绘（终审 M4；仿造页 reflow=1：除国家外的字段先拿掉，800ms 后才重新出来，
+// 比 reflowDelay 慢）。国家真的改了，下一个字段仍按 addressWait 等，等到重绘出来再填；不能记成「页面没有」，
+// 否则最后复查时它又出现了，Fill 放弃，而这时卡已经注资。
+func TestEmbeddedFillCountryChangeReflows(t *testing.T) {
+	needChrome(t)
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "addr=stripe&reflow=1")
+
+	if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+		t.Fatalf("Fill: %v", err)
+	}
+	r := b.FillReport()
+	if len(r.Absent) != 0 {
+		t.Fatalf("Absent = %v，期望为空", r.Absent)
+	}
+	want := []string{"卡号", "有效期", "CVC", "国家", "姓名", "街道地址", "城市", "州/省", "邮编"}
+	if got := fieldLabels(t, r); !slices.Equal(got, want) {
+		t.Fatalf("填过的字段 = %v，期望 %v", got, want)
+	}
+	for sel, want := range map[string]string{
+		"#billingAddress-countryInput":      "US",
+		"#billingAddress-nameInput":         "A B",
+		"#billingAddress-addressLine1Input": "1 Main St",
+		"#billingAddress-postalCodeInput":   "97201",
+	} {
+		got, err := paybrowser.FieldValue(ctx, b, sel)
+		if err != nil || got != want {
+			t.Fatalf("页面上 %s = %q, %v，期望 %q", sel, got, err, want)
+		}
+	}
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("只填表不提交：仿造页收到 %d 次提交", n)
+	}
+}
+
 // 折叠的地址字段展不开时报错放弃，不能当成「页面没有」放过去。
 // 这个变体既没有手动地址入口也没有地址联想：走「选地址联想展开」，联想一直不出现。
 func TestEmbeddedFillStripeAddressHiddenFails(t *testing.T) {
@@ -1117,6 +1152,106 @@ func TestEmbeddedChallenge(t *testing.T) {
 	fillSubmitEmbedded(t, b, ctx)
 	if out, msg, err := b.WaitOutcome(ctx, 15*time.Second); err != nil || out != paybrowser.OutcomeChallenge {
 		t.Fatalf("WaitOutcome = %q, %q, %v，期望 challenge", out, msg, err)
+	}
+}
+
+// otpResult 返回仿造页收到的 3DS 验证结果（ok、fail，还没提交时为空），最多等 5 秒。
+func otpResult(t *testing.T, ctx context.Context, b *paybrowser.Browser) string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		v, err := paybrowser.FieldValue(ctx, b, "#otp-result")
+		if err != nil {
+			t.Fatalf("读 3DS 验证结果: %v", err)
+		}
+		if v != "" || time.Now().After(deadline) {
+			return v
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// 内嵌页上填 3DS 验证码（设计 §5.8，终审 I1）：验证框是全屏遮罩时，选中验证码框、点验证框里的提交按钮都过落点检查，照常提交；
+// 验证页没有提交按钮时，确认焦点在验证框里的验证码框上才按回车。主页面收不到任何按键，支付按钮只在点支付时收到那一次点击。
+func TestEmbeddedEnterOTP(t *testing.T) {
+	for _, c := range []struct{ name, query string }{
+		{"点验证框里的提交按钮", "challenge=1&payclicks=1"},
+		{"没有提交按钮就在验证框里按回车", "challenge=1&acsnobutton=1&payclicks=1"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			needChrome(t)
+			t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+			f := newFakeEmbedded(t)
+			b, ctx := openEmbedded(t, f, c.query)
+
+			fillSubmitEmbedded(t, b, ctx)
+			if out, msg, err := b.WaitOutcome(ctx, 15*time.Second); err != nil || out != paybrowser.OutcomeChallenge {
+				t.Fatalf("WaitOutcome = %q, %q, %v，期望 challenge", out, msg, err)
+			}
+			mainKeys, err := paybrowser.FieldValue(ctx, b, "#main-keys")
+			if err != nil {
+				t.Fatalf("读主页面按键次数: %v", err)
+			}
+			if err := b.EnterOTP(ctx, "123456"); err != nil {
+				t.Fatalf("EnterOTP: %v", err)
+			}
+			if r := otpResult(t, ctx, b); r != "ok" {
+				t.Fatalf("3DS 验证结果 = %q，期望 ok（验证码提交了）", r)
+			}
+			if v, _ := paybrowser.FieldValue(ctx, b, "#main-keys"); v != mainKeys {
+				t.Fatalf("填验证码时主页面收到了按键：%s→%s", mainKeys, v)
+			}
+			if n := payClicks(t, ctx, b); n != "1" {
+				t.Fatalf("支付按钮收到 %s 次可信点击，期望只有点支付那 1 次", n)
+			}
+			if n := len(f.payments()); n != 1 {
+				t.Fatalf("仿造页收到 %d 次提交，期望正好 1 次", n)
+			}
+		})
+	}
+}
+
+// 验证框不是全屏遮罩（嵌在结账 form 里、紧贴支付按钮上方），验证码框和提交按钮在验证框可视区外、滚不过来（仿造页 challenge=inline）：
+// 按坐标点它们会点到主页面的支付按钮——第二次点支付。内嵌页上选中验证码框过落点检查，不过就直接设焦点；
+// 提交按钮的落点不在验证框里就不点、返回错误，也不改按回车。支付按钮只有点支付那一次点击，主页面收不到按键。
+func TestEmbeddedEnterOTPOutsideView(t *testing.T) {
+	needChrome(t)
+	t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "challenge=inline&payclicks=1")
+
+	fillSubmitEmbedded(t, b, ctx)
+	if out, msg, err := b.WaitOutcome(ctx, 15*time.Second); err != nil || out != paybrowser.OutcomeChallenge {
+		t.Fatalf("WaitOutcome = %q, %q, %v，期望 challenge", out, msg, err)
+	}
+	if n := payClicks(t, ctx, b); n != "1" {
+		t.Fatalf("填验证码之前支付按钮收到 %s 次可信点击，期望 1", n)
+	}
+	mainKeys, err := paybrowser.FieldValue(ctx, b, "#main-keys")
+	if err != nil {
+		t.Fatalf("读主页面按键次数: %v", err)
+	}
+	err = b.EnterOTP(ctx, "123456")
+	if n := payClicks(t, ctx, b); n != "1" {
+		t.Errorf("支付按钮收到 %s 次可信点击，期望仍是 1（填验证码时不能点到主页面）", n)
+	}
+	if v, _ := paybrowser.FieldValue(ctx, b, "#main-keys"); v != mainKeys {
+		t.Errorf("填验证码时主页面收到了按键：%s→%s", mainKeys, v)
+	}
+	if err == nil || !strings.Contains(err.Error(), "提交验证码失败") || !strings.Contains(err.Error(), "没有点击") {
+		t.Fatalf("EnterOTP = %v，期望「提交验证码失败……没有点击」", err)
+	}
+	for _, secret := range []string{"123456", testCard.Number} {
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("错误消息泄露了 %q: %v", secret, err)
+		}
+	}
+	time.Sleep(300 * time.Millisecond)
+	if n := len(f.payments()); n != 1 {
+		t.Fatalf("仿造页收到 %d 次提交，期望正好 1 次", n)
+	}
+	if r, _ := paybrowser.FieldValue(ctx, b, "#otp-result"); r != "" {
+		t.Fatalf("3DS 验证结果 = %q，提交按钮没点，期望没有提交", r)
 	}
 }
 

@@ -31,6 +31,8 @@
     addr=stripe      仿真实页面（2026-11-04 实测）：卡号框输入满 16 位后出现国家（US、PH）、姓名、街道地址；
                      城市、州（含 OR）、邮编在 DOM 里但 display:none，点「Enter address manually」后才可见
     addr=stripe-nolink  同 addr=stripe，但没有「Enter address manually」，三个字段一直不可见
+    reflow=1         配 addr=stripe：国家默认选 PH；国家改了之后（收到 change），地址区除国家外的字段立刻拿掉，
+                     800ms 后才重新渲染出来（新的、空的）。仿 PH 单改成 US 时地址表单重绘，比 reflowDelay（500ms）慢
     addr=suggest     仿真实页面（2026-11-04 实测，没有手动地址入口）：卡号框输入满 16 位后出现国家（US、PH）、姓名、
                      街道地址（role=combobox）；城市、州（含 OR、WA）、邮编在 DOM 里但 display:none。
                      街道收到可信的 input 且长度 ≥ 3 时显示地址联想（ul role=listbox，2 个 li role=option），按 Esc 收起；
@@ -216,16 +218,31 @@
   }
 
   if (addr === 'stripe' || addr === 'stripe-nolink') {
-    onFullNumber(function (box) {
-      box.innerHTML = countryHTML + nameHTML +
-        '<label>Address line 1 <input id="billingAddress-addressLine1Input" name="addressLine1" autocomplete="billing address-line1"></label>' +
-        (addr === 'stripe' ? '<button type="button" id="manual">Enter address manually</button>' : '') +
-        foldedHTML
+    var stripeRest = nameHTML +
+      '<label>Address line 1 <input id="billingAddress-addressLine1Input" name="addressLine1" autocomplete="billing address-line1"></label>' +
+      (addr === 'stripe' ? '<button type="button" id="manual">Enter address manually</button>' : '') +
+      foldedHTML
+    var wireManual = function () {
       var manual = document.getElementById('manual')
       if (manual && low) low.appendChild(manual)
       if (manual) manual.addEventListener('click', function () {
         document.getElementById('folded').style.display = 'block'
         manual.remove()
+      })
+    }
+    onFullNumber(function (box) {
+      box.innerHTML = countryHTML + stripeRest
+      wireManual()
+      if (q.get('reflow') !== '1') return
+      var country = document.getElementById('billingAddress-countryInput')
+      country.value = 'PH'
+      country.addEventListener('change', function () {
+        var row = country.closest('label')
+        while (row.nextSibling) row.nextSibling.remove()
+        setTimeout(function () {
+          box.insertAdjacentHTML('beforeend', stripeRest)
+          wireManual()
+        }, 800)
       })
     })
   }

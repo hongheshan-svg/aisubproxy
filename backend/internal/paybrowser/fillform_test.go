@@ -123,6 +123,13 @@ func TestFillTermsConsent(t *testing.T) {
 		b, err := fillStripe(t, f, "mode=success&terms=stuck", testBilling)
 		wantFillRefused(t, f, b, err, "同意条款")
 	})
+	// 条款勾选框做成不写 type 的 <button role="checkbox">、在支付表单里：点它就是提交支付表单。点之前看出是提交控件，不点、放弃
+	t.Run("条款勾选框是提交控件就不点", func(t *testing.T) {
+		needChrome(t)
+		f := newFakeCheckout(t)
+		b, err := fillStripe(t, f, "mode=success&terms=button", testBilling)
+		wantFillRefused(t, f, b, err, "勾选「同意条款」失败: 目标是提交控件，拒绝点击")
+	})
 	t.Run("页面没有条款勾选框照常走", func(t *testing.T) {
 		needChrome(t)
 		f := newFakeCheckout(t)

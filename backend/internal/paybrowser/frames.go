@@ -542,15 +542,11 @@ func (b *Browser) landsInOwnFrame(ctx context.Context, frames []frameRef, e *ele
 	return x, y, nil
 }
 
-// clickOption 点 iframe 里的下拉选项（地址联想）。先确认选项本身不是提交控件（同 clickReveal），
+// clickOption 点 iframe 里的下拉选项（地址联想）。先确认选项本身不是提交控件（refuseSubmitControl），
 // 再过 landsInOwnFrame，落点检查紧挨着鼠标点击；任一不过就不点、返回错误。主页面上的选项一律不点。
 func (b *Browser) clickOption(ctx context.Context, frames []frameRef, e *elem) error {
-	var isSubmit bool
-	if err := callOn(ctx, e.obj, submitControlJS, &isSubmit); err != nil {
+	if err := refuseSubmitControl(ctx, e); err != nil {
 		return err
-	}
-	if isSubmit {
-		return errSubmitControl
 	}
 	return b.clickLanded(ctx, frames, e)
 }
@@ -564,7 +560,9 @@ func (b *Browser) clickLanded(ctx context.Context, frames []frameRef, e *elem) e
 	return chromedp.MouseClickXY(x, y).Do(ctx)
 }
 
-// clickBox 用鼠标点勾选框。托管页同 click；内嵌页上先过 landsInOwnFrame，不通过就不点、返回原因，由调用方改用脚本点并核对。
+// clickBox 用鼠标点勾选框。托管页同 click（调用方 setCheck、EnsureNoSavePayment 已先看过不是提交控件）；
+// 内嵌页上同 clickOption：不是提交控件（errSubmitControl）、落点检查也通过才点，不通过就不点、返回原因。
+// 落点不对时调用方改用脚本点并核对；是提交控件时调用方绝不能再用脚本点（它们自己点之前也会先看）。
 func (b *Browser) clickBox(ctx context.Context, e *elem) error {
 	if b.pageKind() != PageEmbedded {
 		return click(ctx, e)
@@ -573,7 +571,7 @@ func (b *Browser) clickBox(ctx context.Context, e *elem) error {
 	if err != nil {
 		return err
 	}
-	return b.clickLanded(ctx, frames, e)
+	return b.clickOption(ctx, frames, e)
 }
 
 // clickEntry 点按文字找到的入口（新卡、Pay without Link、手动地址）。托管页同 clickReveal；
@@ -605,12 +603,16 @@ func focus(ctx context.Context, e *elem) error {
 	return err
 }
 
-// focusField 选中要填写的输入框。托管页同 focus。内嵌页上先过 landsInOwnFrame，通过才用鼠标点；
+// focusField 选中要填写的输入框。托管页同 focus。内嵌页上先确认它不是提交控件（refuseSubmitControl：是就不点、不设焦点，
+// 返回 errSubmitControl——焦点落在提交控件上，之后键入的回车、空格会直接触发它），再过 landsInOwnFrame，通过才用鼠标点；
 // 不通过（落点不在它自己的 iframe 上、还在移动、读不出位置）就不发任何鼠标事件，直接用 DOM.focus 设焦点。
 // 内嵌页上用了直接设焦点时，direct 是原因（落点检查的错误文字，去掉「，没有点击」，不含任何值），由调用方写进填表报告；托管页总是空。
 func (b *Browser) focusField(ctx context.Context, e *elem) (direct string, err error) {
 	if b.pageKind() != PageEmbedded {
 		return "", focus(ctx, e)
+	}
+	if err := refuseSubmitControl(ctx, e); err != nil {
+		return "", err
 	}
 	frames, lerr := b.frames(ctx)
 	if lerr == nil {

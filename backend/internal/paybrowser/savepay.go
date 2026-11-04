@@ -54,7 +54,7 @@ const savePaymentRounds = 3
 
 // EnsureNoSavePayment 确认支付页上没有勾着的「保存付款信息」勾选框，勾着就取消。返回处理结果（页面没有、未勾选、已取消），
 // 也写进 FillReport；内嵌页上第一轮鼠标没点（落点不对）时，报告里再接「；改用脚本点击（原因）」，返回值不变。
-// 读不出页面、取消不掉都报错：调用方按「未提交」放弃。只读写勾选框，绝不点支付按钮。
+// 读不出页面、取消不掉、勾选框是提交控件（errSubmitControl，不点）都报错：调用方按「未提交」放弃。只读写勾选框，绝不点支付按钮。
 func (b *Browser) EnsureNoSavePayment(ctx context.Context) (string, error) {
 	note, how := "", ""
 	err := b.do(ctx, func(ctx context.Context) error {
@@ -81,6 +81,10 @@ func (b *Browser) EnsureNoSavePayment(ctx context.Context) (string, error) {
 			e := b.evalElem(ctx, frames, fmt.Sprintf("%s(true)", savePaymentJS))
 			if e == nil {
 				return errors.New("找到勾着的「保存付款信息」，但拿不到这个勾选框")
+			}
+			// 每一轮点（鼠标、脚本）之前都先看它不是提交控件：表单里不写 type 的 button 做成勾选框样子，点一下就是提交支付（终审 I2）
+			if err := refuseSubmitControl(ctx, e); err != nil {
+				return err
 			}
 			if round == 0 {
 				// 点不到（内嵌页上落点不对时不点）也没关系，下一轮看结果，再用脚本点

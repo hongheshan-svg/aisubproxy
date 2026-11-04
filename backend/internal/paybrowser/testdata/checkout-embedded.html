@@ -23,7 +23,12 @@
     nobutton=1      主页面一个 button[type="submit"] 都没有
     leave=1         提交成功后跳到 /done（离开结账页）
     decline=文字    点击后主页面显示带这段文字的 [role="alert"]
-    challenge=1     点击后插入 iframe[name="stripe-challenge-frame"]，指向卡片服务的 acs.html
+    challenge=1     点击后插入 iframe[name="stripe-challenge-frame"]（全屏遮罩里），指向卡片服务的 acs.html?wrap=1
+    challenge=inline 点击后在结账 form 里、支付按钮正上方插入 200px 高、scrolling="no" 的 3DS 验证框（不是全屏遮罩），
+                    指向 acs.html?wrap=1&clip=1：验证码框和提交按钮在验证框可视区下沿以下、滚不过来，
+                    按坐标点它们会点到紧贴验证框下沿的支付按钮（这时支付按钮高 80px、占满整行）
+    acsnobutton=1   3DS 验证页没有提交按钮，在验证码框里按回车提交（acs.html 的 nobutton=1）
+    #otp-result（hidden）总是有：3DS 验证页提交后设为 ok（验证码对）或 fail
     rerender=1      页面加载 3 秒后再插入一个可见的提交按钮（模拟填表后页面重绘）
     pushstate=1     页面加载 3 秒后用 history.pushState 换到 /auth/login（模拟 SPA 换路由离开结账页），按钮仍只有一个
     clip=1          卡片 iframe 带 scrolling="no"、高 380px，支付按钮占满整行、高 80px，紧贴 iframe 下沿。
@@ -48,6 +53,8 @@
     busy=blur-stuck 卡片 iframe 回 frame-blur 消息（整个 iframe 失去焦点，焦点移到了本页）后，支付按钮 disabled、aria-busy="true"，
                     再也不恢复。填表时焦点只在 iframe 里换来换去，不会触发
     payclicks=1     只为下一条：支付按钮收到可信点击时 #pay-clicks 加一，页面别的不变
+    savepaybutton=1 结账 form 里多一个不写 type 的 <button role="checkbox" aria-checked="true">，文字是 Save payment details …：
+                    form 里不写 type 的 button 默认就是提交按钮，点它（鼠标或脚本 click()）就是提交结账表单、付款
     clip=1、fold=1、fold=main、cover=1、busy=…、payclicks=1 时，支付按钮收到可信点击，#pay-clicks（hidden）加一
     #main-keys（hidden）总是有，记本页收到的可信 keydown 次数
     linkverify=1    卡片 iframe 回 linkverify-shown 消息（它弹出了 Link 验证框）时，#link-state（hidden）设为 shown
@@ -79,7 +86,7 @@
 <script>
   var CARD_ORIGIN = '__CARD_ORIGIN__'
   var q = new URLSearchParams(location.search)
-  var own = ['twobuttons', 'nobutton', 'leave', 'decline', 'challenge', 'rerender', 'pushstate', 'cover', 'busy', 'payclicks']
+  var own = ['twobuttons', 'nobutton', 'leave', 'decline', 'challenge', 'rerender', 'pushstate', 'cover', 'busy', 'payclicks', 'savepaybutton', 'acsnobutton']
   var cardQuery = new URLSearchParams()
   q.forEach(function (v, k) {
     if (own.indexOf(k) < 0) cardQuery.append(k, v)
@@ -185,6 +192,15 @@
     b.textContent = '升级至 Pro'
     buttons.appendChild(b)
   }
+  if (q.get('savepaybutton') === '1') {
+    var box = document.createElement('button')
+    box.setAttribute('role', 'checkbox')
+    box.setAttribute('aria-checked', 'true')
+    box.textContent = 'Save payment details to OpenAI OpCo, LLC for future purchases'
+    var boxRow = document.createElement('div')
+    boxRow.appendChild(box)
+    document.getElementById('checkout-form').insertBefore(boxRow, buttons)
+  }
   if (q.get('nobutton') === '1') buttons.innerHTML = ''
   if (q.get('twobuttons') === '1') addButton()
   if (q.get('rerender') === '1') setTimeout(addButton, 3000)
@@ -196,15 +212,30 @@
     cardFrame.contentWindow.postMessage({ type: 'collect' }, CARD_ORIGIN)
   })
 
+  var otpResult = counter('otp-result')
+  otpResult.value = ''
+  window.addEventListener('message', function (e) {
+    if (e.origin === CARD_ORIGIN && e.data && e.data.type === '3ds') otpResult.value = e.data.ok ? 'ok' : 'fail'
+  })
   function afterPay() {
+    var acs = CARD_ORIGIN + '/acs.html?wrap=1' + (q.get('acsnobutton') === '1' ? '&nobutton=1' : '')
     if (q.get('challenge') === '1') {
       var modal = document.createElement('div')
       modal.id = 'challenge-modal'
       var frame = document.createElement('iframe')
       frame.name = 'stripe-challenge-frame'
-      frame.src = CARD_ORIGIN + '/acs.html?wrap=1'
+      frame.src = acs
       modal.appendChild(frame)
       document.body.appendChild(modal)
+    }
+    if (q.get('challenge') === 'inline') {
+      var inline = document.createElement('iframe')
+      inline.name = 'stripe-challenge-frame'
+      inline.setAttribute('scrolling', 'no')
+      inline.style.cssText = 'display: block; border: 0; width: 480px; height: 200px'
+      inline.src = acs + '&clip=1'
+      pay.style.cssText = 'display: block; width: 100%; height: 80px; margin: 0'
+      buttons.parentNode.insertBefore(inline, buttons)
     }
     if (q.get('decline')) {
       var note = document.createElement('div')

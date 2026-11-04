@@ -1,6 +1,7 @@
 package paybrowser_test
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -71,6 +72,79 @@ func TestEnsureNoSavePaymentStuck(t *testing.T) {
 	time.Sleep(200 * time.Millisecond)
 	if n := f.submitClicks.Load(); n != 0 {
 		t.Fatalf("支付按钮被点了 %d 次", n)
+	}
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("仿造页收到 %d 次提交", n)
+	}
+}
+
+// 「保存付款信息」做成不写 type 的 <button role="checkbox" aria-checked="true">、放在结账表单里（终审 I2）：
+// 表单里不写 type 的 button 默认就是提交按钮，点它（鼠标或脚本 click()）就是一次没有先置位的付款。
+// 点之前先看是不是提交控件，是就不点、报错，调用方按「未提交」放弃。托管页、内嵌页都一样。
+func TestEnsureNoSavePaymentRefusesSubmitControl(t *testing.T) {
+	check := func(t *testing.T, b *paybrowser.Browser, ctx context.Context) {
+		t.Helper()
+		note, err := b.EnsureNoSavePayment(ctx)
+		if err == nil || !strings.Contains(err.Error(), "目标是提交控件，拒绝点击") || note != "无法确认" {
+			t.Fatalf("EnsureNoSavePayment = %q, %v，期望「无法确认」并报「目标是提交控件，拒绝点击」", note, err)
+		}
+		if got := b.FillReport().SavePayment; got != "无法确认" {
+			t.Fatalf("填表报告记的是 %q", got)
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	t.Run("托管页", func(t *testing.T) {
+		needChrome(t)
+		f := newFakeCheckout(t)
+		b, ctx := openKind(t, f, stripeCheckout, "mode=success&savepay=button", paybrowser.LaunchOptions{})
+		if err := b.Fill(ctx, testCard, testBilling); err != nil {
+			t.Fatalf("Fill: %v", err)
+		}
+		check(t, b, ctx)
+		if n := f.submitClicks.Load(); n != 0 {
+			t.Fatalf("支付表单被提交了 %d 次", n)
+		}
+		if n := len(f.payments()); n != 0 {
+			t.Fatalf("仿造页收到 %d 次提交", n)
+		}
+	})
+	t.Run("内嵌页", func(t *testing.T) {
+		needChrome(t)
+		t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
+		f := newFakeEmbedded(t)
+		b, ctx := openEmbedded(t, f, "savepaybutton=1&payclicks=1")
+		if err := b.Fill(ctx, testCard, embeddedBilling); err != nil {
+			t.Fatalf("Fill: %v", err)
+		}
+		check(t, b, ctx)
+		if n := payClicks(t, ctx, b); n != "0" {
+			t.Fatalf("支付按钮收到 %s 次可信点击，期望 0", n)
+		}
+		if n := len(f.payments()); n != 0 {
+			t.Fatalf("仿造页收到 %d 次提交", n)
+		}
+	})
+}
+
+// 内嵌页上用鼠标点勾选框（clickBox）、选中输入框（focusField）之前也先看目标是不是提交控件：是就不点、不设焦点，报错。
+// 这里直接拿主页面的支付按钮当目标：不能点它，也不能把焦点设到它上面（之后的按键会直接触发它）。
+func TestEmbeddedClickRefusesSubmitControl(t *testing.T) {
+	needChrome(t)
+	f := newFakeEmbedded(t)
+	b, ctx := openEmbedded(t, f, "payclicks=1")
+	const pay = `#buttons button[type="submit"]`
+
+	if err := paybrowser.ClickBox(ctx, b, pay); err == nil || err.Error() != "目标是提交控件，拒绝点击" {
+		t.Fatalf("clickBox = %v，期望「目标是提交控件，拒绝点击」", err)
+	}
+	if direct, err := paybrowser.FocusField(ctx, b, pay); err == nil || err.Error() != "目标是提交控件，拒绝点击" {
+		t.Fatalf("focusField = %q, %v，期望报「目标是提交控件，拒绝点击」", direct, err)
+	}
+	if n, err := paybrowser.VisibleCount(ctx, b, pay+":focus"); err != nil || n != 0 {
+		t.Fatalf("焦点在支付按钮上的个数 = %d, %v，期望 0", n, err)
+	}
+	if n := payClicks(t, ctx, b); n != "0" {
+		t.Fatalf("支付按钮收到 %s 次可信点击，期望 0", n)
 	}
 	if n := len(f.payments()); n != 0 {
 		t.Fatalf("仿造页收到 %d 次提交", n)

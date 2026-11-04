@@ -50,15 +50,25 @@ const submitControlJS = `function () {
 	return !!this.closest('.SubmitButton, [data-testid="hosted-payment-submit-button"]')
 }`
 
-// clickReveal 点按文字找到的展开入口（新卡、手动地址），绝不点提交控件。
-// 这条路径没有 Submit 的「点击前置位」保护：点错就是一次未被记录的付款，之后会被当成「未提交」，造成重复付款。
-func clickReveal(ctx context.Context, e *elem) error {
+// refuseSubmitControl 在点击（鼠标或脚本 this.click()）或设焦点之前确认目标不是提交控件、也不在提交控件里（submitControlJS），
+// 是就返回 errSubmitControl，调用方不点、报错放弃。除 Submit 点支付按钮外，任何点击都没有「点击前置位」保护：
+// 点到提交控件就是一次未被记录的付款，之后会被当成「未提交」，造成重复付款。
+// 表单里不写 type 的 <button> 默认就是提交按钮，做成勾选框样子（role="checkbox"）的也一样（终审 I2）。
+func refuseSubmitControl(ctx context.Context, e *elem) error {
 	var isSubmit bool
 	if err := callOn(ctx, e.obj, submitControlJS, &isSubmit); err != nil {
 		return err
 	}
 	if isSubmit {
 		return errSubmitControl
+	}
+	return nil
+}
+
+// clickReveal 点按文字找到的展开入口（新卡、手动地址），绝不点提交控件（refuseSubmitControl）。
+func clickReveal(ctx context.Context, e *elem) error {
+	if err := refuseSubmitControl(ctx, e); err != nil {
+		return err
 	}
 	return click(ctx, e)
 }
@@ -68,6 +78,7 @@ type fillState struct {
 	done        []field   // 已填的字段，最后统一核对
 	revealClick int       // 已点手动地址入口的次数
 	revealLast  time.Time // 上次点手动地址入口的时间
+	changed     bool      // 最近一次 fillOne 填的是下拉框，而且值真的改了（chooseOption）：地址表单会重绘
 }
 
 // Fill 填入卡片与账单地址，全部发生在点支付之前，任何一步失败都报错、不点支付。错误消息只含中文字段名，绝不含值。
@@ -259,10 +270,17 @@ func (b *Browser) fillEmbeddedAddress(ctx context.Context, st *fillState, bl Bil
 			return nil
 		case visible:
 			// 已经出现：交给 fillOne 重新找一次再填，页面恰好重绘时它会等字段回来
-			return b.fillOne(ctx, st, f, fieldWait, false)
+			err = b.fillOne(ctx, st, f, fieldWait, false)
+		default:
+			// 在 DOM 里但不可见：折叠的必填字段，等它展开
+			err = b.fillOne(ctx, st, f, addressWait, true)
 		}
-		// 在 DOM 里但不可见：折叠的必填字段，等它展开
-		return b.fillOne(ctx, st, f, addressWait, true)
+		if err == nil && st.changed {
+			// 下拉框（国家）真的改了：地址表单会重绘，可能比 reflowDelay 慢（终审 M4：PH 单每笔都把国家改成 US）。
+			// 下一个字段仍按 addressWait 等它出现，不能马上记成「页面没有」
+			wait, st.changed = addressWait, false
+		}
+		return err
 	}
 
 	if err := one(field{"国家", Sel.Country, bl.Country, kindChoice}); err != nil {
@@ -646,9 +664,11 @@ func (b *Browser) fillOne(ctx context.Context, st *fillState, f field, wait time
 	if e == nil {
 		return fmt.Errorf("找不到「%s」输入框", f.label)
 	}
-	if err := b.fillField(ctx, e, f); err != nil {
+	changed, err := b.fillField(ctx, e, f)
+	if err != nil {
 		return err
 	}
+	st.changed = changed
 	st.done = append(st.done, f)
 	b.noteField(e, f)
 	return nil
@@ -713,6 +733,7 @@ func readCheck(ctx context.Context, e *elem) (checkState, error) {
 }
 
 // setCheck 把勾选框点到 want：先用鼠标点（clickBox：内嵌页上落点不对就不点），不生效再用脚本点，返回最后读到的状态。
+// 每次点（鼠标、脚本）之前都先确认它不是提交控件（refuseSubmitControl），是就不点、返回 errSubmitControl，托管页也一样。
 // 调用方先确认它当前不是 want，再按返回的状态核对。内嵌页上鼠标没点、改用了脚本点时，how 是「改用脚本点击（原因）」，写进报告。
 func (b *Browser) setCheck(ctx context.Context, e *elem, want bool) (st checkState, how string, err error) {
 	read := func() (checkState, error) {
@@ -721,12 +742,18 @@ func (b *Browser) setCheck(ctx context.Context, e *elem, want bool) (st checkSta
 		}
 		return readCheck(ctx, e)
 	}
+	if err := refuseSubmitControl(ctx, e); err != nil {
+		return checkState{}, "", err
+	}
 	why := b.refusedNote(b.clickBox(ctx, e)) // 点不到（内嵌页上落点不对时不点）也没关系，下面看结果，再用脚本点
 	if st, err = read(); err != nil || st.Checked == want {
 		return st, "", err
 	}
 	if why != "" {
 		how = "改用脚本点击（" + why + "）"
+	}
+	if err := refuseSubmitControl(ctx, e); err != nil { // 鼠标那一下之后页面可能改过它，脚本点之前再看一次
+		return st, how, err
 	}
 	if err := callOn(ctx, e.obj, `function () { this.click() }`, nil); err != nil {
 		return st, how, err
@@ -823,7 +850,7 @@ func (b *Browser) fillEmail(ctx context.Context, st *fillState, email string) er
 		return errors.New("支付页的邮箱框必填且为空，但不能编辑")
 	}
 	f := field{"邮箱", Sel.Email, email, kindText}
-	if err := b.fillField(ctx, e, f); err != nil {
+	if _, err := b.fillField(ctx, e, f); err != nil {
 		return err
 	}
 	st.done = append(st.done, f)

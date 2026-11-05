@@ -74,6 +74,7 @@ import {
   type PendingOrder, type RecentOrder,
 } from '../../lib/agentViews'
 import { ORDER_RETRY_KEY } from '../../lib/retryLock'
+import { IdempotencyLockedError } from '../../lib/idempotency'
 import { fmtBeijing } from '../../lib/mwwebhook'
 import { copyToClipboard } from '../../lib/clipboard'
 
@@ -111,6 +112,7 @@ function showPending(p: PendingOrder | null) {
 
 const SETTLED_ELSEWHERE = '这笔订单已在别的页面处理完（成功或已放弃），请先到「订单」核对，再决定是否重新下单'
 const LOCKED_ELSEWHERE = '有一笔订单结果未知（可能是在别的页面下的），请先原样重试或放弃'
+const OTHER_ACCOUNT = '这个浏览器里另一个代理商账号有一笔结果未知的订单，请刷新页面，确认当前登录的账号后再下单'
 
 async function loadAll() {
   try {
@@ -176,11 +178,19 @@ async function submit() {
     if (!product.value || !qty.value) return
     p = { product_code: product.value.product_code, quantity: qty.value, note: note.value, expected_unit_price_cents: product.value.unit_price_cents }
   }
-  // 请求发出前先锁定落盘：请求还在路上时刷新、关标签页，回来也沿用同一个请求号
-  let key: string
-  try { key = orderRetry.begin(p) } catch { showPending(orderRetry.refresh()); fail(LOCKED_ELSEWHERE); return }
-  pending.value = p
   busy.value = true; err.value = ''; notice.value = ''
+  // 请求发出前先锁定落盘（多个标签页互斥、写后读回校验）：请求还在路上时刷新、关标签页，回来也沿用同一个请求号
+  let key: string
+  try { key = await orderRetry.acquire(p) } catch (e) {
+    busy.value = false
+    if (!(e instanceof IdempotencyLockedError)) { fail('页面出错，请刷新后重试'); return }
+    // 别的标签页同一瞬间锁定了另一笔（或同一浏览器里另一个账号有未决订单）：这一笔没发
+    const cur = orderRetry.refresh()
+    showPending(cur)
+    fail(cur ? LOCKED_ELSEWHERE : OTHER_ACCOUNT)
+    return
+  }
+  pending.value = p
   try {
     const r = await agentApi('/orders', 'POST', { ...p, request_no: key, expected_unit_price_cents: p.expected_unit_price_cents })
     if (r.ok) {

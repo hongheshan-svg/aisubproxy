@@ -2,7 +2,10 @@
 import { AGENT_ERROR_TEXT } from './agentApi'
 import { fmtUsd } from './agentMoney'
 import { usdToCents } from './provider'
-import { ADJUST_RETRY_PREFIX, clearStoredPrefix, createLeaveGuard, localStore, needsLeaveGuard, RetryLock, type LeaveGuard, type RetryStore } from './retryLock'
+import {
+  ADJUST_RETRY_PREFIX, browserMutex, clearStoredPrefix, createLeaveGuard, localStore, needsLeaveGuard, RETRY_SETTLE_MS, RetryLock, storedKeysWithPrefix,
+  type LeaveGuard, type RetryLockOptions, type RetryStore,
+} from './retryLock'
 
 export type PriceCell = { tier_id: number; product_id: number; price_cents: number }
 export type OverrideCell = { product_id: number; price_cents: number }
@@ -148,6 +151,8 @@ export function adjustPreview(username: string, balanceCents: number, amountCent
 /** 离开页面前的提示：有未决调账时返回文案，否则空串。 */
 export const ADJUST_LEAVE_TEXT = '有一笔调账结果未知，离开后请先查流水再决定是否重调'
 export const ADJUST_BUSY_TEXT = '上一笔调账还在处理，请稍候'
+/** 提交前发现这个代理商有一笔别处（别的标签页、刷新前）留下的未决调账时的提示，和下单页一致。 */
+export const ADJUST_LOCKED_ELSEWHERE = '这个代理商有一笔调账结果未知（可能是在别的页面发起的），请原样重试，或放弃后先到「余额流水」确认'
 
 /** 提交前重读的结论：go 照常发；locked 有一笔结果未知的调账（可能是别的标签页的），改显示它；settled 对话框锁定的那笔已在别处处理完，不许再发。 */
 export type AdjustRecheck = { kind: 'go' } | { kind: 'locked'; pending: PendingAdjust } | { kind: 'settled' }
@@ -160,6 +165,7 @@ function samePendingAdjust(a: PendingAdjust, b: PendingAdjust): boolean {
  * 调账的未决和在途状态。结果未知的那笔（幂等键 + 金额 + 原因）按代理商 ID 分开落 localStorage：
  * 发出前就落盘，刷新、关标签页重开、新标签页都能找回同一个幂等键；多个标签页共用，每次提交前重读；管理员退出登录时清掉。
  * 存储不可用、记录只在内存里时，有在途或未决就注册 beforeunload；落进存储时不注册。
+ * 两个标签页同一瞬间对同一个代理商调账：run 用 Web Locks 互斥、写后读回校验，被覆盖的一方不发请求。
  * 调账不按管理员区分归属：换了管理员登录也能看到并处理上一位留下的未决（原样重试沿用同一个键，服务端最多入账一次）。
  */
 export class AdjustRetry {
@@ -169,7 +175,12 @@ export class AdjustRetry {
   readonly inflight = new Set<number>()
   private locks = new Map<number, RetryLock<PendingAdjust>>()
 
-  constructor(private store: RetryStore | undefined = undefined, private guard: LeaveGuard | undefined = undefined, private now: () => number = Date.now) {}
+  constructor(
+    private store: RetryStore | undefined = undefined,
+    private guard: LeaveGuard | undefined = undefined,
+    private now: () => number = Date.now,
+    private opts: RetryLockOptions = {},
+  ) {}
 
   private syncGuard() {
     const ids = new Set([...this.pendings.keys(), ...this.inflight])
@@ -180,7 +191,7 @@ export class AdjustRetry {
   keeperFor(agentId: number): RetryLock<PendingAdjust> {
     let k = this.locks.get(agentId)
     if (!k) {
-      k = new RetryLock(ADJUST_RETRY_PREFIX + agentId, this.store, parsePendingAdjust, this.now)
+      k = new RetryLock(ADJUST_RETRY_PREFIX + agentId, this.store, parsePendingAdjust, this.now, this.opts)
       this.locks.set(agentId, k)
     }
     return k
@@ -211,12 +222,15 @@ export class AdjustRetry {
     return true
   }
 
-  /** 发出前：锁定落盘，返回幂等键。内容和已锁定的不同抛 IdempotencyLockedError。 */
-  lock(agentId: number, payload: PendingAdjust): string {
-    const key = this.keeperFor(agentId).lock(payload)
-    this.pendings.set(agentId, payload)
-    this.syncGuard()
-    return key
+  /** 有没有任何未决调账：扫存储里所有代理商的记录（别的标签页留下的也算），存储不可用时看本页内存。管理员退出前用。 */
+  hasAnyPending(): boolean {
+    const ids = new Set(this.pendings.keys())
+    for (const name of storedKeysWithPrefix(ADJUST_RETRY_PREFIX, this.store)) {
+      const suffix = name.slice(ADJUST_RETRY_PREFIX.length)
+      if (/^[1-9]\d*$/.test(suffix)) ids.add(Number(suffix))
+    }
+    for (const id of ids) if (this.pendingFor(id)) return true
+    return false
   }
 
   /** 请求返回后调用（不管页面还在不在）：清在途；成功或明确失败清键和未决，结果未知记成未决、保留键。key 给了就只清这一笔。 */
@@ -237,7 +251,8 @@ export class AdjustRetry {
   }
 
   /**
-   * 发一笔调账，结算只做一次（Task 11）：发出前锁定落盘 → 等请求返回（请求本身抛异常算结果未知）→ finish。
+   * 发一笔调账，结算只做一次（Task 11）：发出前锁定落盘（跨标签页校验）→ 等请求返回（请求本身抛异常算结果未知）→ finish。
+   * 锁定时发现别处已锁定了另一笔：清在途、抛 IdempotencyLockedError，不发请求（页面据此改显示那一笔）。
    * onResult 是返回后的界面更新：它出异常照样往外抛，但不会再补记一条未决、也不会换键。
    * 调用前先 begin(agentId)。
    */
@@ -248,11 +263,14 @@ export class AdjustRetry {
     onResult?: (o: AdjustOutcome) => void,
   ): Promise<AdjustOutcome> {
     let key: string
+    const lock = this.keeperFor(agentId).acquire(payload)
+    this.pendings.set(agentId, payload) // 同步部分已落盘（有互斥锁时稍后才落）：先按未决算，失败再纠正
+    this.syncGuard()
     try {
-      key = this.lock(agentId, payload)
+      key = await lock
     } catch (e) {
       this.inflight.delete(agentId)
-      this.syncGuard()
+      this.pendingFor(agentId) // 以存储为准（别处锁定的那一笔）
       throw e
     }
     let o: AdjustOutcome
@@ -294,7 +312,7 @@ export class AdjustRetry {
 }
 
 /** 模块级单例：管理员后台各页面、多个标签页共用（经 localStorage）。 */
-export const adjustRetry = new AdjustRetry(localStore(), createLeaveGuard())
+export const adjustRetry = new AdjustRetry(localStore(), createLeaveGuard(), Date.now, { mutex: browserMutex(), settleMs: RETRY_SETTLE_MS })
 export const adjustPendings = adjustRetry.pendings
 export const adjustInflight = adjustRetry.inflight
 export const adjustKeeperFor = (agentId: number) => adjustRetry.keeperFor(agentId)
@@ -307,6 +325,8 @@ export const adjustRun = (agentId: number, payload: PendingAdjust, send: (key: s
 export const adjustAbandon = (agentId: number) => adjustRetry.abandon(agentId)
 export const adjustLeaveWarning = (agentId: number) => adjustRetry.leaveWarning(agentId)
 export const adjustReopenBlock = (agentId: number) => adjustRetry.reopenBlock(agentId)
+/** 管理员退出登录前调用：存储里有任何未决调账（别的标签页留下的也算）就返回 true。 */
+export const adjustHasAnyPending = () => adjustRetry.hasAnyPending()
 /** 管理员退出登录时调用。 */
 export const clearAdjustRetries = () => adjustRetry.clear()
 

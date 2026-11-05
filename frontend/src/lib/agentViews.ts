@@ -1,5 +1,7 @@
 // 代理商后台页面用到的纯函数：标签、下单预览、日期范围、查询串、导出请求体；结果未知的下单锁定（落 localStorage）。
-import { createLeaveGuard, localStore, needsLeaveGuard, ORDER_RETRY_KEY, RetryLock, type LeaveGuard, type RetryStore } from './retryLock'
+import {
+  browserMutex, createLeaveGuard, localStore, needsLeaveGuard, ORDER_RETRY_KEY, RETRY_SETTLE_MS, RetryLock, type LeaveGuard, type RetryLockOptions, type RetryStore,
+} from './retryLock'
 
 export const CODE_STATUS_LABELS: Record<string, string> = {
   unused: '未使用', processing: '处理中', used: '已开通', failed: '失败', disabled: '已禁用',
@@ -81,24 +83,29 @@ export type OrderRecheck = { kind: 'go' } | { kind: 'locked'; pending: PendingOr
  * 结果未知的下单：请求号和待重试内容（不含码）落 localStorage，绑定代理商登录名。
  * - 发出前就锁定落盘：请求还在路上时刷新、关标签页，回来也沿用原请求号，服务端按请求号找回第一次的结果。
  * - 刷新、关标签页重开、新标签页都能找回；多个标签页共用一份，每次提交前重读。
- * - 换了代理商登录（登录名不符）就丢弃，免得用新代理商的钱「原样重试」上一个人的订单；退出登录时清掉。
+ * - 换了代理商登录（登录名不符）就丢弃，免得用新代理商的钱「原样重试」上一个人的订单；丢弃只在 bind（核对身份）时做，
+ *   还开着的旧标签页只是看不到别人的记录、也不会覆盖它。退出登录时清掉。
+ * - 两个标签页同一瞬间下单：acquire 用 Web Locks 互斥、写后读回校验，被覆盖的一方不发请求。
  * - 存储不可用、记录只在内存里时，结果未知期间注册 beforeunload，结算后注销；落进存储时不注册（找得回，拦了只是打扰）。
  */
 export class OrderRetry {
   private owner = ''
   readonly lock: RetryLock<PendingOrder>
 
-  constructor(store: RetryStore | undefined, private guard: LeaveGuard | undefined = undefined, now: () => number = Date.now) {
-    this.lock = new RetryLock(ORDER_RETRY_KEY, store, parsePendingOrder, now)
+  constructor(store: RetryStore | undefined, private guard: LeaveGuard | undefined = undefined, now: () => number = Date.now, opts: RetryLockOptions = {}) {
+    this.lock = new RetryLock(ORDER_RETRY_KEY, store, parsePendingOrder, now, opts)
   }
 
   get bound(): boolean {
     return !!this.owner
   }
 
-  /** 记下当前代理商（/me 的 username）并重读：存储里别人的记录丢弃。返回当前代理商结果未知的那笔。 */
+  /** 记下当前代理商（/me 的 username）并重读：存储里别人的记录在这里丢弃（只在这里）。返回当前代理商结果未知的那笔。 */
   bind(owner: string): PendingOrder | null {
-    if (owner) this.owner = owner
+    if (owner) {
+      this.owner = owner
+      this.lock.discardOthers(owner)
+    }
     return this.refresh()
   }
 
@@ -116,12 +123,22 @@ export class OrderRetry {
     return shown ? { kind: 'settled' } : { kind: 'go' }
   }
 
-  /** 发请求前调用：先锁定落盘再发，返回请求号。已有别的待重试订单且内容不同时抛 IdempotencyLockedError。 */
+  /** 锁定落盘（同步，不防两个标签页同一瞬间锁定），返回请求号。已有别的待重试订单且内容不同时抛 IdempotencyLockedError。页面发请求前用 acquire。 */
   begin(p: PendingOrder): string {
     if (!this.owner) throw new Error('还没核对当前代理商，不能下单')
     const key = this.lock.lock(p, this.owner)
     this.guard?.set(needsLeaveGuard(true, this.lock.persistent)) // 写不进存储时这一刻已改用内存
     return key
+  }
+
+  /** 发请求前调用：锁定落盘并做跨标签页校验（见 RetryLock.acquire），返回请求号；被别处锁定时抛 IdempotencyLockedError，这时不要发请求。 */
+  async acquire(p: PendingOrder): Promise<string> {
+    if (!this.owner) throw new Error('还没核对当前代理商，不能下单')
+    try {
+      return await this.lock.acquire(p, this.owner)
+    } finally {
+      this.guard?.set(needsLeaveGuard(!!this.lock.current(this.owner), this.lock.persistent))
+    }
   }
 
   /** 有了明确结果（成功、明确失败、首次提交被限流）：解锁。只清请求号相同的那笔。 */
@@ -145,7 +162,7 @@ export class OrderRetry {
 }
 
 /** 模块级单例：代理商后台各页面、多个标签页共用（经 localStorage）。 */
-export const orderRetry = new OrderRetry(localStore(), createLeaveGuard())
+export const orderRetry = new OrderRetry(localStore(), createLeaveGuard(), Date.now, { mutex: browserMutex(), settleMs: RETRY_SETTLE_MS })
 
 /** 「最近一笔订单」：订单列表第一页第一条里用到的字段。 */
 export type RecentOrder = { id: number; product_code: string; product_name: string; quantity: number; total_cents: number; created_at: number }

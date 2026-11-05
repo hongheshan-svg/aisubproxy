@@ -154,9 +154,10 @@ import AgentPasswordDialog from './components/AgentPasswordDialog.vue'
 import { adminApi, centsToUsd, localCdkStatusText } from '../../lib/provider'
 import { authFetch } from '../../lib/api'
 import {
-  ADJUST_LEAVE_TEXT, adjustAbandon, adjustBegin, adjustKeeperFor, adjustLeaveWarning, adjustOpenState, adjustPendingFor, adjustPreview, adjustRecheck, adjustReopenBlock,
-  adjustRun, adminErrorText, overrideChanges, type PendingAdjust,
+  ADJUST_LEAVE_TEXT, ADJUST_LOCKED_ELSEWHERE, adjustAbandon, adjustBegin, adjustKeeperFor, adjustLeaveWarning, adjustOpenState, adjustPendingFor, adjustPreview,
+  adjustRecheck, adjustReopenBlock, adjustRun, adminErrorText, overrideChanges, type PendingAdjust,
 } from '../../lib/agentAdmin'
+import { IdempotencyLockedError } from '../../lib/idempotency'
 import { fmtUsd, parseSignedUsd } from '../../lib/agentMoney'
 import { beijingRange, defaultLedgerRange, ledgerQuery, LEDGER_KIND_LABELS } from '../../lib/agentViews'
 import { fmtBeijing } from '../../lib/mwwebhook'
@@ -417,7 +418,7 @@ async function submitAdjust() {
   const payload: PendingAdjust = { agent_id: aid, amount_cents: p.cents, note }
   // 发出前重读存储（多个标签页共用）：别处锁定了一笔就改显示那笔；这里锁定的那笔别处已处理完就不许再发（再发会换新键重复入账）
   const rc = adjustRecheck(aid, payload, adjLocked.value)
-  if (rc.kind === 'locked') { showLockedAdjust(rc.pending, '这个代理商有一笔调账结果未知（可能是在别的页面发起的），请原样重试，或放弃后先到「余额流水」确认'); return }
+  if (rc.kind === 'locked') { showLockedAdjust(rc.pending, ADJUST_LOCKED_ELSEWHERE); return }
   if (rc.kind === 'settled') {
     adjLocked.value = false
     adjMsg.value = '这笔调账已在别的页面处理完（成功或已放弃），请先到「余额流水」核对，再决定是否重新调账'
@@ -439,6 +440,13 @@ async function submitAdjust() {
       loadAgent()
       if (tab.value === 'ledger') loadLedger()
     })
+  } catch (e) {
+    // 只接住「发出前被别的标签页抢先锁定」：请求没发、不记未决；别的异常照旧往外抛
+    if (!(e instanceof IdempotencyLockedError)) throw e
+    if (aid !== id.value) return
+    const cur = adjustPendingFor(aid)
+    if (cur) showLockedAdjust(cur, ADJUST_LOCKED_ELSEWHERE)
+    else adjMsg.value = '这个代理商的调账刚被别的页面锁定又处理完了，请先到「余额流水」核对，再决定是否重新调账'
   } finally {
     adjBusy.value = false
   }

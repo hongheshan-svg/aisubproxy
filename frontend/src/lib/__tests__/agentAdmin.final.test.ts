@@ -50,6 +50,9 @@ describe('F1 调账结果未知：刷新后找回', () => {
     let sent = ''
     tab.begin(5)
     void tab.run(5, P5, (k) => { sent = k; return new Promise(() => {}) }) // 永不返回
+    expect(s.data[ADJUST_RETRY_PREFIX + '5']).toBeTruthy() // 发出前已同步落盘
+    await new Promise((r) => setTimeout(r, 0)) // 锁定校验完才真正发出
+    expect(sent).not.toBe('')
     const again = new AdjustRetry(s)
     expect(again.pendingFor(5)).toEqual(P5)
     expect(again.keeperFor(5).keyFor(P5)).toBe(sent)

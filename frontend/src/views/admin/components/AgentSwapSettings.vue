@@ -18,6 +18,9 @@
           留空保存=不修改；
           <el-tag size="small" :type="configured ? 'success' : 'info'" effect="plain">{{ configured ? '已设置' : '未设置' }}</el-tag>
         </p>
+        <p v-if="weak" class="w-full text-xs mt-1" style="color: var(--err)" data-testid="swap-password-weak">
+          当前密码不足 12 位，仍可使用，但请尽快换成至少 12 位的新密码。
+        </p>
       </el-form-item>
       <el-form-item label="每日换码上限（张）">
         <el-input-number v-model="swapLimit" :min="1" :max="100000" :step="1" :precision="0" data-field="agent_swap_daily_limit" />
@@ -50,14 +53,16 @@ const password = ref('')
 const swapLimit = ref<number | null>(null)
 let swapLimitLoaded: number | null = null
 const configured = ref(false)
+const weak = ref(false)
 const loaded = ref(false)
 const saving = ref(false)
 
-const pwHint = computed(() => (configured.value ? '已设置（留空保存不修改）' : '设置代理换码密码（至少 6 位）'))
+const pwHint = computed(() => (configured.value ? '已设置（留空保存不修改）' : '设置代理换码密码（至少 12 位）'))
 const agentSwapUrl = typeof window !== 'undefined' ? `${window.location.origin}/partner/swap` : '/partner/swap'
 
 function apply(d: Record<string, any>) {
   configured.value = !!d.agent_swap_password_configured
+  weak.value = !!d.agent_swap_password_weak
   const n = Number(d.agent_swap_daily_limit)
   swapLimit.value = n > 0 ? n : null
   swapLimitLoaded = swapLimit.value

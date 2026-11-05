@@ -13,7 +13,8 @@ import (
 // gin 默认的访问日志和崩溃日志会原样记录。这里遮掉这些参数，其余和 gin.Default 一样。
 
 // sensitiveQueryParams 是日志里要遮掉的查询参数。
-var sensitiveQueryParams = map[string]bool{"code": true, "cdk_code": true, "token": true}
+// setup_token：安装接口只认请求头，旧脚本可能仍放在查询串里，日志照样遮掉。
+var sensitiveQueryParams = map[string]bool{"code": true, "cdk_code": true, "token": true, "setup_token": true}
 
 // newEngine 等同于 gin.Default，只是访问日志和崩溃日志不带卡密和令牌。
 func newEngine() *gin.Engine {

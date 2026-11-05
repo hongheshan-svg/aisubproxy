@@ -25,7 +25,8 @@ notes="$(awk -v ver="$VER" '
   }
 ' "$FILE")"
 
-if [[ -z "${notes//[[:space:]]/}" ]]; then
+# 用 tr 判断是否全是空白：bash 的 ${notes//[[:space:]]/} 在小节很长（几万字）时极慢，macOS 自带的 bash 3.2 要跑几分钟
+if [[ -z "$(printf '%s' "$notes" | tr -d '[:space:]')" ]]; then
   echo "CHANGELOG.md 里没有 v$VER 的更新说明（需要一节「## v${VER}」），拒绝发布" >&2
   exit 1
 fi

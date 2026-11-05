@@ -7,7 +7,8 @@
         </span>
         <el-button size="small" :disabled="!egressIp" @click="copyText(egressIp)">复制</el-button>
         <el-button size="small" :loading="loadingNet" @click="loadNetwork">重探测</el-button>
-        <el-tag v-if="hints.card_api_key_configured" type="success" effect="plain">Key 已存</el-tag>
+        <el-tag v-if="keyError" type="danger" effect="plain">Key 解不开</el-tag>
+        <el-tag v-else-if="hints.card_api_key_configured" type="success" effect="plain">Key 已存</el-tag>
         <el-tag v-else type="info" effect="plain">Key 未配置</el-tag>
       </template>
     </AdminPageHeader>
@@ -48,6 +49,7 @@
             :placeholder="keyHint"
             autocomplete="off"
           />
+          <div v-if="keyError" class="text-xs mt-1" style="color: var(--el-color-danger)">{{ keyError }}</div>
         </el-form-item>
         <div class="flex flex-wrap gap-2">
           <el-button type="primary" size="large" :loading="saving" @click="save">保存</el-button>
@@ -167,6 +169,7 @@ import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { authFetch } from '../../lib/api'
 import { dialog } from '../../lib/dialog'
+import { secretErrorText, secretPlaceholder } from '../../lib/secretError'
 
 const PRESETS: Record<string, string> = {
   prod: 'https://zovocard.com',
@@ -195,9 +198,8 @@ const dlgStatus = ref(false)
 const dlgBal = ref(false)
 const dlgPlans = ref(false)
 
-const keyHint = computed(() =>
-  hints.card_api_key_configured ? `已配置 ${hints.card_api_key_hint || ''}`.trim() : '粘贴 sk_…',
-)
+const keyHint = computed(() => secretPlaceholder(hints, 'card_api_key', '粘贴 sk_…'))
+const keyError = computed(() => secretErrorText(hints, 'card_api_key'))
 
 const siteRoot = computed(() => {
   let b = (form.card_api_base || '').trim().replace(/\/+$/, '')

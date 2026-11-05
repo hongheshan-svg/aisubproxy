@@ -260,7 +260,8 @@ func TestRenewalNeverForDryRun(t *testing.T) {
 	}
 }
 
-// 会话最长保留 1 小时：续费仍待处理的转 failed 并告警，待人工单的会话直接清空；配置更长也不行。
+// 会话最长保留 1 小时：续费仍待处理的转 failed 并告警；配置更长也不行。
+// 待人工单的会话留到人工定论（审计 D-2，见 renewal_audit_ob_test.go），这里只核对它不被清。
 func TestSessionKeptAtMostOneHour(t *testing.T) {
 	h := newRenewalHarness(t)
 	far := h.clock.Now().Add(2 * time.Hour).Unix()
@@ -283,8 +284,8 @@ func TestSessionKeptAtMostOneHour(t *testing.T) {
 	if g.RenewalState != RenewalFailed || g.State != StateSucceeded {
 		t.Fatalf("到点仍待处理应转 failed: %+v", g)
 	}
-	if g := waitSessionCleared(t, review.OrderNo); g.State != StateNeedsReview {
-		t.Fatalf("待人工单只清会话: %+v", g)
+	if g := mustOrder(t, review.OrderNo); g.SessionSealed == "" || g.State != StateNeedsReview {
+		t.Fatalf("待人工单的会话要留到人工定论: %+v", g)
 	}
 	if a := waitAlerts(t, h, 1); len(a) != 1 || !strings.Contains(a[0], pending.OrderNo) {
 		t.Fatalf("应为待处理的那张告警一次: %v", a)

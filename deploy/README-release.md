@@ -75,6 +75,7 @@ curl -fsSL https://raw.githubusercontent.com/hongheshan-svg/aisubproxy/master/de
 - 安装和换版本：`deploy/docker-deploy.sh [--domain 域名] [--version X.Y.Z]`。脚本会下载这一版的 `docker-compose.yml` 等部署文件，补齐 `.env` 里缺少的密钥，然后拉取镜像并启动。版本号写进 `.env` 的 `CDK_VERSION`，之后直接 `docker compose up -d` 也是这个版本。
 - 程序在容器里以 root 运行，启动 Chrome 时降权到 `cdk-chrome` 并保留沙箱。
 - Chrome 带沙箱运行需要创建用户命名空间，而 Docker 默认的 seccomp 配置不放行 `clone`、`unshare`，所以 `docker-compose.yml` 给 `cdk` 服务加了 `security_opt: ["seccomp=./deploy/chrome-seccomp.json"]`。自己 `docker run` 的要加 `--security-opt seccomp=deploy/chrome-seccomp.json`。
+- **不要单独 `docker run -p 8080:8080` 直接暴露端口。** 镜像默认 `TRUSTED_PROXIES=127.0.0.1,172.16.0.0/12`，这是为 `docker-compose.yml` 里的 Caddy 准备的。直接发布端口时，Docker userland-proxy 会把来源改写成网桥网关（如 `172.17.0.1`），落在可信网段内，客户端自带的 `X-Forwarded-For` 就能绕过按 IP 的限流并伪造审计 IP。要么像 compose 那样经反代访问，要么运行时加 `-e TRUSTED_PROXIES=127.0.0.1`（或置空）。
 - `deploy/chrome-seccomp.json` 来自 `moby/profiles` 的 `seccomp/default.json`，末尾追加了一条 `{"names":["clone","unshare"],"action":"SCMP_ACT_ALLOW"}`。代价：容器内进程可以创建用户命名空间，比 Docker 默认配置宽松，但远小于 `seccomp=unconfined`；没有加 `SYS_ADMIN`，也没有关闭 Chrome 沙箱。
 
 ## 在线更新

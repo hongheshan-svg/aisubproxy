@@ -63,6 +63,8 @@ type payOrderColumn struct{ name, ddl, backfill string }
 //   - renewal_*：开通成功后关闭续费的进度。旧库里已经成功的单，会话早已清空，关不了续费，加列时一次性记为 skipped。
 //   - card_saved、saved_cards_before、credit_balance_before：点数单的已存卡核对结果与付款前的快照。
 //   - access_until：关闭续费核实时 ChatGPT 给的权益到期时间（Unix 秒，可为空）。
+//   - resolved_at：人工定论的时刻（Unix 秒，可为空）。定论成功的单的会话从这一刻起再留 SessionKeep 给关闭续费用
+//     （审计 D-2、D-9）；finished_at 仍是转待人工的时刻，熔断等按它统计，不改。旧库里已定论的单不补值，按 finished_at 算。
 var payKindRenewalColumns = []payOrderColumn{
 	{"kind", `kind TEXT NOT NULL DEFAULT 'subscription'`, ""},
 	{"credit_quantity", `credit_quantity INTEGER NOT NULL DEFAULT 0`, ""},
@@ -74,6 +76,7 @@ var payKindRenewalColumns = []payOrderColumn{
 	{"saved_cards_before", `saved_cards_before TEXT NOT NULL DEFAULT ''`, ""},
 	{"credit_balance_before", `credit_balance_before TEXT NOT NULL DEFAULT ''`, ""},
 	{"access_until", `access_until INTEGER`, ""},
+	{"resolved_at", `resolved_at INTEGER`, ""},
 }
 
 // addPayKindRenewalColumns 逐列补齐 payKindRenewalColumns。每列先查 pragma，已存在就跳过，所以可以重复执行；

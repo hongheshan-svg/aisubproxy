@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -181,6 +182,11 @@ func AdminSystemUpdate(c *gin.Context) {
 		target = "latest"
 	} else {
 		target = strings.TrimPrefix(target, "v")
+		// 目标版本会拼进 GitHub API 路径，只接受语义化版本，挡掉 /、..、? 等
+		if _, ok := parseVersion(target); !ok || !updateTargetRe.MatchString(target) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "目标版本号格式不对"})
+			return
+		}
 	}
 
 	updMu.Lock()
@@ -365,52 +371,10 @@ func runSeamlessUpdate(target, username string) {
 		}
 	}
 
-	// 热替换 web：先写到 web.next，再原子改名（不删 data/app.env）
-	wd := l.Web
-	webNext := wd + ".next"
-	webPrev := wd + ".prev"
-	_ = os.RemoveAll(webNext)
-	_ = os.RemoveAll(webPrev)
-	if err := copyDir(webSrc, webNext); err != nil {
-		failUpdate("写入 web.next 失败: " + err.Error())
+	// 前后端要么都换成新版，要么都保持旧版：先备好新二进制和新 web，再换二进制，最后换 web，任何一步失败都回退已换掉的部分
+	if err := swapBinaryAndWeb(l, binSrc, webSrc); err != nil {
+		failUpdate(err.Error())
 		return
-	}
-	// 轮转：web -> web.prev, web.next -> web
-	if _, err := os.Stat(wd); err == nil {
-		if err := os.Rename(wd, webPrev); err != nil {
-			failUpdate("切换 web 失败: " + err.Error())
-			return
-		}
-	}
-	if err := os.Rename(webNext, wd); err != nil {
-		// 尝试回滚
-		_ = os.Rename(webPrev, wd)
-		failUpdate("启用新 web 失败: " + err.Error())
-		return
-	}
-	_ = os.RemoveAll(webPrev)
-
-	setUpdateState(func(s *updateState) {
-		s.Message = "热替换二进制…"
-		s.Progress = 88
-	})
-
-	// 新二进制写到 .new，chmod，再 rename 覆盖（运行中 inode 仍用旧文件，直到 re-exec）
-	binDst := l.Bin
-	binNew := binDst + ".new"
-	if err := copyFile(binSrc, binNew); err != nil {
-		failUpdate("写入新二进制失败: " + err.Error())
-		return
-	}
-	_ = os.Chmod(binNew, 0o755)
-	if err := os.Rename(binNew, binDst); err != nil {
-		// 某些 FS 上 rename 覆盖失败时用 copy
-		if err2 := copyFile(binNew, binDst); err2 != nil {
-			failUpdate("替换二进制失败: " + err.Error() + " / " + err2.Error())
-			return
-		}
-		_ = os.Chmod(binDst, 0o755)
-		_ = os.Remove(binNew)
 	}
 	// 写 VERSION：放在程序之后，容器的启动接管以它为准，程序没换成功就不会有新版本号
 	if verSrc != "" {
@@ -446,7 +410,7 @@ func runSeamlessUpdate(target, username string) {
 		// 兜底：前面查过没有在途单，这里再停止派发、等可能刚开始的单进入确认或结束，再 exec
 		resume := drainPayments()
 		// 优先同进程 re-exec（PID 不变，systemd 无感，亚秒恢复）。容器里 PID 1 也不变，容器不用重启
-		if err := reexecFn(binDst, env); err != nil {
+		if err := reexecFn(l.Bin, env); err != nil {
 			resume() // 进程接着跑，恢复派发
 			if l.Container {
 				// 程序没跑起来，不算一次启动；下次容器启动由启动接管换过去
@@ -460,6 +424,97 @@ func runSeamlessUpdate(target, username string) {
 			failUpdate("重载失败: " + err.Error() + "（已尝试 systemctl restart）")
 		}
 	})
+}
+
+// updateTargetRe 目标版本只允许数字、字母、点和连字符（parseVersion 对预发布段放得比较宽）。
+var updateTargetRe = regexp.MustCompile(`^[0-9A-Za-z.\-]+$`)
+
+// 可替换的文件操作，测试用来模拟磁盘满、改名失败。
+var (
+	updCopyFile = copyFile
+	updRename   = os.Rename
+)
+
+// swapBinaryAndWeb 把新二进制和新 web 换到位，保证「要么都是新版，要么都是旧版」：
+//  1. 先把新二进制写成 bin.new、新 web 写成 web.next（这一步失败，现网文件一个都没动）；
+//  2. 保留旧二进制为 bin.old，再把 bin.new 改名覆盖 bin；
+//  3. 最后 web -> web.prev、web.next -> web；失败则把 web 和二进制都恢复成旧的。
+//
+// 成功后清理 bin.old、web.prev。不动 data/app.env。
+func swapBinaryAndWeb(l updateLayout, binSrc, webSrc string) error {
+	binDst := l.Bin
+	binNew, binOld := binDst+".new", binDst+".old"
+	wd := l.Web
+	webNext, webPrev := wd+".next", wd+".prev"
+
+	cleanup := func() {
+		_ = os.Remove(binNew)
+		_ = os.RemoveAll(webNext)
+	}
+	_ = os.Remove(binNew)
+	_ = os.Remove(binOld)
+	_ = os.RemoveAll(webNext)
+	_ = os.RemoveAll(webPrev)
+
+	if err := updCopyFile(binSrc, binNew); err != nil {
+		cleanup()
+		return errors.New("写入新二进制失败: " + err.Error())
+	}
+	if err := os.Chmod(binNew, 0o755); err != nil {
+		cleanup()
+		return errors.New("设置新二进制权限失败: " + err.Error())
+	}
+	if err := copyDir(webSrc, webNext); err != nil {
+		cleanup()
+		return errors.New("写入 web.next 失败: " + err.Error())
+	}
+
+	// 换二进制：旧的先留一份，回退用
+	hadBin := false
+	if _, err := os.Stat(binDst); err == nil {
+		hadBin = true
+		if err := updCopyFile(binDst, binOld); err != nil {
+			cleanup()
+			_ = os.Remove(binOld)
+			return errors.New("备份旧二进制失败: " + err.Error())
+		}
+	}
+	if err := updRename(binNew, binDst); err != nil {
+		cleanup()
+		_ = os.Remove(binOld)
+		return errors.New("替换二进制失败: " + err.Error())
+	}
+	restoreBin := func() {
+		if hadBin {
+			if err := updRename(binOld, binDst); err != nil {
+				log.Printf("[update] 回退旧二进制失败，旧文件仍在 %s: %v", binOld, err)
+			}
+		} else {
+			_ = os.Remove(binDst)
+		}
+	}
+
+	// 换 web
+	hadWeb := false
+	if _, err := os.Stat(wd); err == nil {
+		hadWeb = true
+		if err := updRename(wd, webPrev); err != nil {
+			restoreBin()
+			cleanup()
+			return errors.New("切换 web 失败，已回退二进制: " + err.Error())
+		}
+	}
+	if err := updRename(webNext, wd); err != nil {
+		if hadWeb {
+			_ = updRename(webPrev, wd)
+		}
+		restoreBin()
+		cleanup()
+		return errors.New("启用新 web 失败，已回退二进制和 web: " + err.Error())
+	}
+	_ = os.RemoveAll(webPrev)
+	_ = os.Remove(binOld)
+	return nil
 }
 
 // updateGOOS 是判断「只支持 linux」用的系统名；测试可改。

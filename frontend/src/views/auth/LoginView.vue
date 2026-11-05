@@ -38,6 +38,7 @@
 import { reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
+import { clearSetupLeftovers, safeAdminRedirect } from '../../lib/session'
 import ThemeToggle from '../../components/ThemeToggle.vue'
 import zh from '../../i18n/locales/zh'
 
@@ -49,18 +50,15 @@ const route = useRoute()
 const authStore = useAuthStore()
 
 const form = reactive({
-  username: sessionStorage.getItem('post_setup_user') || '',
-  password: sessionStorage.getItem('post_setup_pass') || '',
+  username: '',
+  password: '',
 })
 
 const loading = ref(false)
 const errorMessage = ref('')
 
-// 安装向导写过临时凭据时预填一次后清掉，避免长期留在 sessionStorage
-if (form.username || form.password) {
-  sessionStorage.removeItem('post_setup_user')
-  sessionStorage.removeItem('post_setup_pass')
-}
+// 旧版本安装向导往 sessionStorage 写过明文密码，进登录页时清掉（审计 B-4）
+clearSetupLeftovers(typeof sessionStorage === 'undefined' ? undefined : sessionStorage)
 
 const submit = async () => {
   loading.value = true
@@ -84,20 +82,20 @@ const submit = async () => {
       return
     }
 
-    // 认证靠 HttpOnly cookie；本地只存展示用元数据
+    // 认证靠 HttpOnly cookie；本地只存展示用元数据（登录接口也不再返回令牌）
     authStore.save({
       username: data.username,
       name: data.name,
       expiresAt: data.expires_at,
-      token: data.token,
     })
 
-    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/ops'
-    router.push(redirect)
+    // 只跳回后台内的路径，外站、协议相对地址一律回 /ops（审计 B-6）
+    router.push(safeAdminRedirect(route.query.redirect))
   } catch (error) {
     errorMessage.value = t('login.errNetwork')
+  } finally {
+    // 登录失败（密码错、被限流）直接 return 也要复位，否则按钮一直禁用转圈
+    loading.value = false
   }
-
-  loading.value = false
 }
 </script>

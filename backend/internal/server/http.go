@@ -38,20 +38,23 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	if err := db.Init(&cfg.Database); err != nil {
 		return nil, err
 	}
+	// 拒绝启动的检查（ADMIN_PASSWORD、明文卡台密钥要有主密钥、JWT_SECRET、服务商适配器）：只读，
+	// 在改数据之前做；命令行 --check 跑的是同一个函数（在线更新换版本前的预检）
+	if err := startupChecks(cfg.Server.Mode, false); err != nil {
+		return nil, err
+	}
+	// 卡台 API Key、webhook 密钥：旧版明文加密迁移；webhook 原文里的卡号、CVV、有效期清洗。失败就不启动，不静默留着明文
+	if err := db.MigrateCardSecrets(); err != nil {
+		return nil, fmt.Errorf("卡台密钥迁移: %w", err)
+	}
+	if err := db.MigrateWebhookPayloads(); err != nil {
+		return nil, fmt.Errorf("webhook 原文清洗: %w", err)
+	}
 	// Telegram 告警：后台配置优先，没配就用环境变量；旧版明文保存的令牌先加密迁移
 	handler.MigrateLegacyTelegramToken()
 	notify.SetSettingsSource(handler.TelegramSettings)
 	// 后台协程 panic 被兜住后的告警、没有自己告警通道的模块（如付款浏览器）的告警，都走这里发到 Telegram
 	safego.SetAlert(alertSender("system", notify.SendText))
-
-	// 生产模式、或已配置动钱上游密钥时，强制要求安全的 JWT secret，避免 token 被伪造后调用动钱接口
-	upstream, err := upstreamKeysConfigured()
-	if err != nil {
-		return nil, err
-	}
-	if err := enforceJWTSecret(cfg.Server.Mode, upstream); err != nil {
-		return nil, err
-	}
 
 	engine := newEngine()
 
@@ -72,10 +75,6 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	handler.SetCardPool(pool)
 	pools, err := payPools(pool)
 	if err != nil {
-		return nil, err
-	}
-	// 每家注册了的服务商都要接上 handler 层的适配器，否则它的码会被分派过来却没人接
-	if err := handler.CheckProviderAdapters(); err != nil {
 		return nil, err
 	}
 	pay := payengine.New(payengine.Options{Pools: pools, Alert: alertSender("payengine", notify.SendText)})
@@ -166,6 +165,21 @@ func upstreamKeysConfigured() (bool, error) {
 	return false, nil
 }
 
+// isExampleJWTSecret 识别照抄示例文件留下的占位密钥（A-3）：
+// deploy/app.env.example 的占位值，以及带 change-me / changeme / example 字样的值，不区分大小写。
+func isExampleJWTSecret(secret string) bool {
+	lower := strings.ToLower(secret)
+	if lower == "change-me-to-random-32chars-min" {
+		return true
+	}
+	for _, marker := range []string{"change-me", "changeme", "example"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 // enforceJWTSecret 拒绝使用空/默认/过短的 JWT 密钥启动：release 模式总是拒绝；
 // 非 release 模式下，只要已配置动钱上游密钥（hasUpstream）也拒绝，防止公开默认密钥伪造管理员 token 调用动钱接口。
 func enforceJWTSecret(mode string, hasUpstream bool) error {
@@ -173,6 +187,7 @@ func enforceJWTSecret(mode string, hasUpstream bool) error {
 	weak := secret == "" ||
 		secret == "your-secret-key-change-in-production" ||
 		secret == "dev-secret-key-change-in-production" ||
+		isExampleJWTSecret(secret) ||
 		len(secret) < 16
 	if mode == "release" && weak {
 		return fmt.Errorf("不安全的 JWT_SECRET：release 模式必须设置至少 16 位的随机 JWT_SECRET 环境变量")
@@ -233,7 +248,8 @@ func setupRoutes(r *gin.Engine) {
 		auth := api.Group("/auth")
 		{
 			auth.POST("/admin/login", handler.AdminLogin)
-			auth.POST("/admin/logout", handler.AdminLogout)
+			// 登出也要有效会话，cookie 会话还要过 CSRF：第三方页面不能随意把管理员登出（审计 A-13）
+			auth.POST("/admin/logout", JWTAuthMiddleware(), handler.AdminLogout)
 			auth.GET("/admin/me", JWTAuthMiddleware(), handler.AdminMe)
 			auth.POST("/admin/change-password", JWTAuthMiddleware(), AdminAuthMiddleware(), handler.AdminChangePassword)
 		}
@@ -271,6 +287,8 @@ func setupRoutes(r *gin.Engine) {
 		{
 			lookup.GET("/cdk", handler.LookupCDKStatus)
 			lookup.POST("/cdk/batch", handler.LookupCDKStatusBatch)
+			// 批量兑换页轮询：一次查多个令牌的结果，按一次查询计限流
+			lookup.POST("/cdk/results", handler.LookupCDKResultBatch)
 			// 兼容旧路径
 			lookup.GET("/task", handler.LookupCDKStatus)
 		}

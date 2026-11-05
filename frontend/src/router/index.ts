@@ -31,11 +31,6 @@ const routes: RouteRecordRaw[] = [
     component: () => import('../views/auth/RegisterView.vue'),
   },
   {
-    path: '/dashboard',
-    name: 'Dashboard',
-    component: () => import('../views/user/DashboardView.vue'),
-  },
-  {
     path: '/billing',
     name: 'BillingCheck',
     component: () => import('../views/user/BillingCheckView.vue'),
@@ -132,20 +127,7 @@ async function ensureSetupStatus(): Promise<boolean> {
   return setupInstalled
 }
 
-// 本地登录态（localStorage 到期时间）只代表「曾经登录过」，服务端重启/换密钥后会话可能已失效。
-// 每次页面加载只向服务端确认一次；明确 401/403 才判定失效，网络错误不踢人。
-let sessionVerified = false
-async function serverSessionAlive(): Promise<boolean> {
-  if (sessionVerified) return true
-  try {
-    const r = await fetch('/api/v1/admin/settings', { credentials: 'include' })
-    if (r.status === 401 || r.status === 403) return false
-  } catch {
-    /* 后端不可达：沿用本地登录态 */
-  }
-  sessionVerified = true
-  return true
-}
+const isLoginPath = (path: string) => path === `${OPS_BASE}/login` || path === '/auth/login'
 
 router.beforeEach(async (to) => {
   const authStore = useAuthStore()
@@ -159,11 +141,12 @@ router.beforeEach(async (to) => {
     return `${OPS_BASE}/login`
   }
 
-  const toLogin = to.path === `${OPS_BASE}/login` || to.path === '/auth/login'
-  if ((to.meta.requiresAdmin || toLogin) && authStore.isLoggedIn && !(await serverSessionAlive())) {
-    authStore.logout()
-    if (toLogin) return
-    return { path: `${OPS_BASE}/login`, query: { redirect: to.fullPath } }
+  const toLogin = isLoginPath(to.path)
+  // 登录态以服务端为准：本次页面加载第一次进后台或登录页时问一次 /auth/admin/me。
+  // 本地没有记录但 cookie 还有效（刷新、清过存储）照样算已登录；服务端说失效就清掉本地记录；
+  // 服务端暂时不可达时沿用本地记录，不踢人。登录、退出之后不再问。
+  if (to.meta.requiresAdmin || toLogin) {
+    await authStore.ensureSession()
   }
 
   if (to.meta.requiresAdmin && !authStore.isLoggedIn) {
@@ -173,7 +156,7 @@ router.beforeEach(async (to) => {
     }
   }
 
-  if ((to.path === `${OPS_BASE}/login` || to.path === '/auth/login') && authStore.isLoggedIn) {
+  if (toLogin && authStore.isLoggedIn) {
     return OPS_BASE
   }
 })

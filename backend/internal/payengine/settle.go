@@ -535,7 +535,7 @@ func (s *Service) verifyRescheduleAfter(ctx context.Context, j *job, delay time.
 	}
 }
 
-// verifyEscalate 转待人工：Release(aborted)，告警。真实开通单的会话留到 SessionKeep：人工在这之内定论成功，还能关闭续费。
+// verifyEscalate 转待人工：Release(aborted)，告警。真实开通单的会话留到人工定论：定论成功时还能关闭续费（见 renewal.go）。
 func (s *Service) verifyEscalate(ctx context.Context, j *job, code, reason string) {
 	if wantsRenewalCancel(j.o) {
 		j.keepSession = true

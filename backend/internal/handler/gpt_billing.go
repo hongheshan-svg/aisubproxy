@@ -127,19 +127,33 @@ func billingCheckByCDK(c *gin.Context, cdk string) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "账单服务暂时不可用，请稍后再试，或改用直接粘贴 session 查询。"})
 		return
 	}
-	invoices := inv.Invoices
-	if invoices == nil && inv.InvoiceURL != "" {
-		invoices = []map[string]interface{}{
-			{"hosted_invoice_url": inv.InvoiceURL},
+	// 知道卡密不等于本人（审计 F-1）：邮箱打码，账单只给金额、状态、时间这类摘要，不给账单链接和 PDF。
+	// 托管账单页不用登录就能打开，上面有账单抬头和邮箱；要链接请用户当场粘贴 session 查询。
+	c.JSON(http.StatusOK, gin.H{
+		"summary":     map[string]interface{}{"email": maskEmailForAdmin(email)},
+		"invoices":    billingInvoiceDigest(inv.Invoices),
+		"auth_source": "accounthub",
+		"note":        "凭卡密查询只显示账单金额和时间，不提供账单链接；需要账单链接请改用 Session 查询",
+	})
+}
+
+// billingInvoiceDigestKeys 是凭卡密查账单时每张账单可以给出的字段：金额、币种、状态和时间。
+// 其余字段（hosted_invoice_url、invoice_pdf、customer_*、description、lines 等）一律不给。
+var billingInvoiceDigestKeys = []string{"id", "number", "status", "paid", "total", "amount_paid", "amount_due", "currency", "created", "period_start", "period_end"}
+
+// billingInvoiceDigest 把 accounthub 的账单列表按白名单裁成摘要，裁完什么都不剩的（例如只有链接）不要；永不返回 nil。
+func billingInvoiceDigest(list []map[string]interface{}) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(list))
+	for _, inv := range list {
+		d := make(map[string]interface{}, len(billingInvoiceDigestKeys))
+		for _, k := range billingInvoiceDigestKeys {
+			if v, ok := inv[k]; ok {
+				d[k] = v
+			}
+		}
+		if len(d) > 0 {
+			out = append(out, d)
 		}
 	}
-	if invoices == nil {
-		invoices = []map[string]interface{}{}
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"summary":     map[string]interface{}{"email": email},
-		"invoices":    invoices,
-		"invoice_url": inv.InvoiceURL,
-		"auth_source": "accounthub",
-	})
+	return out
 }

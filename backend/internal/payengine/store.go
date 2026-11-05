@@ -28,7 +28,7 @@ var settableColumns = map[string]bool{
 	"resolved_by": true, "resolve_note": true,
 	"kind": true, "credit_quantity": true, "renewal_state": true, "renewal_attempts": true,
 	"renewal_checked_at": true, "renewal_next_at": true, "card_saved": true, "saved_cards_before": true,
-	"credit_balance_before": true, "access_until": true,
+	"credit_balance_before": true, "access_until": true, "resolved_at": true,
 }
 
 const orderColumns = `id, order_no, provider, source, source_ref, dry_run, plan_key, region, currency, cap_minor, fund_cents,
@@ -36,7 +36,7 @@ const orderColumns = `id, order_no, provider, source, source_ref, dry_run, plan_
 	card_id, card_last4, lease_token, fund_order_no, billing_state, page_outcome, submitted_at, failure, error_code,
 	error_message, verify_until, next_check_at, resolved_by, resolve_note, created_at, updated_at, finished_at,
 	kind, credit_quantity, renewal_state, renewal_attempts, renewal_checked_at, renewal_next_at, card_saved,
-	saved_cards_before, credit_balance_before, access_until`
+	saved_cards_before, credit_balance_before, access_until, resolved_at`
 
 // newOrderNo 生成单号：PO + yyMMddHHmmss（UTC）+ 8 位小写十六进制，共 22 位。
 func newOrderNo(now time.Time) string {
@@ -212,7 +212,7 @@ func scanOrder(r rowScanner) (*Order, error) {
 		&o.CardID, &o.CardLast4, &o.LeaseToken, &o.FundOrderNo, &o.BillingState, &o.PageOutcome, &o.SubmittedAt, &o.Failure, &o.ErrorCode,
 		&o.ErrorMessage, &o.VerifyUntil, &o.NextCheckAt, &o.ResolvedBy, &o.ResolveNote, &o.CreatedAt, &o.UpdatedAt, &o.FinishedAt,
 		&o.Kind, &o.CreditQuantity, &o.RenewalState, &o.RenewalAttempts, &o.RenewalCheckedAt, &o.RenewalNextAt, &o.CardSaved,
-		&o.SavedCardsBefore, &o.CreditBalanceBefore, &o.AccessUntil)
+		&o.SavedCardsBefore, &o.CreditBalanceBefore, &o.AccessUntil, &o.ResolvedAt)
 	if err != nil {
 		return nil, err
 	}

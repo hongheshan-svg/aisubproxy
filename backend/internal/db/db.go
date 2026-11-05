@@ -9,8 +9,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -27,18 +29,64 @@ const (
 	legacyDefaultPassword = "admin123456"
 )
 
-func Init(cfg *config.DatabaseConfig) error {
-	// 使用 SQLite。默认 ../data/cdk_recharge.db（相对于backend目录）；
-	// 部署/容器内可用环境变量 DB_PATH 覆盖（如 /app/data/cdk_recharge.db）。
-	dbPath := "../data/cdk_recharge.db"
+// ResolvePath 是数据库文件的位置：默认 ../data/cdk_recharge.db（相对于工作目录，即 backend 目录）；
+// 部署/容器内可用环境变量 DB_PATH 覆盖（如 /app/data/cdk_recharge.db）。启动和 --check 用同一个规则。
+func ResolvePath() string {
 	if p := strings.TrimSpace(os.Getenv("DB_PATH")); p != "" {
-		dbPath = p
+		return p
 	}
+	return "../data/cdk_recharge.db"
+}
+
+// InitialAdminPasswordFileName 是随机初始管理员密码的文件名，放在数据库文件所在目录。
+const InitialAdminPasswordFileName = "initial-admin-password.txt"
+
+// InitialAdminPasswordPath 是随机初始管理员密码文件的位置：和数据库文件同一目录。
+func InitialAdminPasswordPath() string {
+	return filepath.Join(filepath.Dir(ResolvePath()), InitialAdminPasswordFileName)
+}
+
+// RemoveInitialAdminPasswordFile 删掉随机初始密码文件（第一次改密成功后调用）。文件不存在不算错；
+// 其他错误只记一行日志，不带文件内容。
+func RemoveInitialAdminPasswordFile() {
+	path := InitialAdminPasswordPath()
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		log.Printf("删除初始管理员密码文件失败（%s）: %v", path, err)
+	}
+}
+
+// writeInitialAdminPasswordFile 把随机初始密码写进新建的 0600 文件。已有的同名文件或符号链接先删掉再用 O_EXCL 新建：
+// 不复用旧文件（否则密码会先以旧权限落盘），也不跟随符号链接（O_EXCL 遇到已存在的路径包括链接直接失败）。
+// 错误信息不带密码。
+func writeInitialAdminPasswordFile(path, username, password string) error {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	content := fmt.Sprintf("用户名: %s\n初始密码: %s\n登录后台并修改密码后，这个文件会被自动删除；也可以手动删除。\n", username, password)
+	_, werr := f.WriteString(content)
+	cerr := f.Close()
+	if werr != nil {
+		return werr
+	}
+	if cerr != nil {
+		return cerr
+	}
+	return os.Chmod(path, 0o600)
+}
+
+func Init(cfg *config.DatabaseConfig) error {
+	dbPath := ResolvePath()
 	log.Printf("使用数据库: %s", dbPath)
 	// WAL 让读不阻塞写；busy_timeout 让并发写等待锁而不是立刻报 database is locked。
 	// 参数写在 DSN 里，对连接池里每一个连接都生效（busy_timeout 是连接级设置）。
 	// _txlock=immediate：事务一开始就拿写锁，避免读后升级写时的 SQLITE_BUSY（busy_timeout 管不了这种死锁）。
-	dsn := dbPath + "?_journal_mode=WAL&_busy_timeout=10000&_synchronous=NORMAL&_txlock=immediate"
+	// _synchronous=FULL：每次提交都等落盘。NORMAL 在掉电、内核崩溃时可能丢最近几笔已提交的事务，
+	// 付款单「已付款」回退成「处理中」后，重启恢复可能再付一次。本站写入量小，FULL 的代价可以接受。
+	dsn := dbPath + "?_journal_mode=WAL&_busy_timeout=10000&_synchronous=FULL&_txlock=immediate"
 	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return err
@@ -144,7 +192,8 @@ func createTables() error {
 			display_name TEXT,
 			is_active INTEGER DEFAULT 1,
 			created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+			token_version INTEGER NOT NULL DEFAULT 0
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_admin_users_username ON admin_users(username)`,
 
@@ -183,6 +232,12 @@ func createTables() error {
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_cdk_bind_token ON cdk_session_bindings(redemption_token)`,
+		// 只增不改的令牌表：同一张码重复预览会拿到多个令牌，旧令牌也要认（审计 N-2）。
+		`CREATE TABLE IF NOT EXISTS cdk_redemption_tokens (
+			token TEXT PRIMARY KEY,
+			cdk_code TEXT NOT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		)`,
 
 		// 代理失败换码日志（旧码 → 新码，仅未扣款失败）
 		`CREATE TABLE IF NOT EXISTS agent_cdk_exchanges (
@@ -273,12 +328,21 @@ func createTables() error {
 
 	for _, query := range queries {
 		if _, err := DB.Exec(query); err != nil {
-			log.Printf("警告: 创建表时出错 (可能已存在): %v", err)
+			// 语句都带 IF NOT EXISTS，正常不会失败；失败多半是磁盘满、库文件损坏或表结构不对，
+			// 带病启动只会在后面以更难懂的方式出错，这里直接终止（审计 A-16）。
+			if strings.Contains(err.Error(), "already exists") {
+				log.Printf("创建表时提示已存在，跳过: %v", err)
+				continue
+			}
+			return fmt.Errorf("建表失败（%s）: %w", ddlHead(query), err)
 		}
 	}
 
 	log.Println("✓ 数据表已准备就绪")
 	if err := migrateCDKPlanTypes(); err != nil {
+		return err
+	}
+	if err := backfillRedemptionTokens(); err != nil {
 		return err
 	}
 	if err := migrateLegacyCDKCodes(); err != nil {
@@ -292,6 +356,9 @@ func createTables() error {
 	}
 	if err := migrateCardplatformCDKRegionCol(); err != nil {
 		return fmt.Errorf("migrate cardplatform CDK region: %w", err)
+	}
+	if err := migrateAdminTokenVersion(); err != nil {
+		return fmt.Errorf("migrate admin token version: %w", err)
 	}
 	if err := ensureDefaultAdmin(); err != nil {
 		return err
@@ -323,6 +390,15 @@ func createTables() error {
 	return nil
 }
 
+// ddlHead 把建表语句压成一行、截前 80 个字符，放进错误信息里指明是哪一条。
+func ddlHead(q string) string {
+	h := strings.Join(strings.Fields(q), " ")
+	if r := []rune(h); len(r) > 80 {
+		h = string(r[:80]) + "…"
+	}
+	return h
+}
+
 // Migrate 是 createTables 的导出入口，供测试在内存库上建表。
 func Migrate() error { return createTables() }
 
@@ -338,6 +414,27 @@ func migrateCardplatformCDKStatusCol() error {
 	}
 	_, err = DB.Exec(`ALTER TABLE cardplatform_cdk_codes ADD COLUMN status TEXT DEFAULT ''`)
 	return err
+}
+
+// migrateAdminTokenVersion 给旧库的管理员表补令牌版本号（审计 A-2）。可重复执行：列已在就跳过。
+// 版本号签进 JWT，改密码时加一，之前签发的令牌随之作废；老账号从 0 开始，升级前签发的令牌（不带版本号，按 0 算）照常可用到过期。
+func migrateAdminTokenVersion() error {
+	var n int
+	if err := DB.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('admin_users') WHERE name='token_version'`).Scan(&n); err != nil {
+		return err
+	}
+	if n > 0 {
+		return nil
+	}
+	_, err := DB.Exec(`ALTER TABLE admin_users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0`)
+	return err
+}
+
+// AdminTokenState 返回管理员当前的令牌版本号和是否启用，鉴权中间件每个请求查一次。账号不存在返回 sql.ErrNoRows。
+func AdminTokenState(id int64) (version int64, active bool, err error) {
+	var isActive int
+	err = DB.QueryRow(`SELECT token_version, COALESCE(is_active, 0) FROM admin_users WHERE id = ?`, id).Scan(&version, &isActive)
+	return version, isActive == 1, err
 }
 
 // legacySHA256 是旧的（不安全）哈希算法，仅用于兼容历史数据并在登录时升级为 bcrypt。
@@ -384,13 +481,13 @@ func VerifyAdminPassword(stored, plain string) (bool, string) {
 	return false, ""
 }
 
-// SetAdminPassword 更新指定管理员的密码（bcrypt）。
+// SetAdminPassword 更新指定管理员的密码（bcrypt），同时令牌版本号加一：改密前签发的所有令牌立刻失效。
 func SetAdminPassword(username, newPlain string) error {
 	hash, err := HashAdminPassword(newPlain)
 	if err != nil {
 		return err
 	}
-	_, err = DB.Exec(`UPDATE admin_users SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE username = ?`, hash, username)
+	_, err = DB.Exec(`UPDATE admin_users SET password_hash = ?, token_version = token_version + 1, updated_at = CURRENT_TIMESTAMP WHERE username = ?`, hash, username)
 	return err
 }
 
@@ -404,17 +501,34 @@ func UpgradeAdminHash(username, newHash string) {
 	}
 }
 
+// randomPassword 生成管理员初始密码和安装令牌。crypto/rand 读不出来时直接 panic：
+// 宁可启动失败，也不能退回一个可预测的口令（Go 1.24 起 crypto/rand 本身也不会返回错误）。
 func randomPassword(n int) string {
+	p, err := randomPasswordFrom(rand.Reader, n)
+	if err != nil {
+		panic(fmt.Sprintf("生成随机口令失败: %v", err))
+	}
+	return p
+}
+
+// randomPasswordFrom 用拒绝采样从字母表里取 n 个字符：只用小于 224（56 的最大整数倍）的字节，
+// 每个字符等概率。原来直接取模，256 % 56 = 32，前 32 个字符的概率高出 25%（审计 A-17）。
+func randomPasswordFrom(src io.Reader, n int) (string, error) {
 	const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789"
+	const limit = 256 - 256%len(alphabet)
+	out := make([]byte, 0, n)
 	buf := make([]byte, n)
-	if _, err := rand.Read(buf); err != nil {
-		return "Chg-Me-" + legacySHA256(fmt.Sprintf("%d", time.Now().UnixNano()))[:12]
+	for len(out) < n {
+		if _, err := io.ReadFull(src, buf); err != nil {
+			return "", err
+		}
+		for _, b := range buf {
+			if int(b) < limit && len(out) < n {
+				out = append(out, alphabet[int(b)%len(alphabet)])
+			}
+		}
 	}
-	out := make([]byte, n)
-	for i, b := range buf {
-		out[i] = alphabet[int(b)%len(alphabet)]
-	}
-	return string(out)
+	return string(out), nil
 }
 
 // InstallMode: wizard（推荐，等 Web 安装）| auto（启动时建管理员，兼容旧行为）
@@ -517,6 +631,30 @@ func VerifySetupToken(plain string) bool {
 	return subtle.ConstantTimeCompare([]byte(got), []byte(stored)) == 1
 }
 
+// RollbackAdminBootstrap 撤销一次没通过自检的安装：删掉刚建的管理员和安装完成标记，
+// 并把安装令牌恢复成这次用的那个（CreateAdminUser 已把它删了），管理员不用重启就能用同一个令牌重试（审计 A-11）。
+func RollbackAdminBootstrap(userID int64, setupToken string) error {
+	tx, err := DB.Begin()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if _, err := tx.Exec(`DELETE FROM admin_users WHERE id = ?`, userID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM site_settings WHERE key = 'install_completed_at'`); err != nil {
+		return err
+	}
+	sum := sha256.Sum256([]byte(setupToken))
+	if _, err := tx.Exec(`
+		INSERT INTO site_settings (key, value, updated_at) VALUES ('setup_token_hash', ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+	`, hex.EncodeToString(sum[:])); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // MarkInstalled 写安装完成标记并作废 setup token。
 func MarkInstalled(username string) error {
 	if err := SetSetting("install_completed_at", time.Now().UTC().Format(time.RFC3339)); err != nil {
@@ -548,6 +686,49 @@ func IsWeakPassword(p string) bool {
 	return false
 }
 
+// defaultAdminPlan 是启动时对默认管理员的判定。
+type defaultAdminPlan struct {
+	username     string
+	exists       bool   // 这个用户名的管理员已存在
+	existingHash string // exists 时的密码哈希
+	create       bool   // 要在启动时建号
+	password     string // create 时用的 ADMIN_PASSWORD；为空表示随机生成
+}
+
+// planDefaultAdmin 只读：判断启动时要不要建默认管理员、ADMIN_PASSWORD 够不够强。
+// ensureDefaultAdmin 按它建号，CheckDefaultAdmin（命令行 --check）只取它的错误：两边是同一套规则。
+func planDefaultAdmin() (defaultAdminPlan, error) {
+	p := defaultAdminPlan{username: os.Getenv("ADMIN_USERNAME")}
+	if strings.TrimSpace(p.username) == "" {
+		p.username = DefaultAdminUsername
+	}
+	var count int
+	if err := DB.QueryRow(`SELECT COUNT(*), COALESCE(MAX(password_hash), '') FROM admin_users WHERE username = ?`, p.username).Scan(&count, &p.existingHash); err != nil {
+		return p, err
+	}
+	if count > 0 {
+		p.exists = true
+		return p, nil
+	}
+	// wizard：无 ADMIN_PASSWORD 时不自动建号，等 Web bootstrap
+	password := strings.TrimSpace(os.Getenv("ADMIN_PASSWORD"))
+	if InstallMode() == "wizard" && password == "" {
+		return p, nil
+	}
+	if password != "" && (IsWeakPassword(password) || strings.EqualFold(password, p.username)) {
+		// 和安装向导同样的强度要求（审计 A-12）。拒绝启动，错误信息里不带口令本身。
+		return p, fmt.Errorf("ADMIN_PASSWORD 太弱：至少 12 位、不能是常见弱口令、不能和用户名相同。请换成强口令，或删掉 ADMIN_PASSWORD 改用安装向导 /ops/setup")
+	}
+	p.create, p.password = true, password
+	return p, nil
+}
+
+// CheckDefaultAdmin 只读检查启动时按 ADMIN_PASSWORD 建管理员能不能通过（口令太弱会拒绝启动）。
+func CheckDefaultAdmin() error {
+	_, err := planDefaultAdmin()
+	return err
+}
+
 func ensureDefaultAdmin() error {
 	// 先确保有安装令牌（wizard 模式、未安装时）
 	if !IsInstalled() && InstallMode() == "wizard" {
@@ -564,21 +745,15 @@ func ensureDefaultAdmin() error {
 		}
 	}
 
-	username := os.Getenv("ADMIN_USERNAME")
-	if strings.TrimSpace(username) == "" {
-		username = DefaultAdminUsername
-	}
-
-	var count int
-	var existingHash string
-	err := DB.QueryRow(`SELECT COUNT(*), COALESCE(MAX(password_hash), '') FROM admin_users WHERE username = ?`, username).Scan(&count, &existingHash)
+	plan, err := planDefaultAdmin()
 	if err != nil {
 		return err
 	}
+	username := plan.username
 
-	if count > 0 {
+	if plan.exists {
 		// 已存在：若仍是历史弱口令，则在启动时大声告警，提示尽快改密。
-		if ok, _ := VerifyAdminPassword(existingHash, legacyDefaultPassword); ok {
+		if ok, _ := VerifyAdminPassword(plan.existingHash, legacyDefaultPassword); ok {
 			log.Printf("⚠️  管理员 %s 仍在使用历史默认密码（admin123456），存在严重风险，请立刻登录后台修改密码！", username)
 		}
 		// 补写 install 标记（从旧库升级）
@@ -588,15 +763,12 @@ func ensureDefaultAdmin() error {
 		}
 		return nil
 	}
-
-	// wizard：无 ADMIN_PASSWORD 时不自动建号，等 Web bootstrap
-	password := strings.TrimSpace(os.Getenv("ADMIN_PASSWORD"))
-	if InstallMode() == "wizard" && password == "" {
+	if !plan.create {
 		return nil
 	}
 
 	// auto 或显式 ADMIN_PASSWORD：启动时建管理员
-	generated := false
+	password, generated := plan.password, false
 	if password == "" {
 		password = randomPassword(16)
 		generated = true
@@ -606,20 +778,26 @@ func ensureDefaultAdmin() error {
 	if err != nil {
 		return err
 	}
+	// 随机密码不进日志（CodeQL go/clear-text-logging）：先写 0600 文件再建号，写不了就拒绝启动。
+	pwPath := InitialAdminPasswordPath()
+	if generated {
+		if err := writeInitialAdminPasswordFile(pwPath, username, password); err != nil {
+			return fmt.Errorf("无法写入初始管理员密码文件 %s: %v。请设置环境变量 ADMIN_PASSWORD 指定初始密码，或改用安装向导 INSTALL_MODE=wizard", pwPath, err)
+		}
+	}
 	if _, err := DB.Exec(`
 		INSERT INTO admin_users (username, password_hash, display_name, is_active, updated_at)
 		VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP)
 	`, username, hash, "System Admin"); err != nil {
+		if generated {
+			_ = os.Remove(pwPath)
+		}
 		return err
 	}
 	_ = MarkInstalled(username)
 
 	if generated {
-		log.Printf("============================================================")
-		log.Printf("✓ 已创建管理员账号: %s", username)
-		log.Printf("  初始随机密码（仅此一次显示，请立即登录修改）: %s", password)
-		log.Printf("  也可通过环境变量 ADMIN_PASSWORD 指定初始密码。")
-		log.Printf("============================================================")
+		log.Printf("已创建管理员账号 %s，初始随机密码已写入 %s（权限 0600），请立即登录修改密码，改密成功后该文件会自动删除", username, pwPath)
 	} else {
 		log.Printf("✓ 已用 ADMIN_PASSWORD 创建管理员账号: %s", username)
 	}
@@ -758,7 +936,30 @@ func BindCDKRedemptionToken(provider, cdkCode, redemptionToken string) error {
 			redemption_token = excluded.redemption_token,
 			updated_at = CURRENT_TIMESTAMP
 	`, code, tok, provider)
+	if err != nil {
+		return err
+	}
+	return recordRedemptionToken(code, tok)
+}
+
+// recordRedemptionToken 把令牌记进只增不改的令牌表；已存在就忽略。令牌不设保留期限（每条只有几十字节）。
+func recordRedemptionToken(code, tok string) error {
+	if code == "" || tok == "" {
+		return nil
+	}
+	_, err := DB.Exec(`INSERT OR IGNORE INTO cdk_redemption_tokens (token, cdk_code) VALUES (?, ?)`, tok, code)
 	return err
+}
+
+// backfillRedemptionTokens 把绑定表里已有的令牌补进令牌表，可重复执行。
+func backfillRedemptionTokens() error {
+	_, err := DB.Exec(`INSERT OR IGNORE INTO cdk_redemption_tokens (token, cdk_code)
+		SELECT redemption_token, cdk_code FROM cdk_session_bindings
+		WHERE redemption_token IS NOT NULL AND redemption_token != ''`)
+	if err != nil {
+		return fmt.Errorf("补齐兑换令牌表失败: %w", err)
+	}
+	return nil
 }
 
 // FindCodeByRedemptionToken 预检绑 session 时反查完整卡密
@@ -780,6 +981,38 @@ func FindCodeByRedemptionToken(redemptionToken string) (string, error) {
 		return "", nil
 	}
 	return code, err
+}
+
+// KnownRedemptionTokens 返回 tokens 里本站预览时记过的那些（cdk_redemption_tokens，只增不改；同码多次预览的旧令牌也在内）。
+// 批量查结果用：只有本站兑换预览时写过绑定的上游令牌才转发上游（审计 money N-1）。
+func KnownRedemptionTokens(tokens []string) (map[string]bool, error) {
+	out := make(map[string]bool, len(tokens))
+	args := make([]any, 0, len(tokens))
+	for _, t := range tokens {
+		if t = strings.TrimSpace(t); t != "" {
+			args = append(args, t)
+		}
+	}
+	if len(args) == 0 {
+		return out, nil
+	}
+	if DB == nil {
+		return nil, fmt.Errorf("db not ready")
+	}
+	rows, err := DB.Query(`SELECT token FROM cdk_redemption_tokens
+		WHERE token IN (?`+strings.Repeat(",?", len(args)-1)+`)`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var tok string
+		if err := rows.Scan(&tok); err != nil {
+			return nil, err
+		}
+		out[tok] = true
+	}
+	return out, rows.Err()
 }
 
 func migrateCDKPlanTypes() error {

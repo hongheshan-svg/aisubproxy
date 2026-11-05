@@ -4,9 +4,12 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
+	"github.com/tuzi/cdk-recharge-system/internal/secretbox"
 )
 
 // 密钥类键：只接受写入，读出脱敏
@@ -46,15 +49,23 @@ func AdminGetSettings(c *gin.Context) {
 	}
 	// 非密钥可读
 	for k, isSecret := range secretSettingKeys {
-		v, _ := db.GetSetting(k)
 		if isSecret {
-			out[k+"_configured"] = strings.TrimSpace(v) != ""
-			out[k+"_hint"] = maskSecret(v)
+			raw, _ := db.GetSetting(k)
+			out[k+"_configured"] = strings.TrimSpace(raw) != ""
+			v, err := db.GetCardSecret(k)
+			if err != nil {
+				out[k+"_hint"] = ""
+				out[k+"_error"] = "已保存的值解不开：APP_MASTER_KEY 没配置或已更换，请重新填写"
+			} else {
+				out[k+"_hint"] = maskSecret(v)
+			}
 		} else {
+			v, _ := db.GetSetting(k)
 			out[k] = v
 		}
 	}
 	out["agent_swap_password_configured"] = agentSwapPasswordConfigured()
+	out["agent_swap_password_weak"] = agentSwapPasswordWeak()
 	out["agent_swap_daily_limit"] = agentSwapDailyLimit()
 	c.JSON(http.StatusOK, out)
 }
@@ -81,52 +92,104 @@ func AdminPutSettings(c *gin.Context) {
 		return
 	}
 
-	setIf := func(key string, p *string, max int) error {
-		if p == nil {
-			return nil
-		}
-		v := strings.TrimSpace(*p)
-		if max > 0 && len(v) > max {
-			v = v[:max]
-		}
-		// 空字符串对密钥类表示「不修改」；若要清空用 " " 不支持清空密钥防误操作
-		if v == "" && secretSettingKeys[key] {
-			return nil
-		}
-		return db.SetSetting(key, v)
+	// 先校验再写：任何一项非法，都不能带着其它设置项一起存进去一半
+	bad := func(msg string) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": msg})
 	}
-
-	// 先校验再写：非法值不能带着其它设置项一起存进去一半
+	// 文本项：按字符数（rune）判断长度，超长直接拒绝，不截断
+	type textItem struct {
+		key   string
+		p     *string
+		max   int
+		label string
+	}
 	if body.AgentSwapDailyLimit != nil && *body.AgentSwapDailyLimit <= 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "代理换码每日上限必须大于 0"})
+		bad("代理换码每日上限必须大于 0")
 		return
 	}
-
 	allowedSkins := map[string]bool{
 		"zovo": true, "terracotta": true, "ocean": true, "cyber": true, "forest": true, "violet": true,
 		"slate": true, "rose": true, "ember": true, "noir": true, "paper": true,
 	}
-	if body.Skin != nil {
-		s := strings.TrimSpace(*body.Skin)
-		if !allowedSkins[s] {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid skin"})
-			return
-		}
-		_ = db.SetSetting("skin", s)
+	if body.Skin != nil && !allowedSkins[strings.TrimSpace(*body.Skin)] {
+		bad("invalid skin")
+		return
 	}
 	if body.ThemeMode != nil {
-		m := strings.TrimSpace(*body.ThemeMode)
-		if m != "light" && m != "dark" && m != "auto" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid theme_mode"})
+		if m := strings.TrimSpace(*body.ThemeMode); m != "light" && m != "dark" && m != "auto" {
+			bad("invalid theme_mode")
 			return
 		}
-		_ = db.SetSetting("theme_mode", m)
 	}
-	_ = setIf("brand_name", body.BrandName, 40)
-	_ = setIf("brand_sub", body.BrandSub, 80)
-	_ = setIf("card_api_base", body.CardAPIBase, 200)
-	_ = setIf("card_api_key", body.CardAPIKey, 200)
-	_ = setIf("webhook_secret", body.WebhookSecret, 200)
+	var writes []struct{ key, val string }
+	for _, it := range []textItem{
+		{"brand_name", body.BrandName, 40, "站点名称"},
+		{"brand_sub", body.BrandSub, 80, "副标题"},
+	} {
+		if it.p == nil {
+			continue
+		}
+		v := strings.TrimSpace(*it.p)
+		if utf8.RuneCountInString(v) > it.max {
+			bad(it.label + "最多 " + strconv.Itoa(it.max) + " 个字符")
+			return
+		}
+		writes = append(writes, struct{ key, val string }{it.key, v})
+	}
+
+	// 密钥类：空字符串表示「不修改」；超长拒绝而不是截断一个半截的密钥
+	secrets := map[string]string{}
+	for _, it := range []textItem{
+		{"card_api_key", body.CardAPIKey, 200, "卡台 API Key"},
+		{"webhook_secret", body.WebhookSecret, 200, "Webhook 密钥"},
+	} {
+		if it.p == nil {
+			continue
+		}
+		v := strings.TrimSpace(*it.p)
+		if v == "" {
+			continue
+		}
+		if utf8.RuneCountInString(v) > it.max {
+			bad(it.label + "最多 " + strconv.Itoa(it.max) + " 个字符")
+			return
+		}
+		secrets[it.key] = v
+	}
+	if len(secrets) > 0 {
+		if _, err := secretbox.LoadKey(); err != nil {
+			bad("保存卡台密钥需要先配置 APP_MASTER_KEY（base64 编码的 32 字节）：" + err.Error())
+			return
+		}
+	}
+
+	// 卡台地址：只接受 https（本机回环除外）；改了地址必须同时重填 API Key，免得旧 Key 发到新主机
+	cardBase, setBase := "", false
+	if body.CardAPIBase != nil {
+		cardBase = strings.TrimSpace(*body.CardAPIBase)
+		if utf8.RuneCountInString(cardBase) > 200 {
+			bad("卡台地址最多 200 个字符")
+			return
+		}
+		if cardBase != "" {
+			if err := cardplatform.ValidateBase(cardBase); err != nil {
+				bad(err.Error())
+				return
+			}
+		}
+		if cardplatform.NormalizeBase(cardBase) != cardplatform.LoadConfig().SiteBase {
+			if _, ok := secrets["card_api_key"]; !ok {
+				bad("修改卡台地址时必须同时重新填写 API Key")
+				return
+			}
+		}
+		setBase = true
+	}
+
+	if err := writeSiteSettings(body, writes, setBase, cardBase, secrets); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存失败"})
+		return
+	}
 	if body.AgentSwapDailyLimit != nil {
 		if err := db.SetSetting(agentSwapDailyLimitKey, strconv.Itoa(*body.AgentSwapDailyLimit)); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "保存失败"})
@@ -164,4 +227,32 @@ func maskSecret(v string) string {
 		return "****"
 	}
 	return "****" + v[len(v)-4:]
+}
+
+// writeSiteSettings 把已校验的设置项写库，任何一次写失败都返回错误（不吞）。
+func writeSiteSettings(body adminSettingsBody, texts []struct{ key, val string }, setBase bool, base string, secrets map[string]string) error {
+	if body.Skin != nil {
+		if err := db.SetSetting("skin", strings.TrimSpace(*body.Skin)); err != nil {
+			return err
+		}
+	}
+	if body.ThemeMode != nil {
+		if err := db.SetSetting("theme_mode", strings.TrimSpace(*body.ThemeMode)); err != nil {
+			return err
+		}
+	}
+	for _, w := range texts {
+		if err := db.SetSetting(w.key, w.val); err != nil {
+			return err
+		}
+	}
+	// 地址和密钥放在同一个事务里写，读的一方不会看到「新地址 + 旧 Key」（审计 N-1）
+	plain := map[string]string{}
+	if setBase {
+		plain["card_api_base"] = base
+	}
+	if err := db.SetSettingsWithSecrets(plain, secrets); err != nil {
+		return err
+	}
+	return nil
 }

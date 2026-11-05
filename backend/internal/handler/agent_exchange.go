@@ -639,7 +639,7 @@ func upstreamCDKPlan(c *gin.Context, cli *cardplatform.Client, upstreamID int64)
 	return ""
 }
 
-func parseCDKOrderList(raw json.RawMessage) (list []map[string]any, total int) {
+func parseCDKOrderList(raw json.RawMessage) (list []map[string]any, total int64) {
 	if len(raw) == 0 {
 		return nil, 0
 	}
@@ -652,7 +652,7 @@ func parseCDKOrderList(raw json.RawMessage) (list []map[string]any, total int) {
 	if d, ok := envelope["data"].(map[string]any); ok {
 		data = d
 	}
-	total = int(anyToInt64(data["total"]))
+	total = anyToInt64(data["total"])
 	arr, _ := data["list"].([]any)
 	for _, v := range arr {
 		if m, ok := v.(map[string]any); ok {
@@ -660,7 +660,7 @@ func parseCDKOrderList(raw json.RawMessage) (list []map[string]any, total int) {
 		}
 	}
 	if total == 0 {
-		total = len(list)
+		total = int64(len(list))
 	}
 	return list, total
 }

@@ -3,7 +3,7 @@ import { AGENT_ERROR_TEXT } from './agentApi'
 import { fmtUsd } from './agentMoney'
 import { usdToCents } from './provider'
 import {
-  ADJUST_RETRY_PREFIX, browserMutex, clearStoredPrefix, createLeaveGuard, localStore, needsLeaveGuard, RETRY_SETTLE_MS, RetryLock,
+  ADJUST_RETRY_PREFIX, browserMutex, clearStoredPrefix, createLeaveGuard, localStore, needsLeaveGuard, RETRY_SETTLE_MS, RetryLock, storedKeysWithPrefix,
   type LeaveGuard, type RetryLockOptions, type RetryStore,
 } from './retryLock'
 
@@ -222,6 +222,16 @@ export class AdjustRetry {
     return true
   }
 
+  /** 有没有任何未决调账：扫存储里所有代理商的记录（别的标签页留下的也算），存储不可用时看本页内存。管理员退出前用。 */
+  hasAnyPending(): boolean {
+    const ids = new Set(this.pendings.keys())
+    for (const name of storedKeysWithPrefix(ADJUST_RETRY_PREFIX, this.store)) {
+      const suffix = name.slice(ADJUST_RETRY_PREFIX.length)
+      if (/^[1-9]\d*$/.test(suffix)) ids.add(Number(suffix))
+    }
+    for (const id of ids) if (this.pendingFor(id)) return true
+    return false
+  }
 
   /** 请求返回后调用（不管页面还在不在）：清在途；成功或明确失败清键和未决，结果未知记成未决、保留键。key 给了就只清这一笔。 */
   finish(agentId: number, payload: PendingAdjust, outcome: AdjustOutcome, key?: string): void {
@@ -315,6 +325,8 @@ export const adjustRun = (agentId: number, payload: PendingAdjust, send: (key: s
 export const adjustAbandon = (agentId: number) => adjustRetry.abandon(agentId)
 export const adjustLeaveWarning = (agentId: number) => adjustRetry.leaveWarning(agentId)
 export const adjustReopenBlock = (agentId: number) => adjustRetry.reopenBlock(agentId)
+/** 管理员退出登录前调用：存储里有任何未决调账（别的标签页留下的也算）就返回 true。 */
+export const adjustHasAnyPending = () => adjustRetry.hasAnyPending()
 /** 管理员退出登录时调用。 */
 export const clearAdjustRetries = () => adjustRetry.clear()
 

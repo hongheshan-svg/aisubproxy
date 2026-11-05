@@ -2,6 +2,7 @@
 // 1. 归属不符只「看不到」，不删；丢弃只在 bind（核对登录身份）时做。
 // 2. 锁定的「重读 + 写入」：有 Web Locks 就互斥；写后读回（含稍等片刻再读）发现 key 不是自己的 → 不发请求。
 // 3. 调账在发出前被别的标签页抢先锁定：run 抛 IdempotencyLockedError、不发请求，页面据此显示锁定。
+// 4. 管理员退出前从存储判断有没有未决调账（不只看本页内存）。
 import { describe, expect, it, vi } from 'vitest'
 import { IdempotencyLockedError } from '../idempotency'
 import { ADJUST_RETRY_PREFIX, ORDER_RETRY_KEY, type Mutex, type RetryStore } from '../retryLock'
@@ -140,5 +141,37 @@ describe('复审 2：两个标签页同时锁定，写后读回不一致 → 不
     expect(tab.inflight.has(5)).toBe(false)
     expect(tab.pendingFor(5)).toEqual(other)
     expect(tab.recheck(5, other, true)).toEqual({ kind: 'go' })
+  })
+})
+
+describe('复审 4：管理员退出前从存储判断有没有未决调账', () => {
+  const rec = (id: number, extra: Record<string, unknown> = {}) => JSON.stringify({ owner: '', key: 'k' + id, at: Date.now(), payload: { agent_id: id, amount_cents: 100, note: 'x' }, ...extra })
+
+  it('别的标签页留下的未决（本页内存里没有）也算', () => {
+    const s = memStore()
+    s.data[ADJUST_RETRY_PREFIX + '7'] = rec(7)
+    const fresh = new AdjustRetry(s)
+    expect(fresh.pendings.size).toBe(0)
+    expect(fresh.hasAnyPending()).toBe(true)
+    fresh.clear()
+    expect(fresh.hasAnyPending()).toBe(false)
+  })
+
+  it('过期、损坏、存放位置和 agent_id 不符、键名不是数字的不算；别的存储键不看', () => {
+    const s = memStore()
+    s.data[ADJUST_RETRY_PREFIX + '8'] = '{坏的'
+    s.data[ADJUST_RETRY_PREFIX + '9'] = rec(10)
+    s.data[ADJUST_RETRY_PREFIX + 'x'] = rec(1)
+    s.data[ADJUST_RETRY_PREFIX + '11'] = rec(11, { at: Date.now() - 25 * 3600 * 1000 })
+    s.data[ORDER_RETRY_KEY] = slot('alice', 'ka', P)
+    expect(new AdjustRetry(s).hasAnyPending()).toBe(false)
+  })
+
+  it('存储不可用：看本页内存', async () => {
+    const tab = new AdjustRetry(undefined)
+    expect(tab.hasAnyPending()).toBe(false)
+    tab.begin(5)
+    await tab.run(5, { agent_id: 5, amount_cents: 100, note: 'x' }, async () => { throw new TypeError('Failed to fetch') })
+    expect(tab.hasAnyPending()).toBe(true)
   })
 })

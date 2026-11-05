@@ -234,9 +234,9 @@ export class RetryLock<T> {
   }
 }
 
-/** 清掉存储里所有以 prefix 开头的记录（退出登录时用）。存储不可用时什么都不做。 */
-export function clearStoredPrefix(prefix: string, store: RetryStore | undefined): void {
-  if (!store) return
+/** 存储里所有以 prefix 开头的键名。存储不可用、不能列举时返回空数组。 */
+export function storedKeysWithPrefix(prefix: string, store: RetryStore | undefined): string[] {
+  if (!store) return []
   try {
     const names: string[] = []
     const n = Number(store.length) || 0
@@ -244,7 +244,16 @@ export function clearStoredPrefix(prefix: string, store: RetryStore | undefined)
       const name = store.key?.(i)
       if (name && name.startsWith(prefix)) names.push(name)
     }
-    for (const name of names) store.removeItem(name)
+    return names
+  } catch {
+    return []
+  }
+}
+
+/** 清掉存储里所有以 prefix 开头的记录（退出登录时用）。存储不可用时什么都不做。 */
+export function clearStoredPrefix(prefix: string, store: RetryStore | undefined): void {
+  try {
+    for (const name of storedKeysWithPrefix(prefix, store)) store!.removeItem(name)
   } catch {
     /* ignore */
   }

@@ -79,7 +79,7 @@ func RegisterSharedRoutes(r *gin.RouterGroup) {
 	g.POST("/commodity/valuation", SharedValuation)
 	g.POST("/commodity/inventory", SharedInventory)
 	g.POST("/commodity/inventoryState", SharedInventoryState)
-	g.POST("/commodity/trade", func(c *gin.Context) { sharedFail(c, sharedMsgBusy) }) // 取码在下一步实现，先占位
+	g.POST("/commodity/trade", SharedTrade)
 }
 
 // SharedAuth 是 /shared/* 的公共校验（规格 7.1），按顺序：

@@ -66,4 +66,5 @@ export const ACG_SETUP_STEPS: string[] = [
 
 export const KEY_ONCE_WARNING = '密钥只显示这一次，关掉后看不到，丢了只能重置'
 export const RESET_WARNING = '重置后旧密钥立即失效，请马上到异次元里更新'
+export const LOCK_HINT = '重置或重新开通后，如果异次元在你更新前已经用旧密钥连续出错，同一发卡站会被暂时拒绝（提示「密钥错误」），最多 15 分钟后自动恢复'
 export const KEY_INVALID_TEXT = '密钥已失效，请重置'

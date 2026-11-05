@@ -317,6 +317,38 @@ func TestSharedTrade_InsufficientThenResolved(t *testing.T) {
 	}
 }
 
+// 已出码并标「已解决」的单，之后同号重发碰上限流被记成失败，也不能让总览重新报红条。
+func TestSharedTrade_ResolvedStaysResolved(t *testing.T) {
+	f := newSharedFix(t, newAgentEnv(t), true)
+	if code, m := adjust(f.agentEnv, f.aid, "trade-cut", `{"amount_cents":-900,"note":"测试扣到 100"}`); code != 200 {
+		t.Fatalf("调账: %d %v", code, m)
+	}
+	fields := tradeFields(tradeNo1, "mw-plus-ph", "1")
+	f.tradeRefused(fields, "货源余额不足，请联系商家")
+	if code, m := adjust(f.agentEnv, f.aid, "trade-topup", `{"amount_cents":1000,"note":"补足余额"}`); code != 200 {
+		t.Fatalf("调账: %d %v", code, m)
+	}
+	f.mustTrade(fields)
+	oid := f.onlyOrderID()
+	// 同一分钟内把限流用满（含前面失败、成功各一次共 60 次），再重发同号：被限流，记一条新失败
+	for i := 0; i < 58; i++ {
+		f.mustTrade(fields)
+	}
+	f.tradeRefused(fields, "请求太频繁，请稍后再试")
+	x := f.failure(tradeNo1)
+	if x.Reason != "rate_limited" || x.ResolvedOrderID == nil || *x.ResolvedOrderID != oid {
+		t.Fatalf("新失败照常记录，但已解决不变（订单 %d）: %+v", oid, x)
+	}
+	w := f.agentDo(f.s, "GET", agentBase+"/overview", "")
+	if w.Code != 200 {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	sf := decodeMap(t, w.Body.String())["shared_failures_24h"].(map[string]any)
+	if sf["total"] != float64(0) || sf["insufficient_balance"] != float64(0) {
+		t.Fatalf("总览不应报红条: %v", sf)
+	}
+}
+
 func TestSharedTrade_NotReady(t *testing.T) {
 	f := newSharedFix(t, newAgentEnv(t), false)
 	f.tradeRefused(tradeFields(tradeNo1, "mw-plus-ph", "2"), "商品暂时缺货，请稍后再试")

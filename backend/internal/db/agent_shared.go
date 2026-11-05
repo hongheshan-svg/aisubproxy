@@ -147,13 +147,13 @@ type AgentSharedFailure struct {
 	ResolvedOrderID        *int64
 }
 
-// RecordAgentSharedFailure 记一次失败；同 (agent_id, request_no) 已有则次数 +1、更新商品、数量、原因、提示和最后时间，并把已解决标记清掉。
+// RecordAgentSharedFailure 记一次失败；同 (agent_id, request_no) 已有则次数 +1、更新商品、数量、原因、提示和最后时间，已解决标记保留（已解决就一直是已解决，后续同号再失败不会让它重新变成未解决）。
 func RecordAgentSharedFailure(ctx context.Context, f NewSharedFailure, now time.Time) error {
 	_, err := DB.ExecContext(ctx, `INSERT INTO agent_shared_failures (agent_id, request_no, product_code, quantity, reason, message, attempts, first_at, last_at)
 		VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
 		ON CONFLICT(agent_id, request_no) DO UPDATE SET attempts = attempts + 1, product_code = excluded.product_code,
 			quantity = excluded.quantity, reason = excluded.reason, message = excluded.message,
-			last_at = excluded.last_at, resolved_order_id = NULL`,
+			last_at = excluded.last_at`,
 		f.AgentID, f.RequestNo, f.ProductCode, f.Quantity, f.Reason, f.Message, now.Unix(), now.Unix())
 	return err
 }

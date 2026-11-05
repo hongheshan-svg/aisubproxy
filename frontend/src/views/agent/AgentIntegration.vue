@@ -29,6 +29,7 @@
 
     <div v-if="keyInfo.app_key" class="card p-4 space-y-2 text-sm border border-red-300" role="dialog" aria-label="商户密钥">
       <p class="text-red-500 font-semibold">{{ KEY_ONCE_WARNING }}</p>
+      <p class="text-xs opacity-70">{{ LOCK_HINT }}</p>
       <div class="flex flex-wrap items-center gap-2"><span class="opacity-70">上游地址</span><code class="break-all">{{ origin }}</code><button type="button" class="btn-ghost" @click="copy(origin)">复制</button></div>
       <div class="flex flex-wrap items-center gap-2"><span class="opacity-70">商户 ID</span><code class="break-all">{{ keyInfo.app_id }}</code><button type="button" class="btn-ghost" @click="copy(keyInfo.app_id)">复制</button></div>
       <div class="flex flex-wrap items-center gap-2"><span class="opacity-70">商户密钥</span><code class="break-all">{{ keyInfo.app_key }}</code><button type="button" class="btn-ghost" @click="copy(keyInfo.app_key)">复制</button></div>
@@ -87,6 +88,7 @@
       <form class="card p-4 space-y-3 w-full max-w-sm" @submit.prevent="confirm">
         <h2 class="font-semibold">{{ ACTION_TITLE[action] }}</h2>
         <p v-if="action === 'reset'" class="text-sm text-red-500">{{ RESET_WARNING }}</p>
+        <p v-if="action === 'reset'" class="text-xs opacity-70">{{ LOCK_HINT }}</p>
         <label class="block"><span class="block text-sm mb-1">动态码</span><input v-model.trim="code" class="input w-full" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required /></label>
         <p v-if="dlgErr" class="text-sm text-red-500" role="alert">{{ dlgErr }}</p>
         <div class="flex gap-2">
@@ -103,7 +105,7 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { agentApi, agentErrorText } from '../../lib/agentApi'
 import { copyToClipboard } from '../../lib/clipboard'
 import {
-  ACG_SETUP_STEPS, FAILURE_REASON_TEXT, KEY_INVALID_TEXT, KEY_ONCE_WARNING, RESET_WARNING, SHARED_STATUS_TEXT,
+  ACG_SETUP_STEPS, FAILURE_REASON_TEXT, KEY_INVALID_TEXT, KEY_ONCE_WARNING, LOCK_HINT, RESET_WARNING, SHARED_STATUS_TEXT,
   parseAllowlistInput, parseLowBalanceInput, type SharedStatus,
 } from '../../lib/agentShared'
 import { fmtUsd } from '../../lib/agentMoney'

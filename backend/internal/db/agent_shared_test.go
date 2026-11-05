@@ -302,11 +302,11 @@ func TestAgentSharedFailures(t *testing.T) {
 	}
 	rec("r1", "insufficient_balance", t0.Add(30*time.Second))
 	list, total, _ = db.ListAgentSharedFailures(ctx, id, 0, 10, 0)
-	if total != 2 || list[0].RequestNo != "r1" || list[0].ResolvedOrderID != nil || list[0].Attempts != 3 {
-		t.Fatalf("%+v", list)
+	if total != 2 || list[0].RequestNo != "r1" || list[0].ResolvedOrderID == nil || *list[0].ResolvedOrderID != 42 || list[0].Attempts != 3 || list[0].Reason != "insufficient_balance" {
+		t.Fatalf("已解决的不被后续失败清掉，其余照常更新: %+v", list)
 	}
-	if tot, ins, _ = db.CountAgentSharedFailures(ctx, id, 0); tot != 2 || ins != 1 {
-		t.Fatalf("%d %d", tot, ins)
+	if tot, ins, _ = db.CountAgentSharedFailures(ctx, id, 0); tot != 1 || ins != 0 {
+		t.Fatalf("r1 已解决不计，只剩 r2(busy): %d %d", tot, ins)
 	}
 	// 分页
 	if page, total, _ := db.ListAgentSharedFailures(ctx, id, 0, 1, 1); total != 2 || len(page) != 1 || page[0].RequestNo != "r2" {

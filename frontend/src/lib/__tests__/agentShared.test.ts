@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  ACG_SETUP_STEPS, FAILURE_REASON_TEXT, SHARED_STATUS_TEXT, failureBanner, lowBalanceBanner,
+  ACG_SETUP_STEPS, FAILURE_REASON_TEXT, LOCK_HINT, SHARED_STATUS_TEXT, failureBanner, lowBalanceBanner,
   parseAllowlistInput, parseLowBalanceInput, sourceLabel,
 } from '../agentShared'
 
@@ -69,6 +69,10 @@ describe('常量', () => {
     expect(ACG_SETUP_STEPS.length).toBe(4)
     expect(ACG_SETUP_STEPS[1]).toContain('USD')
     expect(ACG_SETUP_STEPS[1]).toContain('汇率')
+  })
+  it('锁定提示写明最多 15 分钟和「密钥错误」', () => {
+    expect(LOCK_HINT).toContain('15 分钟')
+    expect(LOCK_HINT).toContain('密钥错误')
   })
   it('状态和失败原因文案', () => {
     expect(SHARED_STATUS_TEXT.admin_disabled).toBe('已被管理员关闭')

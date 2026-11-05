@@ -2,7 +2,7 @@ package db
 
 import "fmt"
 
-// MigrateAgents 建代理商相关的 7 张表和索引，并给 local_cdks 补两列。可以重复执行。
+// MigrateAgents 建代理商相关的 9 张表和索引，给 local_cdks 补两列、给 agent_orders 补两列。可以重复执行。
 // 列和约束见设计文档第 4 节。金额存美分整数，时间存 Unix 秒。
 func MigrateAgents() error {
 	stmts := []string{
@@ -92,6 +92,35 @@ func MigrateAgents() error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_ledger_ext ON agent_ledger(kind, ext_ref) WHERE ext_ref <> ''`,
 		`CREATE UNIQUE INDEX IF NOT EXISTS uq_agent_ledger_order ON agent_ledger(order_id) WHERE kind = 'purchase'`,
 		`CREATE INDEX IF NOT EXISTS idx_agent_ledger_agent ON agent_ledger(agent_id, id)`,
+		// 异次元店铺共享对接：每个代理商一行设置
+		`CREATE TABLE IF NOT EXISTS agent_shared_creds (
+	agent_id INTEGER PRIMARY KEY,
+	app_id TEXT UNIQUE,
+	key_sealed TEXT NOT NULL DEFAULT '',
+	key_created_at INTEGER NOT NULL DEFAULT 0,
+	last_used_at INTEGER NOT NULL DEFAULT 0,
+	admin_disabled INTEGER NOT NULL DEFAULT 0,
+	ip_allowlist TEXT NOT NULL DEFAULT '',
+	low_balance_cents INTEGER NOT NULL DEFAULT 0 CHECK (low_balance_cents >= 0),
+	created_at INTEGER NOT NULL,
+	updated_at INTEGER NOT NULL
+)`,
+		// 异次元取码失败记录：同一 (代理商, 对方单号) 只留一行，重复失败累加次数
+		`CREATE TABLE IF NOT EXISTS agent_shared_failures (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	agent_id INTEGER NOT NULL,
+	request_no TEXT NOT NULL,
+	product_code TEXT NOT NULL DEFAULT '',
+	quantity INTEGER NOT NULL DEFAULT 0,
+	reason TEXT NOT NULL CHECK (reason IN ('insufficient_balance','not_ready','product_unavailable','request_conflict','rate_limited','busy','invalid_request')),
+	message TEXT NOT NULL DEFAULT '',
+	attempts INTEGER NOT NULL DEFAULT 1,
+	first_at INTEGER NOT NULL,
+	last_at INTEGER NOT NULL,
+	resolved_order_id INTEGER,
+	UNIQUE (agent_id, request_no)
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_agent_shared_failures_last ON agent_shared_failures(last_at)`,
 	}
 	for _, s := range stmts {
 		if _, err := DB.Exec(s); err != nil {
@@ -113,6 +142,23 @@ func MigrateAgents() error {
 		}
 		if _, err := DB.Exec(`ALTER TABLE local_cdks ADD COLUMN ` + c.name + ` ` + c.def); err != nil {
 			return fmt.Errorf("补列 local_cdks.%s: %w", c.name, err)
+		}
+	}
+	// agent_orders 补列：订单来源、对方订单号
+	orderCols := []struct{ name, def string }{
+		{"source", `TEXT NOT NULL DEFAULT 'web' CHECK (source IN ('web','acg'))`},
+		{"external_ref", `TEXT NOT NULL DEFAULT ''`},
+	}
+	for _, c := range orderCols {
+		var n int
+		if err := DB.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('agent_orders') WHERE name = ?`, c.name).Scan(&n); err != nil {
+			return fmt.Errorf("检查 agent_orders.%s: %w", c.name, err)
+		}
+		if n > 0 {
+			continue
+		}
+		if _, err := DB.Exec(`ALTER TABLE agent_orders ADD COLUMN ` + c.name + ` ` + c.def); err != nil {
+			return fmt.Errorf("补列 agent_orders.%s: %w", c.name, err)
 		}
 	}
 	// 补列之后再建索引，旧库才有这一列

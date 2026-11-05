@@ -11,6 +11,12 @@ import (
 // ErrAgentOrderExists 同一个代理商下这个请求号已经有订单（(agent_id, request_no) 撞唯一约束）。
 var ErrAgentOrderExists = errors.New("该请求号已下过单")
 
+// 订单来源：后台下单是 web，异次元店铺共享对接取码是 acg。
+const (
+	AgentOrderSourceWeb = "web"
+	AgentOrderSourceACG = "acg"
+)
+
 // AgentOrder 是 agent_orders 的一行。商品信息在下单时快照进订单，之后商品改名、下架都不影响历史订单。
 type AgentOrder struct {
 	ID, AgentID, ProductID                                       int64
@@ -18,6 +24,7 @@ type AgentOrder struct {
 	Quantity                                                     int
 	UnitPriceCents, TotalCents                                   int64
 	RequestNo, Note                                              string
+	Source, ExternalRef                                          string
 	CreatedAt                                                    int64
 }
 
@@ -28,16 +35,18 @@ type NewAgentOrder struct {
 	UnitPriceCents int64
 	RequestNo      string
 	Note, Operator string
+	Source         string // 为空按 web 写入
+	ExternalRef    string // 对方订单号（异次元的原始 request_no）
 	Codes          []NewLocalCDK
 }
 
 const agentOrderCols = `id, agent_id, product_id, product_code, provider, product, plan_key, region, product_name,
-	quantity, unit_price_cents, total_cents, request_no, note, created_at`
+	quantity, unit_price_cents, total_cents, request_no, note, source, external_ref, created_at`
 
 func scanAgentOrder(s rowScanner) (AgentOrder, error) {
 	var o AgentOrder
 	err := s.Scan(&o.ID, &o.AgentID, &o.ProductID, &o.ProductCode, &o.Provider, &o.Product, &o.PlanKey, &o.Region, &o.ProductName,
-		&o.Quantity, &o.UnitPriceCents, &o.TotalCents, &o.RequestNo, &o.Note, &o.CreatedAt)
+		&o.Quantity, &o.UnitPriceCents, &o.TotalCents, &o.RequestNo, &o.Note, &o.Source, &o.ExternalRef, &o.CreatedAt)
 	return o, err
 }
 
@@ -54,6 +63,9 @@ func CreateAgentOrder(ctx context.Context, o NewAgentOrder, now time.Time) (Agen
 		return AgentOrder{}, nil, errors.New("单价必须大于 0")
 	}
 	total := o.UnitPriceCents * int64(qty)
+	if o.Source == "" {
+		o.Source = AgentOrderSourceWeb
+	}
 	tx, err := DB.BeginTx(ctx, nil)
 	if err != nil {
 		return AgentOrder{}, nil, err
@@ -62,11 +74,11 @@ func CreateAgentOrder(ctx context.Context, o NewAgentOrder, now time.Time) (Agen
 
 	ord := AgentOrder{AgentID: o.AgentID, ProductID: o.Product.ID, ProductCode: o.Product.Code, Provider: o.Product.Provider,
 		Product: o.Product.Product, PlanKey: o.Product.PlanKey, Region: o.Product.Region, ProductName: o.Product.Name,
-		Quantity: qty, UnitPriceCents: o.UnitPriceCents, TotalCents: total, RequestNo: o.RequestNo, Note: o.Note, CreatedAt: now.Unix()}
+		Quantity: qty, UnitPriceCents: o.UnitPriceCents, TotalCents: total, RequestNo: o.RequestNo, Note: o.Note, Source: o.Source, ExternalRef: o.ExternalRef, CreatedAt: now.Unix()}
 	res, err := tx.ExecContext(ctx, `INSERT INTO agent_orders (agent_id, product_id, product_code, provider, product, plan_key, region, product_name,
-		quantity, unit_price_cents, total_cents, request_no, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		quantity, unit_price_cents, total_cents, request_no, note, source, external_ref, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		ord.AgentID, ord.ProductID, ord.ProductCode, ord.Provider, ord.Product, ord.PlanKey, ord.Region, ord.ProductName,
-		ord.Quantity, ord.UnitPriceCents, ord.TotalCents, ord.RequestNo, ord.Note, ord.CreatedAt)
+		ord.Quantity, ord.UnitPriceCents, ord.TotalCents, ord.RequestNo, ord.Note, ord.Source, ord.ExternalRef, ord.CreatedAt)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return AgentOrder{}, nil, ErrAgentOrderExists
@@ -198,6 +210,28 @@ func AgentOrderProductCodes(ctx context.Context, agentID int64) (map[int64]strin
 			return nil, err
 		}
 		out[id] = code
+	}
+	return out, rows.Err()
+}
+
+// AgentOrderRef 是订单的商品编码和来源，给码列表标商品、标来源用。
+type AgentOrderRef struct{ ProductCode, Source, ExternalRef string }
+
+// AgentOrderRefs 这个代理商每笔订单的商品编码、来源和对方订单号（订单 ID → AgentOrderRef）。
+func AgentOrderRefs(ctx context.Context, agentID int64) (map[int64]AgentOrderRef, error) {
+	rows, err := DB.QueryContext(ctx, `SELECT id, product_code, source, external_ref FROM agent_orders WHERE agent_id = ?`, agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[int64]AgentOrderRef{}
+	for rows.Next() {
+		var id int64
+		var r AgentOrderRef
+		if err := rows.Scan(&id, &r.ProductCode, &r.Source, &r.ExternalRef); err != nil {
+			return nil, err
+		}
+		out[id] = r
 	}
 	return out, rows.Err()
 }

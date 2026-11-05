@@ -51,6 +51,9 @@ func RegisterAgentAdminRoutes(admin *gin.RouterGroup) {
 	admin.GET("/agents/:id/ledger/export", AdminAgentLedgerExport)
 	admin.GET("/agents/:id/overrides", AdminGetAgentOverrides)
 	admin.PUT("/agents/:id/overrides", AdminPutAgentOverrides)
+	admin.GET("/agents/:id/shared", AdminAgentSharedGet)
+	admin.POST("/agents/:id/shared/disable", AdminAgentSharedDisable)
+	admin.POST("/agents/:id/shared/enable", AdminAgentSharedEnable)
 	admin.GET("/agent-summary", AdminAgentSummary)
 
 	admin.GET("/agent-tiers", AdminListAgentTiers)

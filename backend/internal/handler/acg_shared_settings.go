@@ -87,19 +87,36 @@ func sharedCheckTOTP(c *gin.Context, a db.Agent, code string) (*agentTOTPSlot, b
 	return slot, true
 }
 
+// sharedStatus 对接状态：管理员关闭优先，其次有商户 ID 即 active，否则 inactive。
+func sharedStatus(creds db.AgentSharedCreds) string {
+	switch {
+	case creds.AdminDisabled:
+		return "admin_disabled"
+	case creds.AppID != "":
+		return "active"
+	}
+	return "inactive"
+}
+
+// sharedFailureView 取码失败记录的 JSON 视图，代理商端和管理员端共用。
+func sharedFailureView(f db.AgentSharedFailure) gin.H {
+	var resolved any
+	if f.ResolvedOrderID != nil {
+		resolved = *f.ResolvedOrderID
+	}
+	return gin.H{
+		"id": f.ID, "request_no": f.RequestNo, "product_code": f.ProductCode, "quantity": f.Quantity, "reason": f.Reason,
+		"message": f.Message, "attempts": f.Attempts, "first_at": f.FirstAt, "last_at": f.LastAt, "resolved_order_id": resolved,
+	}
+}
+
 // AgentSharedGet GET /shared
 func AgentSharedGet(c *gin.Context) {
 	_, creds, ok := sharedAgentCreds(c)
 	if !ok {
 		return
 	}
-	status := "inactive"
-	switch {
-	case creds.AdminDisabled:
-		status = "admin_disabled"
-	case creds.AppID != "":
-		status = "active"
-	}
+	status := sharedStatus(creds)
 	keyInvalid := false
 	if creds.KeySealed != "" {
 		mk, err := secretbox.LoadKey()
@@ -330,14 +347,7 @@ func AgentSharedFailures(c *gin.Context) {
 	}
 	items := make([]gin.H, 0)
 	for _, f := range list {
-		var resolved any
-		if f.ResolvedOrderID != nil {
-			resolved = *f.ResolvedOrderID
-		}
-		items = append(items, gin.H{
-			"id": f.ID, "request_no": f.RequestNo, "product_code": f.ProductCode, "quantity": f.Quantity, "reason": f.Reason,
-			"message": f.Message, "attempts": f.Attempts, "first_at": f.FirstAt, "last_at": f.LastAt, "resolved_order_id": resolved,
-		})
+		items = append(items, sharedFailureView(f))
 	}
 	c.JSON(http.StatusOK, gin.H{"items": items, "total": total})
 }

@@ -359,7 +359,7 @@ func AdminAdjustAgent(c *gin.Context) {
 		adminInvalid(c, fmt.Sprintf("调账原因不能超过 %d 个字", agentNoteMax))
 		return
 	}
-	entry, replayed, err := db.AdjustAgentBalance(c.Request.Context(), a.ID, req.AmountCents, key, adminName(c), note, time.Now())
+	entry, replayed, err := db.AdjustAgentBalance(c.Request.Context(), a.ID, req.AmountCents, key, "admin:"+adminName(c), note, time.Now())
 	var ib *db.InsufficientBalanceError
 	switch {
 	case errors.As(err, &ib):

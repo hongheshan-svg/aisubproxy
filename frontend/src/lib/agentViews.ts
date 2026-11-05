@@ -122,3 +122,9 @@ export function exportBody(src: { ids: number[] } | { filter: CodeFilter }): Rec
 export function ledgerQuery(from: number, to: number): string {
   return `from=${from}&to=${to}`
 }
+
+/** 流水导出的路径（拼在代理商 API 前缀后）；日期不合法时返回空串，页面据此禁用导出。 */
+export function ledgerExportPath(fromDate: string, toDate: string): string {
+  const r = beijingRange(fromDate, toDate)
+  return r ? `/ledger/export?${ledgerQuery(r.from, r.to)}` : ''
+}

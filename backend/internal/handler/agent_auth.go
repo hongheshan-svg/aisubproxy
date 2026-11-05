@@ -76,12 +76,12 @@ func AgentLogin(c *gin.Context) {
 		name = clipName(req.Username)
 	}
 	key := agentRateKey(c, name)
-	if ok, _ := loginAllowed(key); !ok {
+	if ok, _ := agentLoginAllowed(key); !ok {
 		agentError(c, http.StatusTooManyRequests, "rate_limited", agentMsgRate)
 		return
 	}
 	fail := func(detail string, exists bool) {
-		loginFailed(key)
+		agentLoginFailed(key)
 		if exists { // 只给存在的账号写审计，免得误填的密码进审计、也防刷审计表
 			agentAuditRaw(c, name, "agent_login_failed", detail)
 		}
@@ -93,10 +93,12 @@ func AgentLogin(c *gin.Context) {
 	if valid {
 		a, sec, err = db.GetAgentByUsername(c.Request.Context(), name)
 	}
+	// 读库失败不是「账号不存在」：返回 503 且不计密码限流，免得数据库抖动把用户自己锁住（审计 L2）
+	if valid && err != nil && !errors.Is(err, db.ErrAgentNotFound) {
+		agentDBBusy(c, err)
+		return
+	}
 	if !valid || err != nil {
-		if err != nil && !errors.Is(err, db.ErrAgentNotFound) {
-			log.Printf("[agent] 登录查询失败: %v", err)
-		}
 		agentBurnPassword(req.Password)
 		fail("账号不存在", false)
 		return
@@ -270,7 +272,7 @@ func AgentTOTPSetup(c *gin.Context) {
 // agentTOTPAllowed 先查密码限流键，再占账号级动态码名额；任一不通过就写 429。
 // 放行时返回名额，调用方必须 defer slot.release()，并在校验后调 fail/ok。
 func agentTOTPAllowed(c *gin.Context, a db.Agent) (*agentTOTPSlot, bool) {
-	okPw, _ := loginAllowed(agentRateKey(c, a.Username))
+	okPw, _ := agentLoginAllowed(agentRateKey(c, a.Username))
 	var g *agentTOTPGate
 	if okPw {
 		g = agentTOTPReserve(a.ID)
@@ -288,7 +290,7 @@ func agentCodeFailed(c *gin.Context, a db.Agent, slot *agentTOTPSlot, n int) {
 	slot.fail()
 	agentAuditRaw(c, a.Username, "agent_login_failed", "动态码错误")
 	if n >= agentTOTPMaxFails {
-		loginFailed(agentRateKey(c, a.Username))
+		agentLoginFailed(agentRateKey(c, a.Username))
 	}
 	agentError(c, http.StatusUnauthorized, "totp_invalid", agentMsgBadTOTP)
 }
@@ -305,7 +307,7 @@ func finishAgentLogin(c *gin.Context, cl agent.Claims, a db.Agent) {
 		return
 	}
 	agentForgetNonce(cl.Nonce)
-	loginSucceeded(agentRateKey(c, a.Username))
+	agentLoginSucceeded(agentRateKey(c, a.Username))
 	setAgentSessionCookies(c, tok, csrf)
 	clearAgentPreCookie(c)
 	c.Set("agent_username", a.Username)
@@ -523,12 +525,12 @@ func AgentChangePassword(c *gin.Context) {
 		return
 	}
 	key := agentRateKey(c, a.Username)
-	if okPw, _ := loginAllowed(key); !okPw {
+	if okPw, _ := agentLoginAllowed(key); !okPw {
 		agentError(c, http.StatusTooManyRequests, "rate_limited", agentMsgRate)
 		return
 	}
 	if bcrypt.CompareHashAndPassword([]byte(sec.PasswordHash), []byte(req.CurrentPassword)) != nil {
-		loginFailed(key)
+		agentLoginFailed(key)
 		auditAgent(c, "agent_password_change_failed", "当前密码错误")
 		// 会话接口的 401 前端会当作会话失效，所以这里用 400
 		agentError(c, http.StatusBadRequest, "invalid_credentials", "当前密码错误")
@@ -548,7 +550,7 @@ func AgentChangePassword(c *gin.Context) {
 		return
 	case totpRejected:
 		slot.fail()
-		loginFailed(key)
+		agentLoginFailed(key)
 		auditAgent(c, "agent_password_change_failed", "动态码错误")
 		agentError(c, http.StatusBadRequest, "totp_invalid", agentMsgBadTOTP)
 		return
@@ -564,7 +566,7 @@ func AgentChangePassword(c *gin.Context) {
 		return
 	}
 	slot.ok()
-	loginSucceeded(key)
+	agentLoginSucceeded(key)
 	auditAgent(c, "agent_password_change", "在账号页改密码")
 	clearAgentCookies(c)
 	c.JSON(http.StatusOK, gin.H{"ok": true})

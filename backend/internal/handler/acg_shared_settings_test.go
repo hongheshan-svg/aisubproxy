@@ -206,7 +206,7 @@ func TestAgentShared_KeyInvalidWhenSealedByOtherKey(t *testing.T) {
 	f := newSetFix(t, true)
 	f.mustKey()
 	other := make([]byte, 32)
-	f.sharedFix.appID = f.getSettings()["app_id"].(string)
+	f.appID = f.getSettings()["app_id"].(string)
 	f.storeKey(other, "x")
 	if m := f.getSettings(); m["key_invalid"] != true {
 		t.Fatalf("主密钥解不开应为 true: %v", m)

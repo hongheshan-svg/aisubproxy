@@ -61,10 +61,10 @@ export async function probeAdminSession(fetchImpl: typeof fetch = fetch): Promis
   }
 }
 
-/** 旧版本安装向导往 sessionStorage 写过的管理员用户名和明文密码（B-4）。 */
-export const LEGACY_SETUP_KEYS = ['post_setup_user', 'post_setup_pass'] as const
+/** 旧版本安装向导往 sessionStorage 写过的管理员用户名、明文密码（B-4）和安装令牌（codeql #3，现只留内存）。 */
+export const LEGACY_SETUP_KEYS = ['post_setup_user', 'post_setup_pass', 'setup_token'] as const
 
-/** 清掉旧版本安装向导留在 sessionStorage 里的用户名和明文密码。存储不可用时静默跳过。 */
+/** 清掉旧版本安装向导留在 sessionStorage 里的用户名、明文密码和安装令牌。存储不可用时静默跳过。 */
 export function clearSetupLeftovers(storage: Pick<Storage, 'removeItem'> | undefined): void {
   if (!storage) return
   for (const k of LEGACY_SETUP_KEYS) {

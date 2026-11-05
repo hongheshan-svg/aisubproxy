@@ -501,19 +501,29 @@ func UpgradeAdminHash(username, newHash string) {
 	}
 }
 
-// randomPassword 生成管理员初始密码和安装令牌。crypto/rand 读不出来时直接 panic：
+// randomPassword 生成管理员初始密码（安装令牌用 randomToken）。crypto/rand 读不出来时直接 panic：
 // 宁可启动失败，也不能退回一个可预测的口令（Go 1.24 起 crypto/rand 本身也不会返回错误）。
 func randomPassword(n int) string {
-	p, err := randomPasswordFrom(rand.Reader, n)
+	p, err := randomStringFrom(rand.Reader, n)
 	if err != nil {
 		panic(fmt.Sprintf("生成随机口令失败: %v", err))
 	}
 	return p
 }
 
-// randomPasswordFrom 用拒绝采样从字母表里取 n 个字符：只用小于 224（56 的最大整数倍）的字节，
+// randomToken 生成安装令牌这类高熵随机串，与 randomPassword 同一生成方式（同一字母表、同一拒绝采样），
+// 单独起名是为了表明这里生成的是一次性令牌，不是用户口令。
+func randomToken(n int) string {
+	p, err := randomStringFrom(rand.Reader, n)
+	if err != nil {
+		panic(fmt.Sprintf("生成随机令牌失败: %v", err))
+	}
+	return p
+}
+
+// randomStringFrom 用拒绝采样从字母表里取 n 个字符：只用小于 224（56 的最大整数倍）的字节，
 // 每个字符等概率。原来直接取模，256 % 56 = 32，前 32 个字符的概率高出 25%（审计 A-17）。
-func randomPasswordFrom(src io.Reader, n int) (string, error) {
+func randomStringFrom(src io.Reader, n int) (string, error) {
 	const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789"
 	const limit = 256 - 256%len(alphabet)
 	out := make([]byte, 0, n)
@@ -611,7 +621,7 @@ func EnsureSetupToken() (plain string, firstTime bool, err error) {
 	}
 	plain = strings.TrimSpace(os.Getenv("SETUP_BOOTSTRAP_TOKEN"))
 	if plain == "" {
-		plain = randomPassword(24)
+		plain = randomToken(24)
 	}
 	sum := sha256.Sum256([]byte(plain))
 	if err := SetSetting("setup_token_hash", hex.EncodeToString(sum[:])); err != nil {
@@ -1260,7 +1270,7 @@ func ListCardplatformStoredCDKCodesPage(plan, q, status string, page, pageSize i
 		return nil, 0, err
 	}
 	defer rows.Close()
-	out := make([]StoredCDKCode, 0, pageSize)
+	var out []StoredCDKCode
 	for rows.Next() {
 		var it StoredCDKCode
 		if err := rows.Scan(&it.UpstreamID, &it.Code, &it.CodePrefix, &it.Plan, &it.FeeAmountMinor, &it.Status, &it.CreatedAt, &it.PaymentCountry); err != nil {

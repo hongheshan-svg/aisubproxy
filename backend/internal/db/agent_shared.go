@@ -71,7 +71,7 @@ func SetAgentSharedKey(ctx context.Context, agentID int64, appID, keySealed stri
 	res, err := DB.ExecContext(ctx, `INSERT INTO agent_shared_creds (agent_id, app_id, key_sealed, key_created_at, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT(agent_id) DO UPDATE SET app_id = excluded.app_id, key_sealed = excluded.key_sealed,
-			key_created_at = excluded.key_created_at, updated_at = excluded.updated_at
+			key_created_at = excluded.key_created_at, last_used_at = 0, updated_at = excluded.updated_at
 		WHERE agent_shared_creds.admin_disabled = 0`, agentID, appID, keySealed, now.Unix(), now.Unix(), now.Unix())
 	if err != nil {
 		if isUniqueViolation(err) { // agent_id 冲突走 ON CONFLICT，能到这里的只有 app_id 唯一约束
@@ -87,9 +87,9 @@ func SetAgentSharedKey(ctx context.Context, agentID int64, appID, keySealed stri
 	return nil
 }
 
-// DisableAgentShared 代理商自己停用对接：商户 ID 置 NULL、密钥清空。没有行时什么也不做。
+// DisableAgentShared 代理商自己停用对接：商户 ID 置 NULL、密钥清空、最后使用时间清零。没有行时什么也不做。
 func DisableAgentShared(ctx context.Context, agentID int64, now time.Time) error {
-	_, err := DB.ExecContext(ctx, `UPDATE agent_shared_creds SET app_id = NULL, key_sealed = '', key_created_at = 0, updated_at = ? WHERE agent_id = ?`, now.Unix(), agentID)
+	_, err := DB.ExecContext(ctx, `UPDATE agent_shared_creds SET app_id = NULL, key_sealed = '', key_created_at = 0, last_used_at = 0, updated_at = ? WHERE agent_id = ?`, now.Unix(), agentID)
 	return err
 }
 

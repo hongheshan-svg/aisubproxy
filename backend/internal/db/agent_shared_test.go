@@ -336,3 +336,41 @@ func TestAgentSharedCreds_AppIDTaken(t *testing.T) {
 		t.Fatalf("撞约束后不应写入: %+v", c)
 	}
 }
+
+func TestAgentShared_ResetAndDisableClearLastUsed(t *testing.T) {
+	dbtest.Open(t)
+	ctx := context.Background()
+	id := newTestAgent(t, "alice")
+	lastUsed := func() int64 {
+		c, err := db.GetAgentSharedCreds(ctx, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c.LastUsedAt
+	}
+	use := func(step string) {
+		if err := db.TouchAgentSharedUsed(ctx, id, acctNow.Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		if lastUsed() == 0 {
+			t.Fatalf("%s前应已有最后使用时间", step)
+		}
+	}
+	if err := db.SetAgentSharedKey(ctx, id, "agAAAAAAAAAAAAAA", "s1", acctNow); err != nil {
+		t.Fatal(err)
+	}
+	use("重置")
+	if err := db.SetAgentSharedKey(ctx, id, "agAAAAAAAAAAAAAA", "s2", acctNow.Add(2*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if got := lastUsed(); got != 0 {
+		t.Fatalf("重置后 last_used_at=%d，想要 0", got)
+	}
+	use("停用")
+	if err := db.DisableAgentShared(ctx, id, acctNow.Add(3*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if got := lastUsed(); got != 0 {
+		t.Fatalf("停用后 last_used_at=%d，想要 0", got)
+	}
+}

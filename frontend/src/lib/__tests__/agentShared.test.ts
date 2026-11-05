@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  ACG_SETUP_STEPS, FAILURE_REASON_TEXT, LOCK_HINT, SHARED_STATUS_TEXT, failureBanner, lowBalanceBanner,
+  ACG_SETUP_STEPS, DISABLE_WARNING, FAILURE_REASON_TEXT, HTTP_ORIGIN_WARNING, LOCK_HINT, SHARED_STATUS_TEXT, failureBanner, isHttpsOrigin, lowBalanceBanner,
   parseAllowlistInput, parseLowBalanceInput, sourceLabel,
 } from '../agentShared'
 
@@ -77,5 +77,23 @@ describe('常量', () => {
   it('状态和失败原因文案', () => {
     expect(SHARED_STATUS_TEXT.admin_disabled).toBe('已被管理员关闭')
     expect(FAILURE_REASON_TEXT.insufficient_balance).toBe('余额不足')
+  })
+})
+
+describe('DISABLE_WARNING', () => {
+  it('写明后果', () => {
+    expect(DISABLE_WARNING).toContain('立即失效')
+    expect(DISABLE_WARNING).toContain('新的商户 ID')
+  })
+})
+
+describe('isHttpsOrigin', () => {
+  it('只有 https:// 开头为真', () => {
+    expect(isHttpsOrigin('https://a.example')).toBe(true)
+    expect(isHttpsOrigin('http://127.0.0.1:8080')).toBe(false)
+    expect(isHttpsOrigin('')).toBe(false)
+  })
+  it('http 提醒文案含异次元的原话', () => {
+    expect(HTTP_ORIGIN_WARNING).toContain('请使用 https 地址')
   })
 })

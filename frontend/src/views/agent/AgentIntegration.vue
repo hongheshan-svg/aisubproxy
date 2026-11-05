@@ -11,7 +11,7 @@
       </template>
       <p v-if="info.status === 'admin_disabled'" class="text-amber-600">管理员已关闭你的对接，生成和重置密钥暂不可用。</p>
       <template v-if="info.status === 'active'">
-        <div class="flex flex-wrap items-center gap-2"><span class="opacity-70">上游地址</span><code class="break-all">{{ origin }}</code><button type="button" class="btn-ghost" @click="copy(origin)">复制</button></div>
+        <div class="flex flex-wrap items-center gap-2"><span class="opacity-70">上游地址</span><code class="break-all">{{ origin }}</code><button type="button" class="btn-ghost" @click="copy(origin)">复制</button><span v-if="!httpsOk" class="text-red-500 text-xs" role="alert">{{ HTTP_ORIGIN_WARNING }}</span></div>
         <div class="flex flex-wrap items-center gap-2"><span class="opacity-70">商户 ID</span><code class="break-all">{{ info.app_id }}</code><button type="button" class="btn-ghost" @click="copy(info.app_id)">复制</button></div>
         <div><span class="opacity-70">密钥生成时间</span>　{{ info.key_created_at ? fmtBeijing(info.key_created_at) : '无' }}</div>
         <div><span class="opacity-70">最后使用时间</span>　{{ info.last_used_at ? fmtBeijing(info.last_used_at) : '从未使用' }}</div>
@@ -30,7 +30,7 @@
     <div v-if="keyInfo.app_key" class="card p-4 space-y-2 text-sm border border-red-300" role="dialog" aria-label="商户密钥">
       <p class="text-red-500 font-semibold">{{ KEY_ONCE_WARNING }}</p>
       <p class="text-xs opacity-70">{{ LOCK_HINT }}</p>
-      <div class="flex flex-wrap items-center gap-2"><span class="opacity-70">上游地址</span><code class="break-all">{{ origin }}</code><button type="button" class="btn-ghost" @click="copy(origin)">复制</button></div>
+      <div class="flex flex-wrap items-center gap-2"><span class="opacity-70">上游地址</span><code class="break-all">{{ origin }}</code><button type="button" class="btn-ghost" @click="copy(origin)">复制</button><span v-if="!httpsOk" class="text-red-500 text-xs" role="alert">{{ HTTP_ORIGIN_WARNING }}</span></div>
       <div class="flex flex-wrap items-center gap-2"><span class="opacity-70">商户 ID</span><code class="break-all">{{ keyInfo.app_id }}</code><button type="button" class="btn-ghost" @click="copy(keyInfo.app_id)">复制</button></div>
       <div class="flex flex-wrap items-center gap-2"><span class="opacity-70">商户密钥</span><code class="break-all">{{ keyInfo.app_key }}</code><button type="button" class="btn-ghost" @click="copy(keyInfo.app_key)">复制</button></div>
       <button type="button" class="btn-primary" @click="clearKey">我已保存，关闭</button>
@@ -40,6 +40,7 @@
       <h2 class="font-semibold">IP 白名单</h2>
       <p class="opacity-70">最多 5 项，支持单个地址或网段（如 10.0.0.0/8），用逗号、空格或换行分隔；留空表示不限制。</p>
       <textarea v-model="allowText" class="input w-full font-mono text-xs" rows="3" aria-label="IP 白名单"></textarea>
+      <p v-if="allowErr" class="text-red-500" role="alert">{{ allowErr }}</p>
       <button type="button" class="btn-ghost" @click="ask('allowlist')">保存白名单</button>
     </div>
 
@@ -47,7 +48,7 @@
       <h2 class="font-semibold">余额提醒线</h2>
       <p class="opacity-70">余额低于这个金额时，总览页会提醒你。填 0 或留空表示关闭，最高 10000 美元。</p>
       <div class="flex flex-wrap items-center gap-2">
-        <span>$</span><input v-model.trim="lowText" class="input" inputmode="decimal" aria-label="余额提醒线（美元）" />
+        <span>$</span><input v-model.trim="lowText" class="input !w-40" inputmode="decimal" aria-label="余额提醒线（美元）" />
         <button type="submit" class="btn-ghost" :disabled="lowBusy">{{ lowBusy ? '保存中…' : '保存' }}</button>
       </div>
       <p v-if="lowErr" class="text-red-500" role="alert">{{ lowErr }}</p>
@@ -62,12 +63,12 @@
 
     <div class="card p-2 overflow-x-auto">
       <h2 class="font-semibold p-2">最近失败记录</h2>
-      <table class="w-full text-sm">
+      <table class="w-full text-sm whitespace-nowrap">
         <thead><tr class="text-left"><th class="p-2">时间</th><th class="p-2">对方订单号</th><th class="p-2">商品</th><th class="p-2">数量</th><th class="p-2">原因</th><th class="p-2">次数</th><th class="p-2">状态</th></tr></thead>
         <tbody>
           <tr v-for="f in failures" :key="f.id" class="border-t">
-            <td class="p-2 whitespace-nowrap">{{ fmtBeijing(f.last_at) }}</td>
-            <td class="p-2 break-all">{{ f.request_no }}</td>
+            <td class="p-2">{{ fmtBeijing(f.last_at) }}</td>
+            <td class="p-2">{{ f.request_no }}</td>
             <td class="p-2">{{ f.product_code }}</td>
             <td class="p-2">{{ f.quantity }}</td>
             <td class="p-2">{{ FAILURE_REASON_TEXT[f.reason] || f.reason }}</td>
@@ -89,6 +90,7 @@
         <h2 class="font-semibold">{{ ACTION_TITLE[action] }}</h2>
         <p v-if="action === 'reset'" class="text-sm text-red-500">{{ RESET_WARNING }}</p>
         <p v-if="action === 'reset'" class="text-xs opacity-70">{{ LOCK_HINT }}</p>
+        <p v-if="action === 'disable'" class="text-sm text-red-500">{{ DISABLE_WARNING }}</p>
         <label class="block"><span class="block text-sm mb-1">动态码</span><input v-model.trim="code" class="input w-full" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" required /></label>
         <p v-if="dlgErr" class="text-sm text-red-500" role="alert">{{ dlgErr }}</p>
         <div class="flex gap-2">
@@ -105,8 +107,8 @@ import { onBeforeUnmount, onMounted, ref } from 'vue'
 import { agentApi, agentErrorText } from '../../lib/agentApi'
 import { copyToClipboard } from '../../lib/clipboard'
 import {
-  ACG_SETUP_STEPS, FAILURE_REASON_TEXT, KEY_INVALID_TEXT, KEY_ONCE_WARNING, LOCK_HINT, RESET_WARNING, SHARED_STATUS_TEXT,
-  parseAllowlistInput, parseLowBalanceInput, type SharedStatus,
+  ACG_SETUP_STEPS, DISABLE_WARNING, FAILURE_REASON_TEXT, HTTP_ORIGIN_WARNING, KEY_INVALID_TEXT, KEY_ONCE_WARNING, LOCK_HINT, RESET_WARNING, SHARED_STATUS_TEXT,
+  isHttpsOrigin, parseAllowlistInput, parseLowBalanceInput, type SharedStatus,
 } from '../../lib/agentShared'
 import { fmtUsd } from '../../lib/agentMoney'
 import { fmtBeijing } from '../../lib/mwwebhook'
@@ -116,6 +118,7 @@ const ACTION_TITLE: Record<Action, string> = { create: '生成商户密钥', res
 
 const PAGE = 20
 const origin = typeof location !== 'undefined' ? location.origin : ''
+const httpsOk = isHttpsOrigin(origin)
 const info = ref<any>(null)
 const err = ref('')
 const msg = ref('')
@@ -123,6 +126,7 @@ const msg = ref('')
 const keyInfo = ref({ app_id: '', app_key: '' })
 const allowText = ref('')
 const lowText = ref('')
+const allowErr = ref('')
 const lowErr = ref('')
 const lowBusy = ref(false)
 const failures = ref<any[]>([])
@@ -162,8 +166,8 @@ function ask(a: Action) {
   dlgErr.value = ''; msg.value = ''; code.value = ''
   if (a === 'allowlist') {
     const p = parseAllowlistInput(allowText.value)
-    if (p.error) { err.value = p.error; return }
-    err.value = ''
+    if (p.error) { allowErr.value = p.error; return }
+    allowErr.value = ''
   }
   action.value = a
 }
@@ -180,7 +184,12 @@ async function confirm() {
     if (a === 'create' || a === 'reset') r = await agentApi('/shared/key', 'POST', { code: c })
     else if (a === 'disable') r = await agentApi('/shared/disable', 'POST', { code: c })
     else r = await agentApi('/shared/allowlist', 'PUT', { code: c, ips: parseAllowlistInput(allowText.value).ips })
-    if (!r.ok) { dlgErr.value = agentErrorText(r.data, r.status); return }
+    if (!r.ok) {
+      const t = agentErrorText(r.data, r.status)
+      // 后端校验不通过（格式、项数）属于输入框的问题：关掉确认框，报错放在白名单输入框下面；动态码错误等留在确认框
+      if (a === 'allowlist' && r.data?.error === 'invalid_request') { closeDialog(); allowErr.value = t; return }
+      dlgErr.value = t; return
+    }
     closeDialog()
     if (a === 'create' || a === 'reset') {
       keyInfo.value = { app_id: String(r.data?.app_id || ''), app_key: String(r.data?.app_key || '') }

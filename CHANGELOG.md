@@ -23,7 +23,7 @@
 4. **服务器前面有 Nginx、Caddy 这类反向代理提供 HTTPS 的：把反代的地址（IP 或 CIDR）写进 `TRUSTED_PROXIES`。**
    - 本版起，程序只信任 `TRUSTED_PROXIES` 里列出的代理转来的 `X-Forwarded-Proto`。不配的话，程序会把所有访问都当成普通 HTTP：后台登录 cookie 不再带 `Secure`（只能走 HTTPS）标记，也不再下发 HSTS（要求浏览器一律用 HTTPS 访问）。
    - **这时服务照常运行、不报错，很容易漏掉。**
-   - 代理商登录（`/agent`）同样受影响：登录 cookie 的 `Secure` 标记按同样规则下发；登录失败限流按客户端 IP 计。不配时所有人共用反代的 IP，一个人输错密码会把所有代理商一起锁住；配得过宽（比如填 `0.0.0.0/0`）则可以伪造 `X-Forwarded-For` 绕过限流。只填自己的反代地址。
+   - 代理商（`/agent`）同样受影响：登录 cookie 的 `Secure` 标记按同样规则下发；登录失败限流和接口访问配额都按客户端 IP 计。不配时所有人共用反代的 IP：任何人对某个代理商的登录名输错 5 次密码，就能把这个代理商锁 15 分钟；所有代理商共用一份接口访问配额，流量大时会一起被限流。配得过宽（比如填 `0.0.0.0/0`）则可以伪造 `X-Forwarded-For` 绕过限流。只填自己的反代地址。
    - 自带的 `install.sh`、`docker-compose.yml`、Dockerfile 已经设好。自己搭反代的、或者用 Docker 镜像单独 `docker run` 的，要自己加上 `-e TRUSTED_PROXIES=...`；不要用 `-p 8080:8080` 直接暴露端口（见 `deploy/README-release.md`）。
 5. **从 1.5.3 及更早版本在后台「一键更新」到本版的：点更新前先确认上面 1–3 条。**
    - 旧版的更新器不会提前检查这几条。不满足的话，**更新后服务会起不来**，需要 SSH 补好配置后重启，或执行 `cdk-recharge rollback` 回到旧版。

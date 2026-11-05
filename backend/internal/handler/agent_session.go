@@ -151,8 +151,9 @@ var (
 	agentGates  = map[int64]*agentTOTPGate{}
 )
 
-// agentTOTPReserve 占一个名额，返回是否放行。
-func agentTOTPReserve(id int64) bool {
+// agentTOTPReserve 占一个名额，返回占的那个 gate；不放行返回 nil。名额之后都对这个指针结算，
+// 不再按 id 回查 map（别的名额结算时可能已经把 map 里的项删掉或换成新的）。
+func agentTOTPReserve(id int64) *agentTOTPGate {
 	agentGateMu.Lock()
 	defer agentGateMu.Unlock()
 	now := agentNow()
@@ -167,21 +168,22 @@ func agentTOTPReserve(id int64) bool {
 		agentGates[id] = g
 	}
 	if now.Before(g.lockedUntil) {
-		return false
+		return nil
 	}
 	if !g.lockedUntil.IsZero() || now.Sub(g.windowStart) > agentTOTPAcctLock { // 锁或窗口已过：重新计
 		g.fails, g.lockedUntil, g.windowStart = 0, time.Time{}, now
 	}
 	if g.fails+g.inflight >= agentTOTPAcctMax {
-		return false
+		return nil
 	}
 	g.inflight++
-	return true
+	return g
 }
 
 // agentTOTPSlot 是一次已占用的账号级名额。用 defer slot.release() 兜底，没结算就退回。
 type agentTOTPSlot struct {
 	id   int64
+	gate *agentTOTPGate // 占名额时的那个 gate，结算都落在它身上
 	done bool
 }
 
@@ -193,13 +195,13 @@ func (s *agentTOTPSlot) fail() {
 	s.done = true
 	agentGateMu.Lock()
 	defer agentGateMu.Unlock()
-	if g := agentGates[s.id]; g != nil {
-		now := agentNow()
+	g := s.gate
+	if g.inflight > 0 {
 		g.inflight--
-		g.fails++
-		if g.fails >= agentTOTPAcctMax {
-			g.lockedUntil = now.Add(agentTOTPAcctLock)
-		}
+	}
+	g.fails++
+	if g.fails >= agentTOTPAcctMax {
+		g.lockedUntil = agentNow().Add(agentTOTPAcctLock)
 	}
 }
 
@@ -210,8 +212,13 @@ func (s *agentTOTPSlot) ok() {
 	}
 	s.done = true
 	agentGateMu.Lock()
-	delete(agentGates, s.id)
-	agentGateMu.Unlock()
+	defer agentGateMu.Unlock()
+	if s.gate.inflight > 0 {
+		s.gate.inflight--
+	}
+	if agentGates[s.id] == s.gate { // 只清自己占的那个；已被换成新的就别动新的
+		delete(agentGates, s.id)
+	}
 }
 
 // release 内部错误或没走到校验：退回名额，不计失败。
@@ -222,8 +229,8 @@ func (s *agentTOTPSlot) release() {
 	s.done = true
 	agentGateMu.Lock()
 	defer agentGateMu.Unlock()
-	if g := agentGates[s.id]; g != nil && g.inflight > 0 {
-		g.inflight--
+	if s.gate.inflight > 0 {
+		s.gate.inflight--
 	}
 }
 

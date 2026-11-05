@@ -476,7 +476,7 @@ func TestAgentLedgerExportCSV(t *testing.T) {
 		t.Fatalf("Content-Disposition: %q 想要 %q", cd, wantName)
 	}
 	body := w.Body.String()
-	if !strings.HasPrefix(body, "\xEF\xBB\xBF时间,类型,金额,变动后余额,订单号,备注\n") && !strings.HasPrefix(body, "\xEF\xBB\xBF时间,类型,金额,变动后余额,订单号,备注\r\n") {
+	if !strings.HasPrefix(body, "\xEF\xBB\xBF时间,类型,金额,变动后余额,订单号,备注,来源,对方订单号\n") && !strings.HasPrefix(body, "\xEF\xBB\xBF时间,类型,金额,变动后余额,订单号,备注,来源,对方订单号\r\n") {
 		t.Fatalf("应有 BOM 和表头: %q", body)
 	}
 	lines := strings.Split(strings.TrimSpace(body), "\n")
@@ -559,7 +559,7 @@ func TestAdminAgentLedgerSharesQuery(t *testing.T) {
 		t.Fatalf("管理员 CSV: %d %q %s", w.Code, w.Header().Get("Content-Disposition"), w.Body.String())
 	}
 	lines := strings.Split(strings.TrimSpace(w.Body.String()), "\n")
-	if !strings.HasSuffix(strings.TrimSpace(lines[0]), "备注,操作人") || !strings.HasSuffix(strings.TrimSpace(lines[2]), ",admin") {
+	if !strings.HasSuffix(strings.TrimSpace(lines[0]), "备注,操作人,来源,对方订单号") || !strings.HasSuffix(strings.TrimSpace(lines[2]), ",admin,,") {
 		t.Fatalf("管理员 CSV 多一列操作人: %q", w.Body.String())
 	}
 	for _, p := range []string{"/agents/99999/ledger", "/agents/99999/ledger/export", "/agents/abc/ledger"} {

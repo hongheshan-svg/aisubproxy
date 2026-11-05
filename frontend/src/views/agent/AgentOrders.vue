@@ -4,14 +4,15 @@
     <p v-if="err" class="text-sm text-red-500" role="alert">{{ err }}</p>
     <div class="card p-2 overflow-x-auto">
       <table class="w-full text-sm">
-        <thead><tr class="text-left"><th class="p-2">订单号</th><th class="p-2">商品</th><th class="p-2">数量</th><th class="p-2">总价</th><th class="p-2">备注</th><th class="p-2">时间</th></tr></thead>
+        <thead><tr class="text-left"><th class="p-2">订单号</th><th class="p-2">商品</th><th class="p-2">数量</th><th class="p-2">总价</th><th class="p-2">来源</th><th class="p-2">备注</th><th class="p-2">时间</th></tr></thead>
         <tbody>
           <tr v-for="o in items" :key="o.id" class="border-t">
             <td class="p-2"><router-link :to="`/agent/orders/${o.id}`" class="underline">#{{ o.id }}</router-link></td>
             <td class="p-2">{{ o.product_name }}</td><td class="p-2">{{ o.quantity }}</td><td class="p-2">{{ fmtUsd(o.total_cents) }}</td>
+            <td class="p-2 whitespace-nowrap">{{ sourceLabel(o.source) }}</td>
             <td class="p-2 break-all">{{ o.note }}</td><td class="p-2 whitespace-nowrap">{{ fmtBeijing(o.created_at) }}</td>
           </tr>
-          <tr v-if="!items.length"><td colspan="6" class="p-3 opacity-70">暂无订单</td></tr>
+          <tr v-if="!items.length"><td colspan="7" class="p-3 opacity-70">暂无订单</td></tr>
         </tbody>
       </table>
     </div>
@@ -27,6 +28,7 @@
 import { onMounted, ref } from 'vue'
 import { agentApi, agentErrorText } from '../../lib/agentApi'
 import { fmtUsd } from '../../lib/agentMoney'
+import { sourceLabel } from '../../lib/agentShared'
 import { fmtBeijing } from '../../lib/mwwebhook'
 
 const PAGE = 50

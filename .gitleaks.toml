@@ -38,4 +38,8 @@ regexes = [
   '''^InitPass-12345$''',
   # 代理商：agent/creds.go 生成随机密码用的字符表（去掉了 0O1lI 这类易混字符），是常量不是密钥
   '''^ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789$''',
+  # 异次元对接：acgshared_test.go 签名算法的测试向量（假密钥 Key32 算出的 md5，不是密钥）
+  '''^d2681f16ecd11d47540603c66bdcd975$''',
+  # 异次元对接：acg_shared_test.go 测试夹具里的假商户密钥
+  '''^Kf8pQ2xZ7vN3mB6tR1wY4uE9sA5dG0hJ$''',
 ]

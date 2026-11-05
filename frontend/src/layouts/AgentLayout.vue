@@ -31,6 +31,7 @@ const nav: Nav[] = [
   { to: '/agent/codes', label: '我的码' },
   { to: '/agent/orders', label: '订单' },
   { to: '/agent/ledger', label: '流水' },
+  { to: '/agent/integration', label: '对接异次元' },
   { to: '/agent/account', label: '账号' },
 ]
 

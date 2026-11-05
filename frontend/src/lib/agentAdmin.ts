@@ -1,6 +1,7 @@
 // 管理员后台「代理商」相关页面的纯逻辑：价格改动、调账结果判断、错误文案。
 import { AGENT_ERROR_TEXT } from './agentApi'
 import { fmtUsd } from './agentMoney'
+import { SHARED_STATUS_TEXT, type SharedStatus } from './agentShared'
 import { usdToCents } from './provider'
 import {
   ADJUST_RETRY_PREFIX, browserMutex, clearStoredPrefix, createLeaveGuard, localStore, needsLeaveGuard, RETRY_SETTLE_MS, RetryLock, storedKeysWithPrefix,
@@ -344,5 +345,18 @@ export function assemblePricing(tiersResp: any, pricesResp: any): {
     tiers, matrixTiers,
     products: Array.isArray(pricesResp?.products) ? pricesResp.products : [],
     cells: Array.isArray(pricesResp?.cells) ? pricesResp.cells : [],
+  }
+}
+
+/** 管理员看代理商的异次元对接：状态文案、按钮可用性、IP 白名单文案。 */
+export function adminSharedView(d: any): { statusText: string; canDisable: boolean; canEnable: boolean; allowlistText: string } {
+  const status = String(d?.status ?? '')
+  const known = Object.prototype.hasOwnProperty.call(SHARED_STATUS_TEXT, status)
+  const list: string[] = Array.isArray(d?.ip_allowlist) ? d.ip_allowlist : []
+  return {
+    statusText: known ? SHARED_STATUS_TEXT[status as SharedStatus] : status,
+    canDisable: status !== 'admin_disabled',
+    canEnable: status === 'admin_disabled',
+    allowlistText: list.length ? list.join('、') : '不限',
   }
 }

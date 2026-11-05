@@ -118,69 +118,6 @@ func resetAgentOrderRate() {
 	agentOrderRateMu.Unlock()
 }
 
-// ---- 同一个请求号串行 ----
-
-type agentOrderKeyLock struct {
-	ch   chan struct{}
-	refs int // 持有者加等待者；归零时从表里删掉
-}
-
-var (
-	agentOrderLocksMu sync.Mutex
-	agentOrderLocks   = map[string]*agentOrderKeyLock{}
-)
-
-func agentOrderLockKey(agentID int64, requestNo string) string {
-	return strconv.FormatInt(agentID, 10) + "|" + requestNo
-}
-
-// agentOrderLock 拿「代理商 + 请求号」的锁（裁定 P26）。测试可以替换成空锁，模拟多进程时锁不共享。
-var agentOrderLock = lockAgentOrderRequest
-
-// lockAgentOrderRequest 让同一个代理商的同一个请求号在进程内串行通过「查请求号 → 商品检查 → 生成码 → 建单」：
-// 否则请求 A 已过检查、还没提交时，管理员恰好改价、下架或熔断，同号重试 B 会拿到明确失败，
-// 前端随后换新请求号重下，而 A 照常扣款，用户就买了两单。
-// 等锁时请求被取消返回 ok=false。release 可以重复调用；没人持有也没人等待时这一项从表里删掉，表不会越长越大。
-// 多进程部署时锁不共享，靠 (agent_id, request_no) 唯一约束兜底（撞上后回到查请求号重放）。
-func lockAgentOrderRequest(ctx context.Context, agentID int64, requestNo string) (release func(), ok bool) {
-	k := agentOrderLockKey(agentID, requestNo)
-	agentOrderLocksMu.Lock()
-	l := agentOrderLocks[k]
-	if l == nil {
-		l = &agentOrderKeyLock{ch: make(chan struct{}, 1)}
-		agentOrderLocks[k] = l
-	}
-	l.refs++
-	agentOrderLocksMu.Unlock()
-	drop := func() {
-		agentOrderLocksMu.Lock()
-		l.refs--
-		if l.refs == 0 {
-			delete(agentOrderLocks, k)
-		}
-		agentOrderLocksMu.Unlock()
-	}
-	select {
-	case l.ch <- struct{}{}:
-	case <-ctx.Done():
-		drop()
-		return nil, false
-	}
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			<-l.ch
-			drop()
-		})
-	}, true
-}
-
-// 测试钩子，生产环境都是 nil。
-var (
-	agentOrderPausePoint func() // 第 5 步检查全部通过之后、生成码之前
-	agentOrderCollided   func() // 建单撞上同号唯一约束、转回第 4 步之前
-)
-
 // ---- 取回完整码 ----
 
 // exportedCode 是交给代理商的一张完整码。解不开的码 Code 为空串、Unavailable 为 true。
@@ -285,43 +222,62 @@ func agentOrderInvalid(c *gin.Context, msg string) {
 	agentError(c, http.StatusBadRequest, "invalid_request", msg)
 }
 
-// agentOrderCodes 取一笔订单当时发出的码并解密（重放和导出共用）。出错时已写好响应，返回 false。
+// agentOrderFail 把下单核心的错误写成响应（状态码、错误编号、提示和以前逐字一致）。
+// 除了成功和重放，这些响应都没有扣款、没有建单：前端遇到明确失败可以换新请求号重下。
+func agentOrderFail(c *gin.Context, err error) {
+	var (
+		noKey *agentOrderNoKeyError
+		busy  *agentOrderBusyError
+		pc    *priceChangedError
+		short *db.InsufficientBalanceError
+	)
+	switch {
+	case errors.As(err, &noKey):
+		agentOrderNoKey(c, noKey.Kind, agentMsgOrderMaint)
+	case errors.As(err, &busy):
+		agentOrderBusy(c, busy.Op, busy.Err)
+	case errors.Is(err, errAgentOrderSeal):
+		agentError(c, http.StatusServiceUnavailable, "maintenance", agentMsgOrderMaint)
+	case errors.Is(err, errAgentOrderInternal):
+		agentError(c, http.StatusInternalServerError, "internal", "系统出错，请稍后再试")
+	case errors.Is(err, errProductUnavailable):
+		agentError(c, http.StatusNotFound, "product_unavailable", agentMsgUnavailable)
+	case errors.As(err, &pc):
+		c.AbortWithStatusJSON(http.StatusConflict, gin.H{"error": "price_changed", "message": agentMsgPriceChanged, "current_unit_price_cents": pc.CurrentCents})
+	case errors.Is(err, errProductNotReady):
+		agentError(c, http.StatusConflict, "product_not_ready", agentMsgNotReady)
+	case errors.Is(err, errRequestConflict):
+		agentError(c, http.StatusConflict, "request_no_conflict", agentMsgReqConflict)
+	case errors.As(err, &short):
+		gap := short.NeedCents - short.BalanceCents
+		c.AbortWithStatusJSON(http.StatusConflict, gin.H{
+			"error": "insufficient_balance", "message": "余额不足，还差 $" + agent.FormatCents(gap), "shortfall_cents": gap,
+		})
+	case errors.Is(err, db.ErrAgentDisabled), errors.Is(err, db.ErrAgentNotFound):
+		agentError(c, http.StatusUnauthorized, "unauthorized", "未登录或登录已过期")
+	default: // 核心只返回上面这些错误，这里兜底按下单失败处理
+		agentOrderBusy(c, "下单", err)
+	}
+}
+
+// agentOrderCodes 取一笔订单当时发出的码并解密（订单导出用）。出错时已写好响应，返回 false。
 func agentOrderCodes(c *gin.Context, o db.AgentOrder, maintMsg string) ([]exportedCode, bool) {
-	ctx := c.Request.Context()
-	ids, err := db.LocalCDKIDsForAgentOrder(ctx, agentID(c), o.ID)
-	if err != nil {
-		agentOrderBusy(c, "读取订单的码", err)
-		return nil, false
-	}
-	if len(ids) != o.Quantity { // 不应发生：码和订单在同一个事务里写入，码只会被禁用、不会被删
-		log.Printf("[agent-order] 订单 %d 现有 %d 张码，和订单数量 %d 不一致", o.ID, len(ids), o.Quantity)
-	}
-	codes, err := openAgentCodes(ctx, agentID(c), ids)
-	var noKey *agentCodesNoKeyError
-	if errors.As(err, &noKey) {
+	codes, err := loadAgentOrderCodes(c.Request.Context(), agentID(c), o)
+	var (
+		noKey *agentCodesNoKeyError
+		busy  *agentOrderBusyError
+	)
+	switch {
+	case errors.As(err, &noKey):
 		agentOrderNoKey(c, noKey.kind, maintMsg)
-		return nil, false
+	case errors.As(err, &busy):
+		agentOrderBusy(c, busy.Op, busy.Err)
+	case err != nil: // loadAgentOrderCodes 只返回上面两种错误，这里兜底
+		agentOrderBusy(c, "读取订单的码", err)
+	default:
+		return codes, true
 	}
-	if err != nil {
-		agentOrderBusy(c, "读取码的密文", err)
-		return nil, false
-	}
-	// 补上每张码现在的状态和换出的新码：只读这笔订单这些码（限定 agent_id）
-	rows, err := db.LoadLocalCDKRowsByAgentIDs(ctx, agentID(c), ids)
-	if err != nil {
-		agentOrderBusy(c, "读取码的状态", err)
-		return nil, false
-	}
-	byID := make(map[int64]db.LocalCDKRow, len(rows))
-	for _, r := range rows {
-		byID[r.ID] = r
-	}
-	for i := range codes {
-		if r, ok := byID[codes[i].ID]; ok {
-			codes[i].Status, codes[i].ReplacedBy = agentCodeStatus(r.View.Status), r.ReplacedBy
-		}
-	}
-	return codes, true
+	return nil, false
 }
 
 // ---- 商品 ----
@@ -402,6 +358,8 @@ func agentOrderBind(c *gin.Context) (agentOrderRequest, bool) {
 		agentOrderInvalid(c, fmt.Sprintf("备注不能超过 %d 个字", localCDKNoteMax))
 	case !agent.ValidRequestNo(req.RequestNo):
 		agentOrderInvalid(c, "请求号需为 1–64 位，只能用字母、数字和 _ . : -")
+	case strings.HasPrefix(req.RequestNo, "acg:"): // 异次元对接的订单用 "acg:" + 对方单号，后台下单不能占用
+		agentOrderInvalid(c, "请求号不能以 acg: 开头")
 	case req.ExpectedUnitPriceCents <= 0:
 		agentOrderInvalid(c, agentMsgBadPrice)
 	default:
@@ -410,40 +368,9 @@ func agentOrderBind(c *gin.Context) (agentOrderRequest, bool) {
 	return req, false
 }
 
-// agentOrderReplay 查这个请求号有没有订单（第 4 步）。没有返回 false。
-// 有的话写好响应返回 true：商品编码和数量都一致就原样重放（码从密文解出，不再扣钱；备注不参与比较），否则 409。
-// 读库出错也写好 503 并返回 true。
-func agentOrderReplay(c *gin.Context, req agentOrderRequest) bool {
-	o, found, err := db.GetAgentOrderByRequestNo(c.Request.Context(), agentID(c), req.RequestNo)
-	if err != nil {
-		agentOrderBusy(c, "查请求号", err)
-		return true
-	}
-	if !found {
-		return false
-	}
-	if o.ProductCode != req.ProductCode || o.Quantity != req.Quantity {
-		agentError(c, http.StatusConflict, "request_no_conflict", agentMsgReqConflict)
-		return true
-	}
-	codes, ok := agentOrderCodes(c, o, agentMsgOrderMaint)
-	if !ok {
-		return true
-	}
-	// 重放又交出了一遍完整码，按导出记审计
-	auditAgent(c, "agent_codes_export", fmt.Sprintf("order=%d count=%d replay=true", o.ID, len(codes)))
-	c.Header("Cache-Control", "no-store")
-	c.JSON(http.StatusOK, gin.H{"order": agentOrderView(o), "codes": codes, "replayed": true})
-	return true
-}
-
 // AgentPlaceOrder POST /orders。处理顺序：
-//  1. 限流；2. 校验参数；3. 主密钥可用；
-//  4. 查请求号——放在商品检查之前：第一次成功后商品下架或改价，用同一个请求号重试也要拿回第一次的码；
-//  5. 商品已上架、取得到价格、价格和代理商确认时看到的一致、现在能出码；
-//  6. 生成码并逐张加密；7. 一个事务里建单、扣款、写流水、写码；8. 返回码，写审计。
-//
-// 第 4–7 步按「代理商 + 请求号」在进程内串行（见 lockAgentOrderRequest）。
+//  1. 限流；2. 校验参数；3–7. 下单核心 placeAgentOrder（主密钥、查请求号重放、商品检查、生成码、建单扣款）；
+//  8. 返回码，写审计。
 //
 // 1–6 步的拒绝都在写库之前，第 7 步失败整体回滚，所以除了成功和重放，任何响应都没有扣款、没有建单：
 // 前端遇到明确失败可以换新请求号重下，遇到限流可以保留原请求号重试。
@@ -457,114 +384,22 @@ func AgentPlaceOrder(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if _, err := secretbox.LoadKey(); err != nil {
-		agentOrderNoKey(c, secretErrKind(err), agentMsgOrderMaint)
-		return
-	}
-	// 第 4–7 步同号串行：锁在查请求号之前拿，建单返回后放（提前返回由 defer 放）
-	release, locked := agentOrderLock(c.Request.Context(), aid, req.RequestNo)
-	if !locked {
-		agentOrderBusy(c, "等同号请求", c.Request.Context().Err())
-		return
-	}
-	defer release()
-	if agentOrderReplay(c, req) {
-		return
-	}
-
-	ctx := c.Request.Context()
-	p, err := db.GetAgentProductByCode(ctx, req.ProductCode)
-	switch {
-	case errors.Is(err, db.ErrAgentProductNotFound):
-		agentError(c, http.StatusNotFound, "product_unavailable", agentMsgUnavailable)
-		return
-	case err != nil:
-		agentOrderBusy(c, "读取商品", err)
-		return
-	case !p.Enabled:
-		agentError(c, http.StatusNotFound, "product_unavailable", agentMsgUnavailable)
-		return
-	}
-	price, priced, err := db.AgentPriceFor(ctx, aid, p.ID)
+	out, err := placeAgentOrder(c.Request.Context(), agentOrderInput{
+		AgentID: aid, Username: user, ProductCode: req.ProductCode, Quantity: req.Quantity, RequestNo: req.RequestNo,
+		Note: req.Note, ExpectedUnitPriceCents: req.ExpectedUnitPriceCents, Source: db.AgentOrderSourceWeb,
+	})
 	if err != nil {
-		agentOrderBusy(c, "取价", err)
+		agentOrderFail(c, err)
 		return
 	}
-	if !priced {
-		agentError(c, http.StatusNotFound, "product_unavailable", agentMsgUnavailable)
-		return
+	o := out.Order
+	if out.Replayed { // 重放又交出了一遍完整码，按导出记审计
+		auditAgent(c, "agent_codes_export", fmt.Sprintf("order=%d count=%d replay=true", o.ID, len(out.Codes)))
+	} else {
+		auditAgent(c, "agent_order", fmt.Sprintf("product=%s quantity=%d total_cents=%d order=%d", o.ProductCode, o.Quantity, o.TotalCents, o.ID))
 	}
-	if price != req.ExpectedUnitPriceCents {
-		c.AbortWithStatusJSON(http.StatusConflict, gin.H{"error": "price_changed", "message": agentMsgPriceChanged, "current_unit_price_cents": price})
-		return
-	}
-	cs, ready := agentProductReady(ctx, p)
-	if !ready {
-		agentError(c, http.StatusConflict, "product_not_ready", agentMsgNotReady)
-		return
-	}
-	if agentOrderPausePoint != nil {
-		agentOrderPausePoint()
-	}
-
-	issuedBy := "agent:" + user
-	// 不按 req.Quantity 预分配容量（CodeQL #26 #27）：数量上面已限制在 MaxIssueCount 以内，追加的开销可以忽略。
-	plain := make([]string, 0)
-	rows := make([]db.NewLocalCDK, 0)
-	for i := 0; i < req.Quantity; i++ {
-		lc, err := provider.GenerateCode(cs)
-		if err != nil {
-			log.Printf("[agent-order] 代理商 %d 生成码失败: %v", aid, err)
-			agentError(c, http.StatusInternalServerError, "internal", "系统出错，请稍后再试")
-			return
-		}
-		sealed := sealLocalCDKCode(lc.Code, lc.CodeHash)
-		if sealed == "" { // 加密失败（原因已由 sealLocalCDKCode 记下），整单拒绝
-			agentError(c, http.StatusServiceUnavailable, "maintenance", agentMsgOrderMaint)
-			return
-		}
-		plain = append(plain, lc.Code)
-		rows = append(rows, db.NewLocalCDK{
-			Provider: p.Provider, CodeHash: lc.CodeHash, TokenHash: lc.TokenHash, CodePrefix: lc.Prefix,
-			Product: p.Product, PlanKey: p.PlanKey, Region: p.Region, IssuedBy: issuedBy, Note: req.Note, CodeSealed: sealed,
-		})
-	}
-
-	ord, ids, err := db.CreateAgentOrder(ctx, db.NewAgentOrder{
-		AgentID: aid, Product: p, UnitPriceCents: price, RequestNo: req.RequestNo, Note: req.Note, Operator: issuedBy, Codes: rows,
-	}, agentNow())
-	release()
-	var short *db.InsufficientBalanceError
-	switch {
-	case errors.Is(err, db.ErrAgentOrderExists): // 同一个请求号的并发请求先提交了：回到第 4 步
-		if agentOrderCollided != nil {
-			agentOrderCollided()
-		}
-		if !agentOrderReplay(c, req) {
-			agentOrderBusy(c, "下单", err)
-		}
-		return
-	case errors.As(err, &short):
-		gap := short.NeedCents - short.BalanceCents
-		c.AbortWithStatusJSON(http.StatusConflict, gin.H{
-			"error": "insufficient_balance", "message": "余额不足，还差 $" + agent.FormatCents(gap), "shortfall_cents": gap,
-		})
-		return
-	case errors.Is(err, db.ErrAgentDisabled), errors.Is(err, db.ErrAgentNotFound):
-		agentError(c, http.StatusUnauthorized, "unauthorized", "未登录或登录已过期")
-		return
-	case err != nil: // 含数据库忙、码的哈希撞上唯一约束；已整体回滚
-		agentOrderBusy(c, "下单", err)
-		return
-	}
-
-	codes := make([]exportedCode, len(ids))
-	for i, id := range ids {
-		codes[i] = exportedCode{ID: id, Code: plain[i], Status: agentCStatusUnused} // 刚发出的码一定是未使用
-	}
-	auditAgent(c, "agent_order", fmt.Sprintf("product=%s quantity=%d total_cents=%d order=%d", ord.ProductCode, ord.Quantity, ord.TotalCents, ord.ID))
 	c.Header("Cache-Control", "no-store")
-	c.JSON(http.StatusOK, gin.H{"order": agentOrderView(ord), "codes": codes, "replayed": false})
+	c.JSON(http.StatusOK, gin.H{"order": agentOrderView(o), "codes": out.Codes, "replayed": out.Replayed})
 }
 
 // ---- 订单 ----

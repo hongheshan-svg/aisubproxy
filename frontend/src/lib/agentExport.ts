@@ -13,6 +13,8 @@ export type ExportedCode = {
   created_at?: number
   order_id?: number
   note?: string
+  source?: string
+  external_ref?: string
 }
 
 /** 订单导出、重放、下单结果里的码带状态；status 缺省（旧响应）当作未使用。不是「未使用」的码已作废或已被用掉。 */
@@ -55,7 +57,7 @@ function csvField(v: unknown): string {
 }
 
 export function codesCsv(items: ExportedCode[]): string {
-  const rows = ['code,product_code,plan,region,status,purchased_at,order_id,note']
+  const rows = ['code,product_code,plan,region,status,purchased_at,order_id,note,source,external_ref']
   for (const it of items) {
     rows.push([
       it.unavailable ? UNAVAILABLE_TEXT : it.code,
@@ -66,6 +68,8 @@ export function codesCsv(items: ExportedCode[]): string {
       it.created_at ? fmtBeijing(it.created_at) : '',
       it.order_id,
       csvText(it.note),
+      it.source,
+      csvText(it.external_ref),
     ].map(csvField).join(','))
   }
   return '\uFEFF' + rows.join('\n') + '\n'

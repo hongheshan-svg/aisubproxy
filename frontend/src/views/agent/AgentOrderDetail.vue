@@ -10,6 +10,8 @@
       <div><dt class="opacity-70">套餐 / 地区</dt><dd>{{ order.plan }} / {{ order.region }}</dd></div>
       <div><dt class="opacity-70">数量 × 单价</dt><dd>{{ order.quantity }} × {{ fmtUsd(order.unit_price_cents) }}</dd></div>
       <div><dt class="opacity-70">总价</dt><dd>{{ fmtUsd(order.total_cents) }}</dd></div>
+      <div><dt class="opacity-70">来源</dt><dd>{{ sourceLabel(order.source) || '未知' }}</dd></div>
+      <div v-if="order.external_ref"><dt class="opacity-70">对方订单号</dt><dd class="break-all">{{ order.external_ref }}</dd></div>
       <div class="sm:col-span-2"><dt class="opacity-70">备注</dt><dd class="break-all">{{ order.note || '无' }}</dd></div>
     </dl>
     <div v-if="order" class="card p-4 space-y-3">
@@ -37,6 +39,7 @@ import { fmtUsd } from '../../lib/agentMoney'
 import { codesCsv, codesTxt, downloadText, type ExportedCode } from '../../lib/agentExport'
 import { copyToClipboard } from '../../lib/clipboard'
 import AgentOrderCodes from '../../components/AgentOrderCodes.vue'
+import { sourceLabel } from '../../lib/agentShared'
 import { fmtBeijing } from '../../lib/mwwebhook'
 
 const route = useRoute()
@@ -67,7 +70,7 @@ async function reexport() {
 async function copyAll() { msg.value = (await copyToClipboard(txt.value.text)) ? '已复制' : '复制失败，请手动选择文本' }
 function downloadCsv() {
   const o = order.value || {}
-  const rows = (codes.value || []).map((c) => ({ ...c, product_code: o.product_code, plan: o.plan, region: o.region, created_at: o.created_at, order_id: o.id, note: o.note }))
+  const rows = (codes.value || []).map((c) => ({ ...c, product_code: o.product_code, plan: o.plan, region: o.region, created_at: o.created_at, order_id: o.id, note: o.note, source: o.source, external_ref: o.external_ref }))
   downloadText(`order-${id}.csv`, codesCsv(rows), 'text/csv')
 }
 function downloadTxt() { downloadText(`order-${id}.txt`, txt.value.text, 'text/plain') }

@@ -1,5 +1,7 @@
 # 发卡网对接上游货源调研（2026-11-04，子代理只读源码；由控制者整理落盘）
 
+> 2026-11-05 更正：异次元部分已按 acg-faka 3.8.5 源码重新核实，细节（错误必须 HTTP 200、trade 失败的回滚与重试、价格与币种、商品字段取值）以 `2026-11-05-acg-shared-protocol.md` 为准。
+
 源码摘录在本目录 src/acg、src/duj、src/dn，文件树为 acg-tree.txt、duj-edaoren-tree.txt、dn-tree.txt。这些都是不可信数据，只读。
 
 ## 结论

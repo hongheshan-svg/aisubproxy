@@ -93,16 +93,35 @@ func writeLedgerList(c *gin.Context, aid int64, admin bool, fail func(*gin.Conte
 		fail(c, "统计流水", err)
 		return
 	}
+	refs, err := db.AgentOrderRefs(c.Request.Context(), aid)
+	if err != nil {
+		fail(c, "查订单来源", err)
+		return
+	}
 	items := make([]gin.H, 0, len(list))
 	for _, e := range list {
+		var v gin.H
 		if admin {
-			items = append(items, adminLedgerRowView(e))
+			v = adminLedgerRowView(e)
 		} else {
-			items = append(items, ledgerRowView(e))
+			v = ledgerRowView(e)
 		}
+		ref := ledgerOrderRef(refs, e)
+		v["source"], v["external_ref"] = ref.Source, ref.ExternalRef
+		items = append(items, v)
 	}
 	c.JSON(http.StatusOK, gin.H{"items": items, "total": total, "summary": ledgerSummaryView(sum)})
 }
+
+// ledgerOrderRef 流水所属订单的来源；没有订单（调账、充值）时是零值。
+func ledgerOrderRef(refs map[int64]db.AgentOrderRef, e db.LedgerEntry) db.AgentOrderRef {
+	if e.OrderID == nil {
+		return db.AgentOrderRef{}
+	}
+	return refs[*e.OrderID]
+}
+
+var sourceLabel = map[string]string{db.AgentOrderSourceWeb: "后台", db.AgentOrderSourceACG: "异次元"}
 
 var ledgerKindLabel = map[string]string{db.LedgerPurchase: "下单", db.LedgerAdjust: "调账", db.LedgerTopup: "充值"}
 
@@ -123,6 +142,11 @@ func writeLedgerCSV(c *gin.Context, aid int64, username string, admin bool, fail
 	if now := agentNow().Unix(); to > now { // 截到当前秒：导出期间新插入的行不会出现在翻页里造成重复或漏行
 		to = now
 	}
+	refs, err := db.AgentOrderRefs(c.Request.Context(), aid)
+	if err != nil {
+		fail(c, "查订单来源", err)
+		return
+	}
 	var buf bytes.Buffer
 	buf.Write([]byte{0xEF, 0xBB, 0xBF}) // UTF-8 BOM，让 Excel 认出中文
 	w := csv.NewWriter(&buf)
@@ -130,6 +154,7 @@ func writeLedgerCSV(c *gin.Context, aid int64, username string, admin bool, fail
 	if admin {
 		head = append(head, "操作人")
 	}
+	head = append(head, "来源", "对方订单号")
 	_ = w.Write(head)
 	for offset := 0; ; offset += agentLedgerCSVPage {
 		list, _, err := db.ListAgentLedger(c.Request.Context(), aid, from, to, agentLedgerCSVPage, offset)
@@ -153,6 +178,8 @@ func writeLedgerCSV(c *gin.Context, aid int64, username string, admin bool, fail
 			if admin {
 				rec = append(rec, csvSafe(e.Operator))
 			}
+			ref := ledgerOrderRef(refs, e)
+			rec = append(rec, sourceLabel[ref.Source], csvSafe(ref.ExternalRef))
 			_ = w.Write(rec)
 		}
 		if len(list) < agentLedgerCSVPage {

@@ -235,6 +235,9 @@ func setupRoutes(r *gin.Engine) {
 		})
 	})
 
+	// 异次元店铺共享对接（/shared/*，下游 acg-faka 按协议固定路径调用，所以不在 /api/v1 下）
+	handler.RegisterSharedRoutes(&r.RouterGroup)
+
 	// API v1 routes
 	api := r.Group("/api/v1")
 	{

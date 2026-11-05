@@ -119,6 +119,7 @@ export const routes: RouteRecordRaw[] = [
       { path: 'orders', name: 'AgentOrders', component: () => import('../views/agent/AgentOrders.vue') },
       { path: 'orders/:id', name: 'AgentOrderDetail', component: () => import('../views/agent/AgentOrderDetail.vue') },
       { path: 'ledger', name: 'AgentLedger', component: () => import('../views/agent/AgentLedger.vue') },
+      { path: 'integration', name: 'AgentIntegration', component: () => import('../views/agent/AgentIntegration.vue') },
       { path: 'account', name: 'AgentAccount', component: () => import('../views/agent/AgentAccount.vue') },
     ],
   },

@@ -55,6 +55,7 @@
           <el-table-column label="金额" width="110"><template #default="{ row }">{{ fmtUsd(row.amount_cents) }}</template></el-table-column>
           <el-table-column label="变动后余额" width="120"><template #default="{ row }">{{ fmtUsd(row.balance_after_cents) }}</template></el-table-column>
           <el-table-column label="订单" width="80"><template #default="{ row }">{{ row.order_id ? '#' + row.order_id : '' }}</template></el-table-column>
+          <el-table-column label="来源" width="80"><template #default="{ row }">{{ sourceLabel(row.source) }}</template></el-table-column>
           <el-table-column prop="operator" label="操作人" width="110" show-overflow-tooltip />
           <el-table-column prop="ext_ref" label="外部单号" min-width="110" show-overflow-tooltip />
           <el-table-column prop="note" label="备注" min-width="140" show-overflow-tooltip />
@@ -72,6 +73,8 @@
           <el-table-column prop="quantity" label="数量" width="70" />
           <el-table-column label="单价" width="100"><template #default="{ row }">{{ fmtUsd(row.unit_price_cents) }}</template></el-table-column>
           <el-table-column label="合计" width="110"><template #default="{ row }">{{ fmtUsd(row.total_cents) }}</template></el-table-column>
+          <el-table-column label="来源" width="80"><template #default="{ row }">{{ sourceLabel(row.source) }}</template></el-table-column>
+          <el-table-column prop="external_ref" label="对方订单号" min-width="130" show-overflow-tooltip />
           <el-table-column prop="note" label="备注" min-width="120" show-overflow-tooltip />
         </el-table>
         <div class="flex justify-end"><el-pagination v-model:current-page="ordersPage" :page-size="PAGE" :total="ordersTotal" layout="total, prev, pager, next" size="small" @current-change="loadOrders" /></div>
@@ -91,6 +94,9 @@
         </el-table>
         <el-button type="primary" :loading="savingOverrides" @click="saveOverrides">保存覆盖价</el-button>
       </div>
+
+      <!-- 异次元对接 -->
+      <AgentSharedPanel v-if="tab === 'shared'" :agent-id="id" />
 
       <!-- 本站码 -->
       <div v-if="tab === 'codes'" class="space-y-3">
@@ -151,6 +157,8 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute } from 'vue-router'
 import AgentPasswordDialog from './components/AgentPasswordDialog.vue'
+import AgentSharedPanel from './components/AgentSharedPanel.vue'
+import { sourceLabel } from '../../lib/agentShared'
 import { adminApi, centsToUsd, localCdkStatusText } from '../../lib/provider'
 import { authFetch } from '../../lib/api'
 import {
@@ -178,7 +186,7 @@ function downloadBlob(name: string, blob: Blob) {
 }
 const TABS = [
   { key: 'ledger', label: '余额流水' }, { key: 'orders', label: '订单' },
-  { key: 'overrides', label: '覆盖价' }, { key: 'codes', label: '本站码' },
+  { key: 'overrides', label: '覆盖价' }, { key: 'shared', label: '异次元对接' }, { key: 'codes', label: '本站码' },
 ]
 const route = useRoute()
 const id = computed(() => Number(route.params.id))

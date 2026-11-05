@@ -242,7 +242,7 @@ func TestAdminAdjustIdempotent(t *testing.T) {
 		t.Fatalf("首次: %d %v", code, m)
 	}
 	entry := m["entry"].(map[string]any)
-	if entry["kind"] != "adjust" || entry["amount_cents"] != float64(1000) || entry["operator"] != "admin" || entry["note"] != "首充" {
+	if entry["kind"] != "adjust" || entry["amount_cents"] != float64(1000) || entry["operator"] != "admin:admin" || entry["note"] != "首充" {
 		t.Fatalf("流水行不对: %v", entry)
 	}
 	code, m = adjust(e, id, "k-1", `{"amount_cents":1000,"note":"首充"}`)

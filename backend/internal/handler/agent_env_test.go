@@ -82,12 +82,15 @@ func agentEnvOn(t *testing.T, le *localEnv) *agentEnv {
 	agentNow = func() time.Time { return e.clock }
 	resetAgentAuthState()
 	resetAgentOrderRate()
+	resetSharedState()
 	t.Cleanup(func() {
 		agentNow = old
 		resetAgentAuthState()
 		resetAgentOrderRate()
+		resetSharedState()
 	})
 	r := gin.New()
+	RegisterSharedRoutes(&r.RouterGroup)
 	RegisterAgentRoutes(r.Group("/api/v1"))
 	adm := r.Group("/api/v1/admin")
 	adm.Use(func(c *gin.Context) {

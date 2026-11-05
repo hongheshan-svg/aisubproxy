@@ -143,6 +143,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { authFetch, serverLogout } from '../lib/api'
 import { dialog } from '../lib/dialog'
+import { adjustHasAnyPending, clearAdjustRetries } from '../lib/agentAdmin'
 import { siteBrand } from '../theme'
 import ThemeToggle from '../components/ThemeToggle.vue'
 import { PAGE_TABS, tabCrumb, zovoEnv, marsEnv, type EnvBadge } from '../lib/adminui'
@@ -255,7 +256,10 @@ async function onUserCommand(cmd: string) {
     resetPwd()
     pwdOpen.value = true
   } else if (cmd === 'logout') {
+    // 从存储判断（别的标签页留下的未决也算），不只看本页内存
+    if (adjustHasAnyPending() && !(await dialog.confirm('有调账结果未知，退出后这台电脑上不能再原样重试，请先到代理商的「余额流水」核对。确定退出吗？', { title: '调账结果未知', okText: '仍然退出', danger: true }))) return
     await serverLogout()
+    clearAdjustRetries() // 退出登录清掉调账的待重试记录（只有幂等键、金额和原因）
     router.push('/ops/login')
   }
 }

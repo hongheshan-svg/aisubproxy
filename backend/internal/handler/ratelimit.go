@@ -20,7 +20,9 @@ const failLimiterSweepEvery = time.Minute
 
 var (
 	loginLimiter = newFailLimiter(loginMaxAttempts, loginLockWindow, authLimiterMaxKeys)
-	setupLimiter = newFailLimiter(setupMaxAttempts, setupLockWindow, authLimiterMaxKeys)
+	// 代理商登录单独一张表：规格 6.2 要求和管理员登录的计数器分开，互相挤占不了键（审计 AG-B-3）。
+	agentLoginLimiter = newFailLimiter(loginMaxAttempts, loginLockWindow, authLimiterMaxKeys)
+	setupLimiter      = newFailLimiter(setupMaxAttempts, setupLockWindow, authLimiterMaxKeys)
 )
 
 // failLimiter 是按键计失败次数的内存限流表：窗口内失败到上限就锁定一个窗口长的时间。
@@ -175,3 +177,12 @@ func loginFailed(key string) { loginLimiter.failed(key) }
 
 // loginSucceeded 登录成功后清除该 key 的失败计数。
 func loginSucceeded(key string) { loginLimiter.succeeded(key) }
+
+// agentLoginAllowed 代理商登录的限流检查，只看代理商自己的表。
+func agentLoginAllowed(key string) (bool, time.Duration) { return agentLoginLimiter.allowed(key) }
+
+// agentLoginFailed 记一次代理商登录失败。
+func agentLoginFailed(key string) { agentLoginLimiter.failed(key) }
+
+// agentLoginSucceeded 代理商登录成功后清除该 key 的失败计数。
+func agentLoginSucceeded(key string) { agentLoginLimiter.succeeded(key) }

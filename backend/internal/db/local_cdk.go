@@ -71,6 +71,8 @@ type LocalCDK struct {
 	Note            string
 	CreatedAt       int64
 	UpdatedAt       int64
+	AgentID         int64 // 所属代理商；0 表示后台发的码
+	AgentOrderID    int64 // 所属代理商订单；0 表示不属于代理商订单
 }
 
 // LocalCDKOrder 是派生状态用到的单据字段。
@@ -275,8 +277,10 @@ type NewLocalCDK struct {
 	Provider, CodeHash, TokenHash, CodePrefix, Product, PlanKey, Region, IssuedBy, Note string
 	ExchangedFrom                                                                       *int64
 	AttemptsCarried                                                                     int
-	// CodeSealed 是完整码的密文，只有换码换出的新码才有；后台批量发码留空。
+	// CodeSealed 是完整码的密文：换码换出的新码和代理商下单买的码都有；后台批量发码留空。
 	CodeSealed string
+	// AgentID、AgentOrderID 只由代理商下单（CreateAgentOrder）填写；换码时由 ExchangeLocalCDK 从旧码继承。
+	AgentID, AgentOrderID int64
 }
 
 func insertLocalCDK(ctx context.Context, tx *sql.Tx, n NewLocalCDK, now int64) (int64, error) {
@@ -285,10 +289,10 @@ func insertLocalCDK(ctx context.Context, tx *sql.Tx, n NewLocalCDK, now int64) (
 		from = *n.ExchangedFrom
 	}
 	res, err := tx.ExecContext(ctx, `INSERT INTO local_cdks (provider, code_hash, token_hash, code_prefix, product, plan_key, region,
-		status, exchanged_from, attempts_carried, issued_by, note, created_at, updated_at, code_sealed)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?)`,
+		status, exchanged_from, attempts_carried, issued_by, note, created_at, updated_at, code_sealed, agent_id, agent_order_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		n.Provider, n.CodeHash, n.TokenHash, n.CodePrefix, n.Product, n.PlanKey, n.Region,
-		from, n.AttemptsCarried, n.IssuedBy, n.Note, now, now, n.CodeSealed)
+		from, n.AttemptsCarried, n.IssuedBy, n.Note, now, now, n.CodeSealed, n.AgentID, n.AgentOrderID)
 	if err != nil {
 		return 0, err
 	}
@@ -347,13 +351,13 @@ func InsertLocalCDKs(ctx context.Context, key string, list []NewLocalCDK, now ti
 }
 
 const localCDKColumns = `l.id, l.provider, l.code_prefix, l.product, l.plan_key, l.region, l.status, l.exchanged_from,
-	(SELECT MIN(n.id) FROM local_cdks n WHERE n.exchanged_from = l.id), l.attempts_carried, l.issued_by, l.note, l.created_at, l.updated_at`
+	(SELECT MIN(n.id) FROM local_cdks n WHERE n.exchanged_from = l.id), l.attempts_carried, l.issued_by, l.note, l.created_at, l.updated_at, l.agent_id, l.agent_order_id`
 
 func scanLocalCDK(s interface{ Scan(...any) error }) (LocalCDK, error) {
 	var c LocalCDK
 	var from, replaced sql.NullInt64
 	err := s.Scan(&c.ID, &c.Provider, &c.CodePrefix, &c.Product, &c.PlanKey, &c.Region, &c.Manual, &from, &replaced,
-		&c.AttemptsCarried, &c.IssuedBy, &c.Note, &c.CreatedAt, &c.UpdatedAt)
+		&c.AttemptsCarried, &c.IssuedBy, &c.Note, &c.CreatedAt, &c.UpdatedAt, &c.AgentID, &c.AgentOrderID)
 	if err != nil {
 		return c, err
 	}
@@ -447,7 +451,39 @@ type LocalCDKRow struct {
 // LoadLocalCDKRows 取全部本地码并派生状态，新的在前。状态是派生值，不能用 SQL 筛选，所以整表读出来在 Go 里算；
 // 本地码按批发放、数量有限，后台接口和补卡闸的调用频率都低，先读码再读单，两次查询之间没有持有结果集。
 func LoadLocalCDKRows(ctx context.Context) ([]LocalCDKRow, error) {
-	rows, err := DB.QueryContext(ctx, `SELECT `+localCDKColumns+` FROM local_cdks l ORDER BY l.id DESC`)
+	return loadLocalCDKRows(ctx, "", nil, "", nil)
+}
+
+// LoadLocalCDKRowsByAgent 只取这个代理商的码，派生规则与 LoadLocalCDKRows 相同。
+func LoadLocalCDKRowsByAgent(ctx context.Context, agentID int64) ([]LocalCDKRow, error) {
+	// 付款单也限定到这个代理商自己的码：读取代价只和它自己的码数有关，不随全站付款单增长
+	return loadLocalCDKRows(ctx, "l.agent_id = ?", []any{agentID},
+		` AND source_ref IN (SELECT CAST(id AS TEXT) FROM local_cdks WHERE agent_id = ?)`, []any{agentID})
+}
+
+// LoadLocalCDKRowsByAgentIDs 只取这个代理商名下指定 id 的码（别人的 id 取不到），派生规则相同。
+// 付款单也只读这些码的；replaced_by 由列里的子查询按旧码算出，不需要把新码行读进来。
+func LoadLocalCDKRowsByAgentIDs(ctx context.Context, agentID int64, ids []int64) ([]LocalCDKRow, error) {
+	if len(ids) == 0 {
+		return []LocalCDKRow{}, nil
+	}
+	marks := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	args := []any{agentID}
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	return loadLocalCDKRows(ctx, "l.agent_id = ? AND l.id IN ("+marks+")", args,
+		` AND source_ref IN (SELECT CAST(id AS TEXT) FROM local_cdks WHERE agent_id = ? AND id IN (`+marks+`))`, args)
+}
+
+// loadLocalCDKRows 是两个对外函数共用的实现；where、orderWhere 是固定的 SQL 片段，值一律走参数。
+// orderWhere 追加在付款单查询的条件后面（用于只读这批码的付款单），为空表示读全部真实付款单。
+func loadLocalCDKRows(ctx context.Context, where string, args []any, orderWhere string, orderArgs []any) ([]LocalCDKRow, error) {
+	q := `SELECT ` + localCDKColumns + ` FROM local_cdks l`
+	if where != "" {
+		q += ` WHERE ` + where
+	}
+	rows, err := DB.QueryContext(ctx, q+` ORDER BY l.id DESC`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -466,7 +502,8 @@ func LoadLocalCDKRows(ctx context.Context) ([]LocalCDKRow, error) {
 	}
 	rows.Close()
 
-	orderRows, err := DB.QueryContext(ctx, `SELECT `+localCDKOrderColumns+` FROM pay_orders WHERE source = ? AND dry_run = 0 ORDER BY id`, localCDKSource)
+	orderRows, err := DB.QueryContext(ctx, `SELECT `+localCDKOrderColumns+` FROM pay_orders WHERE source = ? AND dry_run = 0`+orderWhere+` ORDER BY id`,
+		append([]any{localCDKSource}, orderArgs...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -554,6 +591,11 @@ func ExchangeLocalCDK(ctx context.Context, oldID int64, n NewLocalCDK, now time.
 	}
 	if changed == 0 {
 		return 0, ErrLocalCDKNotExchangeable
+	}
+	// 新码继承旧码的归属：代理商的码换出来的新码仍然属于这个代理商和这笔订单。
+	if err := tx.QueryRowContext(ctx, `SELECT agent_id, agent_order_id FROM local_cdks WHERE id = ?`, oldID).
+		Scan(&n.AgentID, &n.AgentOrderID); err != nil {
+		return 0, err
 	}
 	id, err := insertLocalCDK(ctx, tx, n, now.Unix())
 	if err != nil {

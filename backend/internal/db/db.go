@@ -1264,7 +1264,7 @@ func ListCardplatformStoredCDKCodesPage(plan, q, status string, page, pageSize i
 		return nil, 0, err
 	}
 	defer rows.Close()
-	out := make([]StoredCDKCode, 0, pageSize)
+	var out []StoredCDKCode
 	for rows.Next() {
 		var it StoredCDKCode
 		if err := rows.Scan(&it.UpstreamID, &it.Code, &it.CodePrefix, &it.Plan, &it.FeeAmountMinor, &it.Status, &it.CreatedAt, &it.PaymentCountry); err != nil {

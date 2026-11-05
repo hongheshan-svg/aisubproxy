@@ -154,8 +154,8 @@ import AgentPasswordDialog from './components/AgentPasswordDialog.vue'
 import { adminApi, centsToUsd, localCdkStatusText } from '../../lib/provider'
 import { authFetch } from '../../lib/api'
 import {
-  ADJUST_LEAVE_TEXT, adjustBegin, adjustFinish, adjustKeeperFor, adjustLeaveWarning, adjustOpenState, adjustPendings, adjustPreview, adjustReopenBlock, adminErrorText,
-  classifyAdjust, overrideChanges,
+  ADJUST_LEAVE_TEXT, adjustAbandon, adjustBegin, adjustKeeperFor, adjustLeaveWarning, adjustOpenState, adjustPendingFor, adjustPreview, adjustRecheck, adjustReopenBlock,
+  adjustRun, adminErrorText, overrideChanges, type PendingAdjust,
 } from '../../lib/agentAdmin'
 import { fmtUsd, parseSignedUsd } from '../../lib/agentMoney'
 import { beijingRange, defaultLedgerRange, ledgerQuery, LEDGER_KIND_LABELS } from '../../lib/agentViews'
@@ -359,7 +359,8 @@ async function resetTotp() {
 }
 
 // ---------- 调账 ----------
-// 未决调账（结果未知）和幂等键放模块级内存（lib/agentAdmin），关对话框、切页面都不丢，不写 storage
+// 未决调账（结果未知）和幂等键按代理商 ID 落 localStorage（lib/agentAdmin 的 adjustRetry）：
+// 关对话框、切页面、刷新、关标签页重开、新标签页都不丢；只存幂等键、金额和原因
 const adjustOpen = ref(false)
 const adjAmount = ref('')
 const adjNote = ref('')
@@ -375,7 +376,7 @@ const preview = computed(() => {
 })
 
 function openAdjust() {
-  const st = adjustOpenState(adjustPendings.get(id.value))
+  const st = adjustOpenState(adjustPendingFor(id.value)) // 重读存储：刷新前、别的标签页留下的未决也算
   adjAmount.value = st.amountText
   adjNote.value = st.note
   adjLocked.value = st.locked
@@ -390,8 +391,7 @@ async function abandonAdjust() {
   if (adjBusy.value) return
   const ok = await dialog.confirm(`这次对 ${agent.value?.username} 的调账可能已经入账。放弃后不会再重试，请先到「余额流水」确认有没有这笔记录，再决定是否重新调账。确认放弃？`, { title: '放弃这次调账', okText: '放弃', danger: true })
   if (!ok) return
-  adjustPendings.delete(id.value)
-  adjustKeeperFor(id.value).done()
+  adjustAbandon(id.value)
   adjLocked.value = false
   adjMsg.value = ''
   adjustOpen.value = false
@@ -414,30 +414,45 @@ async function submitAdjust() {
   const ok = await dialog.confirm(`${pv.text}\n${pv.afterText}\n原因：${note}\n确认调账？`, { title: `确认调账：${agent.value.username}`, okText: pv.direction === 'credit' ? '确认充值' : '确认扣款', danger: pv.direction === 'debit' })
   if (!ok) return
   const aid = id.value
-  const keeper = adjustKeeperFor(aid)
+  const payload: PendingAdjust = { agent_id: aid, amount_cents: p.cents, note }
+  // 发出前重读存储（多个标签页共用）：别处锁定了一笔就改显示那笔；这里锁定的那笔别处已处理完就不许再发（再发会换新键重复入账）
+  const rc = adjustRecheck(aid, payload, adjLocked.value)
+  if (rc.kind === 'locked') { showLockedAdjust(rc.pending, '这个代理商有一笔调账结果未知（可能是在别的页面发起的），请原样重试，或放弃后先到「余额流水」确认'); return }
+  if (rc.kind === 'settled') {
+    adjLocked.value = false
+    adjMsg.value = '这笔调账已在别的页面处理完（成功或已放弃），请先到「余额流水」核对，再决定是否重新调账'
+    loadAgent(); loadLedger()
+    return
+  }
   if (!adjustBegin(aid)) { adjPending.value = adjustReopenBlock(aid); adjMsg.value = adjPending.value; return }
   adjBusy.value = true
   adjMsg.value = ''
   try {
-    const payload = { agent_id: aid, amount_cents: p.cents, note }
-    const key = keeper.keyFor(payload)
-    const r = await adminApi<any>(`/agents/${aid}/adjust`, 'POST', { amount_cents: p.cents, note }, { 'Idempotency-Key': key })
-    const o = classifyAdjust(r.status, r.data)
-    adjustFinish(aid, payload, o) // 不管页面还在不在：先清在途、记未决或清键
-    if (aid !== id.value) return // 请求期间已切到别的代理商：不再动当前页面
-    if (o.kind === 'unknown') { adjLocked.value = true; adjMsg.value = o.message; return }
-    adjLocked.value = false
-    if (o.kind === 'failed') { adjMsg.value = o.message; return }
-    dialog.toast(o.message, o.kind === 'replayed' ? 'info' : 'ok', o.kind === 'replayed' ? 6000 : 2800)
-    adjustOpen.value = false
-    loadAgent()
-    if (tab.value === 'ledger') loadLedger()
-  } catch (e) {
-    adjustFinish(aid, { agent_id: aid, amount_cents: p.cents, note }, classifyAdjust(0, {})) // 意外异常按结果未知处理
-    if (aid === id.value) { adjLocked.value = true; adjMsg.value = classifyAdjust(0, {}).message }
+    // 发出前落盘、返回后只结算一次（lib/agentAdmin 的 run）；下面更新界面出异常也不会再记一条未决、换键（Task 11）
+    await adjustRun(aid, payload, (key) => adminApi<any>(`/agents/${aid}/adjust`, 'POST', { amount_cents: p.cents, note }, { 'Idempotency-Key': key }), (o) => {
+      if (aid !== id.value) return // 请求期间已切到别的代理商：不再动当前页面
+      if (o.kind === 'unknown') { adjLocked.value = true; adjMsg.value = o.message; return }
+      adjLocked.value = false
+      if (o.kind === 'failed') { adjMsg.value = o.message; return }
+      dialog.toast(o.message, o.kind === 'replayed' ? 'info' : 'ok', o.kind === 'replayed' ? 6000 : 2800)
+      adjustOpen.value = false
+      loadAgent()
+      if (tab.value === 'ledger') loadLedger()
+    })
   } finally {
     adjBusy.value = false
   }
+}
+function showLockedAdjust(pending: PendingAdjust, msg: string) {
+  const st = adjustOpenState(pending)
+  adjAmount.value = st.amountText
+  adjNote.value = st.note
+  adjLocked.value = true
+  adjMsg.value = msg
+}
+// 打开详情页（或换到另一个代理商）时：有结果未知的调账就直接打开锁定的对话框，只许原样重试或放弃
+function resumeAdjust() {
+  if (agent.value && !adjustOpen.value && adjustPendingFor(id.value)) openAdjust()
 }
 
 // 有未决调账时离开（或换到另一个代理商）先提示
@@ -462,13 +477,13 @@ function resetForId() {
   ledger.value = []; orders.value = []; codes.value = []
   ledgerPage.value = ordersPage.value = codesPage.value = 1
   tab.value = 'ledger'
-  loadAgent()
+  loadAgent().then(resumeAdjust)
   loadLedger()
 }
 watch(id, (n, o) => { if (n && n !== o) resetForId() })
 
 onMounted(async () => {
-  loadAgent()
+  loadAgent().then(resumeAdjust)
   loadLedger()
   const t = await adminApi<any>('/agent-tiers')
   if (t.ok) tiers.value = t.data.items || []

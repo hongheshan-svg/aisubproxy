@@ -2,7 +2,7 @@
 import { AGENT_ERROR_TEXT } from './agentApi'
 import { fmtUsd } from './agentMoney'
 import { usdToCents } from './provider'
-import { ADJUST_RETRY_PREFIX, clearStoredPrefix, createLeaveGuard, localStore, RetryLock, type LeaveGuard, type RetryStore } from './retryLock'
+import { ADJUST_RETRY_PREFIX, clearStoredPrefix, createLeaveGuard, localStore, needsLeaveGuard, RetryLock, type LeaveGuard, type RetryStore } from './retryLock'
 
 export type PriceCell = { tier_id: number; product_id: number; price_cents: number }
 export type OverrideCell = { product_id: number; price_cents: number }
@@ -159,6 +159,7 @@ function samePendingAdjust(a: PendingAdjust, b: PendingAdjust): boolean {
 /**
  * 调账的未决和在途状态。结果未知的那笔（幂等键 + 金额 + 原因）按代理商 ID 分开落 localStorage：
  * 发出前就落盘，刷新、关标签页重开、新标签页都能找回同一个幂等键；多个标签页共用，每次提交前重读；管理员退出登录时清掉。
+ * 存储不可用、记录只在内存里时，有在途或未决就注册 beforeunload；落进存储时不注册。
  * 调账不按管理员区分归属：换了管理员登录也能看到并处理上一位留下的未决（原样重试沿用同一个键，服务端最多入账一次）。
  */
 export class AdjustRetry {
@@ -171,7 +172,8 @@ export class AdjustRetry {
   constructor(private store: RetryStore | undefined = undefined, private guard: LeaveGuard | undefined = undefined, private now: () => number = Date.now) {}
 
   private syncGuard() {
-    this.guard?.set(this.pendings.size > 0 || this.inflight.size > 0)
+    const ids = new Set([...this.pendings.keys(), ...this.inflight])
+    this.guard?.set([...ids].some((id) => needsLeaveGuard(true, this.keeperFor(id).persistent)))
   }
 
   /** 每个代理商一把锁，同一笔内容沿用同一个幂等键。 */

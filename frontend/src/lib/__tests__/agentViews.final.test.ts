@@ -2,7 +2,7 @@
 // 另含「最近一笔订单」的重复提醒（纯函数）。
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { IdempotencyLockedError } from '../idempotency'
-import { ORDER_RETRY_KEY, createLeaveGuard, type RetryStore } from '../retryLock'
+import { ORDER_RETRY_KEY, createLeaveGuard, needsLeaveGuard, type RetryStore } from '../retryLock'
 import {
   OrderRetry, orderLockState, pickLatestOrder, recentOrderWarning, RECENT_ORDER_WINDOW_SEC, type PendingOrder,
 } from '../agentViews'
@@ -225,25 +225,65 @@ describe('F1 存储不可用时退回内存', () => {
   })
 })
 
-describe('F1 结果未知期间拦截刷新、关标签页', () => {
-  it('锁定时注册 beforeunload，结算后注销；刷新后恢复出锁定也注册', () => {
+describe('F1 结果未知期间拦截刷新、关标签页（只在记录只在内存里时）', () => {
+  it('needsLeaveGuard：有待重试且没落进存储才拦', () => {
+    expect(needsLeaveGuard(true, false)).toBe(true)
+    expect(needsLeaveGuard(true, true)).toBe(false)
+    expect(needsLeaveGuard(false, false)).toBe(false)
+    expect(needsLeaveGuard(false, true)).toBe(false)
+  })
+
+  it('存储可用：锁定已落 localStorage，刷新、关标签页都能找回，不注册 beforeunload', () => {
     const s = memStore()
-    const t1 = fakeTarget()
-    const tab = new OrderRetry(s, createLeaveGuard(t1))
+    const t = fakeTarget()
+    const tab = new OrderRetry(s, createLeaveGuard(t))
     tab.bind('alice')
-    expect(t1.handlers.size).toBe(0)
     const key = tab.begin(P)
-    expect(t1.handlers.size).toBe(1)
-    tab.begin(P) // 重复锁定不重复注册
-    expect(t1.handlers.size).toBe(1)
-    const t2 = fakeTarget()
-    const again = new OrderRetry(s, createLeaveGuard(t2))
-    again.bind('alice')
-    expect(t2.handlers.size).toBe(1)
+    expect(tab.lock.persistent).toBe(true)
+    expect(t.handlers.size).toBe(0)
+    // 刷新后恢复出锁定也不注册
+    const again = new OrderRetry(s, createLeaveGuard(t))
+    expect(again.bind('alice')).toEqual(P)
+    expect(t.handlers.size).toBe(0)
     again.settle(key)
-    expect(t2.handlers.size).toBe(0)
+    expect(t.handlers.size).toBe(0)
+  })
+
+  it('存储不可用（只在内存里）：锁定时注册，结算后注销；重复锁定不重复注册；退出登录注销', () => {
+    const t = fakeTarget()
+    const tab = new OrderRetry(throwingStore(), createLeaveGuard(t))
+    tab.bind('alice')
+    expect(t.handlers.size).toBe(0)
+    const key = tab.begin(P)
+    expect(tab.lock.persistent).toBe(false)
+    expect(t.handlers.size).toBe(1)
+    tab.begin(P)
+    expect(t.handlers.size).toBe(1)
+    tab.settle(key)
+    expect(t.handlers.size).toBe(0)
+    tab.begin(P)
+    expect(t.handlers.size).toBe(1)
     tab.clear()
-    expect(t1.handlers.size).toBe(0)
+    expect(t.handlers.size).toBe(0)
+  })
+
+  it('存储能读不能写：写失败那一刻改用内存，随即注册', () => {
+    const s = memStore()
+    s.setItem = () => { throw new Error('QuotaExceededError') }
+    const t = fakeTarget()
+    const tab = new OrderRetry(s, createLeaveGuard(t))
+    tab.bind('alice')
+    expect(t.handlers.size).toBe(0)
+    tab.begin(P)
+    expect(t.handlers.size).toBe(1)
+  })
+
+  it('没有存储：锁定时注册', () => {
+    const t = fakeTarget()
+    const tab = new OrderRetry(undefined, createLeaveGuard(t))
+    tab.bind('alice')
+    tab.begin(P)
+    expect(t.handlers.size).toBe(1)
   })
 
   it('beforeunload 处理函数要求浏览器弹确认', () => {

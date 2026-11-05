@@ -187,27 +187,40 @@ describe('F1 调账：退出登录、存储不可用、离开提示', () => {
     expect(tab.pendingFor(5)).toBeNull()
   })
 
-  it('有未决调账时注册 beforeunload，清掉后注销；离开页面提示照旧', async () => {
+  it('存储可用：未决已落 localStorage，在途和结果未知都不注册 beforeunload；离开页面提示照旧', async () => {
     const handlers = new Set<unknown>()
     const target = { addEventListener: (_: string, h: unknown) => { handlers.add(h) }, removeEventListener: (_: string, h: unknown) => { handlers.delete(h) } }
     const s = memStore()
     const tab = new AdjustRetry(s, createLeaveGuard(target))
     tab.begin(5)
     const p = tab.run(5, P5, netDown)
-    expect(handlers.size).toBe(1) // 在途就已注册
+    expect(handlers.size).toBe(0)
     await p
-    expect(handlers.size).toBe(1)
+    expect(handlers.size).toBe(0)
     expect(tab.leaveWarning(5)).not.toBe('')
     expect(tab.leaveWarning(6)).toBe('')
+    expect(new AdjustRetry(s, createLeaveGuard(target)).pendingFor(5)).toEqual(P5)
+    expect(handlers.size).toBe(0)
+  })
+
+  it('存储不可用（只在内存里）：在途就注册，结果未知保持，放弃后注销', async () => {
+    const handlers = new Set<unknown>()
+    const target = { addEventListener: (_: string, h: unknown) => { handlers.add(h) }, removeEventListener: (_: string, h: unknown) => { handlers.delete(h) } }
+    const boom = () => { throw new Error('denied') }
+    const tab = new AdjustRetry({ getItem: boom, setItem: boom, removeItem: boom }, createLeaveGuard(target))
+    tab.begin(5)
+    const p = tab.run(5, P5, netDown)
+    expect(handlers.size).toBe(1)
+    await p
+    expect(handlers.size).toBe(1)
     tab.abandon(5)
     expect(handlers.size).toBe(0)
-    // 刷新后恢复出未决也注册
-    tab.begin(5)
-    await tab.run(5, P5, netDown)
-    const h2 = new Set<unknown>()
-    const again = new AdjustRetry(s, createLeaveGuard({ addEventListener: (_: string, h: unknown) => { h2.add(h) }, removeEventListener: (_: string, h: unknown) => { h2.delete(h) } }))
-    expect(h2.size).toBe(0)
-    again.pendingFor(5)
-    expect(h2.size).toBe(1)
+    // 没有存储：同样注册
+    const none = new AdjustRetry(undefined, createLeaveGuard(target))
+    none.begin(6)
+    await none.run(6, P6, netDown)
+    expect(handlers.size).toBe(1)
+    none.abandon(6)
+    expect(handlers.size).toBe(0)
   })
 })

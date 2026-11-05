@@ -3,7 +3,8 @@
 // - 只存「归属 + 请求号 + 请求内容（商品编码、数量、备注、期望单价；调账金额、原因）+ 时间」，从不存码、密码、令牌。
 // - 多个标签页共用一份：每次用之前都重读存储，别的标签页写入的锁定、清掉的锁定立刻生效。
 // - 锁定 24 小时后过期（和 lib/idempotency.ts 的发码锁一致）。
-// - 存储不可用（隐私模式、被禁用、写不进去）时退回内存：只在本页面有效，页面不报错。
+// - 存储不可用（隐私模式、被禁用、写不进去）时退回内存：只在本页面有效，页面不报错；
+//   这时才注册 beforeunload 拦截刷新、关标签页（记录落进了存储就找得回，不用拦）。
 // 没有直接用 IdempotencyKeeper：它只在构造时读一次存储，且只存键和指纹；这里要每次重读、并把归属和请求内容跟键存在同一条里。
 import { IdempotencyLockedError, newIdempotencyKey, type KeeperStore } from './idempotency'
 
@@ -46,6 +47,11 @@ export class RetryLock<T> {
     private now: () => number = Date.now,
   ) {
     this.durable = !!store
+  }
+
+  /** 记录能落进存储（刷新、关标签页后找得回）；false 表示只在本页面内存里。 */
+  get persistent(): boolean {
+    return this.durable
   }
 
   private fp(payload: T): string {
@@ -168,13 +174,18 @@ export function clearStoredPrefix(prefix: string, store: RetryStore | undefined)
   }
 }
 
+/** 要不要拦截刷新、关标签页：有结果未知的请求，且记录只在内存里（存储不可用）才拦；落进存储的找得回，拦了只是打扰。 */
+export function needsLeaveGuard(hasPending: boolean, persistent: boolean): boolean {
+  return hasPending && !persistent
+}
+
 export type LeaveGuard = { set(active: boolean): void; readonly active: boolean }
 type ListenerTarget = {
   addEventListener(type: 'beforeunload', h: (e: BeforeUnloadEvent) => void): void
   removeEventListener(type: 'beforeunload', h: (e: BeforeUnloadEvent) => void): void
 }
 
-/** 结果未知期间拦截刷新、关标签页：浏览器弹「确定离开」。没有 window（服务端渲染、测试）时什么都不做。 */
+/** 拦截刷新、关标签页：浏览器弹「确定离开」（何时打开见 needsLeaveGuard）。没有 window（服务端渲染、测试）时什么都不做。 */
 export function createLeaveGuard(target: ListenerTarget | undefined = typeof window !== 'undefined' ? window : undefined): LeaveGuard {
   let on = false
   const handler = (e: BeforeUnloadEvent) => {

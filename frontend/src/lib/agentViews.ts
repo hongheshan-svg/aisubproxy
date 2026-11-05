@@ -1,5 +1,5 @@
 // 代理商后台页面用到的纯函数：标签、下单预览、日期范围、查询串、导出请求体；结果未知的下单锁定（落 localStorage）。
-import { createLeaveGuard, localStore, ORDER_RETRY_KEY, RetryLock, type LeaveGuard, type RetryStore } from './retryLock'
+import { createLeaveGuard, localStore, needsLeaveGuard, ORDER_RETRY_KEY, RetryLock, type LeaveGuard, type RetryStore } from './retryLock'
 
 export const CODE_STATUS_LABELS: Record<string, string> = {
   unused: '未使用', processing: '处理中', used: '已开通', failed: '失败', disabled: '已禁用',
@@ -82,6 +82,7 @@ export type OrderRecheck = { kind: 'go' } | { kind: 'locked'; pending: PendingOr
  * - 发出前就锁定落盘：请求还在路上时刷新、关标签页，回来也沿用原请求号，服务端按请求号找回第一次的结果。
  * - 刷新、关标签页重开、新标签页都能找回；多个标签页共用一份，每次提交前重读。
  * - 换了代理商登录（登录名不符）就丢弃，免得用新代理商的钱「原样重试」上一个人的订单；退出登录时清掉。
+ * - 存储不可用、记录只在内存里时，结果未知期间注册 beforeunload，结算后注销；落进存储时不注册（找得回，拦了只是打扰）。
  */
 export class OrderRetry {
   private owner = ''
@@ -104,7 +105,7 @@ export class OrderRetry {
   /** 重读存储：当前代理商结果未知的那笔（别的标签页写的也算），没有为 null。还没核对身份时一律 null、不动存储。 */
   refresh(): PendingOrder | null {
     const p = this.owner ? this.lock.current(this.owner)?.payload ?? null : null
-    this.guard?.set(!!p)
+    this.guard?.set(needsLeaveGuard(!!p, this.lock.persistent))
     return p
   }
 
@@ -119,7 +120,7 @@ export class OrderRetry {
   begin(p: PendingOrder): string {
     if (!this.owner) throw new Error('还没核对当前代理商，不能下单')
     const key = this.lock.lock(p, this.owner)
-    this.guard?.set(true)
+    this.guard?.set(needsLeaveGuard(true, this.lock.persistent)) // 写不进存储时这一刻已改用内存
     return key
   }
 

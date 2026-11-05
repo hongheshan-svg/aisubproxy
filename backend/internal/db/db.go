@@ -501,7 +501,7 @@ func UpgradeAdminHash(username, newHash string) {
 	}
 }
 
-// randomPassword 生成管理员初始密码和安装令牌。crypto/rand 读不出来时直接 panic：
+// randomPassword 生成管理员初始密码（安装令牌用 randomToken）。crypto/rand 读不出来时直接 panic：
 // 宁可启动失败，也不能退回一个可预测的口令（Go 1.24 起 crypto/rand 本身也不会返回错误）。
 func randomPassword(n int) string {
 	p, err := randomStringFrom(rand.Reader, n)

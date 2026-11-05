@@ -390,7 +390,7 @@ func agentOrderView(o db.AgentOrder) gin.H {
 	return gin.H{
 		"id": o.ID, "product_code": o.ProductCode, "product_name": o.ProductName, "plan": o.PlanKey, "region": o.Region,
 		"quantity": o.Quantity, "unit_price_cents": o.UnitPriceCents, "total_cents": o.TotalCents,
-		"request_no": o.RequestNo, "note": o.Note, "created_at": o.CreatedAt,
+		"request_no": o.RequestNo, "note": o.Note, "created_at": o.CreatedAt, "source": o.Source, "external_ref": o.ExternalRef,
 	}
 }
 

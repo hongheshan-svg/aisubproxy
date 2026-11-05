@@ -11,6 +11,7 @@ import (
 var (
 	ErrAgentSharedNotFound      = errors.New("商户 ID 不存在")
 	ErrAgentSharedAdminDisabled = errors.New("对接已被管理员关闭")
+	ErrAgentSharedAppIDTaken    = errors.New("商户 ID 已被占用")
 )
 
 // AgentSharedCreds 是 agent_shared_creds 的一行（异次元对接设置）。没有行时 Exists=false，其余字段为零值（AgentID 除外）。
@@ -65,7 +66,7 @@ func GetAgentSharedCredsByAppID(ctx context.Context, appID string) (AgentSharedC
 }
 
 // SetAgentSharedKey 写入商户 ID 和密钥密文（开通或重置）；没有行就插入。
-// 管理员关闭对接时不改并返回 ErrAgentSharedAdminDisabled。
+// 管理员关闭对接时不改并返回 ErrAgentSharedAdminDisabled；商户 ID 已被别的代理商占用时返回 ErrAgentSharedAppIDTaken。
 func SetAgentSharedKey(ctx context.Context, agentID int64, appID, keySealed string, now time.Time) error {
 	res, err := DB.ExecContext(ctx, `INSERT INTO agent_shared_creds (agent_id, app_id, key_sealed, key_created_at, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?)
@@ -73,6 +74,9 @@ func SetAgentSharedKey(ctx context.Context, agentID int64, appID, keySealed stri
 			key_created_at = excluded.key_created_at, updated_at = excluded.updated_at
 		WHERE agent_shared_creds.admin_disabled = 0`, agentID, appID, keySealed, now.Unix(), now.Unix(), now.Unix())
 	if err != nil {
+		if isUniqueViolation(err) { // agent_id 冲突走 ON CONFLICT，能到这里的只有 app_id 唯一约束
+			return ErrAgentSharedAppIDTaken
+		}
 		return err
 	}
 	if n, err := res.RowsAffected(); err != nil {

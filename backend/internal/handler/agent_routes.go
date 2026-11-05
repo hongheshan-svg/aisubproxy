@@ -27,6 +27,12 @@ func RegisterAgentRoutes(api *gin.RouterGroup) {
 	sess.GET("/overview", AgentOverview)
 	sess.GET("/ledger", AgentLedger)
 	sess.GET("/ledger/export", AgentLedgerExport)
+	sess.GET("/shared", AgentSharedGet)
+	sess.POST("/shared/key", AgentSharedCreateKey)
+	sess.POST("/shared/disable", AgentSharedDisable)
+	sess.PUT("/shared/allowlist", AgentSharedAllowlist)
+	sess.PUT("/shared/low-balance", AgentSharedLowBalance)
+	sess.GET("/shared/failures", AgentSharedFailures)
 }
 
 // RegisterAgentAdminRoutes 挂管理员管理代理商的接口（调用方已套好管理员中间件）。

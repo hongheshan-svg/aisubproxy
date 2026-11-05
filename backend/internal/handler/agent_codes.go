@@ -121,10 +121,11 @@ func agentCodeFilterFromQuery(c *gin.Context) (agentCodeFilter, bool) {
 	return f, true
 }
 
-// agentCodeEntry 是筛选后的一张码和它所属订单的商品编码。
+// agentCodeEntry 是筛选后的一张码和它所属订单的商品编码、来源。码不属于订单时 ref 为零值。
 type agentCodeEntry struct {
 	row     db.LocalCDKRow
 	product string
+	ref     db.AgentOrderRef
 }
 
 // loadAgentCodes 取这个代理商名下符合筛选的码，id 降序。读库失败时已写好 503。
@@ -136,14 +137,15 @@ func loadAgentCodes(c *gin.Context, f agentCodeFilter) ([]agentCodeEntry, bool) 
 		agentOrderBusy(c, "列出码", err)
 		return nil, false
 	}
-	product, err := db.AgentOrderProductCodes(ctx, aid)
+	refs, err := db.AgentOrderRefs(ctx, aid)
 	if err != nil {
 		agentOrderBusy(c, "列出订单", err)
 		return nil, false
 	}
 	out := make([]agentCodeEntry, 0, len(rows))
 	for _, r := range rows {
-		e := agentCodeEntry{row: r, product: product[r.AgentOrderID]}
+		ref := refs[r.AgentOrderID]
+		e := agentCodeEntry{row: r, product: ref.ProductCode, ref: ref}
 		switch {
 		case f.Product != "" && e.product != f.Product:
 		case f.Status != "" && agentCodeStatus(r.View.Status) != f.Status:
@@ -171,7 +173,7 @@ func agentCodeView(e agentCodeEntry) gin.H {
 	return gin.H{
 		"id": r.ID, "code_prefix": r.CodePrefix, "product_code": e.product, "plan": r.PlanKey, "region": r.Region,
 		"status": status, "reason": r.View.Reason, "created_at": r.CreatedAt, "order_id": r.AgentOrderID, "note": r.Note,
-		"email": email, "used_at": usedAt,
+		"email": email, "used_at": usedAt, "source": e.ref.Source, "external_ref": e.ref.ExternalRef,
 	}
 }
 
@@ -324,5 +326,19 @@ func AgentOverview(c *gin.Context) {
 	for _, o := range recent {
 		orders = append(orders, agentOrderView(o))
 	}
-	c.JSON(http.StatusOK, gin.H{"balance_cents": a.BalanceCents, "month_order_cents": month, "status_counts": counts, "recent_orders": orders})
+	creds, err := db.GetAgentSharedCreds(ctx, aid)
+	if err != nil {
+		agentOrderBusy(c, "读取对接设置", err)
+		return
+	}
+	failTotal, failShort, err := db.CountAgentSharedFailures(ctx, aid, agentNow().Add(-sharedFailures24h).Unix())
+	if err != nil {
+		agentOrderBusy(c, "统计取码失败", err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"balance_cents": a.BalanceCents, "month_order_cents": month, "status_counts": counts, "recent_orders": orders,
+		"shared_failures_24h": gin.H{"total": failTotal, "insufficient_balance": failShort},
+		"low_balance":         gin.H{"threshold_cents": creds.LowBalanceCents, "below": creds.LowBalanceCents > 0 && a.BalanceCents < creds.LowBalanceCents},
+	})
 }

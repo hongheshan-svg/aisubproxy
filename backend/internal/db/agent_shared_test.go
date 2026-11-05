@@ -320,3 +320,19 @@ func TestAgentSharedFailures(t *testing.T) {
 		t.Fatalf("剩 %d", total)
 	}
 }
+
+func TestAgentSharedCreds_AppIDTaken(t *testing.T) {
+	dbtest.Open(t)
+	ctx := context.Background()
+	a1 := newTestAgent(t, "alice")
+	a2 := newTestAgent(t, "bob")
+	if err := db.SetAgentSharedKey(ctx, a1, "agAAAAAAAAAAAAAA", "s1", acctNow); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SetAgentSharedKey(ctx, a2, "agAAAAAAAAAAAAAA", "s2", acctNow); !errors.Is(err, db.ErrAgentSharedAppIDTaken) {
+		t.Fatalf("商户 ID 被占用应返回 ErrAgentSharedAppIDTaken: %v", err)
+	}
+	if c, _ := db.GetAgentSharedCreds(ctx, a2); c.Exists && c.AppID != "" {
+		t.Fatalf("撞约束后不应写入: %+v", c)
+	}
+}

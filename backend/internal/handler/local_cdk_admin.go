@@ -340,6 +340,16 @@ func AdminListLocalCDKs(c *gin.Context) {
 	status := strings.TrimSpace(c.Query("status"))
 	plan := strings.TrimSpace(c.Query("plan"))
 	prov := strings.TrimSpace(c.Query("provider"))
+	// agent_id 给了就按代理商筛：0 是后台发的码，其余是代理商 ID
+	agentFilter, hasAgentFilter := int64(0), false
+	if raw := strings.TrimSpace(c.Query("agent_id")); raw != "" {
+		v, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || v < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "agent_id 必须是非负整数"})
+			return
+		}
+		agentFilter, hasAgentFilter = v, true
+	}
 	all, err := db.LoadLocalCDKRows(c.Request.Context())
 	if err != nil {
 		log.Printf("[local-cdk] 列表失败: %v", err)
@@ -348,7 +358,7 @@ func AdminListLocalCDKs(c *gin.Context) {
 	}
 	filtered := all[:0]
 	for _, r := range all {
-		if (status == "" || r.View.Status == status) && (plan == "" || r.PlanKey == plan) && (prov == "" || r.Provider == prov) {
+		if (status == "" || r.View.Status == status) && (plan == "" || r.PlanKey == plan) && (prov == "" || r.Provider == prov) && (!hasAgentFilter || r.AgentID == agentFilter) {
 			filtered = append(filtered, r)
 		}
 	}
@@ -356,8 +366,18 @@ func AdminListLocalCDKs(c *gin.Context) {
 	list := []gin.H{}
 	if start := (page - 1) * size; start < total {
 		end := min(start+size, total)
+		names := map[int64]string{}
+		if agents, err := db.ListAgents(c.Request.Context()); err != nil {
+			log.Printf("[local-cdk] 读取代理商登录名失败: %v", err)
+		} else {
+			for _, a := range agents {
+				names[a.ID] = a.Username
+			}
+		}
 		for _, r := range filtered[start:end] {
-			list = append(list, localCDKRowJSON(r))
+			row := localCDKRowJSON(r)
+			row["agent_id"], row["agent_username"] = r.AgentID, names[r.AgentID]
+			list = append(list, row)
 		}
 	}
 	c.JSON(http.StatusOK, gin.H{"list": list, "total": total, "page": page, "page_size": size})

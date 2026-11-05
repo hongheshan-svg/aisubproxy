@@ -308,6 +308,7 @@ export interface LocalCdkRow {
   funded_failures: number; attempts_left: number
   order_no?: string; order_state?: string; order_error_code?: string; note?: string
   created_at?: string | number; fund_cents?: number
+  agent_id?: number; agent_username?: string
 }
 
 const LOCAL_STATUS: Record<string, string> = {

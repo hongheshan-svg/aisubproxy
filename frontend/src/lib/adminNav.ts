@@ -17,7 +17,8 @@ export function buildNavItems(routes: readonly RouteRecordRaw[]): NavItem[] {
   const out: NavItem[] = []
   for (const c of root?.children || []) {
     const m = (c.meta || {}) as Record<string, string>
-    if (!m.title) continue
+    // hideInNav：有标题（浏览器标签页、面包屑用）但不进侧栏，比如详情页
+    if (!m.title || (c.meta as Record<string, unknown> | undefined)?.hideInNav) continue
     out.push({ path: c.path ? `${OPS}/${c.path}` : OPS, title: m.title, fullTitle: m.fullTitle || m.title, group: m.group || '', icon: m.icon || 'Document' })
   }
   return out

@@ -5,6 +5,7 @@ export type ExportedCode = {
   id: number
   code: string
   unavailable?: boolean
+  replaced_by?: number | null
   product_code?: string
   plan?: string
   region?: string
@@ -12,6 +13,17 @@ export type ExportedCode = {
   created_at?: number
   order_id?: number
   note?: string
+}
+
+/** 订单导出、重放、下单结果里的码带状态；status 缺省（旧响应）当作未使用。不是「未使用」的码已作废或已被用掉。 */
+export function isStaleCode(c: ExportedCode): boolean {
+  return !!c.status && c.status !== 'unused'
+}
+
+/** 码列表上方的提示；没有非未使用的码时返回空串。 */
+export function staleCodesNotice(items: ExportedCode[]): string {
+  const n = items.filter(isStaleCode).length
+  return n ? `含 ${n} 张已禁用/已使用/已换码，新码请到「我的码」查看` : ''
 }
 
 export const UNAVAILABLE_TEXT = '无法取回，请联系管理员'

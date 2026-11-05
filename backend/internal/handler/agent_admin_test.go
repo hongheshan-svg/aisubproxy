@@ -306,6 +306,11 @@ func TestAdminAdjustOverdraft(t *testing.T) {
 	if code, _ = adjust(e, id, "k-3", `{"amount_cents":-500,"note":"扣"}`); code != 200 {
 		t.Fatalf("扣到 0 应成功: %d", code)
 	}
+	// 只有成功的两笔（充 500、扣 500）留流水，被拒的那笔不留
+	var n int
+	if err := db.DB.QueryRow(`SELECT COUNT(*) FROM agent_ledger WHERE agent_id = ?`, id).Scan(&n); err != nil || n != 2 {
+		t.Fatalf("流水应只有 2 条（被拒的透支不留流水）: %d %v", n, err)
+	}
 }
 
 func TestAdminProductValidation(t *testing.T) {
@@ -429,6 +434,14 @@ func TestAdminPriceMatrixAndOverrides(t *testing.T) {
 	}
 	if p, _, _ := db.AgentPriceFor(context.Background(), aid, pids[0]); p != 500 {
 		t.Fatalf("负价整批不应生效: %d", p)
+	}
+	// 同批里前面那格合法的新格（t1/PH 之前被 0 删掉了）也不能写进去
+	if code, m = put("/agent-prices", fmt.Sprintf(`{"cells":[{"tier_id":%d,"product_id":%d,"price_cents":888},{"tier_id":%d,"product_id":%d,"price_cents":-1}]}`, t1, pids[1], t2, pids[0])); code != 400 {
+		t.Fatalf("半批非法应 400: %d %v", code, m)
+	}
+	var nCell int
+	if err := db.DB.QueryRow(`SELECT COUNT(*) FROM agent_tier_prices WHERE tier_id = ? AND product_id = ?`, t1, pids[1]).Scan(&nCell); err != nil || nCell != 0 {
+		t.Fatalf("半批非法回滚后，前面的合法格不应写入: %d %v", nCell, err)
 	}
 	if code, m = put("/agent-prices", fmt.Sprintf(`{"cells":[{"tier_id":9999,"product_id":%d,"price_cents":1}]}`, pids[0])); code != 400 {
 		t.Fatalf("等级不存在应 400: %d %v", code, m)
@@ -622,6 +635,9 @@ func TestAdminLocalCDKListAgentFilter(t *testing.T) {
 		if r["code_prefix"] == "MW-S1" && (r["agent_id"] != float64(0) || r["agent_username"] != "") {
 			t.Fatalf("后台码应 0 和空串: %v", r)
 		}
+	}
+	if zero := list("?agent_id=0"); len(zero) != 1 || zero[0]["code_prefix"] != "MW-S1" {
+		t.Fatalf("agent_id=0 应只返回后台自己发的 MW-S1: %v", zero)
 	}
 	if w := e.adminDo("GET", adminBase+"/cdks?agent_id=abc", "", nil); w.Code != http.StatusBadRequest {
 		t.Fatalf("agent_id 不是数字应 400: %d", w.Code)

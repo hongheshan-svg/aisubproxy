@@ -78,6 +78,8 @@ func newAgentEnvFileDB(t *testing.T) *agentEnv {
 func agentEnvOn(t *testing.T, le *localEnv) *agentEnv {
 	t.Helper()
 	e := &agentEnv{localEnv: le, clock: time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)}
+	// 代理商功能默认关闭；这些测试测的是打开以后的行为
+	setAgentFeatureForTest(t, true)
 	old := agentNow
 	agentNow = func() time.Time { return e.clock }
 	resetAgentAuthState()

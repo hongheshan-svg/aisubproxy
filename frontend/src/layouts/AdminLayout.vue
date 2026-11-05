@@ -150,6 +150,7 @@ import { PAGE_TABS, tabCrumb, zovoEnv, marsEnv, type EnvBadge } from '../lib/adm
 import {
   buildNavItems, groupNavItems, pageTitle, readNavPref, writeNavPref, isCollapsed, MOBILE_MAX, OPS, type NavPref,
 } from '../lib/adminNav'
+import { adminFeatures, loadAdminFeatures, shouldLeaveFeaturePage, visibleNavItems } from '../lib/features'
 
 const route = useRoute()
 const router = useRouter()
@@ -158,7 +159,8 @@ const brand = siteBrand
 const username = computed(() => auth.username || 'admin')
 
 // 菜单唯一来源：/ops 子路由的 meta（title / group / icon），按路由定义顺序排列。
-const navItems = computed(() => buildNavItems(router.options.routes))
+// 受功能开关控制的菜单（meta.feature，如代理商）在开关关闭或还没读到时不显示。
+const navItems = computed(() => visibleNavItems(buildNavItems(router.options.routes), adminFeatures))
 const groups = computed(() => groupNavItems(navItems.value))
 const currentMeta = computed(() => {
   const m = route.meta as Record<string, string>
@@ -191,6 +193,14 @@ async function loadEnv() {
   envBadges.value = [zovo, mars]
 }
 onMounted(loadEnv)
+
+// 功能开关：读到「关闭」后，停在受控页面（如直接输入 /ops/agents）就送回总览
+onMounted(() => { loadAdminFeatures() })
+watch(
+  () => [route.path, adminFeatures.loaded, adminFeatures.agent],
+  () => { if (shouldLeaveFeaturePage(route.meta as Record<string, unknown>, adminFeatures)) router.replace(OPS) },
+  { immediate: true },
+)
 
 function isActive(p: string) {
   return p === OPS ? route.path === OPS : route.path === p || route.path.startsWith(p + '/')

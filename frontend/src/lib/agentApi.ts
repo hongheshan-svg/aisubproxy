@@ -88,6 +88,7 @@ export const AGENT_ERROR_TEXT: Record<string, string> = {
   invalid_request: '请求参数不正确',
   export_too_large: '一次最多导出 10000 张，请缩小筛选范围',
   range_too_large: '日期范围不能超过 366 天',
+  agent_disabled: '代理商功能暂未开放',
 }
 
 const FALLBACK = '操作失败，请稍后再试'

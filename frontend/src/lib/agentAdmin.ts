@@ -151,6 +151,8 @@ export function adjustPreview(username: string, balanceCents: number, amountCent
 /** 离开页面前的提示：有未决调账时返回文案，否则空串。 */
 export const ADJUST_LEAVE_TEXT = '有一笔调账结果未知，离开后请先查流水再决定是否重调'
 export const ADJUST_BUSY_TEXT = '上一笔调账还在处理，请稍候'
+/** 提交前发现这个代理商有一笔别处（别的标签页、刷新前）留下的未决调账时的提示，和下单页一致。 */
+export const ADJUST_LOCKED_ELSEWHERE = '这个代理商有一笔调账结果未知（可能是在别的页面发起的），请原样重试，或放弃后先到「余额流水」确认'
 
 /** 提交前重读的结论：go 照常发；locked 有一笔结果未知的调账（可能是别的标签页的），改显示它；settled 对话框锁定的那笔已在别处处理完，不许再发。 */
 export type AdjustRecheck = { kind: 'go' } | { kind: 'locked'; pending: PendingAdjust } | { kind: 'settled' }

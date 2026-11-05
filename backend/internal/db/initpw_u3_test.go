@@ -1,6 +1,7 @@
 package db_test
 
 import (
+	"io"
 	"os"
 	"testing"
 )
@@ -47,18 +48,28 @@ func TestU3ExistingFileReplacedNotReused(t *testing.T) {
 	if err := os.WriteFile(path, []byte("old"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	before, err := os.Stat(path)
+	// 先拿住旧文件的句柄：句柄开着时旧 inode 不会被回收（Linux 会立刻复用 inode 号，不能只比 inode）。
+	// 实现若截断复用旧文件，通过这个句柄会读到新内容；删掉旧文件再新建，这个句柄读到的仍是 "old"。
+	old, err := os.Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer old.Close()
 	if err := s8Open(t); err != nil {
 		t.Fatal(err)
 	}
-	after, err := os.Stat(path)
+	raw, err := io.ReadAll(old)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if os.SameFile(before, after) {
-		t.Fatal("应删掉旧文件后新建（新文件一创建就是 0600），不能截断复用旧的 0644 文件")
+	if string(raw) != "old" {
+		t.Fatalf("应删掉旧文件后新建（新文件一创建就是 0600），不能截断复用旧的 0644 文件（旧句柄读到 %d 字节）", len(raw))
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.Mode().Perm() != 0o600 {
+		t.Fatalf("新文件权限应为 0600，实际 %v", st.Mode().Perm())
 	}
 }

@@ -11,7 +11,7 @@ vi.hoisted(() => {
 })
 
 import { routes } from '../../router/routes'
-import { buildNavItems, groupNavItems } from '../../lib/adminNav'
+import { buildNavItems, groupNavItems, pageTitle } from '../../lib/adminNav'
 
 describe('侧栏：代理商分组', () => {
   const items = buildNavItems(routes)
@@ -22,11 +22,16 @@ describe('侧栏：代理商分组', () => {
       ['/ops/agent-pricing', '批发商品与价格'],
     ])
   })
-  it('详情页不进侧栏', () => {
+  it('详情页有自己的标题，但不进侧栏', () => {
     expect(items.some((i) => i.path.includes(':id'))).toBe(false)
+    expect(items.some((i) => i.title === '代理商详情')).toBe(false)
     const root = routes.find((r) => r.path === '/ops')!
     const d = (root.children || []).find((c) => c.path === 'agents/:id')
     expect(d).toBeTruthy()
-    expect((d!.meta as any)?.title).toBeUndefined()
+    const m = d!.meta as any
+    expect(m?.title).toBe('代理商详情')
+    expect(m?.group).toBe('代理商')
+    expect(m?.hideInNav).toBe(true)
+    expect(pageTitle(m, 'Recharge Portal')).toBe('代理商详情 · Recharge Portal')
   })
 })

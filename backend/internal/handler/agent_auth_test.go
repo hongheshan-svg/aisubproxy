@@ -727,14 +727,13 @@ func TestAgentDBReadErrorIs503(t *testing.T) {
 	e := newAgentEnv(t)
 	_, pw, secret := e.seedAgent("alice", e.seedTier("普通"))
 	s := e.login("alice", pw, secret)
-	_, pre := e.setupStagePre("bob")
+	e.setupStagePre("bob")
 	hash, _ := bcrypt.GenerateFromPassword([]byte("InitPass-12345"), bcrypt.MinCost)
 	if _, err := db.CreateAgent(context.Background(), db.NewAgent{Username: "newbie", PasswordHash: string(hash), TierID: e.seedTier("T2")}, e.clock); err != nil {
 		t.Fatal(err)
 	}
 	w := e.send("POST", agentBase+"/auth/login", `{"username":"newbie","password":"InitPass-12345"}`, nil, nil)
 	cpre := findCookie(liveCookies(w), agentPreCookie)
-	_ = pre
 	// 让只读 password_hash 等敏感字段的查询失败，其余查询不受影响
 	if _, err := db.DB.Exec(`ALTER TABLE agents RENAME COLUMN totp_last_step TO totp_last_step_x`); err != nil {
 		t.Skip("SQLite 不支持改列名: ", err)

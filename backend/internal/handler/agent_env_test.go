@@ -35,6 +35,7 @@ func resetAgentAuthState() {
 	agentGates = map[int64]*agentTOTPGate{}
 	agentGateMu.Unlock()
 	loginLimiter.reset()
+	agentLoginLimiter.reset()
 }
 
 func newAgentEnv(t *testing.T) *agentEnv {

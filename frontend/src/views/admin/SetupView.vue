@@ -98,13 +98,15 @@ import { useAuthStore } from '../../stores/auth'
 import { clearSetupLeftovers } from '../../lib/session'
 
 const authStore = useAuthStore()
+// 页面加载时清掉旧版本残留在 sessionStorage 里的安装令牌和口令
+clearSetupLeftovers(sessionStorage)
 
 const installed = ref(false)
 const done = ref(false)
 const loading = ref(false)
 const mode = ref<'generate' | 'manual'>('generate')
 const showManual = ref(false)
-const setupToken = ref(sessionStorage.getItem('setup_token') || '')
+const setupToken = ref('')
 const username = ref('admin')
 const password = ref('')
 const confirm = ref('')
@@ -131,7 +133,6 @@ async function bootstrap(m: 'generate' | 'manual') {
     error.value = '请填写 Setup Token（安装钥匙，不是登录密码）'
     return
   }
-  sessionStorage.setItem('setup_token', setupToken.value.trim())
   loading.value = true
   try {
     const body: Record<string, string> = {
@@ -172,7 +173,6 @@ async function bootstrap(m: 'generate' | 'manual') {
     resultUser.value = d.username
     resultPass.value = d.password
     done.value = true
-    sessionStorage.removeItem('setup_token')
     // 自动登录：后端已下发 cookie；本地会话态同步
     if (d.username) {
       authStore.save({

@@ -83,7 +83,7 @@ func RegisterSharedRoutes(r *gin.RouterGroup) {
 }
 
 // SharedAuth 是 /shared/* 的公共校验（规格 7.1），按顺序：
-//  1. 只接受 HTTPS，TCP 对端是本机回环的放行；
+//  1. 只接受 HTTPS，只有本机直连（对端是回环且没有转发头，见 sharedLocalDirect）的放行；
 //  2. 按来源 IP 限流，只收 form-urlencoded，请求体最多 64 KB；
 //  3. 自己解析请求体（保留字段顺序）；
 //  4. 主密钥可用（验签前要先用它解出商户密钥，所以从规格的第 8 步提到这里）；
@@ -97,7 +97,7 @@ func SharedAuth() gin.HandlerFunc {
 		ctx := c.Request.Context()
 		now := sharedNow()
 
-		if !auth.RequestIsHTTPS(c.Request) && !sharedFromLoopback(c.Request.RemoteAddr) {
+		if !auth.RequestIsHTTPS(c.Request) && !sharedLocalDirect(c.Request) {
 			sharedFail(c, sharedMsgHTTPS)
 			return
 		}
@@ -190,11 +190,24 @@ func SharedAuth() gin.HandlerFunc {
 	}
 }
 
-// sharedFromLoopback 只看 TCP 对端（RemoteAddr），不看 ClientIP：代理头可以伪造成 127.0.0.1。
-func sharedFromLoopback(remoteAddr string) bool {
-	host, _, err := net.SplitHostPort(remoteAddr)
+// sharedForwardHeaders 是反代会加的转发头。带了任何一个（值为空也算），请求就不是本机直连。
+var sharedForwardHeaders = []string{"X-Forwarded-Proto", "X-Forwarded-For", "Forwarded", "X-Real-IP"}
+
+// sharedLocalDirect 判断是不是真正的本机直连（例如在服务器上用 curl 自测），只有这种请求能不走 HTTPS：
+// TCP 对端（RemoteAddr，不看 ClientIP——代理头可以伪造成 127.0.0.1）是回环地址，并且没有任何转发头。
+// 光看对端不够：原生包部署时 nginx、caddy 通常和本站在同一台机器上，经反代进来的请求对端全是 127.0.0.1，
+// 反代把 80 端口的明文 HTTP 也转给 /shared、或者 Cloudflare Flexible 让源站这一段走明文时，请求会被静默接受。
+// 下游默认在表单里明文发 app_key，HTTPS 检查是让「下游填了 http 地址」暴露出来的唯一手段，
+// 所以带了转发头就只认 auth.RequestIsHTTPS（可信反代用 X-Forwarded-Proto: https 标明）。
+func sharedLocalDirect(r *http.Request) bool {
+	for _, h := range sharedForwardHeaders {
+		if _, ok := r.Header[http.CanonicalHeaderKey(h)]; ok {
+			return false
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
-		host = remoteAddr
+		host = r.RemoteAddr
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()

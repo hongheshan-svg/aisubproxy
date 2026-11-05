@@ -34,4 +34,8 @@ regexes = [
   '''^S7-Strong-Passw0rd-xyz$''',
   '''^sk_plain_123456$''',
   '''^Str0ngPassw0rd-S8x$''',
+  # 代理商：agent_auth_test.go 里管理员开户时设的假初始密码
+  '''^InitPass-12345$''',
+  # 代理商：agent/creds.go 生成随机密码用的字符表（去掉了 0O1lI 这类易混字符），是常量不是密钥
+  '''^ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789$''',
 ]

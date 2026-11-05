@@ -22,6 +22,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { agentApi, setAgentUnauthorizedHandler } from '../lib/agentApi'
 import { fmtUsd } from '../lib/agentMoney'
 import { resetAgentSession } from '../lib/agentSession'
+import { orderRetry } from '../lib/agentViews'
 
 type Nav = { to: string; label: string; exact?: boolean }
 const nav: Nav[] = [
@@ -49,18 +50,25 @@ function toLogin() {
 async function loadMe() {
   try {
     const r = await agentApi('/me')
-    if (r.ok) me.value = r.data
+    if (r.ok) {
+      me.value = r.data
+      // 核对身份：恢复本人结果未知的订单（并拦截刷新、关标签页），别人的丢弃
+      orderRetry.bind(String(r.data?.username || ''))
+    }
   } catch {
     /* 网络异常时不显示余额，页面照常 */
   }
 }
 
 async function logout() {
+  if (orderRetry.refresh() && !window.confirm('有一笔订单结果未知，退出后这台电脑上不能再原样重试。确定退出吗？')) return
   try {
     await agentApi('/auth/logout', 'POST')
   } catch {
     /* 退出失败也回登录页，cookie 过期后自然失效 */
   }
+  // 退出登录清掉待重试订单（只有请求号和下单内容），换别的代理商登录也拿不到
+  orderRetry.clear()
   resetAgentSession()
   router.replace('/agent/login')
 }

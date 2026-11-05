@@ -548,7 +548,7 @@ func TestAgentTOTPConcurrentSameCode(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	if !(codes[0] == 200 && codes[1] == 401) && !(codes[0] == 401 && codes[1] == 200) {
+	if oneWon := (codes[0] == 200 && codes[1] == 401) || (codes[0] == 401 && codes[1] == 200); !oneWon {
 		t.Fatalf("应恰有一个 200: %v", codes)
 	}
 }

@@ -61,8 +61,9 @@
       </ol>
     </div>
 
-    <div class="card p-2 overflow-x-auto">
+    <div class="card p-2">
       <h2 class="font-semibold p-2">最近失败记录</h2>
+      <div class="overflow-x-auto">
       <table class="w-full text-sm whitespace-nowrap">
         <thead><tr class="text-left"><th class="p-2">时间</th><th class="p-2">对方订单号</th><th class="p-2">商品</th><th class="p-2">数量</th><th class="p-2">原因</th><th class="p-2">次数</th><th class="p-2">状态</th></tr></thead>
         <tbody>
@@ -78,6 +79,7 @@
           <tr v-if="!failures.length"><td colspan="7" class="p-3 opacity-70">暂无失败记录</td></tr>
         </tbody>
       </table>
+      </div>
     </div>
     <div class="flex items-center gap-3 text-sm">
       <button class="btn-ghost" :disabled="page <= 1" @click="loadFailures(page - 1)">上一页</button>
@@ -86,7 +88,7 @@
     </div>
 
     <div v-if="action" class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" role="dialog" aria-modal="true" :aria-label="ACTION_TITLE[action]">
-      <form class="card p-4 space-y-3 w-full max-w-sm" @submit.prevent="confirm">
+      <form class="card card-solid p-4 space-y-3 w-full max-w-sm" @submit.prevent="confirm">
         <h2 class="font-semibold">{{ ACTION_TITLE[action] }}</h2>
         <p v-if="action === 'reset'" class="text-sm text-red-500">{{ RESET_WARNING }}</p>
         <p v-if="action === 'reset'" class="text-xs opacity-70">{{ LOCK_HINT }}</p>

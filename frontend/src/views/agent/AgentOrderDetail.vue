@@ -18,9 +18,11 @@
         <div class="flex flex-wrap gap-2">
           <button type="button" class="btn-ghost" @click="copyAll">复制全部</button>
           <button type="button" class="btn-ghost" @click="downloadTxt">下载 .txt</button>
+          <button type="button" class="btn-ghost" @click="downloadCsv">下载 .csv</button>
         </div>
         <p v-if="txt.skipped" class="text-sm text-amber-600">有 {{ txt.skipped }} 张无法取回，请联系管理员</p>
         <textarea class="input w-full font-mono text-xs" rows="8" readonly :value="txt.text"></textarea>
+        <AgentOrderCodes :codes="codes" />
       </template>
       <p v-if="msg" class="text-sm">{{ msg }}</p>
     </div>
@@ -32,8 +34,9 @@ import { computed, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { agentApi, agentErrorText } from '../../lib/agentApi'
 import { fmtUsd } from '../../lib/agentMoney'
-import { codesTxt, downloadText, type ExportedCode } from '../../lib/agentExport'
+import { codesCsv, codesTxt, downloadText, type ExportedCode } from '../../lib/agentExport'
 import { copyToClipboard } from '../../lib/clipboard'
+import AgentOrderCodes from '../../components/AgentOrderCodes.vue'
 import { fmtBeijing } from '../../lib/mwwebhook'
 
 const route = useRoute()
@@ -62,5 +65,10 @@ async function reexport() {
   } catch { msg.value = '网络异常，请稍后再试' } finally { busy.value = false }
 }
 async function copyAll() { msg.value = (await copyToClipboard(txt.value.text)) ? '已复制' : '复制失败，请手动选择文本' }
+function downloadCsv() {
+  const o = order.value || {}
+  const rows = (codes.value || []).map((c) => ({ ...c, product_code: o.product_code, plan: o.plan, region: o.region, created_at: o.created_at, order_id: o.id, note: o.note }))
+  downloadText(`order-${id}.csv`, codesCsv(rows), 'text/csv')
+}
 function downloadTxt() { downloadText(`order-${id}.txt`, txt.value.text, 'text/plain') }
 </script>

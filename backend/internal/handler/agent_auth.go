@@ -271,11 +271,15 @@ func AgentTOTPSetup(c *gin.Context) {
 // 放行时返回名额，调用方必须 defer slot.release()，并在校验后调 fail/ok。
 func agentTOTPAllowed(c *gin.Context, a db.Agent) (*agentTOTPSlot, bool) {
 	okPw, _ := loginAllowed(agentRateKey(c, a.Username))
-	if !okPw || !agentTOTPReserve(a.ID) {
+	var g *agentTOTPGate
+	if okPw {
+		g = agentTOTPReserve(a.ID)
+	}
+	if g == nil {
 		agentError(c, http.StatusTooManyRequests, "rate_limited", agentMsgRate)
 		return nil, false
 	}
-	return &agentTOTPSlot{id: a.ID}, true
+	return &agentTOTPSlot{id: a.ID, gate: g}, true
 }
 
 // agentCodeFailed 记一次动态码错误（调用时已经占了这张凭证的第 n 次机会和账号级名额）：

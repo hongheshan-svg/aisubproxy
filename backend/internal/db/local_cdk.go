@@ -461,6 +461,21 @@ func LoadLocalCDKRowsByAgent(ctx context.Context, agentID int64) ([]LocalCDKRow,
 		` AND source_ref IN (SELECT CAST(id AS TEXT) FROM local_cdks WHERE agent_id = ?)`, []any{agentID})
 }
 
+// LoadLocalCDKRowsByAgentIDs 只取这个代理商名下指定 id 的码（别人的 id 取不到），派生规则相同。
+// 付款单也只读这些码的；replaced_by 由列里的子查询按旧码算出，不需要把新码行读进来。
+func LoadLocalCDKRowsByAgentIDs(ctx context.Context, agentID int64, ids []int64) ([]LocalCDKRow, error) {
+	if len(ids) == 0 {
+		return []LocalCDKRow{}, nil
+	}
+	marks := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+	args := []any{agentID}
+	for _, id := range ids {
+		args = append(args, id)
+	}
+	return loadLocalCDKRows(ctx, "l.agent_id = ? AND l.id IN ("+marks+")", args,
+		` AND source_ref IN (SELECT CAST(id AS TEXT) FROM local_cdks WHERE agent_id = ? AND id IN (`+marks+`))`, args)
+}
+
 // loadLocalCDKRows 是两个对外函数共用的实现；where、orderWhere 是固定的 SQL 片段，值一律走参数。
 // orderWhere 追加在付款单查询的条件后面（用于只读这批码的付款单），为空表示读全部真实付款单。
 func loadLocalCDKRows(ctx context.Context, where string, args []any, orderWhere string, orderArgs []any) ([]LocalCDKRow, error) {

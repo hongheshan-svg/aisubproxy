@@ -188,6 +188,9 @@ type exportedCode struct {
 	ID          int64  `json:"id"`
 	Code        string `json:"code"`
 	Unavailable bool   `json:"unavailable,omitempty"`
+	// Status 和 ReplacedBy 只在下单结果、同号重放、订单导出里有值：沿用「我的码」的 5 种状态；换码换出的新码 ID，没有为 null。
+	Status     string `json:"status,omitempty"`
+	ReplacedBy *int64 `json:"replaced_by"`
 }
 
 // agentCodesNoKeyError 主密钥不可用，一张码也解不开：调用方返回 503 maintenance，而不是把每张码都标成取不回。
@@ -302,6 +305,21 @@ func agentOrderCodes(c *gin.Context, o db.AgentOrder, maintMsg string) ([]export
 	if err != nil {
 		agentOrderBusy(c, "读取码的密文", err)
 		return nil, false
+	}
+	// 补上每张码现在的状态和换出的新码：只读这笔订单这些码（限定 agent_id）
+	rows, err := db.LoadLocalCDKRowsByAgentIDs(ctx, agentID(c), ids)
+	if err != nil {
+		agentOrderBusy(c, "读取码的状态", err)
+		return nil, false
+	}
+	byID := make(map[int64]db.LocalCDKRow, len(rows))
+	for _, r := range rows {
+		byID[r.ID] = r
+	}
+	for i := range codes {
+		if r, ok := byID[codes[i].ID]; ok {
+			codes[i].Status, codes[i].ReplacedBy = agentCodeStatus(r.View.Status), r.ReplacedBy
+		}
 	}
 	return codes, true
 }
@@ -541,7 +559,7 @@ func AgentPlaceOrder(c *gin.Context) {
 
 	codes := make([]exportedCode, len(ids))
 	for i, id := range ids {
-		codes[i] = exportedCode{ID: id, Code: plain[i]}
+		codes[i] = exportedCode{ID: id, Code: plain[i], Status: agentCStatusUnused} // 刚发出的码一定是未使用
 	}
 	auditAgent(c, "agent_order", fmt.Sprintf("product=%s quantity=%d total_cents=%d order=%d", ord.ProductCode, ord.Quantity, ord.TotalCents, ord.ID))
 	c.Header("Cache-Control", "no-store")

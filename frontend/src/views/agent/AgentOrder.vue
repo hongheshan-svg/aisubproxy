@@ -53,6 +53,7 @@
       </div>
       <p v-if="skipped" class="text-sm text-amber-600">有 {{ skipped }} 张无法取回，请联系管理员</p>
       <textarea class="input w-full font-mono text-xs" rows="8" readonly :value="txt.text"></textarea>
+      <AgentOrderCodes :codes="result.codes" />
     </div>
   </div>
 </template>
@@ -64,6 +65,7 @@ import { fmtUsd } from '../../lib/agentMoney'
 import { codesTxt, downloadText } from '../../lib/agentExport'
 import { keepPendingOnRateLimit, orderFailureKind, NOTE_MAX, orderKeeper as keeper, orderLockState, orderPreview, orderRetry, validQuantity, type PendingOrder } from '../../lib/agentViews'
 import { copyToClipboard } from '../../lib/clipboard'
+import AgentOrderCodes from '../../components/AgentOrderCodes.vue'
 
 const products = ref<any[]>([])
 const balance = ref(0)

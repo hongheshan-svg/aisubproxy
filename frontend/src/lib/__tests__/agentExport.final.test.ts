@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { codesCsv, isStaleCode, staleCodesNotice } from '../agentExport'
+import { codesCsv, isStaleCode, staleCodes, staleCodesNotice } from '../agentExport'
 
 describe('订单码的状态提示（F2）', () => {
   it('N 张非未使用时提示文字和计数正确', () => {
@@ -20,5 +20,14 @@ describe('订单码的状态提示（F2）', () => {
     const csv = codesCsv([{ id: 1, code: 'A', status: 'disabled' }])
     expect(csv.split('\n')[0]).toContain(',status,')
     expect(csv.split('\n')[1]).toContain(',disabled,')
+  })
+})
+
+describe('staleCodes（F2）', () => {
+  it('只留非未使用的码；全是未使用时为空', () => {
+    const a = { id: 1, code: 'A', status: 'unused' }
+    const b = { id: 2, code: 'B', status: 'disabled', replaced_by: 9 }
+    expect(staleCodes([a, b])).toEqual([b])
+    expect(staleCodes([a, { id: 3, code: 'C' }])).toEqual([])
   })
 })

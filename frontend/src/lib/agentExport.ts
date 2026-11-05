@@ -20,6 +20,11 @@ export function isStaleCode(c: ExportedCode): boolean {
   return !!c.status && c.status !== 'unused'
 }
 
+/** 只留不是「未使用」的码，供结果区单独列出（未使用的已在文本框里）。 */
+export function staleCodes(items: ExportedCode[]): ExportedCode[] {
+  return items.filter(isStaleCode)
+}
+
 /** 码列表上方的提示；没有非未使用的码时返回空串。 */
 export function staleCodesNotice(items: ExportedCode[]): string {
   const n = items.filter(isStaleCode).length

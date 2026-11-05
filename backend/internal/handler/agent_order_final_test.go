@@ -93,3 +93,22 @@ func TestAgentPlaceOrderCodesStatusFinal(t *testing.T) {
 		t.Fatalf("下单结果的码应带 status=unused: %d %s", w.Code, w.Body.String())
 	}
 }
+
+// F2：代理商还有很多别的码时，订单导出只含这笔订单的码，且状态读取只按这些 id。
+func TestAgentOrderCodesOnlyThisOrderFinal(t *testing.T) {
+	f := newOrderFix(t, newAgentEnv(t), true)
+	f.topUp()
+	f.mustOrder(f.s, orderReq("mw-plus-ph", 5, "", "req-fo-other", 500))
+	r := f.mustOrder(f.s, orderReq("mw-plus-ph", 2, "", "req-fo-this", 500))
+	w := f.agentDo(f.s, "POST", fmt.Sprintf("%s/%d/export", orderPath, r.Order.ID), "")
+	if got := finalDecodeCodes(t, w.Body.String()); len(got) != 2 {
+		t.Fatalf("应只含本单 2 张: %s", w.Body.String())
+	}
+	rows, err := db.LoadLocalCDKRowsByAgentIDs(context.Background(), f.aid, []int64{r.Codes[0].ID})
+	if err != nil || len(rows) != 1 || rows[0].ID != r.Codes[0].ID {
+		t.Fatalf("按 id 只应读到 1 张: %v %d", err, len(rows))
+	}
+	if rows, _ := db.LoadLocalCDKRowsByAgentIDs(context.Background(), f.aid+99, []int64{r.Codes[0].ID}); len(rows) != 0 {
+		t.Fatal("别的代理商读不到")
+	}
+}

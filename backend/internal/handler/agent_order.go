@@ -306,8 +306,8 @@ func agentOrderCodes(c *gin.Context, o db.AgentOrder, maintMsg string) ([]export
 		agentOrderBusy(c, "读取码的密文", err)
 		return nil, false
 	}
-	// 补上每张码现在的状态和换出的新码：只读这个代理商自己的码（按 agent_id）
-	rows, err := db.LoadLocalCDKRowsByAgent(ctx, agentID(c))
+	// 补上每张码现在的状态和换出的新码：只读这笔订单这些码（限定 agent_id）
+	rows, err := db.LoadLocalCDKRowsByAgentIDs(ctx, agentID(c), ids)
 	if err != nil {
 		agentOrderBusy(c, "读取码的状态", err)
 		return nil, false

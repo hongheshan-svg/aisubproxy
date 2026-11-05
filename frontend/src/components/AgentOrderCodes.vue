@@ -1,5 +1,5 @@
 <template>
-  <div v-if="notice || items.length" class="space-y-2">
+  <div v-if="items.length" class="space-y-2">
     <p v-if="notice" class="text-sm text-amber-600" role="status">{{ notice }}</p>
     <ul v-if="items.length" class="text-xs font-mono space-y-0.5 max-h-60 overflow-auto">
       <li v-for="c in items" :key="c.id" :class="isStaleCode(c) ? 'opacity-50' : ''" :data-stale="isStaleCode(c) ? '1' : '0'">
@@ -12,10 +12,10 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { UNAVAILABLE_TEXT, isStaleCode, staleCodesNotice, type ExportedCode } from '../lib/agentExport'
+import { UNAVAILABLE_TEXT, isStaleCode, staleCodes, staleCodesNotice, type ExportedCode } from '../lib/agentExport'
 import { CODE_STATUS_LABELS } from '../lib/agentViews'
 
 const props = defineProps<{ codes: ExportedCode[] }>()
-const items = computed(() => props.codes)
+const items = computed(() => staleCodes(props.codes))
 const notice = computed(() => staleCodesNotice(props.codes))
 </script>

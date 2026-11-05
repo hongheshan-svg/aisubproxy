@@ -368,6 +368,8 @@ func (s *Service) ListBy(ctx context.Context, f OrderFilter, page, size int) ([]
 // 标记失败时按有没有提交过区分：提交过（submitted_at 非空）记 declined，绝不记成 not_submitted；
 // 没提交过的（例如重启时已经取卡、但所属服务商没有卡池而转人工的单）记 not_submitted，保留原错误码。会话随之清空。
 // 标记成功时，真实开通单还要关闭续费：会话还在就交给续费协程（pending），会话已清空记 skipped 并告警。
+// 定论时刻记在 resolved_at：定论成功的单的会话从这一刻起再留 SessionKeep（见 sweepSessions），
+// 待人工期间会话不清（审计 D-2），定论时离转待人工已满 1 小时也不会被清理抢先记成 failed（审计 D-9）。
 func (s *Service) Resolve(ctx context.Context, no, result, note, by string) error {
 	note, by = strings.TrimSpace(note), strings.TrimSpace(by)
 	if result != StateSucceeded && result != StateFailed {
@@ -385,7 +387,7 @@ func (s *Service) Resolve(ctx context.Context, no, result, note, by string) erro
 	if err != nil {
 		return err
 	}
-	set := map[string]any{"resolved_by": by, "resolve_note": note}
+	set := map[string]any{"resolved_by": by, "resolve_note": note, "resolved_at": s.now().Unix()}
 	label, mode := "成功", moveStep
 	renewalSkipped := false
 	switch result {
@@ -418,7 +420,56 @@ func (s *Service) Resolve(ctx context.Context, no, result, note, by string) erro
 		}
 		s.opts.Alert(fmt.Sprintf("付款单 %s 人工定论为成功，但%s。", no, why))
 	}
+	if err == nil {
+		s.recordResolvedOutcome(ctx, o, result)
+	}
 	return err
+}
+
+// outcomeRecorder 是卡池的「补记用卡结果」能力：不碰租约，只把结果计入健康度。*cardpool.Service 实现了它；
+// 没实现的卡池（测试替身、以后接入的服务商）跳过补记，定论照常。
+type outcomeRecorder interface {
+	RecordOutcome(ctx context.Context, cardID, planKey, orderRef, email string, o cardpool.Outcome) error
+}
+
+// resolvedOutcome 人工定论后该补记的用卡结果，与确认协程的判定一致；返回 aborted 表示不记。
+//   - 没提交过（submitted_at 为空）或没有卡：这张卡没被用来付款，不记。
+//   - 定论成功：success。
+//   - 定论失败：只有页面明确显示被拒才记 failed（同 concludeDeclined）；校验错误、结果不明都不算这张卡或这个产品的问题。
+func resolvedOutcome(o *Order, result string) cardpool.Outcome {
+	if o.DryRun || o.SubmittedAt == nil || o.CardID == "" {
+		return cardpool.Outcome{Result: cardpool.ResultAborted}
+	}
+	switch {
+	case result == StateSucceeded:
+		return cardpool.Outcome{Result: cardpool.ResultSuccess}
+	case result == StateFailed && o.PageOutcome == string(paybrowser.OutcomeDeclined):
+		return cardpool.Outcome{Result: cardpool.ResultFailed, ErrorCode: "manual_declined"}
+	}
+	return cardpool.Outcome{Result: cardpool.ResultAborted}
+}
+
+// recordResolvedOutcome 人工定论后把用卡结果补记进卡池健康度（审计 D-6）。转待人工时租约已按 aborted 释放，
+// 这里不释放、不改卡的池状态，只补一条结果。补记失败只写时间线：定论已经生效，健康度少一条不影响钱。
+func (s *Service) recordResolvedOutcome(ctx context.Context, o *Order, result string) {
+	oc := resolvedOutcome(o, result)
+	if oc.Result == cardpool.ResultAborted {
+		return
+	}
+	pool, ok := s.poolFor(o.Provider)
+	if !ok {
+		return
+	}
+	rec, ok := pool.(outcomeRecorder)
+	if !ok {
+		return
+	}
+	if err := rec.RecordOutcome(ctx, o.CardID, o.PlanKey, o.OrderNo, o.AccountEmail, oc); err != nil {
+		log.Printf("[payengine] 单据 %s 补记用卡结果失败: %v", o.OrderNo, err)
+		if eerr := addEvent(ctx, o.OrderNo, "warn", "补记用卡结果失败（不影响定论）："+truncate(err.Error(), errorMessageLimit), ""); eerr != nil {
+			log.Printf("[payengine] 单据 %s 写时间线失败: %v", o.OrderNo, eerr)
+		}
+	}
 }
 
 // Evidence 返回该单的卡在授权窗口内（submitted_at 减去时钟容差，见 authWindowStart）的交易，新的在前；

@@ -269,7 +269,9 @@ func TestBillingCheckByCDKUsesEmailAndSurvivesClear(t *testing.T) {
 		if err := json.Unmarshal(w.Body.Bytes(), &d); err != nil {
 			t.Fatal(err)
 		}
-		if d.Summary["email"] != cdkSessEmail || d.AuthSource != "accounthub" || len(d.Invoices) != 1 {
+		// 审计 F-1：凭卡密查询邮箱打码、不给账单链接（假 accounthub 的账单只有链接，裁完不剩字段）
+		if d.Summary["email"] != maskEmailForAdmin(cdkSessEmail) || d.AuthSource != "accounthub" || d.InvoiceURL != "" ||
+			strings.Contains(w.Body.String(), "invoice.example") {
 			t.Fatalf("clear=%v 响应不符: %s", clear, w.Body.String())
 		}
 		if strings.Contains(w.Body.String(), cdkSessToken) {
@@ -358,8 +360,9 @@ func TestResultByCodeClearsSessionOnlyWhenCompleted(t *testing.T) {
 	if s := storedCDKSession(t, cdkSessCode); s != "" {
 		t.Fatalf("完成后应清空: %q", s)
 	}
-	if !strings.Contains(w.Body.String(), "invoice.example") {
-		t.Fatalf("完成时仍应带账单链接: %s", w.Body.String())
+	// 审计 F-1：凭卡密就能调这个接口，完成时也不再附带账单链接
+	if strings.Contains(w.Body.String(), "invoice") {
+		t.Fatalf("按码查结果不应带账单链接: %s", w.Body.String())
 	}
 }
 

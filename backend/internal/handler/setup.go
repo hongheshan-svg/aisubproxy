@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"os"
 	"strings"
-	"sync"
 	"time"
 	"unicode"
 
@@ -21,48 +20,12 @@ const (
 	setupLockWindow  = time.Hour
 )
 
-var (
-	setupMu       sync.Mutex
-	setupAttempts = map[string]*loginAttempt{}
-)
+// 安装接口的失败计数用和登录同一种有上限的限流表（setupLimiter，见 ratelimit.go），按来源 IP 计。
+func setupAllowed(ip string) (bool, time.Duration) { return setupLimiter.allowed(ip) }
 
-func setupAllowed(ip string) (bool, time.Duration) {
-	setupMu.Lock()
-	defer setupMu.Unlock()
-	a := setupAttempts[ip]
-	if a == nil {
-		return true, 0
-	}
-	now := time.Now()
-	if now.Before(a.lockedUntil) {
-		return false, time.Until(a.lockedUntil)
-	}
-	if !a.lockedUntil.IsZero() && now.After(a.lockedUntil) {
-		delete(setupAttempts, ip)
-	}
-	return true, 0
-}
+func setupFailed(ip string) { setupLimiter.failed(ip) }
 
-func setupFailed(ip string) {
-	setupMu.Lock()
-	defer setupMu.Unlock()
-	now := time.Now()
-	a := setupAttempts[ip]
-	if a == nil || now.Sub(a.windowStart) > setupLockWindow {
-		a = &loginAttempt{windowStart: now}
-		setupAttempts[ip] = a
-	}
-	a.failures++
-	if a.failures >= setupMaxAttempts {
-		a.lockedUntil = now.Add(setupLockWindow)
-	}
-}
-
-func setupSucceeded(ip string) {
-	setupMu.Lock()
-	defer setupMu.Unlock()
-	delete(setupAttempts, ip)
-}
+func setupSucceeded(ip string) { setupLimiter.succeeded(ip) }
 
 // SetupStatus GET /api/v1/setup/status — 仅返回是否已安装，不泄露细节。
 func SetupStatus(c *gin.Context) {
@@ -100,10 +63,8 @@ func SetupBootstrap(c *gin.Context) {
 		return
 	}
 
+	// 只认请求头：查询串会进访问日志、浏览器历史和反代日志（审计 A-10）
 	token := strings.TrimSpace(c.GetHeader("X-Setup-Token"))
-	if token == "" {
-		token = strings.TrimSpace(c.Query("setup_token"))
-	}
 	if !db.VerifySetupToken(token) {
 		setupFailed(ip)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid setup token"})
@@ -111,8 +72,7 @@ func SetupBootstrap(c *gin.Context) {
 	}
 
 	var req setupBootstrapRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+	if !bindAuthJSON(c, &req, "invalid request") {
 		return
 	}
 	mode := strings.ToLower(strings.TrimSpace(req.Mode))
@@ -137,8 +97,9 @@ func SetupBootstrap(c *gin.Context) {
 	if mode == "generate" {
 		password = db.RandomPassword(16)
 	} else {
-		password = req.Password
-		if password != req.ConfirmPassword {
+		// 和登录一样去掉首尾空白再校验、入库（登录时会 Trim，不 Trim 入库的话设好就登不进，审计 A-9）
+		password = strings.TrimSpace(req.Password)
+		if password != strings.TrimSpace(req.ConfirmPassword) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "passwords do not match"})
 			return
 		}
@@ -181,15 +142,18 @@ func SetupBootstrap(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "setup failed"})
 		return
 	}
-	if ok, _ := db.VerifyAdminPassword(storedHash, password); !ok {
+	if ok, _ := verifyAdminPassword(storedHash, password); !ok {
 		log.Printf("setup bootstrap: password self-check failed for %s", username)
-		_, _ = db.DB.Exec(`DELETE FROM admin_users WHERE id = ?`, userID)
-		_, _ = db.DB.Exec(`DELETE FROM site_settings WHERE key IN ('install_completed_at','setup_token_hash')`)
+		// 回滚时保留这次用的安装令牌，不用重启就能重试（原来连令牌一起删，重启前装不了）
+		if err := db.RollbackAdminBootstrap(userID, token); err != nil {
+			log.Printf("setup bootstrap: rollback failed: %v", err)
+		}
+		db.WriteAudit(username, "install_rollback", "password self-check failed", ip)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "password self-check failed, please retry"})
 		return
 	}
 
-	sess, err := issueAdminSession(c, userID, username, "System Admin")
+	sess, err := issueAdminSession(c, userID, username, "System Admin", 0) // 新建账号的版本号是 0
 	if err != nil {
 		log.Printf("setup bootstrap session error: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "setup failed"})
@@ -201,7 +165,6 @@ func SetupBootstrap(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"username":   username,
 		"password":   password,
-		"token":      sess["token"],
 		"name":       sess["name"],
 		"expires_at": sess["expires_at"],
 		"csrf_token": sess["csrf_token"],

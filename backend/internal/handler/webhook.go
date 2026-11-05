@@ -10,7 +10,6 @@ import (
 	"log"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
@@ -26,8 +25,13 @@ func CardPlatformWebhook(c *gin.Context) {
 		c.Status(http.StatusBadRequest)
 		return
 	}
-	secret, _ := db.GetSetting("webhook_secret")
+	secret, serr := db.GetCardSecret(db.SettingWebhookSecret)
 	secret = strings.TrimSpace(secret)
+	if serr != nil {
+		log.Printf("webhook: 解密 webhook_secret 失败: %v", serr)
+		c.Status(http.StatusServiceUnavailable)
+		return
+	}
 	if secret == "" {
 		// 未配置密钥时拒绝，避免裸奔
 		log.Printf("webhook: webhook_secret not configured")
@@ -59,12 +63,18 @@ func CardPlatformWebhook(c *gin.Context) {
 		eventType = v
 	}
 	// 幂等键
-	idem := webhookIdemKey(payload, eventType)
-	if err := db.InsertWebhookEvent(eventType, idem, string(raw)); err != nil {
-		// 唯一冲突视为已处理（幂等）
+	idem := webhookIdemKey(payload, eventType, raw)
+	// 原文入库前脱敏：卡号只留前 6 后 4，去掉 CVV、有效期（业务处理仍用未脱敏的 payload）
+	if err := db.InsertWebhookEvent(eventType, idem, db.SanitizeWebhookPayload(string(raw))); err != nil {
 		if !strings.Contains(err.Error(), "UNIQUE") && !strings.Contains(err.Error(), "unique") {
+			// 非唯一冲突的写库错误：回 500 让卡台重试，不能回 200 把事件丢掉
 			log.Printf("webhook store: %v", err)
+			c.Status(http.StatusInternalServerError)
+			return
 		}
+		// 唯一冲突：这个事件已处理过，直接回 200，不再回写状态（否则陈旧的重发会把状态改回去）
+		c.Status(http.StatusOK)
+		return
 	} else {
 		// 若是 GPT 直充完成，可写审计
 		if eventType == "gpt_direct.completed" {
@@ -115,12 +125,13 @@ func clearSessionFromWebhook(payload map[string]interface{}, eventType string) {
 	if !strings.Contains(strings.ToLower(eventType), "completed") {
 		return
 	}
-	if code, ok := db.LookupCardplatformCDKCode(anyToInt64(payload["cdk_id"]), strAny(payload["code_prefix"])); ok {
+	// 只按上游 ID 取码，不按前缀兜底：前缀撞上别的码会清掉别人的会话。
+	if code := exactCDKCodeByID(anyToInt64(payload["cdk_id"])); code != "" {
 		clearSessionAfterCompleted(code, "")
 	}
 }
 
-func webhookIdemKey(p map[string]interface{}, eventType string) string {
+func webhookIdemKey(p map[string]interface{}, eventType string, raw []byte) string {
 	str := func(k string) string {
 		if v, ok := p[k]; ok {
 			switch t := v.(type) {
@@ -145,8 +156,12 @@ func webhookIdemKey(p map[string]interface{}, eventType string) string {
 			return "gpt_direct.completed|client|" + id
 		}
 	}
-	// fallback
-	h := sha256.Sum256([]byte(str("auth_id") + str("order_id") + str("operation_id") + eventType + time.Now().UTC().Format(time.RFC3339Nano)))
+	// 卡台文档要求按 event_id 去重
+	if id := str("event_id"); id != "" {
+		return eventType + "|event|" + id
+	}
+	// fallback：不含时间，同一份原文重发得到同一个键
+	h := sha256.Sum256(append([]byte(eventType+"|"), raw...))
 	return hex.EncodeToString(h[:16])
 }
 
@@ -187,13 +202,19 @@ func AdminListWebhooks(c *gin.Context) {
 		}
 		urlHint = scheme + "://" + host + "/api/v1/webhooks/cardplatform"
 	}
-	sec, _ := db.GetSetting("webhook_secret")
-	c.JSON(http.StatusOK, gin.H{
+	sec, secErr := db.GetCardSecret(db.SettingWebhookSecret)
+	resp := gin.H{
 		"events":              out,
 		"webhook_url":         urlHint,
 		"webhook_secret_set":  strings.TrimSpace(sec) != "",
 		"webhook_secret_hint": maskSecret(sec),
-	})
+	}
+	if secErr != nil {
+		// 密文还在但解不开（APP_MASTER_KEY 没配或已更换）：告诉前端，别显示成「未配置」
+		resp["webhook_secret_set"] = true
+		resp["webhook_secret_error"] = "已保存的值解不开：APP_MASTER_KEY 没配置或已更换，请重新填写"
+	}
+	c.JSON(http.StatusOK, resp)
 }
 
 func sanitizeWebhookPayload(raw string) interface{} {
@@ -201,8 +222,10 @@ func sanitizeWebhookPayload(raw string) interface{} {
 	if json.Unmarshal([]byte(raw), &m) != nil {
 		return raw
 	}
-	if cn, ok := m["card_number"].(string); ok && len(cn) > 4 {
-		m["card_number"] = "****" + cn[len(cn)-4:]
+	// 入库时已脱敏；这里再过一遍，兼顾没跑过清洗的旧数据
+	var out interface{}
+	if json.Unmarshal([]byte(db.SanitizeWebhookPayload(raw)), &out) == nil {
+		return out
 	}
 	return m
 }

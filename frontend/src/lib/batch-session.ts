@@ -3,11 +3,10 @@ import { isGrokCredential } from './grok'
 // xlsx 约 430 kB（gzip 145 kB）：只在真正读/写 Excel 时才加载，不拖累首屏与其它页面。
 const loadXLSX = () => import('xlsx')
 
-/** 批量上限：前端受理条数（并发提交，非同时跑满） */
-export const BATCH_MAX_KEYS = 1000
+/** 批量上限：与公开接口的限流额度对齐（一张码预览+预检+兑换共 3 次变更，每 IP 每小时 300 次），也等于一次批量查结果的令牌数上限 */
+export const BATCH_MAX_KEYS = 100
 export const AUTO_SUBMIT_CONCURRENCY = 6
 export const VERIFY_CONCURRENCY = 6
-export const BATCH_POLL_INTERVAL_MS = 3000
 
 export interface ImportedSession {
   email: string

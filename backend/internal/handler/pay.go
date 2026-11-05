@@ -21,6 +21,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/tuzi/cdk-recharge-system/internal/cardpool"
 	"github.com/tuzi/cdk-recharge-system/internal/chatgpt"
+	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/paybrowser"
 	"github.com/tuzi/cdk-recharge-system/internal/payengine"
 	"github.com/tuzi/cdk-recharge-system/internal/provider"
@@ -52,7 +53,7 @@ const (
 
 var (
 	payOrderNoRe  = regexp.MustCompile(`^PO\d{12}[0-9a-f]{8}$`)
-	payShotNameRe = regexp.MustCompile(`^\d{2}-[a-z0-9_]+\.png$`)
+	payShotNameRe = regexp.MustCompile(`^\d{2}-[a-z0-9_-]+\.png$`)
 )
 
 // payFail 把引擎错误映射成 HTTP 响应。Resolve 的状态冲突同时满足 ErrBadRequest 与 ErrStateChanged，
@@ -121,6 +122,15 @@ func AdminPaySubmit(c *gin.Context) {
 			}
 			prov = cs.Name()
 		}
+		// 真实付款（会动钱）要过和 CDK 入口同样的服务端闸门，不能只靠前端拦；试运行不动钱，不拦
+		if !req.DryRun && !req.DryRunFill {
+			release, status, msg := adminRealPayGate(c.Request.Context(), s, session)
+			if release == nil {
+				c.JSON(status, gin.H{"error": msg})
+				return
+			}
+			defer release()
+		}
 		o, err := s.Submit(c.Request.Context(), payengine.Request{
 			Provider:   string(prov),
 			PlanKey:    strings.TrimSpace(req.PlanKey),
@@ -138,6 +148,56 @@ func AdminPaySubmit(c *gin.Context) {
 		auditAdmin(c, "pay_test_submit", fmt.Sprintf("provider=%s plan=%s region=%s dry_run=%t dry_run_fill=%t order_no=%s", o.Provider, o.PlanKey, o.Region, o.DryRun, o.DryRunFill, o.OrderNo))
 		c.JSON(http.StatusOK, gin.H{"order_no": o.OrderNo, "order": o})
 	})(c)
+}
+
+// adminRealPayGate 是后台真实付款的服务端闸门，照搬 CDK 入口（localCDKRedeem）的几道检查：
+//   - 同一账号已有在途或待人工的真实单就拒绝（待人工的单可能已经付了钱，引擎的在途索引不管它），并取账号独占锁防并发双提交；
+//   - 付款熔断暂停时拒绝；
+//   - 卡租约时长短于付款最长耗时就拒绝（就绪检查里的同一条）。
+//
+// 放行时返回释放账号锁的函数；被拒时 release 为 nil，status 和 msg 是要回的响应。会话解析不了时不在这里拦，交给 Submit 报「会话无效」。
+func adminRealPayGate(ctx context.Context, s *payengine.Service, rawSession string) (release func(), status int, msg string) {
+	if sess, err := chatgpt.ParseSession(rawSession); err == nil {
+		email := normEmail(sess.Email)
+		unlock, ok := holdAccountExclusive(email)
+		if !ok {
+			return nil, http.StatusConflict, crossProviderBusyText
+		}
+		release = unlock
+		open, err := db.HasOpenPayOrderForEmail(ctx, email)
+		if err != nil {
+			log.Printf("[pay] 后台付款：查询账号在途单失败: %v", err)
+			unlock()
+			return nil, http.StatusServiceUnavailable, "暂时无法确认账号状态，请稍后再试"
+		}
+		if open {
+			unlock()
+			return nil, http.StatusConflict, "该账号已有在途或待人工处理的付款单，请先处理完再提交"
+		}
+	} else {
+		release = func() {}
+	}
+	fail := func(code int, m string) (func(), int, string) {
+		release()
+		return nil, code, m
+	}
+	st, err := s.BreakerStatus(ctx)
+	if err != nil {
+		log.Printf("[pay] 后台付款：读取付款熔断状态失败: %v", err)
+		return fail(http.StatusServiceUnavailable, "付款熔断状态查询失败，按暂停处理")
+	}
+	if st.Paused {
+		return fail(http.StatusConflict, "付款已熔断暂停："+st.ReasonText)
+	}
+	pol, err := cardpool.LoadPolicy()
+	if err != nil {
+		log.Printf("[pay] 后台付款：读取卡池策略失败: %v", err)
+		return fail(http.StatusServiceUnavailable, "卡池策略读取失败")
+	}
+	if p := leaseTooShortProblem(s, pol); p != "" {
+		return fail(http.StatusConflict, p+"，请先在卡池策略里调大租约时长")
+	}
+	return release, 0, ""
 }
 
 // AdminPayList 分页列出单据，可按 state、renewal（续费进度）、kind（种类）筛选。

@@ -24,9 +24,7 @@ func newSealedExchangeEnv(t *testing.T) *localEnv {
 	if err := setAgentSwapPassword(sealedSwapPassword); err != nil {
 		t.Fatal(err)
 	}
-	swapRateMu.Lock()
-	swapRateHits = map[string][]time.Time{}
-	swapRateMu.Unlock()
+	resetLocalRate()
 	return e
 }
 

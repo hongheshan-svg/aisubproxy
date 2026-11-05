@@ -24,14 +24,14 @@ const (
 // 替换程序或停止服务会把它打断。排队的（还没开始）和确认中的（重启后确认协程接着查）不算。
 var processingStates = []string{StateChecking, StateLinkCreated, StateOpening, StateFunding, StateFilling, StateSubmitted, StateRequires3DS}
 
-// CountProcessing 返回处于在途状态的单据张数（以数据库为准，含试运行单）。在线更新替换文件之前用它挡住更新。
+// CountProcessing 返回处于在途状态的单据张数（以数据库为准，不含试运行单：试运行不动钱，更新打断它没有损失）。在线更新替换文件之前用它挡住更新。
 func CountProcessing(ctx context.Context) (int, error) {
 	args := make([]any, len(processingStates))
 	for i, st := range processingStates {
 		args[i] = st
 	}
 	var n int
-	err := db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM pay_orders WHERE state IN (?`+
+	err := db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM pay_orders WHERE dry_run = 0 AND state IN (?`+
 		strings.Repeat(", ?", len(processingStates)-1)+`)`, args...).Scan(&n)
 	return n, err
 }

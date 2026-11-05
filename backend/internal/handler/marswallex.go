@@ -209,7 +209,12 @@ func AdminPutMarsWallexConfig(c *gin.Context) {
 			}
 		}
 	}
-	setToken := req.APIToken != nil && *req.APIToken != ""
+	// API Token 去掉首尾空白（C-12）：从网页复制常带换行，带着保存会导致连接测试恒 401
+	token := ""
+	if req.APIToken != nil {
+		token = strings.TrimSpace(*req.APIToken)
+	}
+	setToken := token != ""
 	setPriv := req.PrivateKey != nil && strings.TrimSpace(*req.PrivateKey) != ""
 	if setPriv {
 		if _, err := marswallex.ParsePrivateKey(*req.PrivateKey); err != nil {
@@ -247,22 +252,31 @@ func AdminPutMarsWallexConfig(c *gin.Context) {
 		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存失败"})
 	}
+	// 非密钥项（地址、开发者 ID、平台公钥）一次事务写入，要么全写要么都不写（C-11）；
+	// 密钥项仍逐个加密写入，失败时审计只记已写入的字段名。
+	plain := map[string]string{}
+	var plainNames []string
 	if req.BaseURL != nil {
-		if err := db.SetSetting(db.SettingMarsWallexBaseURL, baseURL); err != nil {
-			fail("base_url", err)
-			return
-		}
-		changed = append(changed, "base_url")
+		plain[db.SettingMarsWallexBaseURL] = baseURL
+		plainNames = append(plainNames, "base_url")
 	}
 	if req.DeveloperID != nil {
-		if err := db.SetSetting(db.SettingMarsWallexDeveloperID, strings.TrimSpace(*req.DeveloperID)); err != nil {
-			fail("developer_id", err)
+		plain[db.SettingMarsWallexDeveloperID] = strings.TrimSpace(*req.DeveloperID)
+		plainNames = append(plainNames, "developer_id")
+	}
+	if setPlat {
+		plain[db.SettingMarsWallexPlatformPublicKey] = platPEMNorm
+		plainNames = append(plainNames, "platform_public_key")
+	}
+	if len(plain) > 0 {
+		if err := db.SetSettings(plain); err != nil {
+			fail(strings.Join(plainNames, ","), err)
 			return
 		}
-		changed = append(changed, "developer_id")
+		changed = append(changed, plainNames...)
 	}
 	if setToken {
-		if err := db.SetSecretSetting(db.SettingMarsWallexAPIToken, *req.APIToken); err != nil {
+		if err := db.SetSecretSetting(db.SettingMarsWallexAPIToken, token); err != nil {
 			fail("api_token", err)
 			return
 		}
@@ -274,13 +288,6 @@ func AdminPutMarsWallexConfig(c *gin.Context) {
 			return
 		}
 		changed = append(changed, "private_key")
-	}
-	if setPlat {
-		if err := db.SetSetting(db.SettingMarsWallexPlatformPublicKey, platPEMNorm); err != nil {
-			fail("platform_public_key", err)
-			return
-		}
-		changed = append(changed, "platform_public_key")
 	}
 	if len(changed) > 0 {
 		auditAdmin(c, "update_marswallex_config", "changed: "+strings.Join(changed, ","))

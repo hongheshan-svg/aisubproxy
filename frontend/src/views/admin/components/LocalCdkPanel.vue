@@ -64,6 +64,11 @@
         <ul v-if="failure.kind === 'not_ready'" class="list-disc pl-5"><li v-for="p in failure.problems" :key="p">{{ p }}</li></ul>
       </div>
 
+      <div v-if="keeperLocked" class="text-xs text-muted" data-testid="keeper-locked">
+        上一次发码结果未知，已锁定为只许原样重试。确认没有这一批码、不想找回时：
+        <el-button link type="danger" size="small" @click="discardLocked">放弃上一次</el-button>
+      </div>
+
       <div v-if="failure && failure.kind === 'already_issued'" class="alert alert-warning space-y-2" role="alert" data-testid="already-issued">
         <div class="font-semibold">这批码已经发过，但无法再显示</div>
         <p class="text-sm">
@@ -186,7 +191,7 @@ import { copyToClipboard } from '../../../lib/clipboard'
 import { errText } from '../../../lib/cardpool'
 import { formatMinor, stateLabel } from '../../../lib/pay'
 import { payErrorText } from '../../../lib/payui'
-import { IdempotencyKeeper } from '../../../lib/idempotency'
+import { IdempotencyLockedError, sharedKeeper } from '../../../lib/idempotency'
 import {
   adminApi, canDisableLocal, canEnableLocal, centsToUsd, classifyIssueFailure, localCdkStatusText, localCdkTagType,
   needsFirstRealPayment, NO_SUB_NOTE, planNote, providerLabel,
@@ -237,7 +242,14 @@ const funding = ref(false)
 const issuing = ref(false)
 const reissuing = ref(false)
 const failure = ref<IssueFailure | null>(null)
-const keeper = new IdempotencyKeeper()
+// 模块级单例 + sessionStorage：结果不明的那一批在刷新、重新进入后仍沿用原键，只许原样重试
+const keeper = sharedKeeper('local-issue')
+const keeperLocked = ref(keeper.isLocked())
+function discardLocked() {
+  keeper.discard()
+  keeperLocked.value = false
+  failure.value = null
+}
 
 const combo = computed(() => combos.value.find((c) => comboId(c) === comboKey.value) || null)
 
@@ -289,10 +301,22 @@ async function issue(skipConfirm = false): Promise<boolean> {
   try {
     const body = payloadOf()
     // 点击时按内容生成一次键；失败重试内容不变就沿用同一个，不会多发
-    const r = await adminApi<any>('/cdks/issue', 'POST', body, { 'Idempotency-Key': keeper.keyFor(body) })
+    let idemKey: string
+    try {
+      idemKey = keeper.keyFor(body)
+    } catch (e) {
+      if (e instanceof IdempotencyLockedError) {
+        keeperLocked.value = true
+        failure.value = { kind: 'uncertain', message: e.message + '（原样 = 与上次相同的套餐、地区、数量和备注）' }
+        return false
+      }
+      throw e
+    }
+    const r = await adminApi<any>('/cdks/issue', 'POST', body, { 'Idempotency-Key': idemKey })
     if (!r.ok) {
       const f = classifyIssueFailure(r.status, r.data)
-      if (f.kind === 'already_issued') keeper.done() // 否则再点一直 409；重发要用新键
+      if (f.kind === 'already_issued') { keeper.done(); keeperLocked.value = false } // 否则再点一直 409；重发要用新键
+      if (f.kind === 'uncertain') { keeper.markUncertain(); keeperLocked.value = true }
       failure.value = f
       return false
     }
@@ -301,9 +325,12 @@ async function issue(skipConfirm = false): Promise<boolean> {
     if (!codes.length) {
       // 响应成功但没有码：不能当成功清键，沿用原键重试会拿到 409，由 already_issued 路径处理
       failure.value = { kind: 'uncertain', message: '服务端返回成功但没有完整码。请到下面的列表按时间找到这批码，禁用后重发。' }
+      keeper.markUncertain()
+      keeperLocked.value = true
       return false
     }
     keeper.done()
+    keeperLocked.value = false
     resultCodes.value = codes
     resultMeta.value = `${c.label || c.plan} / ${c.region}`
     resultNote.value = body.note
@@ -345,6 +372,7 @@ async function disableAndReissue() {
     dialog.toast(`已禁用 ${n} 张`)
     failure.value = null
     keeper.done()
+    keeperLocked.value = false
     await issue(true)
   } finally {
     reissuing.value = false

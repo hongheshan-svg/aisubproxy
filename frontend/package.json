@@ -11,14 +11,10 @@
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",
-    "@vueuse/core": "^10.7.2",
-    "axios": "^1.6.8",
-    "chart.js": "^4.4.1",
     "element-plus": "^2.14.2",
     "pinia": "^2.1.7",
     "qrcode": "^1.5.4",
     "vue": "^3.5.44",
-    "vue-chartjs": "^5.3.1",
     "vue-i18n": "^11.4.17",
     "vue-router": "^4.2.5",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"

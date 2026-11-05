@@ -93,8 +93,14 @@ func openStoredEmail(sealedEmail, stored string) (string, error) {
 
 // BindCDKSession 预检/兑换时写入 session（可按码或 redemption_token 关联）。provider 是写绑定的上游服务商，必填。
 // 只写密文；主密钥缺失或不合法时返回错误且不写任何东西。调用方记日志后照常继续：兑换本身不依赖这份副本。
-// 已有的行不改 provider：一张码终身只属于一家。
+// 已有的行不改 provider：一张码终身只属于一家。账号邮箱取会话 JSON 里写的 user.email。
 func BindCDKSession(provider, cdkCode, redemptionToken, sessionPayload string) error {
+	return BindCDKSessionAs(provider, cdkCode, redemptionToken, sessionPayload, ExtractSessionEmail(sessionPayload))
+}
+
+// BindCDKSessionAs 同 BindCDKSession，但账号邮箱由调用方给出（例如上游预检核验过的邮箱）。
+// 这个邮箱是跨服务商互斥和凭卡密查账单的依据，不能取会话 JSON 里用户自己填的那一份（审计 F-2）。为空时不记邮箱。
+func BindCDKSessionAs(provider, cdkCode, redemptionToken, sessionPayload, accountEmail string) error {
 	if DB == nil {
 		return fmt.Errorf("db not ready")
 	}
@@ -116,9 +122,11 @@ func BindCDKSession(provider, cdkCode, redemptionToken, sessionPayload string) e
 	if err != nil {
 		return fmt.Errorf("加密会话失败: %w", err)
 	}
-	email, err := sealSessionEmail(key, sess)
-	if err != nil {
-		return fmt.Errorf("加密邮箱失败: %w", err)
+	email := ""
+	if em := strings.TrimSpace(accountEmail); em != "" {
+		if email, err = secretbox.Seal(key, cdkSessionEmailAAD, em); err != nil {
+			return fmt.Errorf("加密邮箱失败: %w", err)
+		}
 	}
 	now := time.Now().Unix()
 	// 优先已知码
@@ -133,7 +141,10 @@ func BindCDKSession(provider, cdkCode, redemptionToken, sessionPayload string) e
 				redemption_token = COALESCE(NULLIF(excluded.redemption_token,''), cdk_session_bindings.redemption_token),
 				updated_at = CURRENT_TIMESTAMP
 		`, code, sealed, tok, email, now, provider)
-		return err
+		if err != nil {
+			return err
+		}
+		return recordRedemptionToken(code, tok)
 	}
 	// 仅有 token：更新已绑定行
 	res, err := DB.Exec(`
@@ -152,7 +163,10 @@ func BindCDKSession(provider, cdkCode, redemptionToken, sessionPayload string) e
 		INSERT INTO cdk_session_bindings (cdk_code, session_payload, redemption_token, account_email_sealed, session_bound_at, provider, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 	`, "RT:"+tok, sealed, tok, email, now, provider)
-	return err
+	if err != nil {
+		return err
+	}
+	return recordRedemptionToken("RT:"+tok, tok)
 }
 
 // GetSessionByCDK 凭卡密取绑定 session 的原文；没有绑定或已清空时返回空串。解不开（主密钥缺失或已更换）时返回错误。

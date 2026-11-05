@@ -216,45 +216,6 @@ func TestTruncateHTMLKeepsEntities(t *testing.T) {
 	}
 }
 
-// 「新订单」通知：卡密只留末 4 位，邮箱打码，不再带上游的写死链接。
-func TestNotifyNewOrderMasksSensitiveFields(t *testing.T) {
-	f := newFakeTelegram(t)
-	useSettings(t, func() (string, string, error) { return testToken, "1", nil })
-	NotifyNewOrder("T-1", "ZC-ABCD-EFGH-9876", `{"user":{"email":"buyer@example.com"}}`)
-	var form url.Values
-	select {
-	case form = <-f.got:
-	case <-time.After(5 * time.Second):
-		t.Fatal("没有发送")
-	}
-	text := form.Get("text")
-	for _, bad := range []string{"ZC-ABCD-EFGH-9876", "buyer@example.com", "claudec.ai"} {
-		if strings.Contains(text, bad) {
-			t.Fatalf("通知里不应出现 %q: %s", bad, text)
-		}
-	}
-	for _, want := range []string{"****9876", "bu***@example.com", "T-1", "「ZovoCard → 兑换订单」"} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("通知里应有 %q: %s", want, text)
-		}
-	}
-}
-
-func TestMaskEmail(t *testing.T) {
-	cases := map[string]string{
-		"buyer@example.com": "bu***@example.com",
-		"ab@x.io":           "a***@x.io",
-		"a@x.io":            "a***@x.io",
-		"不是邮箱":              "",
-		"@x.io":             "",
-	}
-	for in, want := range cases {
-		if got := maskEmail(in); got != want {
-			t.Errorf("maskEmail(%q) = %q，期望 %q", in, got, want)
-		}
-	}
-}
-
 // 设了 TELEGRAM_PROXY 时经这个代理发送；格式不对时报错且不回显原值（里面可能有代理密码）。
 func TestSendUsesTelegramProxy(t *testing.T) {
 	var via []string

@@ -36,10 +36,12 @@ type exchangeUpstream struct {
 	// 禁用旧码的失败开关与尝试次数（MO-08）：disableFail 为真时禁用接口返回 500
 	disableFail  atomic.Bool
 	disableTries atomic.Int32
-	mu           sync.Mutex
-	keys         []string
-	onIssue      func(n int32, w http.ResponseWriter, r *http.Request)
-	onOrders     func()
+	// detailFail 为真时订单详情接口返回 500（E-6）
+	detailFail atomic.Bool
+	mu         sync.Mutex
+	keys       []string
+	onIssue    func(n int32, w http.ResponseWriter, r *http.Request)
+	onOrders   func()
 }
 
 func issueOK(n int32, w http.ResponseWriter, _ *http.Request) {
@@ -58,6 +60,11 @@ func newExchangeUpstream(t *testing.T) *exchangeUpstream {
 			}
 			w.Write([]byte(`{"code":0,"data":{"total":1,"list":[{"order_id":5,"status":"failed","stage":"declined","final_amount_minor":0}]}}`))
 		case r.Method == "GET" && r.URL.Path == "/openapi/v1/gpt-direct/cdk-orders/5":
+			if u.detailFail.Load() {
+				w.WriteHeader(500)
+				w.Write([]byte(`{"code":500,"msg":"boom"}`))
+				return
+			}
 			w.Write([]byte(`{"code":0,"data":{"order":{"status":"failed","stage":"declined","final_amount_minor":0},"events":[]}}`))
 		case r.Method == "POST" && r.URL.Path == "/openapi/v1/gpt-direct/cdks":
 			n := u.issued.Add(1)
@@ -94,9 +101,7 @@ func seedExchange(t *testing.T, codes ...string) {
 	if err := setAgentSwapPassword(exchangePassword); err != nil {
 		t.Fatal(err)
 	}
-	swapRateMu.Lock()
-	swapRateHits = map[string][]time.Time{}
-	swapRateMu.Unlock()
+	resetLocalRate()
 	for i, code := range codes {
 		if err := db.SaveCardplatformCDKCode(int64(77+i), code, code[:14], "plus", 0, "PH"); err != nil {
 			t.Fatal(err)

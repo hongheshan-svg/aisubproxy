@@ -171,6 +171,14 @@ func planCombos(ctx context.Context, engine *payengine.Service, pool *cardpool.S
 	return out
 }
 
+// leaseTooShortProblem 卡租约短于付款最长耗时时返回说明，否则为空。就绪检查和后台真实付款入口共用。
+func leaseTooShortProblem(engine *payengine.Service, pol cardpool.Policy) string {
+	if need := payengine.MaxPayDuration(engine.Timeouts()); time.Duration(pol.LeaseMinutes)*time.Minute < need {
+		return fmt.Sprintf("卡租约 %d 分钟短于付款最长耗时 %s", pol.LeaseMinutes, need.Round(time.Minute))
+	}
+	return ""
+}
+
 func checkCombo(ctx context.Context, engine *payengine.Service, pool *cardpool.Service, plan, region string) planCombo {
 	c := planCombo{Plan: plan, Region: region, Problems: []string{}, PlanNote: provider.PlanNote(provider.MarsWallex, plan)}
 	fail := func(format string, args ...any) { c.Problems = append(c.Problems, fmt.Sprintf(format, args...)) }
@@ -190,8 +198,8 @@ func checkCombo(ctx context.Context, engine *payengine.Service, pool *cardpool.S
 	if rc.FundCents > pol.MaxFundCents {
 		fail("注资金额 %d 分超过单笔上限 %d 分", rc.FundCents, pol.MaxFundCents)
 	}
-	if need := payengine.MaxPayDuration(engine.Timeouts()); time.Duration(pol.LeaseMinutes)*time.Minute < need {
-		fail("卡租约 %d 分钟短于付款最长耗时 %s", pol.LeaseMinutes, need.Round(time.Minute))
+	if p := leaseTooShortProblem(engine, pol); p != "" {
+		fail("%s", p)
 	}
 	if c.Cards, err = pool.SelectableCards(ctx, plan, localFundCurrency); err != nil {
 		log.Printf("[provider] 统计可用卡失败: %v", err)

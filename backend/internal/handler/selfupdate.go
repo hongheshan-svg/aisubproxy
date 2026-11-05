@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"net/http"
 	"os"
 	"os/exec"
@@ -16,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 )
@@ -115,34 +117,140 @@ func verifyBundleSignatureFile(tgzPath, sigURL string) error {
 	return verifyBundleSignature(data, string(sig))
 }
 
-// preflightBinary 在替换前运行新程序的 --version：确认它能在本机执行，且自报版本与发布版本一致。
+// lastVersionWithoutCheck 是最后一个没有 --check（启动检查）的版本。这些老程序不认识 --check，会把它当成
+// 普通启动：连真实数据库、跑迁移、启动付款引擎和卡池，所以绝不能用 --check 运行它们，只做 --version 自检。
+// 它们也没有 --check 要查的那些拒绝启动条件（都是之后的版本加的），跳过 --check 不会漏掉什么。
+const lastVersionWithoutCheck = "1.5.3"
+
+// preflightBinary 在替换前自检新程序：先跑 --version，确认它能在本机执行、自报版本与发布版本一致；
+// 再跑 --check，用当前的环境变量和数据库（只读）走一遍新版本的启动检查（审计 auth N-2），
+// 不通过就中止更新，免得换上去以后起不来、systemd 崩溃循环。
 // 在新程序所在目录运行，并去掉 CDK_APP_VERSION，避免读到旧版本号。
 func preflightBinary(bin, wantVersion string) error {
 	if err := os.Chmod(bin, 0o755); err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, bin, "--version")
-	cmd.Dir = filepath.Dir(bin)
-	env := make([]string, 0, len(os.Environ()))
-	for _, kv := range os.Environ() {
-		if !strings.HasPrefix(kv, "CDK_APP_VERSION=") {
-			env = append(env, kv)
-		}
-	}
-	cmd.Env = env
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-	if err := cmd.Run(); err != nil {
+	out, err := runPreflight(bin, "--version", 10*time.Second, nil)
+	if err != nil {
 		return fmt.Errorf("新程序无法在本机运行: %v", err)
 	}
-	got := normalizeVer(strings.TrimSpace(strings.SplitN(out.String(), "\n", 2)[0]))
+	got := normalizeVer(strings.TrimSpace(strings.SplitN(out, "\n", 2)[0]))
 	if got != normalizeVer(wantVersion) {
 		return fmt.Errorf("新程序自报版本 %s，与发布版本 %s 不一致", got, normalizeVer(wantVersion))
 	}
-	return nil
+	c, ok := compareVersions(got, lastVersionWithoutCheck)
+	if !ok {
+		// 不合 semver 的发布版本既不能确认它有 --check，也不能当老程序放行，宁可中止（审计 N-5）
+		return fmt.Errorf("版本号 %s 无法解析，已中止更新", got)
+	}
+	if c <= 0 {
+		log.Printf("[update] v%s 不晚于 v%s，没有 --check，只做 --version 自检", got, lastVersionWithoutCheck)
+		return nil
+	}
+	// 新程序的工作目录是解压目录，数据库路径要换成当前进程实际用的绝对路径，只放进 --check 专用的变量
+	dbPath, err := filepath.Abs(db.ResolvePath())
+	if err != nil {
+		return fmt.Errorf("确定数据库路径失败: %v", err)
+	}
+	guard, cleanup, err := checkGuardDBPath()
+	if err != nil {
+		return fmt.Errorf("准备启动检查失败: %v", err)
+	}
+	defer cleanup()
+	// 第二道防线（裁定 R17）：万一新程序其实不认识 --check（例如漏了本功能的版本），它会当成普通启动。
+	// 这几项让它在第一步就退出、什么都碰不到：启动接管直接跳过（不 exec、不动数据卷的 runtime 目录），
+	// 按 DB_PATH 打开库失败（建表、迁移、付款引擎、卡池都在这之后），万一打开了也监听不了端口。
+	out, err = runPreflight(bin, "--check", 30*time.Second, []string{
+		db.CheckDBPathEnv + "=" + dbPath,
+		"DB_PATH=" + guard,
+		"CDK_RUNTIME_HANDOFF=1",
+		"SERVER_PORT=-1",
+	})
+	if err == nil && hasLine(out, CheckOKLine) {
+		return nil
+	}
+	if !strings.Contains(out, CheckFailPrefix) {
+		return fmt.Errorf("新程序没有按 --check 的约定回应，可能是不支持 --check 的版本，已中止（%v）：%s", err, tailText(out, 600))
+	}
+	return fmt.Errorf("新版本的启动检查没通过，换上去会起不来（%v）：%s", err, tailText(out, 600))
+}
+
+// --check 的输出约定：通过时单独一行打印 CheckOKLine；不通过时以 CheckFailPrefix 开头说明原因并以非 0 退出。
+const (
+	CheckOKLine     = "启动检查通过"
+	CheckFailPrefix = "启动检查未通过"
+)
+
+// hasLine 判断输出里有没有恰好是 want 的一行。
+func hasLine(out, want string) bool {
+	for _, l := range strings.Split(out, "\n") {
+		if strings.TrimSpace(l) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// checkGuardDBPath 返回一个打不开的库路径：放在一个普通文件「下面」，上级目录建不出来，SQLite 也打不开。
+// 跑 --check 时把 DB_PATH 指向它，误收 --check 的老程序在打开库那一步就失败退出。cleanup 删掉那个文件。
+func checkGuardDBPath() (string, func(), error) {
+	f, err := os.CreateTemp("", "cdk-check-guard-*")
+	if err != nil {
+		return "", nil, err
+	}
+	name := f.Name()
+	if err := f.Close(); err != nil {
+		_ = os.Remove(name)
+		return "", nil, err
+	}
+	return filepath.Join(name, "cdk_recharge.db"), func() { _ = os.Remove(name) }, nil
+}
+
+// runPreflight 以 arg 运行新程序，返回合并后的输出。环境变量沿用当前进程的，去掉 CDK_APP_VERSION，
+// extra 里的同名变量覆盖原值。
+func runPreflight(bin, arg string, timeout time.Duration, extra []string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, arg)
+	cmd.Dir = filepath.Dir(bin)
+	drop := []string{"CDK_APP_VERSION="}
+	for _, kv := range extra {
+		if i := strings.IndexByte(kv, '='); i > 0 {
+			drop = append(drop, kv[:i+1])
+		}
+	}
+	env := make([]string, 0, len(os.Environ())+len(extra))
+next:
+	for _, kv := range os.Environ() {
+		for _, p := range drop {
+			if strings.HasPrefix(kv, p) {
+				continue next
+			}
+		}
+		env = append(env, kv)
+	}
+	cmd.Env = append(env, extra...)
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+	err := cmd.Run()
+	return out.String(), err
+}
+
+// tailText 取输出的最后 n 个字节以内（按字符边界），去掉首尾空白；输出为空时说明一下。
+func tailText(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if len(s) > n {
+		s = s[len(s)-n:]
+		for len(s) > 0 && !utf8.RuneStart(s[0]) {
+			s = s[1:]
+		}
+		s = "…" + s
+	}
+	if s == "" {
+		return "（新程序没有输出原因）"
+	}
+	return s
 }
 
 // backupDatabase 用 VACUUM INTO 生成一致的数据库快照；目标文件已存在时报错，不覆盖旧备份。

@@ -14,7 +14,6 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/auth"
 	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
-	"github.com/tuzi/cdk-recharge-system/internal/notify"
 )
 
 func parseLimit(raw string, fallback int) int {
@@ -34,29 +33,16 @@ func parseLimit(raw string, fallback int) int {
 	return value
 }
 
-// ConfirmTaskRequest request for confirming a task
-type ConfirmTaskRequest struct {
-	TaskID string `json:"task_id" binding:"required"`
-}
-
 type AdminLoginRequest struct {
 	Username string `json:"username" binding:"required"`
 	Password string `json:"password" binding:"required"`
-}
-
-type AdminLoginResponse struct {
-	Token     string `json:"token"`
-	Username  string `json:"username"`
-	Name      string `json:"name"`
-	ExpiresAt string `json:"expires_at"`
 }
 
 // ===== Recharge Portal APIs =====
 
 func AdminLogin(c *gin.Context) {
 	var req AdminLoginRequest
-	if err := c.BindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+	if !bindAuthJSON(c, &req, "Invalid request") {
 		return
 	}
 
@@ -74,30 +60,31 @@ func AdminLogin(c *gin.Context) {
 	var passwordHash string
 	var displayName sql.NullString
 	var isActive int
+	var tokenVersion int64
 
 	err := db.DB.QueryRow(`
-		SELECT id, username, password_hash, display_name, is_active
+		SELECT id, username, password_hash, display_name, is_active, token_version
 		FROM admin_users
 		WHERE username = ?
-	`, strings.TrimSpace(req.Username)).Scan(&userID, &username, &passwordHash, &displayName, &isActive)
-	if err == sql.ErrNoRows {
-		loginFailed(rateKey)
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户名或密码错误"})
-		return
-	}
-	if err != nil {
+	`, strings.TrimSpace(req.Username)).Scan(&userID, &username, &passwordHash, &displayName, &isActive, &tokenVersion)
+	if err != nil && err != sql.ErrNoRows {
 		log.Printf("admin login lookup error: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "系统错误"})
 		return
 	}
-	if isActive != 1 {
-		c.JSON(http.StatusForbidden, gin.H{"error": "账号已被禁用"})
-		return
+	// 用户名不存在、账号禁用、密码错误三种情况：都跑一次 bcrypt（不存在的用户比一个固定的假哈希），
+	// 都计一次失败，都回同一个 401。响应内容和耗时都不暴露用户名是否存在（审计 A-8）。
+	known := err == nil
+	if !known {
+		passwordHash = dummyAdminHash()
 	}
-	// 密码两侧空白常因复制粘贴产生，校验时 Trim；入库仍按原样（生成口令无空白）
+	// 密码两侧空白常因复制粘贴产生，校验时 Trim；安装（自设密码）和改密入库前也 Trim，口径一致
 	plain := strings.TrimSpace(req.Password)
-	ok, upgradedHash := db.VerifyAdminPassword(passwordHash, plain)
-	if !ok {
+	ok, upgradedHash := verifyAdminPassword(passwordHash, plain)
+	if !known || !ok || isActive != 1 {
+		if known && ok {
+			log.Printf("admin login: 账号 %s 已禁用，按登录失败处理", username)
+		}
 		loginFailed(rateKey)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "用户名或密码错误"})
 		return
@@ -111,7 +98,7 @@ func AdminLogin(c *gin.Context) {
 	if displayName.Valid && strings.TrimSpace(displayName.String) != "" {
 		name = displayName.String
 	}
-	sess, err := issueAdminSession(c, userID, username, name)
+	sess, err := issueAdminSession(c, userID, username, name, tokenVersion)
 	if err != nil {
 		log.Printf("admin login session error: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "系统错误"})
@@ -121,12 +108,16 @@ func AdminLogin(c *gin.Context) {
 }
 
 // issueAdminSession 签发 JWT + HttpOnly cookie，供登录与安装向导共用。
-func issueAdminSession(c *gin.Context, userID int64, username, displayName string) (gin.H, error) {
+// 令牌只放在 HttpOnly cookie 里，不进响应 JSON：前端 JS 拿不到，XSS 偷不走（审计 A-1）。
+// 脚本和命令行仍可用 Authorization: Bearer，令牌另行签发，不经浏览器。
+// tokenVersion 是校验密码时一并读出的令牌版本号，签进令牌，之后改密码就会让它作废（审计 A-2）。
+func issueAdminSession(c *gin.Context, userID int64, username, displayName string, tokenVersion int64) (gin.H, error) {
 	expiration := time.Now().Add(24 * time.Hour)
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, auth.CustomClaims{
-		UserID:   userID,
-		IsAdmin:  true,
-		Username: username,
+		UserID:       userID,
+		IsAdmin:      true,
+		Username:     username,
+		TokenVersion: tokenVersion,
 		RegisteredClaims: jwt.RegisteredClaims{
 			ExpiresAt: jwt.NewNumericDate(expiration),
 			IssuedAt:  jwt.NewNumericDate(time.Now()),
@@ -143,7 +134,6 @@ func issueAdminSession(c *gin.Context, userID int64, username, displayName strin
 	csrf := newCSRFToken()
 	setAuthCookies(c, signedToken, csrf, int(time.Until(expiration).Seconds()))
 	return gin.H{
-		"token":      signedToken,
 		"username":   username,
 		"name":       displayName,
 		"expires_at": expiration.Format(time.RFC3339),
@@ -157,15 +147,28 @@ func AdminLogout(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "已退出登录"})
 }
 
+// AdminMe 返回当前会话的管理员信息。前端刷新页面后靠它确认登录态、恢复用户名和到期时间。
 func AdminMe(c *gin.Context) {
 	userID, _ := c.Get("user_id")
 	username, _ := c.Get("username")
 	isAdmin, _ := c.Get("is_admin")
+	expiresAt, _ := c.Get("token_expires_at")
+
+	name, _ := username.(string)
+	if id, ok := userID.(int64); ok {
+		var display sql.NullString
+		if err := db.DB.QueryRow(`SELECT display_name FROM admin_users WHERE id = ?`, id).Scan(&display); err == nil &&
+			strings.TrimSpace(display.String) != "" {
+			name = display.String
+		}
+	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"user_id":  userID,
-		"username": username,
-		"is_admin": isAdmin,
+		"user_id":    userID,
+		"username":   username,
+		"name":       name,
+		"is_admin":   isAdmin,
+		"expires_at": expiresAt,
 	})
 }
 
@@ -177,10 +180,12 @@ func AdminChangePassword(c *gin.Context) {
 	}
 
 	var req ChangePasswordRequest
-	if err := c.BindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
+	if !bindAuthJSON(c, &req, "Invalid request") {
 		return
 	}
+	// 和登录一样去掉首尾空白再校验、入库（审计 A-9）
+	req.OldPassword = strings.TrimSpace(req.OldPassword)
+	req.NewPassword = strings.TrimSpace(req.NewPassword)
 
 	if len(req.NewPassword) < 12 || db.IsWeakPassword(req.NewPassword) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "新密码至少 12 位，且不能为常见弱口令"})
@@ -204,7 +209,7 @@ func AdminChangePassword(c *gin.Context) {
 		return
 	}
 
-	if ok, _ := db.VerifyAdminPassword(storedHash, req.OldPassword); !ok {
+	if ok, _ := verifyAdminPassword(storedHash, req.OldPassword); !ok {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "旧密码不正确"})
 		return
 	}
@@ -216,6 +221,10 @@ func AdminChangePassword(c *gin.Context) {
 	}
 
 	auditAdmin(c, "change_password", "")
+	// 改密成功：随机初始密码文件（如有）已经没用，删掉
+	db.RemoveInitialAdminPasswordFile()
+	// 版本号已加一，包括本机在内的所有旧会话都已作废；顺手清掉本机 cookie
+	clearAuthCookies(c)
 	c.JSON(http.StatusOK, gin.H{"message": "密码已修改，请用新密码重新登录"})
 }
 
@@ -226,14 +235,31 @@ func auditAdmin(c *gin.Context, action, detail string) {
 	db.WriteAudit(username, action, detail, c.ClientIP())
 }
 
-// ListAuditLogs 返回最近的管理员操作审计日志。
+// ListAuditLogs 返回管理员操作审计日志，按 id 倒序。
+// before_id > 0 时只返回 id 小于它的记录（游标分页）；多取一条用来判断后面还有没有，has_more 为 true 时
+// 用返回的 next_before_id 继续翻。
 func ListAuditLogs(c *gin.Context) {
 	limit := parseLimit(c.Query("limit"), 200)
-	rows, err := db.DB.Query(`
+	var beforeID int64
+	if raw := strings.TrimSpace(c.Query("before_id")); raw != "" {
+		v, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || v <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "before_id 不合法"})
+			return
+		}
+		beforeID = v
+	}
+	query := `
 		SELECT id, COALESCE(username,''), COALESCE(action,''), COALESCE(detail,''), COALESCE(ip,''), COALESCE(created_at,'')
-		FROM admin_audit_logs
-		ORDER BY id DESC LIMIT ?
-	`, limit)
+		FROM admin_audit_logs`
+	args := []any{}
+	if beforeID > 0 {
+		query += ` WHERE id < ?`
+		args = append(args, beforeID)
+	}
+	query += ` ORDER BY id DESC LIMIT ?`
+	args = append(args, limit+1)
+	rows, err := db.DB.Query(query, args...)
 	if err != nil {
 		log.Printf("list audit error: %v", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to list audit logs"})
@@ -257,78 +283,15 @@ func ListAuditLogs(c *gin.Context) {
 		}
 		logs = append(logs, item)
 	}
-	c.JSON(http.StatusOK, gin.H{"logs": logs})
-}
-
-// ConfirmRechargeTask confirms and submits a recharge task
-func ConfirmRechargeTask(c *gin.Context) {
-	var req ConfirmTaskRequest
-	if err := c.BindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
-		return
+	hasMore := len(logs) > limit
+	if hasMore {
+		logs = logs[:limit]
 	}
-	req.TaskID = strings.TrimSpace(req.TaskID)
-
-	// Get task info
-	var cdkCode string
-	var sessionJSON sql.NullString
-	err := db.DB.QueryRow(`
-		SELECT cdk_code, session_json FROM recharge_tasks WHERE task_id = ? AND task_status = 'pending'
-	`, req.TaskID).Scan(&cdkCode, &sessionJSON)
-
-	if err == sql.ErrNoRows {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Task not found or already confirmed"})
-		return
+	var nextBeforeID int64
+	if hasMore && len(logs) > 0 {
+		nextBeforeID = logs[len(logs)-1].ID
 	}
-
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "System error"})
-		return
-	}
-
-	// Begin transaction
-	tx, err := db.DB.Begin()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to start transaction"})
-		return
-	}
-	defer tx.Rollback()
-
-	// Update task status to submitted
-	_, err = tx.Exec(`
-		UPDATE recharge_tasks
-		SET task_status = 'submitted', updated_at = CURRENT_TIMESTAMP
-		WHERE task_id = ?
-	`, req.TaskID)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update task"})
-		return
-	}
-
-	// Mark CDK as used
-	_, err = tx.Exec(`
-		UPDATE cd_keys
-		SET status = 'used', used_at = CURRENT_TIMESTAMP
-		WHERE code = ?
-	`, cdkCode)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to mark CDK"})
-		return
-	}
-
-	if err = tx.Commit(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to commit"})
-		return
-	}
-
-	// 订单成交：CDK 已使用 + session 已提交 → 推送 Telegram 通知（异步，不阻塞响应）
-	notify.NotifyNewOrder(req.TaskID, cdkCode, sessionJSON.String)
-
-	c.JSON(http.StatusOK, gin.H{
-		"task_id": req.TaskID,
-		"status":  "submitted",
-		"message": "充值申请已提交，请等待处理",
-	})
+	c.JSON(http.StatusOK, gin.H{"logs": logs, "has_more": hasMore, "next_before_id": nextBeforeID})
 }
 
 // ===== Billing Tool APIs =====

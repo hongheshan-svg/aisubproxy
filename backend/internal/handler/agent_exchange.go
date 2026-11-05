@@ -28,30 +28,58 @@ const (
 	defaultAgentSwapDailyLimit = 20
 )
 
-// 简易 IP 限流：每 IP 每小时最多 20 次换码尝试
-var (
-	swapRateMu   sync.Mutex
-	swapRateHits = map[string][]time.Time{}
+// swapRateAllow 每 IP（IPv6 按 /64）每小时最多 20 次换码尝试。
+// 复用公开接口的限流表（localRateAllow）：有键数上限，过期键由 PublicGuard 每分钟清扫，不会随来源 IP 无限增长。
+func swapRateAllow(ip string) bool {
+	return localRateAllow(localRateSwap, ip)
+}
+
+const (
+	agentSwapWeakKey        = "agent_swap_password_weak"
+	minAgentSwapPasswordLen = 12
 )
 
-func swapRateAllow(ip string) bool {
-	swapRateMu.Lock()
-	defer swapRateMu.Unlock()
-	now := time.Now()
-	cut := now.Add(-time.Hour)
-	hits := swapRateHits[ip]
-	kept := hits[:0]
-	for _, t := range hits {
-		if t.After(cut) {
-			kept = append(kept, t)
-		}
+// 口令错误按北京日计数：只记次数和来源，不记口令内容。
+var (
+	swapWrongMu  sync.Mutex
+	swapWrongDay string
+	swapWrongN   int
+)
+
+func agentSwapWrongPassword(ip string) {
+	day := time.Now().In(beijingZone).Format("2006-01-02")
+	swapWrongMu.Lock()
+	if swapWrongDay != day {
+		swapWrongDay, swapWrongN = day, 0
 	}
-	if len(kept) >= 20 {
-		swapRateHits[ip] = kept
-		return false
+	swapWrongN++
+	n := swapWrongN
+	swapWrongMu.Unlock()
+	log.Printf("[agent-exchange] 换码口令错误 ip=%s 今日第 %d 次", ip, n)
+}
+
+func agentSwapWrongToday() int {
+	day := time.Now().In(beijingZone).Format("2006-01-02")
+	swapWrongMu.Lock()
+	defer swapWrongMu.Unlock()
+	if swapWrongDay != day {
+		return 0
 	}
-	swapRateHits[ip] = append(kept, now)
-	return true
+	return swapWrongN
+}
+
+// noteAgentSwapPasswordUsed 口令验证通过时调用：库里存的是哈希看不出长度，只能这时用明文判断。
+// 短于新规则的老口令继续可用，但打上标记，后台设置页提示尽快更换。
+func noteAgentSwapPasswordUsed(plain string) {
+	if len(strings.TrimSpace(plain)) >= minAgentSwapPasswordLen || agentSwapPasswordWeak() {
+		return
+	}
+	_ = db.SetSetting(agentSwapWeakKey, "1")
+}
+
+func agentSwapPasswordWeak() bool {
+	v, _ := db.GetSetting(agentSwapWeakKey)
+	return strings.TrimSpace(v) == "1"
 }
 
 func setAgentSwapPassword(plain string) error {
@@ -59,17 +87,20 @@ func setAgentSwapPassword(plain string) error {
 	if plain == "" {
 		return db.DeleteSetting(agentSwapPasswordKey)
 	}
-	if len(plain) < 6 {
+	if len(plain) < minAgentSwapPasswordLen {
 		return errPasswordTooShort
 	}
 	hash, err := db.HashAdminPassword(plain)
 	if err != nil {
 		return err
 	}
-	return db.SetSetting(agentSwapPasswordKey, hash)
+	if err := db.SetSetting(agentSwapPasswordKey, hash); err != nil {
+		return err
+	}
+	return db.DeleteSetting(agentSwapWeakKey)
 }
 
-var errPasswordTooShort = &simpleError{"代理换码密码至少 6 位"}
+var errPasswordTooShort = &simpleError{"代理换码密码至少 12 位"}
 
 type simpleError struct{ s string }
 
@@ -137,7 +168,11 @@ func finishDisableOldCode(ctx context.Context, cli *cardplatform.Client, exID, o
 	if err := cli.DisableCDK(ctx, oldID); err != nil {
 		return err
 	}
-	_ = db.UpdateCardplatformCDKStatus(oldID, "disabled")
+	// 卡台已禁用，本地只是列表缓存：写库失败不算禁用失败，但和 E-8 一样记日志（setLocalCDKStatuses 里）并告警（审计 money N-5）
+	if failed := setLocalCDKStatuses([]int64{oldID}, "disabled"); len(failed) > 0 {
+		opsAlertDaily(fmt.Sprintf("agent-swap-local-status-%d", oldID), fmt.Sprintf(
+			"代理换码的旧码 ID %d 已在卡台禁用，但本站列表状态没能同步为已禁用（写库失败，见日志）。卡台侧已生效、旧码不能再兑换；本站缓存的状态仍是旧值，可在后台对这张码再点一次禁用来刷新。", oldID), time.Now())
+	}
 	if exID > 0 {
 		if err := db.CompleteAgentCDKExchangeDisable(exID); err != nil && !errors.Is(err, db.ErrAgentExchangeState) {
 			log.Printf("[agent-exchange] 记录 %d 旧码已禁用但转 done 失败（下一轮维护会再试）: %v", exID, err)
@@ -248,9 +283,11 @@ func PublicAgentCDKExchange(c *gin.Context) {
 		return
 	}
 	if !verifyAgentSwapPassword(req.Password) {
+		agentSwapWrongPassword(ip)
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "密码错误"})
 		return
 	}
+	noteAgentSwapPasswordUsed(req.Password)
 	code := strings.TrimSpace(req.Code)
 	if code == "" || len(code) < 10 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "请输入完整卡密"})
@@ -292,9 +329,6 @@ func zovoCardExchange(c *gin.Context, code, ip string) {
 		return
 	}
 	plan = strings.ToLower(strings.TrimSpace(plan))
-	if plan == "" {
-		plan = "plus"
-	}
 
 	cli := cardplatform.NewFromSettings()
 	// 查该 CDK 的订单（卡台 OpenAPI）
@@ -328,21 +362,26 @@ func zovoCardExchange(c *gin.Context, code, ip string) {
 	// 拉详情看 events 的 payment_fact
 	var events []map[string]any
 	if orderID > 0 {
-		if detailRaw, err := cli.GetCDKOrder(c.Request.Context(), strconv.FormatInt(orderID, 10)); err == nil {
-			if evs := extractOrderEvents(detailRaw); len(evs) > 0 {
-				events = evs
+		detailRaw, err := cli.GetCDKOrder(c.Request.Context(), strconv.FormatInt(orderID, 10))
+		if err != nil {
+			// 详情拉不到就不知道有没有扣款：按结果不明拒绝，不占位、不发码
+			log.Printf("[agent-exchange] 拉订单详情失败 old=%d order=%d: %v", upstreamID, orderID, err)
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "暂时无法确认订单扣款情况，请稍后重试"})
+			return
+		}
+		if evs := extractOrderEvents(detailRaw); len(evs) > 0 {
+			events = evs
+		}
+		// 详情里的 order 覆盖
+		if m := extractOrderMap(detailRaw); m != nil {
+			if s := strAny(m["status"]); s != "" {
+				status = strings.ToLower(s)
 			}
-			// 详情里的 order 覆盖
-			if m := extractOrderMap(detailRaw); m != nil {
-				if s := strAny(m["status"]); s != "" {
-					status = strings.ToLower(s)
-				}
-				if s := strAny(m["stage"]); s != "" {
-					stage = strings.ToLower(s)
-				}
-				if n := anyToInt64(m["final_amount_minor"]); n > 0 {
-					finalMinor = n
-				}
+			if s := strAny(m["stage"]); s != "" {
+				stage = strings.ToLower(s)
+			}
+			if n := anyToInt64(m["final_amount_minor"]); n > 0 {
+				finalMinor = n
 			}
 		}
 	}
@@ -364,6 +403,15 @@ func zovoCardExchange(c *gin.Context, code, ip string) {
 			"final_amount": finalMinor,
 			"local_status": localStatus,
 		})
+		return
+	}
+
+	// 套餐和地区一样不能猜：旧码套餐缓存为空（回填的历史码）就去卡台按 id 查，查不到就拒绝，不默认按 plus 补发。
+	if plan == "" {
+		plan = upstreamCDKPlan(c, cli, upstreamID)
+	}
+	if plan == "" {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "无法确认原卡密的套餐，暂不能补发，请联系管理员"})
 		return
 	}
 
@@ -575,6 +623,20 @@ func upstreamCDKRegion(c *gin.Context, cli *cardplatform.Client, upstreamID int6
 		}
 	}
 	return "", false
+}
+
+// upstreamCDKPlan 去卡台按 id 查一张码的套餐，查不到返回空串。
+func upstreamCDKPlan(c *gin.Context, cli *cardplatform.Client, upstreamID int64) string {
+	res, err := cli.ListCDKsQuery(c.Request.Context(), cardplatform.CDKListQuery{Page: 1, PageSize: 50, Query: strconv.FormatInt(upstreamID, 10)})
+	if err != nil || res == nil {
+		return ""
+	}
+	for _, it := range res.List {
+		if it.ID == upstreamID {
+			return strings.ToLower(strings.TrimSpace(it.Plan))
+		}
+	}
+	return ""
 }
 
 func parseCDKOrderList(raw json.RawMessage) (list []map[string]any, total int) {

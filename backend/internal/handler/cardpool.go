@@ -374,7 +374,8 @@ func AdminCardPoolFundCard(c *gin.Context) {
 	})(c)
 }
 
-// AdminCardPoolSensitive 返回完整卡号；审计只记 card_id。
+// AdminCardPoolSensitive 查看卡号：响应里只有前 6 后 4 的打码卡号，不返回完整卡号、CVV2、有效期（审计 C-3）。
+// 仍然走租用 / 记取卡号的流程和审计，审计只记 card_id。
 func AdminCardPoolSensitive(c *gin.Context) {
 	poolRoute(func(c *gin.Context, s *cardpool.Service) {
 		c.Header("Cache-Control", "no-store")
@@ -385,8 +386,26 @@ func AdminCardPoolSensitive(c *gin.Context) {
 			return
 		}
 		poolAudit(c, "view_sensitive", "card_id="+id)
-		c.JSON(http.StatusOK, gin.H{"card_no": sv.CardNo, "cvv2": sv.CVV2, "expiry_date": sv.ExpiryDate})
+		c.JSON(http.StatusOK, gin.H{"card_no_masked": s4MaskCardNumber(sv.CardNo)})
 	})(c)
+}
+
+// s4MaskCardNumber 卡号最多留前 6 后 4，中间用 * 补齐；少于 13 位的不显示任何数字。
+func s4MaskCardNumber(s string) string {
+	digits := make([]byte, 0, len(s))
+	for i := 0; i < len(s); i++ {
+		if s[i] >= '0' && s[i] <= '9' {
+			digits = append(digits, s[i])
+		}
+	}
+	n := len(digits)
+	if n == 0 {
+		return ""
+	}
+	if n < 13 {
+		return strings.Repeat("*", n)
+	}
+	return string(digits[:6]) + strings.Repeat("*", n-10) + string(digits[n-4:])
 }
 
 func AdminCardPoolOTP(c *gin.Context) {

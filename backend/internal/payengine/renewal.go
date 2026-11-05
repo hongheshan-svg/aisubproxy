@@ -21,11 +21,16 @@ import (
 // 核实不了按失败处理。关闭续费的成败不影响单据的成功状态和资金结论。
 //
 // 会话：单据成功时会话不清空，留给续费协程用；关掉了就清空。自动重试最多 3 次（间隔 1、3、10 分钟），用完转 failed 并告警，
-// 会话再留到 SessionKeep（1 小时）给管理员手动重试，到点一律清空。待人工的开通单也留会话到同一时限，人工定论成功时还能关。
+// 会话再留到 SessionKeep（1 小时）给管理员手动重试，到点一律清空。
+// 待人工的开通单在人工定论之前留着会话，最多 30 天（审计 D-2）：管理员什么时候定论成功都还能关续费，否则用户账号留着自动续费、
+// 下期扣的可能是我们复用中的卡。定论成功之后从定论时刻（resolved_at）起再按 SessionKeep 计时（审计 D-9）；定论失败当场清空。
 const (
 	renewalAutoRetries = 3
 	defaultRenewalTick = 15 * time.Second
 	defaultSessionKeep = time.Hour
+	// reviewSessionKeep 是待人工单的会话最长保留时间（审计 D-2 后续）：管理员再怎么拖，30 天后也清掉，
+	// 不让用户会话在库里无限期留着。到点后定论成功会记 skipped 并告警，由用户自己去关续费。
+	reviewSessionKeep = 30 * 24 * time.Hour
 )
 
 // renewalRetryDelays 是第 n 次自动尝试失败后到下一次的间隔（n 从 1 起）。
@@ -295,8 +300,10 @@ func (s *Service) renewalOff(ctx context.Context, gpt ChatGPT, sess chatgpt.Sess
 }
 
 // sweepSessions 清空保留到点的会话：终态单据结束满 SessionKeep 还留着会话的，一律清空。
+// 人工定论过的单从定论时刻算，待人工的单不清（定论之前不知道要不要关续费）。
 // 续费还在待处理的单转 failed 并告警：关闭续费到点还没结论，只能让用户自己关。
 func (s *Service) sweepSessions(ctx context.Context) {
+	s.sweepReviewSessions(ctx)
 	cutoff := s.now().Add(-s.t.SessionKeep).Unix()
 	list, err := expiredSessions(ctx, cutoff)
 	if err != nil {
@@ -330,6 +337,53 @@ func (s *Service) sweepSessions(ctx context.Context) {
 	}
 }
 
+// sweepReviewSessions 清掉待人工满 reviewSessionKeep（30 天）的单据的会话，单据本身仍待人工。
+// 每张单只记一行日志（单号，不含会话和邮箱），再追加一条时间线事件。已人工定论的单不在这里处理，仍按 SessionKeep 从定论时刻计时。
+func (s *Service) sweepReviewSessions(ctx context.Context) {
+	cutoff := s.now().Add(-reviewSessionKeep).Unix()
+	rows, err := db.DB.QueryContext(ctx, `SELECT order_no FROM pay_orders
+		WHERE state = ? AND session_sealed != '' AND resolved_at IS NULL AND COALESCE(finished_at, created_at) <= ? ORDER BY id`,
+		StateNeedsReview, cutoff)
+	if err != nil {
+		if ctx.Err() == nil {
+			log.Printf("[payengine] 读取待人工超期的会话失败: %v", err)
+		}
+		return
+	}
+	var nos []string
+	for rows.Next() {
+		var no string
+		if rows.Scan(&no) == nil {
+			nos = append(nos, no)
+		}
+	}
+	rows.Close()
+	for _, no := range nos {
+		if ctx.Err() != nil {
+			return
+		}
+		now := time.Now().UTC().Unix()
+		tx, err := db.DB.BeginTx(ctx, nil)
+		if err != nil {
+			continue
+		}
+		res, err := tx.ExecContext(ctx, `UPDATE pay_orders SET session_sealed = '', updated_at = ?
+			WHERE order_no = ? AND state = ? AND session_sealed != '' AND resolved_at IS NULL AND COALESCE(finished_at, created_at) <= ?`,
+			now, no, StateNeedsReview, cutoff)
+		if err == nil {
+			if n, _ := res.RowsAffected(); n > 0 {
+				_, err = tx.ExecContext(ctx, `INSERT INTO pay_order_events (order_no, at, state, level, message)
+					VALUES (?, ?, ?, 'info', ?)`, no, now, StateNeedsReview, "待人工已满 30 天，会话已清空；之后定论成功将无法自动关闭续费")
+				if err == nil && tx.Commit() == nil {
+					log.Printf("[payengine] 单据 %s 待人工已满 30 天，已清空会话", no)
+				}
+				continue
+			}
+		}
+		tx.Rollback()
+	}
+}
+
 // dueRenewals 返回续费待处理且到了处理时刻的成功单（按 id 升序）。会话已清空的也返回，由 renewOnce 记成 skipped。
 func dueRenewals(ctx context.Context, now int64) ([]Order, error) {
 	rows, err := db.DB.QueryContext(ctx, `SELECT `+orderColumns+` FROM pay_orders
@@ -341,11 +395,14 @@ func dueRenewals(ctx context.Context, now int64) ([]Order, error) {
 	return collectOrders(rows)
 }
 
-// expiredSessions 返回已经结束、结束时刻不晚于 cutoff、还留着会话的单据。
+// sessionKeepFrom 是会话保留的起算时刻：人工定论过的单从定论时刻算，其余从结束时刻算。
+const sessionKeepFrom = `COALESCE(resolved_at, finished_at)`
+
+// expiredSessions 返回已经结束、保留起算时刻不晚于 cutoff、还留着会话的终态单据。待人工的单不在其中：会话要留到人工定论。
 func expiredSessions(ctx context.Context, cutoff int64) ([]Order, error) {
 	rows, err := db.DB.QueryContext(ctx, `SELECT `+orderColumns+` FROM pay_orders
-		WHERE session_sealed != '' AND finished_at IS NOT NULL AND finished_at <= ? AND state IN (?, ?, ?, ?) ORDER BY id`,
-		cutoff, StateSucceeded, StateFailed, StateNeedsReview, StatePreviewed)
+		WHERE session_sealed != '' AND finished_at IS NOT NULL AND `+sessionKeepFrom+` <= ? AND state IN (?, ?, ?) ORDER BY id`,
+		cutoff, StateSucceeded, StateFailed, StatePreviewed)
 	if err != nil {
 		return nil, err
 	}
@@ -353,6 +410,7 @@ func expiredSessions(ctx context.Context, cutoff int64) ([]Order, error) {
 }
 
 // clearExpiredSession 清空一张到点单据的会话，记一条事件。续费待处理的单不在这里清（见 sweepSessions）。
+// 条件在同一条 UPDATE 里重查：读列表之后单据刚被人工定论的，起算时刻已经变了，不会被清；待人工的单一律不清。
 func clearExpiredSession(ctx context.Context, no string, cutoff int64) error {
 	now := time.Now().UTC().Unix()
 	tx, err := db.DB.BeginTx(ctx, nil)
@@ -361,7 +419,8 @@ func clearExpiredSession(ctx context.Context, no string, cutoff int64) error {
 	}
 	defer tx.Rollback()
 	res, err := tx.ExecContext(ctx, `UPDATE pay_orders SET session_sealed = '', updated_at = ?
-		WHERE order_no = ? AND session_sealed != '' AND finished_at <= ? AND renewal_state != ?`, now, no, cutoff, RenewalPending)
+		WHERE order_no = ? AND session_sealed != '' AND `+sessionKeepFrom+` <= ? AND renewal_state != ? AND state != ?`,
+		now, no, cutoff, RenewalPending, StateNeedsReview)
 	if err != nil {
 		return err
 	}

@@ -97,11 +97,18 @@ func (o LocalCDKOrder) CleanFailure() bool {
 	return o.State == "failed" && o.Failure == "not_submitted" && o.SubmittedAt == nil
 }
 
+// preFundCardCodes 是「已经取到卡、但一定在注资之前放弃」的错误码（payengine/pay.go 里读卡信息、核对姓名和币种之后、Fund 之前）。
+// 这两个码只出现在注资之前：卡池里一张卡没有持卡人姓名或币种不对，不能让用户的码白白用掉「注资后失败」的名额（审计 D-4）。
+var preFundCardCodes = map[string]bool{"card_info_failed": true, "card_currency_unsupported": true}
+
 // ReachedFunding 这张单走到了注资阶段。判断依据是 card_id：
 //   - 引擎选到卡就记下，注资之前一定已经落库（见 payengine.fundCard），之后不会清空，所以不会漏掉真的注资过的单。
 //   - 不用 fund_order_no：注资接口报错或超时时它没有写入，钱却可能已经到账。
-//   - 不用错误码：新增错误码时容易漏，service_restart、internal_error 也分不出发生在注资前后。
-func (o LocalCDKOrder) ReachedFunding() bool { return o.CardID != "" }
+//   - 一般不用错误码：新增错误码时容易漏，service_restart、internal_error 也分不出发生在注资前后。
+//     只排除 preFundCardCodes 里那两个确定发生在注资之前的码；其余一律按选过卡算，宁可多算不漏算。
+func (o LocalCDKOrder) ReachedFunding() bool {
+	return o.CardID != "" && !preFundCardCodes[o.ErrorCode]
+}
 
 // LocalCDKView 是一张码的派生结果。
 type LocalCDKView struct {

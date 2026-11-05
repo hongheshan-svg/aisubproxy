@@ -111,6 +111,8 @@ type Order struct {
 	CreditBalanceBefore string `json:"credit_balance_before"`
 	// AccessUntil 是关闭续费核实时 ChatGPT 给的权益到期时间（Unix 秒）；没拿到为空。
 	AccessUntil *int64 `json:"access_until"`
+	// ResolvedAt 是人工定论的时刻（Unix 秒）；没经过人工定论为空。定论成功的单的会话从这一刻起计 SessionKeep。
+	ResolvedAt *int64 `json:"resolved_at"`
 	// HasSession 表示单据里还存着用户会话的密文（不含会话本身）：关闭续费要用，界面据此决定能不能重试。
 	HasSession bool `json:"has_session"`
 }

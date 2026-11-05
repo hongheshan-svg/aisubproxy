@@ -291,6 +291,7 @@
               <el-button type="success" :loading="resolving" @click="resolve('succeeded')">标记成功</el-button>
               <el-button type="danger" :loading="resolving" @click="resolve('failed')">标记失败</el-button>
             </div>
+            <div class="text-xs text-gray-500">标记失败前请注意：{{ RESOLVE_FAILED_HINT }}</div>
           </div>
         </template>
       </div>
@@ -321,7 +322,7 @@ import { dialog } from '../../lib/dialog'
 import { errText, fmtTs } from '../../lib/cardpool'
 import {
   STATES, failureText, formToPlan, formatMinor, isTerminal, pageOutcomeLabel, payApi, planToForm, proxyTestText, regionWithName, stateLabel,
-  payBlockReason, type BuiltinPrices, type FormPlan, type PlanConf, type ProxyTestResult,
+  payBlockReason, RESOLVE_FAILED_HINT, resolveConfirmText, type BuiltinPrices, type FormPlan, type PlanConf, type ProxyTestResult,
 } from '../../lib/pay'
 import { loadRegistry, providerLabel, registry } from '../../lib/provider'
 
@@ -718,7 +719,7 @@ async function resolve(result: 'succeeded' | 'failed') {
   const note = resolveNote.value.trim()
   if (!note) { dialog.toast('请先填写备注', 'warn'); return }
   const label = result === 'succeeded' ? '成功' : '失败'
-  const ok = await dialog.confirm(`确认把本单标记为${label}？只改本单结果，不会触发任何付款。`, { title: '人工定论', okText: `标记${label}`, danger: result === 'failed' })
+  const ok = await dialog.confirm(resolveConfirmText(result), { title: '人工定论', okText: `标记${label}`, danger: result === 'failed' })
   if (!ok) return
   const no = detailNo.value
   resolving.value = true

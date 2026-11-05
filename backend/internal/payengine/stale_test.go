@@ -22,7 +22,9 @@ func presetStale(t *testing.T, email, state string, age time.Duration, set map[s
 // S2：停在提交前中间状态、没有协程在处理、超过 5 分钟没进展的单：释放租约，记 failed/not_submitted/stale_order。
 // 正在处理的、刚更新过的、已经提交的（submitted、requires_3ds）都不动。
 func TestSweepStaleAbandonsStuckPreSubmit(t *testing.T) {
-	h := newPayHarness(t, nil)
+	// 确认协程每个 VerifyTick 会接管没人处理的 submitted / requires_3ds 单（adoptSubmitted），
+	// 这里只测扫描本身：把间隔拉长，免得机器慢时确认协程先把预置的已提交单转走。
+	h := newPayHarness(t, func(to *Timeouts) { to.VerifyTick = time.Hour })
 	h.start(t) // 启动时的恢复先做完：之后预置的单只能由扫描收敛
 	lease := map[string]any{"card_id": "card-s", "lease_token": "tok-s"}
 	stuck := presetStale(t, "stuck@example.com", StateFilling, 10*time.Minute, lease)

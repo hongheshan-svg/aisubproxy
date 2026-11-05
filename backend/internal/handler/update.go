@@ -833,7 +833,10 @@ func extractTarGz(tgzPath, dest string) error {
 		if err != nil {
 			return err
 		}
-		// 防 zip-slip
+		// 防 zip-slip：条目名含 ".." 直接拒绝（发布包里没有这种名字），再做下面的清洗与前缀检查
+		if strings.Contains(hdr.Name, "..") {
+			return fmt.Errorf("安装包里有非法路径: %s", hdr.Name)
+		}
 		name := filepath.Clean(hdr.Name)
 		if strings.HasPrefix(name, "..") || filepath.IsAbs(name) {
 			return fmt.Errorf("非法路径: %s", hdr.Name)

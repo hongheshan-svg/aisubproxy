@@ -226,7 +226,7 @@ func (j *job) note(col string, v any) {
 }
 
 func (j *job) merge(set map[string]any) map[string]any {
-	out := make(map[string]any, len(j.pending)+len(set))
+	out := make(map[string]any)
 	for k, v := range j.pending {
 		out[k] = v
 	}

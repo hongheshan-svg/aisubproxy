@@ -10,14 +10,14 @@ import (
 func TestOARandomPasswordRejectionSampling(t *testing.T) {
 	// 250、224 被丢掉；5 → 'F'，223 → 223%56=55 → '9'，0 → 'A'
 	src := bytes.NewReader([]byte{250, 5, 223, 224, 0, 1, 2, 3})
-	got, err := randomPasswordFrom(src, 3)
+	got, err := randomStringFrom(src, 3)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got != "F9A" {
 		t.Fatalf("got %q want %q", got, "F9A")
 	}
-	if _, err := randomPasswordFrom(bytes.NewReader([]byte{255, 255}), 3); err == nil {
+	if _, err := randomStringFrom(bytes.NewReader([]byte{255, 255}), 3); err == nil {
 		t.Fatal("随机源不够时应返回错误，不能退回可预测的口令")
 	}
 }

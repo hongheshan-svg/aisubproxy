@@ -17,16 +17,17 @@
     </div>
     <div class="card p-2 overflow-x-auto">
       <table class="w-full text-sm">
-        <thead><tr class="text-left"><th class="p-2">时间</th><th class="p-2">类型</th><th class="p-2">金额</th><th class="p-2">变动后余额</th><th class="p-2">订单</th><th class="p-2">备注</th></tr></thead>
+        <thead><tr class="text-left"><th class="p-2">时间</th><th class="p-2">类型</th><th class="p-2">金额</th><th class="p-2">变动后余额</th><th class="p-2">订单</th><th class="p-2">来源</th><th class="p-2">备注</th></tr></thead>
         <tbody>
           <tr v-for="l in items" :key="l.id" class="border-t">
             <td class="p-2 whitespace-nowrap">{{ fmtBeijing(l.created_at) }}</td>
             <td class="p-2">{{ LEDGER_KIND_LABELS[l.kind] || l.kind }}</td>
             <td class="p-2">{{ fmtUsd(l.amount_cents) }}</td><td class="p-2">{{ fmtUsd(l.balance_after_cents) }}</td>
             <td class="p-2"><router-link v-if="l.order_id" :to="`/agent/orders/${l.order_id}`" class="underline">#{{ l.order_id }}</router-link></td>
+            <td class="p-2 whitespace-nowrap">{{ sourceLabel(l.source) }}<span v-if="l.external_ref" class="opacity-70 break-all"> {{ l.external_ref }}</span></td>
             <td class="p-2 break-all">{{ l.note }}</td>
           </tr>
-          <tr v-if="!items.length"><td colspan="6" class="p-3 opacity-70">没有流水</td></tr>
+          <tr v-if="!items.length"><td colspan="7" class="p-3 opacity-70">没有流水</td></tr>
         </tbody>
       </table>
     </div>
@@ -44,6 +45,7 @@ import { agentApi, agentDownload, agentErrorText } from '../../lib/agentApi'
 import { downloadBlob } from '../../lib/agentExport'
 import { fmtUsd } from '../../lib/agentMoney'
 import { beijingRange, defaultLedgerRange, ledgerExportPath, ledgerQuery, LEDGER_KIND_LABELS } from '../../lib/agentViews'
+import { sourceLabel } from '../../lib/agentShared'
 import { fmtBeijing } from '../../lib/mwwebhook'
 
 const PAGE = 50

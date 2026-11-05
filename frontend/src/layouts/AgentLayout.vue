@@ -74,8 +74,22 @@ async function logout() {
   router.replace('/agent/login')
 }
 
+// 代理商功能关闭时（后台「系统 → 功能开关」）回登录页，登录页只显示「暂未开放」
+async function checkEnabled() {
+  try {
+    const r = await agentApi<{ enabled?: boolean }>('/status')
+    if (r.ok && r.data?.enabled === false) {
+      resetAgentSession()
+      router.replace('/agent/login')
+    }
+  } catch {
+    /* 读不到就照常显示，接口自己会拦 */
+  }
+}
+
 onMounted(() => {
   setAgentUnauthorizedHandler(toLogin)
+  checkEnabled()
   loadMe()
 })
 onBeforeUnmount(() => setAgentUnauthorizedHandler(null))

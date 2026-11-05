@@ -70,8 +70,9 @@ var (
 )
 
 // RegisterSharedRoutes 挂 /shared/*，挂在根引擎上（不在 /api/v1 下）。没挂的路径（draft、draftCard、query）是 404。
+// 代理商功能关闭时全部 404（在验签之前判断）。
 func RegisterSharedRoutes(r *gin.RouterGroup) {
-	g := r.Group("/shared", SharedAuth())
+	g := r.Group("/shared", AgentFeatureGate(), SharedAuth())
 	g.POST("/authentication/connect", SharedConnect)
 	g.POST("/commodity/items", SharedItems)
 	g.POST("/commodity/item", SharedItem)

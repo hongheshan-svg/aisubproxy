@@ -3,9 +3,12 @@
     <div class="w-full max-w-md card p-6 space-y-5">
       <div>
         <h1 class="text-xl font-semibold">代理商登录</h1>
-        <p class="text-sm opacity-70 mt-1">{{ stepHint }}</p>
+        <p v-if="!disabled" class="text-sm opacity-70 mt-1">{{ stepHint }}</p>
       </div>
 
+      <!-- 代理商功能关闭时（后台「系统 → 功能开关」）只显示提示，不显示登录框 -->
+      <p v-if="disabled" class="text-sm" role="status">{{ AGENT_DISABLED_TEXT }}</p>
+      <template v-else>
       <form v-if="step === 'password'" class="space-y-4" autocomplete="on" @submit.prevent="submitPassword">
         <label class="block">
           <span class="block text-sm mb-1">登录名</span>
@@ -57,15 +60,17 @@
 
       <p v-if="errorText" class="text-sm text-red-500" role="alert">{{ errorText }}</p>
       <button v-if="step !== 'password'" type="button" class="text-sm underline opacity-70" @click="restart">返回重新输入密码</button>
+      </template>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { agentApi, agentErrorText, safeAgentRedirect } from '../../lib/agentApi'
 import { nextLoginStep, type LoginStep } from '../../lib/agentLoginFlow'
+import { AGENT_DISABLED_TEXT } from '../../lib/features'
 
 type Step = LoginStep
 
@@ -84,6 +89,17 @@ const totpCode = ref('')
 const secret = ref('')
 const qrDataUrl = ref('')
 const setupLoading = ref(false)
+// 代理商功能是否关闭：读状态接口失败时按「开着」处理，登录接口自己会再拦
+const disabled = ref(false)
+
+onMounted(async () => {
+  try {
+    const r = await agentApi<{ enabled?: boolean }>('/status')
+    disabled.value = r.ok && r.data?.enabled === false
+  } catch {
+    /* 读不到就照常显示登录框 */
+  }
+})
 
 const stepHint = computed(() => ({
   password: '请输入管理员为你开通的登录名和密码。',

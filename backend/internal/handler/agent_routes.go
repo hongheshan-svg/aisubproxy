@@ -5,6 +5,9 @@ import "github.com/gin-gonic/gin"
 // RegisterAgentRoutes 挂代理商接口（/api/v1/agent）。后续任务往 sess 组里追加需要登录的接口。
 func RegisterAgentRoutes(api *gin.RouterGroup) {
 	g := api.Group("/agent", LookupGuard())
+	// 状态接口不受功能开关限制：代理商登录页用它判断要不要显示登录框
+	g.GET("/status", AgentStatus)
+	g = g.Group("", AgentFeatureGate())
 
 	auth := g.Group("/auth")
 	auth.POST("/login", AgentLogin)
@@ -35,8 +38,9 @@ func RegisterAgentRoutes(api *gin.RouterGroup) {
 	sess.GET("/shared/failures", AgentSharedFailures)
 }
 
-// RegisterAgentAdminRoutes 挂管理员管理代理商的接口（调用方已套好管理员中间件）。
+// RegisterAgentAdminRoutes 挂管理员管理代理商的接口（调用方已套好管理员中间件）。代理商功能关闭时全部 404。
 func RegisterAgentAdminRoutes(admin *gin.RouterGroup) {
+	admin = admin.Group("", AgentFeatureGate())
 	admin.GET("/agents", AdminListAgents)
 	admin.POST("/agents", AdminCreateAgent)
 	admin.GET("/agents/:id", AdminGetAgent)

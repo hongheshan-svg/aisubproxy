@@ -41,6 +41,7 @@ func TestAgentTokenRejectedByAdminMiddleware(t *testing.T) {
 func TestAdminTokenRejectedByAgentMiddleware(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	dbtest.Open(t)
+	enableAgentFeature(t)
 	r := gin.New()
 	api := r.Group("/api/v1")
 	handler.RegisterAgentRoutes(api)
@@ -86,4 +87,12 @@ func TestAdminAgentLedgerRoutesRejectNonAdmin(t *testing.T) {
 			}
 		}
 	}
+}
+
+// enableAgentFeature 打开代理商功能开关（默认关闭），测试结束还原。
+func enableAgentFeature(t *testing.T) {
+	t.Helper()
+	old := handler.AgentFeatureEnabled()
+	handler.SetAgentFeatureEnabled(true)
+	t.Cleanup(func() { handler.SetAgentFeatureEnabled(old) })
 }

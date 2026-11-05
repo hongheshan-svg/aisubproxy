@@ -50,6 +50,10 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	if err := db.MigrateWebhookPayloads(); err != nil {
 		return nil, fmt.Errorf("webhook 原文清洗: %w", err)
 	}
+	// 功能开关（代理商功能默认关闭）：注册路由之前读好，受控接口按它放行
+	if err := handler.LoadFeatureFlags(); err != nil {
+		return nil, err
+	}
 	// Telegram 告警：后台配置优先，没配就用环境变量；旧版明文保存的令牌先加密迁移
 	handler.MigrateLegacyTelegramToken()
 	notify.SetSettingsSource(handler.TelegramSettings)
@@ -460,6 +464,9 @@ func setupRoutes(r *gin.Engine) {
 			admin.GET("/settings", handler.AdminGetSettings)
 			admin.PUT("/settings", handler.AdminPutSettings)
 			// Telegram 告警：令牌加密保存、只写不读；测试消息同步发送并返回结果
+			// 功能开关：代理商功能（代理商后台、异次元对接、代理商菜单）默认关闭
+			admin.GET("/features", handler.AdminGetFeatures)
+			admin.PUT("/features", handler.AdminPutFeatures)
 			admin.GET("/notify/telegram", handler.AdminGetTelegram)
 			admin.PUT("/notify/telegram", handler.AdminPutTelegram)
 			admin.POST("/notify/telegram/test", handler.AdminTestTelegram)

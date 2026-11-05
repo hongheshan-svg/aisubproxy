@@ -8,7 +8,8 @@ export const NAV_STORE_KEY = 'ops-sidenav'
 export const MOBILE_MAX = 900
 export const NARROW_MAX = 1200
 
-export interface NavItem { path: string; title: string; fullTitle: string; group: string; icon: string }
+// feature：受哪个功能开关控制（如 'agent'），空串表示总是显示
+export interface NavItem { path: string; title: string; fullTitle: string; group: string; icon: string; feature: string }
 export interface NavGroup { name: string; items: NavItem[] }
 export type NavPref = 'expanded' | 'collapsed' | ''
 
@@ -19,7 +20,7 @@ export function buildNavItems(routes: readonly RouteRecordRaw[]): NavItem[] {
     const m = (c.meta || {}) as Record<string, string>
     // hideInNav：有标题（浏览器标签页、面包屑用）但不进侧栏，比如详情页
     if (!m.title || (c.meta as Record<string, unknown> | undefined)?.hideInNav) continue
-    out.push({ path: c.path ? `${OPS}/${c.path}` : OPS, title: m.title, fullTitle: m.fullTitle || m.title, group: m.group || '', icon: m.icon || 'Document' })
+    out.push({ path: c.path ? `${OPS}/${c.path}` : OPS, title: m.title, fullTitle: m.fullTitle || m.title, group: m.group || '', icon: m.icon || 'Document', feature: m.feature || '' })
   }
   return out
 }

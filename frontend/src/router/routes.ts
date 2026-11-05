@@ -83,11 +83,12 @@ export const routes: RouteRecordRaw[] = [
       { path: 'cardpool', name: 'CardPool', component: () => import('../views/admin/CardPool.vue'), meta: { title: '卡池', fullTitle: 'MarsWallex 卡池', group: 'MarsWallex', icon: 'CreditCard' } },
       { path: 'marswallex-selection', name: 'MarsWallexSelection', component: () => import('../views/admin/MarsWallexSelection.vue'), meta: { title: '选卡规则', fullTitle: 'MarsWallex 选卡规则', group: 'MarsWallex', icon: 'Operation' } },
       // 代理商（管理员侧）：详情页不设 title，不进侧栏
-      { path: 'agents', name: 'AgentList', component: () => import('../views/admin/AgentList.vue'), meta: { title: '代理商', group: '代理商', icon: 'User' } },
-      { path: 'agents/:id', name: 'AgentDetail', component: () => import('../views/admin/AgentDetail.vue'), meta: { title: '代理商详情', group: '代理商', hideInNav: true } },
-      { path: 'agent-pricing', name: 'AgentPricing', component: () => import('../views/admin/AgentPricing.vue'), meta: { title: '批发商品与价格', group: '代理商', icon: 'PriceTag' } },
+      { path: 'agents', name: 'AgentList', component: () => import('../views/admin/AgentList.vue'), meta: { title: '代理商', group: '代理商', icon: 'User', feature: 'agent' } },
+      { path: 'agents/:id', name: 'AgentDetail', component: () => import('../views/admin/AgentDetail.vue'), meta: { title: '代理商详情', group: '代理商', hideInNav: true, feature: 'agent' } },
+      { path: 'agent-pricing', name: 'AgentPricing', component: () => import('../views/admin/AgentPricing.vue'), meta: { title: '批发商品与价格', group: '代理商', icon: 'PriceTag', feature: 'agent' } },
       // 系统
       { path: 'appearance', name: 'SiteAppearance', component: () => import('../views/admin/SiteAppearance.vue'), meta: { title: '外观与品牌', group: '系统', icon: 'Brush' } },
+      { path: 'features', name: 'FeatureFlags', component: () => import('../views/admin/FeatureFlags.vue'), meta: { title: '功能开关', group: '系统', icon: 'Switch' } },
       { path: 'telegram', name: 'TelegramAlerts', component: () => import('../views/admin/TelegramAlerts.vue'), meta: { title: 'Telegram 告警', group: '系统', icon: 'ChatDotRound' } },
       { path: 'audit', name: 'AuditLogs', component: () => import('../views/admin/AuditLogs.vue'), meta: { title: '审计日志', group: '系统', icon: 'List' } },
       { path: 'update', name: 'SystemUpdate', component: () => import('../views/admin/SystemUpdate.vue'), meta: { title: '版本更新', group: '系统', icon: 'Refresh' } },

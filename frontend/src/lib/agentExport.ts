@@ -55,7 +55,11 @@ export function codesCsv(items: ExportedCode[]): string {
 }
 
 export function downloadText(name: string, text: string, mime: string): void {
-  const blob = new Blob([text], { type: `${mime};charset=utf-8` })
+  downloadBlob(name, new Blob([text], { type: `${mime};charset=utf-8` }))
+}
+
+/** 把已有的 Blob（如 CSV 字节，保留 BOM）存成文件。 */
+export function downloadBlob(name: string, blob: Blob): void {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url

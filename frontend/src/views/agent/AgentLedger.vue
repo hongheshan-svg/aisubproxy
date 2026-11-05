@@ -5,8 +5,7 @@
       <label class="block"><span class="block text-sm mb-1">开始日期</span><input v-model="from" type="date" class="input" /></label>
       <label class="block"><span class="block text-sm mb-1">结束日期</span><input v-model="to" type="date" class="input" /></label>
       <button class="btn-primary" type="button" @click="search">查询</button>
-      <a v-if="exportHref && inputValid" class="btn-ghost" :href="exportHref" download>导出 CSV</a>
-      <button v-else type="button" class="btn-ghost" disabled>导出 CSV</button>
+      <button class="btn-ghost" type="button" :disabled="!exportPath || !inputValid" @click="exportCsv">导出 CSV</button>
       <span class="text-xs opacity-70">导出的是上次查询的日期范围</span>
     </div>
     <p v-if="err" class="text-sm text-red-500" role="alert">{{ err }}</p>
@@ -41,9 +40,10 @@
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
-import { agentApi, agentErrorText } from '../../lib/agentApi'
+import { agentApi, agentDownload, agentErrorText } from '../../lib/agentApi'
+import { downloadBlob } from '../../lib/agentExport'
 import { fmtUsd } from '../../lib/agentMoney'
-import { beijingRange, defaultLedgerRange, ledgerQuery, LEDGER_KIND_LABELS } from '../../lib/agentViews'
+import { beijingRange, defaultLedgerRange, ledgerExportPath, ledgerQuery, LEDGER_KIND_LABELS } from '../../lib/agentViews'
 import { fmtBeijing } from '../../lib/mwwebhook'
 
 const PAGE = 50
@@ -56,14 +56,25 @@ const page = ref(1)
 const err = ref('')
 const summary = ref({ opening_cents: 0, closing_cents: 0, income_cents: 0, expense_cents: 0 })
 
-// 同源下载，cookie 自动带上；CSV 由后端生成
 // 导出和翻页都用上次查询时的日期快照；输入框里的日期不合法时禁用导出
+// 导出用 fetch 下载（带 cookie）；会话失效走统一的登录跳转，不再裸打开 401 的 JSON
 const snap = ref({ from: def.from, to: def.to })
 const inputValid = computed(() => !!beijingRange(from.value, to.value))
-const exportHref = computed(() => {
-  const r = beijingRange(snap.value.from, snap.value.to)
-  return r ? `/api/v1/agent/ledger/export?${ledgerQuery(r.from, r.to)}` : ''
-})
+const exportPath = computed(() => ledgerExportPath(snap.value.from, snap.value.to))
+
+async function exportCsv() {
+  if (!exportPath.value) return
+  try {
+    const r = await agentDownload(exportPath.value)
+    if (!r.ok || !r.blob) {
+      err.value = agentErrorText(r.data, r.status)
+      return
+    }
+    err.value = ''
+    // 直接用字节建文件，保留后端写的 BOM
+    downloadBlob(`agent-ledger-${snap.value.from}_${snap.value.to}.csv`, new Blob([await r.blob.arrayBuffer()], { type: 'text/csv;charset=utf-8' }))
+  } catch { err.value = '网络异常，请稍后再试' }
+}
 
 function search() {
   if (!beijingRange(from.value, to.value)) { err.value = '日期范围不正确'; return }

@@ -48,6 +48,21 @@ export async function agentApi<T = any>(path: string, method = 'GET', body?: unk
   return { ok: res.ok, status: res.status, data: data as T }
 }
 
+/**
+ * 下载文件（如流水 CSV）：用 fetch 拿二进制，带 cookie。
+ * 401 和普通 API 一样走统一的会话失效处理；非 2xx 返回 JSON 错误体，不返回 blob。
+ */
+export async function agentDownload(path: string): Promise<AgentResult<any> & { blob?: Blob }> {
+  const res = await fetch(AGENT_API_BASE + path, { method: 'GET', credentials: 'include' })
+  if (res.status === 401 && !path.startsWith('/auth/')) onAgentUnauthorized()
+  if (!res.ok) {
+    let data: any = {}
+    try { data = await res.json() } catch { data = {} }
+    return { ok: false, status: res.status, data }
+  }
+  return { ok: true, status: res.status, data: {}, blob: await res.blob() }
+}
+
 /** 设计文档第 9 节：错误编号 → 中文提示。 */
 export const AGENT_ERROR_TEXT: Record<string, string> = {
   insufficient_balance: '余额不足',

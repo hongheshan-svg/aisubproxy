@@ -44,6 +44,13 @@ describe('agentDownload（审计 AG-B-5：导出走 fetch，401 走统一会话�
     expect(handler).not.toHaveBeenCalled()
   })
 
+  it('文件名取自后端的 Content-Disposition', async () => {
+    const res = { status: 200, ok: true, headers: new Headers({ 'Content-Disposition': 'attachment; filename="ledger-alice-2026-11-05.csv"' }), blob: async () => new Blob(['x']) }
+    vi.stubGlobal('fetch', vi.fn(async () => res))
+    const r = await agentDownload('/ledger/export?from=1&to=2')
+    expect(r.filename).toBe('ledger-alice-2026-11-05.csv')
+  })
+
   it('非 2xx 且非 401 时返回 JSON 错误体，不触发会话失效', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ status: 400, ok: false, json: async () => ({ error: 'range_too_large' }) })))
     const r = await agentDownload('/ledger/export?from=1&to=2')

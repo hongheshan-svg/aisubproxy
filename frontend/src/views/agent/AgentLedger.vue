@@ -72,7 +72,7 @@ async function exportCsv() {
     }
     err.value = ''
     // 直接用字节建文件，保留后端写的 BOM
-    downloadBlob(`agent-ledger-${snap.value.from}_${snap.value.to}.csv`, new Blob([await r.blob.arrayBuffer()], { type: 'text/csv;charset=utf-8' }))
+    downloadBlob(r.filename || 'agent-ledger.csv', new Blob([await r.blob.arrayBuffer()], { type: 'text/csv;charset=utf-8' }))
   } catch { err.value = '网络异常，请稍后再试' }
 }
 

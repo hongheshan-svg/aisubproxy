@@ -163,7 +163,7 @@ async function bootstrap(m: 'generate' | 'manual') {
       const map: Record<string, string> = {
         'invalid setup token': 'Setup Token 错误（请填服务器给的安装钥匙）',
         'setup not allowed from this address': '当前 IP 不允许安装（联系管理员放开 SETUP_ALLOW_CIDRS）',
-        'password too weak (min 12, not common, not equal to username)': '密码太弱（至少 12 位，字母+数字）',
+        'password too weak (min 12, not common, not equal to username)': '密码太弱：至少 12 位，不能是常见词加数字或符号（如 Password2026!）、同一字符重复或连续数字，也不能和用户名相同',
         'passwords do not match': '两次密码不一致',
         'password must include letters and digits': '密码需同时包含字母和数字',
       }

@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/tuzi/cdk-recharge-system/internal/config"
@@ -675,7 +676,15 @@ func MarkInstalled(username string) error {
 	return nil
 }
 
-// IsWeakPassword 拦截常见弱口令与历史默认口令。
+// weakPasswordWords：去掉首尾的数字和符号后仍是这些词的，算弱口令（如 password1234、Admin@2026!!）。
+var weakPasswordWords = map[string]bool{
+	"password": true, "passw0rd": true, "admin": true, "adminadmin": true, "administrator": true,
+	"qwerty": true, "qwertyuiop": true, "changeme": true, "letmein": true, "welcome": true,
+	"root": true, "test": true, "default": true,
+}
+
+// IsWeakPassword 拦截常见弱口令与历史默认口令：名单原文、常见词加首尾数字或符号、
+// 同一字符重复、连续数字（升序或降序，可跨 9→0）。只在设置或修改口令时检查，已保存的口令不受影响。
 func IsWeakPassword(p string) bool {
 	p = strings.TrimSpace(p)
 	if len(p) < 12 {
@@ -692,8 +701,45 @@ func IsWeakPassword(p string) bool {
 			return true
 		}
 	}
-	// 全数字或与用户名相同在调用方再判
+	core := strings.TrimFunc(lower, func(r rune) bool { return !unicode.IsLetter(r) })
+	if weakPasswordWords[core] || sameRune(lower) || consecutiveDigits(lower) {
+		return true
+	}
+	// 与用户名相同在调用方再判
 	return false
+}
+
+// sameRune 判断字符串是否由同一个字符重复组成。
+func sameRune(s string) bool {
+	var first rune
+	for i, r := range s {
+		if i == 0 {
+			first = r
+		} else if r != first {
+			return false
+		}
+	}
+	return s != ""
+}
+
+// consecutiveDigits 判断字符串是否全是数字且逐位加一或逐位减一（9 之后是 0）。
+func consecutiveDigits(s string) bool {
+	if len(s) < 2 {
+		return false
+	}
+	up, down := true, true
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+		if i == 0 {
+			continue
+		}
+		d := (int(s[i]) - int(s[i-1]) + 10) % 10
+		up = up && d == 1
+		down = down && d == 9
+	}
+	return up || down
 }
 
 // defaultAdminPlan 是启动时对默认管理员的判定。

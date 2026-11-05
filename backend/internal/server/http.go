@@ -487,6 +487,11 @@ func setupRoutes(r *gin.Engine) {
 				c.JSON(404, gin.H{"error": "not found"})
 				return
 			}
+			// 原始路径含 ".." 直接 404，不交给后面的清洗（正常路径里不会出现）
+			if strings.Contains(p, "..") {
+				c.JSON(404, gin.H{"error": "not found"})
+				return
+			}
 			// 防目录穿越：path.Clean 后再拼接，确保不越出 webDir
 			clean := path.Clean("/" + strings.TrimPrefix(p, "/"))
 			if clean != "/" {

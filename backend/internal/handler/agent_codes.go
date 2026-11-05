@@ -186,7 +186,7 @@ func AgentListCodes(c *gin.Context) {
 		return
 	}
 	limit, offset := agentPaging(c)
-	items := make([]gin.H, 0, limit)
+	items := make([]gin.H, 0) // 不按 page_size 预分配容量（CodeQL #25）；空结果仍返回 []
 	for i := offset; i < len(list) && i < offset+limit; i++ {
 		items = append(items, agentCodeView(list[i]))
 	}

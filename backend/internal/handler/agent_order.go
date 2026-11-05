@@ -508,8 +508,9 @@ func AgentPlaceOrder(c *gin.Context) {
 	}
 
 	issuedBy := "agent:" + user
-	plain := make([]string, 0, req.Quantity)
-	rows := make([]db.NewLocalCDK, 0, req.Quantity)
+	// 不按 req.Quantity 预分配容量（CodeQL #26 #27）：数量上面已限制在 MaxIssueCount 以内，追加的开销可以忽略。
+	plain := make([]string, 0)
+	rows := make([]db.NewLocalCDK, 0)
 	for i := 0; i < req.Quantity; i++ {
 		lc, err := provider.GenerateCode(cs)
 		if err != nil {

@@ -41,11 +41,11 @@ func LookupGuard() gin.HandlerFunc {
 func publicGuard(kind func(*gin.Context) string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if !localRateAllow(kind(c), c.ClientIP()) {
-			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": publicRateLimitedText})
+			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{"error": publicRateLimitedText, "error_code": "rate_limited"})
 			return
 		}
 		if c.Request.ContentLength > publicBodyMax {
-			c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{"error": publicBodyTooLargeText})
+			c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{"error": publicBodyTooLargeText, "error_code": "body_too_large"})
 			return
 		}
 		if c.Request.Body == nil || c.Request.Body == http.NoBody {
@@ -56,10 +56,10 @@ func publicGuard(kind func(*gin.Context) string) gin.HandlerFunc {
 		if err != nil {
 			var tooLarge *http.MaxBytesError
 			if errors.As(err, &tooLarge) {
-				c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{"error": publicBodyTooLargeText})
+				c.AbortWithStatusJSON(http.StatusRequestEntityTooLarge, gin.H{"error": publicBodyTooLargeText, "error_code": "body_too_large"})
 				return
 			}
-			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "invalid request", "error_code": "invalid_request"})
 			return
 		}
 		c.Request.Body = io.NopCloser(bytes.NewReader(body))

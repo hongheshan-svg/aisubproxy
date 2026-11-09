@@ -566,6 +566,7 @@ export default {
     errors: {
       failed: '失败 ({status})',
       rate_limited: '请求过于频繁，请稍后再试',
+      body_too_large: '请求太大',
       disabled: '管理员尚未启用代理换码功能',
       invalid_request: '请求格式不正确，请刷新页面后重试',
       locked: '换码口令错误次数过多，已暂停换码，请 {retry_after_minutes} 分钟后再试',
@@ -629,6 +630,8 @@ export default {
       lookup_failed: '查询绑定失败',
       binding_not_found: '未找到该卡密绑定的账号。请确认兑换时使用了 session 凭证，或改用直接粘贴 session 查询。',
       billing_unavailable: '账单服务暂时不可用，请稍后再试，或改用直接粘贴 session 查询。',
+      rate_limited: '请求过于频繁，请稍后再试',
+      body_too_large: '请求太大',
     },
   },
 }

@@ -566,6 +566,7 @@ export default {
     errors: {
       failed: 'Failed ({status})',
       rate_limited: 'Too many requests. Try again later.',
+      body_too_large: 'The request is too large. Shorten what you pasted and try again.',
       disabled: 'Code reissue has not been enabled yet. Ask the administrator.',
       invalid_request: 'The request was not valid. Refresh the page and try again.',
       locked: 'Too many wrong passwords. Reissue is paused. Try again in {retry_after_minutes} min.',
@@ -580,11 +581,12 @@ export default {
       plan_unknown: 'Cannot confirm the plan of the original code, so it cannot be reissued yet. Contact the administrator.',
       region_unknown: 'Cannot confirm the payment region of the original code, so it cannot be reissued yet. Contact the administrator.',
       conflict: 'This code has already been reissued and cannot be reissued again.',
-      conflict_pending: 'This code is being reissued. Do not submit it again.',
-      conflict_unknown: 'The last reissue of this code had an unknown outcome and is under manual review. Do not retry.',
+      // 这三句只用在锁住提交的提示里，后面会接以句号开头的后缀（lock.unknown / lock.busy），所以结尾不带句号、不重复「Do not retry」
+      conflict_pending: 'This code is being reissued',
+      conflict_unknown: 'The last reissue of this code had an unknown outcome and is under manual review',
       daily_limit: 'The daily reissue limit ({limit}) has been reached. Contact the administrator.',
       unavailable: 'Reissue is temporarily unavailable. Try again later.',
-      outcome_unknown: 'The outcome of issuing is unknown and has been sent for manual review. Do not retry.',
+      outcome_unknown: 'The outcome of issuing is unknown and has been sent for manual review',
       code_unrecognized: 'That code is not recognized. Check it and try again.',
       service_unavailable: 'Redemption is temporarily unavailable. Try again later.',
       busy: 'This code is being processed. Do not submit it again.',
@@ -629,6 +631,8 @@ export default {
       lookup_failed: 'Could not look up the code. Try again later.',
       binding_not_found: 'No account is linked to this code. Make sure you redeemed with login info, or paste the login info to check directly.',
       billing_unavailable: 'The billing service is unavailable right now. Try again later, or paste the login info to check directly.',
+      rate_limited: 'Too many requests. Try again later.',
+      body_too_large: 'The request is too large. Shorten what you pasted and try again.',
     },
   },
 }

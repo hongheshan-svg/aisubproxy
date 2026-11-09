@@ -110,8 +110,10 @@ const SWAP_CODES = [
   'region_unknown', 'conflict', 'daily_limit', 'unavailable', 'outcome_unknown',
   // 本站码（MarsWallex）路径和分派层新增的码
   'code_unrecognized', 'service_unavailable', 'busy', 'not_eligible_unpaid',
+  // 两个接口共用的限流中间件（public_guard.go）
+  'body_too_large',
 ]
-const BILLING_CODES = ['invalid_request', 'input_required', 'session_invalid', 'lookup_failed', 'binding_not_found', 'billing_unavailable']
+const BILLING_CODES = ['invalid_request', 'input_required', 'session_invalid', 'lookup_failed', 'binding_not_found', 'billing_unavailable', 'rate_limited', 'body_too_large']
 
 describe('错误码都有中英文文案', () => {
   const i18n = (locale: 'zh' | 'en') => createI18n({ legacy: false, locale, messages: { zh, en } }).global

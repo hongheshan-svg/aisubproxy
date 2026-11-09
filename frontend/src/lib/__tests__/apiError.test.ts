@@ -97,6 +97,20 @@ describe('swapFailureT 英文', () => {
     expect(done.locked).toBe(false)
     noZh(done.message)
   })
+  it('锁住时的提示：报错与后缀拼起来没有「..」，「Do not retry」只出现一次', () => {
+    const cases = [
+      swapFailureT(502, { outcome: 'unknown', error_code: 'outcome_unknown' }, t, te),
+      swapFailureT(502, { outcome: 'unknown' }, t, te),
+      swapFailureT(409, { state: 'pending', error_code: 'conflict' }, t, te),
+      swapFailureT(409, { state: 'unknown', error_code: 'conflict' }, t, te),
+      swapFailureT(409, { state: 'pending' }, t, te),
+    ]
+    for (const f of cases) {
+      expect(f.locked).toBe(true)
+      expect(f.message).not.toContain('..')
+      expect(f.message.match(/Do not retry/g)?.length).toBe(1)
+    }
+  })
   it('口令锁定带分钟数', () => {
     const f = swapFailureT(429, { error: '中文', error_code: 'locked', retry_after_minutes: 42 }, t, te)
     expect(f.locked).toBe(false)

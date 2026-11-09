@@ -211,8 +211,11 @@ export const SKINS: SkinMeta[] = [
 ]
 
 function readSkin(): SkinId {
-  const v = localStorage.getItem(SKIN_KEY) as SkinId
-  return SKINS.some((s) => s.id === v) ? v : 'zovo'
+  try {
+    const v = localStorage.getItem(SKIN_KEY) as SkinId
+    if (SKINS.some((s) => s.id === v)) return v
+  } catch { /* 取不到本机记录，用默认皮肤 */ }
+  return 'zovo'
 }
 
 function readMode(): ThemeMode {
@@ -389,12 +392,12 @@ export function toggleTheme() {
 export function setSkin(id: SkinId) {
   if (!SKINS.some((s) => s.id === id)) return
   siteSkin.value = id
-  localStorage.setItem(SKIN_KEY, id)
+  try { localStorage.setItem(SKIN_KEY, id) } catch { /* 存不了就只在本次生效 */ }
   const meta = SKINS.find((s) => s.id === id)!
   // 切到 preferDark 皮肤时，若当前是 light 且用户没刻意锁 light，可自动转 dark 以完整适配
   if (meta.preferDark && themeMode.value === 'light') {
     themeMode.value = 'dark'
-    localStorage.setItem(MODE_KEY, 'dark')
+    try { localStorage.setItem(MODE_KEY, 'dark') } catch { /* 存不了就只在本次生效 */ }
   }
   applyThemeAll()
 }

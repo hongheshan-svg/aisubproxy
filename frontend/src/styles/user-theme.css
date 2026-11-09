@@ -29,7 +29,7 @@
   --u-line: #22403B;
   --u-primary: var(--brand-primary-dark, #3FB8A5);
   --u-on-primary: #0C1A18;
-  --u-tint: var(--brand-tint-dark, #1B3A35);
+  --u-tint: var(--brand-tint-dark, #1C423C);
   --u-warn-bg: #2E2410;
   --u-warn-ink: #F0C878;
   --u-error-bg: #331614;
@@ -46,7 +46,7 @@
     --u-line: #22403B;
     --u-primary: var(--brand-primary-dark, #3FB8A5);
     --u-on-primary: #0C1A18;
-    --u-tint: var(--brand-tint-dark, #1B3A35);
+    --u-tint: var(--brand-tint-dark, #1C423C);
     --u-warn-bg: #2E2410;
     --u-warn-ink: #F0C878;
     --u-error-bg: #331614;

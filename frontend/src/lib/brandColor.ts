@@ -4,7 +4,6 @@
 const HEX6 = /^#[0-9A-Fa-f]{6}$/
 const DEFAULT_PRIMARY = '#0F6B5F'
 const DEFAULT_DARK_PRIMARY = '#3FB8A5'
-const DARK_BG = '#0C1A18'
 const DARK_SURFACE = '#132522'
 
 type RGB = [number, number, number]
@@ -67,7 +66,7 @@ function hslToRgb(h: number, s: number, l: number): RGB {
   return [f(h + 1 / 3) * 255, f(h) * 255, f(h - 1 / 3) * 255]
 }
 
-/** 暗色下的主色：保持色相，逐步提亮直到压在暗色底 #0C1A18 上不低于 4.5。 */
+/** 暗色下的主色：保持色相，逐步提亮直到压在卡片底色 #132522 上不低于 4.5（比页面底色更亮，达标则两处都达标）。 */
 export function darkPrimaryFrom(hex: string): string {
   if (hex.toUpperCase() === DEFAULT_PRIMARY) return DEFAULT_DARK_PRIMARY
   const [h, s, l0] = rgbToHsl(parse(hex))
@@ -75,7 +74,7 @@ export function darkPrimaryFrom(hex: string): string {
     const l = l0 + 0.02 * i
     if (l >= 1) return '#FFFFFF'
     const c = format(hslToRgb(h, s, l))
-    if (contrastRatio(c, DARK_BG) >= 4.5) return c
+    if (contrastRatio(c, DARK_SURFACE) >= 4.5) return c
   }
 }
 

@@ -55,9 +55,14 @@ export interface RedeemFlow {
   preview(code: string): Promise<void>
   preflight(credential: { mode: 'session'; session: string }): Promise<void>
   redeem(opts?: { agreeCreditTerms?: boolean; claudeOrgId?: string; grokSession?: string }): Promise<void>
+  /** 只给第 ③ 屏「不确定是否已提交」用：按卡密查，查不到单会回第 ③ 屏让买家自己再点 */
   checkResult(): Promise<void>
-  /** 调用前由页面弹二次确认（沿用 grace.confirm 文案），这里不弹框 */
-  recoverGrace(): Promise<void>
+  /** 只给第 ④ 屏：立即按单查一次进度，查询停了就重新开始；404 也留在第 ④ 屏，不改提交状态（裁决 R30） */
+  refreshProgress(): Promise<void>
+  /** 只给第 ⑤ 屏：只重新取售后结果，不查进度、不改屏、不改提交状态（裁决 R30） */
+  refreshLookup(): Promise<void>
+  /** 调用前由页面弹二次确认（redeemUi.grace.confirm），这里不弹框。真的发了请求返回 true，被守卫挡掉返回 false */
+  recoverGrace(): Promise<boolean>
   /** 回到第 ② 屏：清预检票、账号摘要、放弃码、出错，卡密和预览保留 */
   changeAccount(): void
   reset(opts?: { keepCode?: boolean }): void
@@ -394,32 +399,37 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
     stopPoll = every(tick, POLL_MS)
   }
 
-  async function pollOnce(s: number) {
+  /** 查一次进度。返回 true 表示查到了单、还没结束。 */
+  async function pollOnce(s: number): Promise<boolean> {
     let res: Awaited<ReturnType<typeof api>>
     try {
       res = await api(redemptionToken ? `${API}/result?token=${encodeURIComponent(redemptionToken)}` : byCodePath(code.value))
     } catch {
       if (s === seq) error.value = flowError('network') // 继续按原频率查
-      return
+      return false
     }
-    if (s !== seq) return
+    if (s !== seq) return false
     const { r, data } = res
     if (r.status === 404) {
       // 没有这笔单（例如兑换没有建单）：停止查询，不对着不存在的单一直转圈
       stopPolling()
       error.value = flowError('rejected', serverText(data))
-      return
+      return false
     }
     const httpErr = httpError(r.status)
     if (httpErr) {
       error.value = httpErr // 只是读进度，继续按原频率查
-      return
+      return false
     }
-    if (!r.ok) return
+    if (!r.ok) return false
     applyResult(data)
     error.value = null
-    if (isTerminal(result.value.status)) await finish(s)
-    else save()
+    if (isTerminal(result.value.status)) {
+      await finish(s)
+      return false
+    }
+    save()
+    return true
   }
 
   // ---------- 对外操作 ----------
@@ -645,8 +655,41 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
     }
   }
 
-  async function recoverGrace() {
-    if (busy.value || submitState.value !== 'idle' || !canRecover.value) return
+  // 第 ④⑤ 屏已经建单，这两个方法都不会回第 ③ 屏，也不碰 submitState：已经建单的屏没有回到「确认开通」的路
+  async function refreshProgress() {
+    if (busy.value || screen.value !== 'progress') return
+    const s = seq
+    busy.value = true
+    try {
+      const running = await pollOnce(s)
+      // 查询停了（之前遇到 404 等）而这次查到了还没结束的单：重新按原频率查
+      if (running && s === seq && screen.value === 'progress' && !stopPoll) startPoll()
+    } finally {
+      if (s === seq) busy.value = false
+    }
+  }
+
+  async function refreshLookup() {
+    if (busy.value || screen.value !== 'result' || !code.value) return
+    const s = seq
+    busy.value = true
+    try {
+      const msgs = lookupMessages()
+      const res = await lookupAftersale(code.value, msgs, fetchFn)
+      if (s !== seq) return
+      if (res.result) {
+        lookup.value = res.result
+        error.value = null
+      } else {
+        error.value = flowError(res.error === msgs.network ? 'network' : 'invalid', res.error)
+      }
+    } finally {
+      if (s === seq) busy.value = false
+    }
+  }
+
+  async function recoverGrace(): Promise<boolean> {
+    if (busy.value || submitState.value !== 'idle' || !canRecover.value) return false
     const token = preflightTicket.value
     // 票只用一次：交出去以后只要没确认解除就作废，页面改为「重新核对」，刷新后也不能拿它再发
     preflightTicket.value = ''
@@ -665,21 +708,21 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
       try {
         res = await post(`${API}/recover-subscription`, { redemption_token: redemptionToken, preflight_token: token, confirmed: true })
       } catch {
-        if (s === seq) unconfirmed(flowError('network', t('grace.refreshFailed')))
-        return
+        if (s === seq) unconfirmed(flowError('network', t('redeemUi.grace.refreshFailed')))
+        return true
       }
-      if (s !== seq) return
+      if (s !== seq) return true
       const { r, data } = res
       if (r.status === 429) {
         // 被限流时服务器没处理，票还能用
         preflightTicket.value = token
         error.value = flowError('rate_limited')
         save()
-        return
+        return true
       }
       if (!r.ok || (typeof data?.code === 'number' && data.code !== 0)) {
-        unconfirmed(flowError(r.status >= 500 ? 'network' : 'rejected', t('grace.refreshFailed')))
-        return
+        unconfirmed(flowError(r.status >= 500 ? 'network' : 'rejected', t('redeemUi.grace.refreshFailed')))
+        return true
       }
       const out = data?.data || data
       const pf = out?.preflight
@@ -693,9 +736,10 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
         // 确认解除并拿到新票：按新的账号信息显示，开通用新票
         preflightTicket.value = fresh
         save()
-        return
+        return true
       }
       unconfirmed(null)
+      return true
     } finally {
       if (s === seq) busy.value = false
     }
@@ -788,6 +832,7 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
 
   return {
     screen, code, previewInfo, account, blockingCode, blockingReason, extra, result, lookup, error, busy, submitState,
-    progressStartedAt, canRecover, confirmView, preview, preflight, redeem, checkResult, recoverGrace, changeAccount, reset, restore,
+    progressStartedAt, canRecover, confirmView, preview, preflight, redeem, checkResult, refreshProgress, refreshLookup, recoverGrace,
+    changeAccount, reset, restore,
   }
 }

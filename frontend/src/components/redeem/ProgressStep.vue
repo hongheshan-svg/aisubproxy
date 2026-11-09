@@ -16,7 +16,7 @@ const rows = computed(() => props.view.rows.map((state, i) => ({ key: LABEL_KEYS
 <template>
   <div class="prog">
     <h2 class="prog-title" data-testid="progress-title">{{ title }}</h2>
-    <ol class="prog-rows" :aria-label="title">
+    <ol class="prog-rows" :aria-label="title" aria-live="polite">
       <li
         v-for="row in rows"
         :key="row.key"

@@ -473,6 +473,14 @@ export default {
       item3: 'Credits expire after 12 months and are non-refundable',
       agree: 'I have read and agree to the terms above',
     },
+    grace: {
+      title: 'Deal with the previous subscription first',
+      confirm: 'The previous subscription on this account is overdue or in a grace period. Confirming will cancel it, and grace-period access may end right away. You will not be charged, and this code will not be used. When it is done, press "Confirm and activate" again.',
+      confirmAction: 'Cancel the previous subscription',
+      dismiss: 'Not now',
+      pending: 'The previous subscription has not been confirmed as cancelled yet. Press "Check again" to see the latest status, and do not repeat the action.',
+      refreshFailed: 'The result could not be confirmed yet. Press "Check again", and do not repeat the action.',
+    },
     progress: {
       title: 'Activating {plan}',
       rowCheck: 'Check account',

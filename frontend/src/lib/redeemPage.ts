@@ -61,22 +61,52 @@ export function switchCodeEntry(screen: Screen, submitState: SubmitState): 'show
 }
 
 /**
- * 「恢复订阅」：先弹确认框，买家确认后才调恢复（裁决 R19）。确认框开着或恢复请求在途时再点不动作，
- * 不会叠出第二个确认框、也不会发第二次。返回这次有没有真的调了恢复。
+ * 换一张卡密的编排（裁决 R28）：不确定是否已提交时什么都不做；否则清掉页面内存（登录信息等）→ 流程重来 →
+ * 输入框换成新码 → 网址跟着改（刷新后还是这张码）→ 有新码就预览。
  */
-export function makeRecoverAction(confirm: () => Promise<boolean>, recover: () => Promise<void>): () => Promise<boolean> {
+export function makeStartOver(d: {
+  canSwitch: () => boolean
+  clearLocal: () => void
+  reset: () => void
+  setInput: (code: string) => void
+  replaceQuery: (query: Record<string, string>) => void
+  preview: (code: string) => void
+}): (next?: string) => void {
+  return (next = '') => {
+    if (!d.canSwitch()) return
+    const c = next.trim()
+    d.clearLocal()
+    d.reset()
+    d.setInput(c)
+    d.replaceQuery(c ? { code: c } : {})
+    if (c) d.preview(c)
+  }
+}
+
+/**
+ * 「恢复订阅」：先弹确认框，买家确认后才调恢复（裁决 R19）。确认框开着或恢复请求在途时再点不动作，
+ * 不会叠出第二个确认框、也不会发第二次。返回恢复有没有真的发了请求（被流程守卫挡掉为 false）。
+ */
+export function makeRecoverAction(confirm: () => Promise<boolean>, recover: () => Promise<boolean>): () => Promise<boolean> {
   let running = false
   return async () => {
     if (running) return false
     running = true
     try {
       if (!(await confirm())) return false
-      await recover()
-      return true
+      return await recover()
     } finally {
       running = false
     }
   }
+}
+
+type TFn = (key: string) => string
+/** 恢复订阅确认框的参数，全部用买家口吻的 redeemUi.grace.*（裁决 R31）。 */
+export function graceConfirmArgs(t: TFn): [string, { title: string; okText: string; cancelText: string; danger: true }] {
+  return [t('redeemUi.grace.confirm'), {
+    title: t('redeemUi.grace.title'), okText: t('redeemUi.grace.confirmAction'), cancelText: t('redeemUi.grace.dismiss'), danger: true,
+  }]
 }
 
 /** 点过「恢复订阅」后仍要先恢复、又没出错（服务器说还在处理）：第 ③ 屏显示 grace.pending（裁决 R19）。 */
@@ -95,7 +125,18 @@ export function waitedLong(startedAt: number | null, now: number): boolean {
 }
 
 /**
- * 页面上的「查一下结果」（只按卡密查，不会重新提交）：
+ * 「查一下结果」按钮调哪个方法（裁决 R30）。第 ④⑤ 屏已经建单，不能用 checkResult：它查不到单会回第 ③ 屏并把
+ * 提交状态清成空闲，买家就能再点「确认开通」。checkResult 只留给第 ③ 屏「不确定是否已提交」。
+ */
+export function checkActionFor(screen: Screen, submitState: SubmitState): 'checkResult' | 'refreshProgress' | 'refreshLookup' | null {
+  if (screen === 'progress') return 'refreshProgress'
+  if (screen === 'result') return 'refreshLookup'
+  if (screen === 'confirm' && submitState === 'unknown') return 'checkResult'
+  return null
+}
+
+/**
+ * 页面上的「查一下结果」（不会重新提交）：
  * - 第 ④ 屏查进度出错时（规格 §8：网络断了要有「再试一次」）；
  * - 第 ⑤ 屏没开通成功、又没拿到售后结果时。
  * 第 ③ 屏「不确定是否已提交」的同名按钮在 ConfirmStep 里。

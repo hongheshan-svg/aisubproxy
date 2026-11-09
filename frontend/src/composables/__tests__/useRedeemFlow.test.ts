@@ -665,7 +665,7 @@ describe('修复第 1 轮', () => {
     net.reply(RECOVER, { status: 400, body: { error: 'bad' } })
     await flow.recoverGrace()
     expect(flow.canRecover.value).toBe(false)
-    expect(flow.error.value).toEqual({ kind: 'rejected', message: '暂时无法确认处理结果，请重新检测账号，不要重复取消。' })
+    expect(flow.error.value).toEqual({ kind: 'rejected', message: '暂时没法确认处理结果。请点「重新核对」，不要重复操作。' })
     expect(storage.getItem(KEY)).not.toContain('pf_1')
   })
 
@@ -730,5 +730,120 @@ describe('修复第 1 轮', () => {
     await flow.redeem()
     expect(flow.screen.value).toBe('progress')
     expect(storage.getItem(KEY)).not.toContain('pf_1')
+  })
+})
+
+describe('任务 13 修复第 1 轮：第 ④⑤ 屏不能走回「确认开通」（裁决 R30）', () => {
+  async function toProgress() {
+    const ctx = await toConfirm()
+    ctx.net.reply(REDEEM, { body: MW_QUEUED })
+    await ctx.flow.redeem()
+    expect(ctx.flow.screen.value).toBe('progress')
+    return ctx
+  }
+
+  it('refreshProgress 遇到 404：留在第 ④ 屏，提交状态不变，不发兑换请求、不按卡密查', async () => {
+    const { flow, net } = await toProgress()
+    net.reply(RESULT, { status: 404, body: { ...MW, error: '未找到该卡密的兑换记录' } })
+    const before = flow.submitState.value
+    await flow.refreshProgress()
+    expect(flow.screen.value).toBe('progress')
+    expect(flow.submitState.value).toBe(before)
+    expect(flow.error.value?.kind).toBe('rejected')
+    await flow.refreshProgress()
+    expect(flow.screen.value).toBe('progress')
+    expect(net.count(REDEEM)).toBe(1)
+    expect(net.count(BY_CODE)).toBe(0)
+    expect(flow.busy.value).toBe(false)
+  })
+
+  it('refreshProgress 拿到 completed 进入结果屏', async () => {
+    const { flow, net } = await toProgress()
+    net.reply(RESULT, { body: { ...MW, status: 'completed', order: { status: 'completed', stage: '' } } })
+    net.reply(LOOKUP, { body: { cdk_code: CODE, status: 'used', used: true, plan: 'plus', renewal: 'off' } })
+    await flow.refreshProgress()
+    expect(flow.screen.value).toBe('result')
+    expect(flow.lookup.value?.renewal).toBe('off')
+    expect(net.count(REDEEM)).toBe(1)
+  })
+
+  it('refreshProgress：查询停了（之前遇到 404）再点，查到单就重新按原频率查', async () => {
+    const { flow, net, timer } = await toProgress()
+    net.reply(RESULT, { status: 404, body: { ...MW } })
+    await runTick(timer.timers[0])
+    expect(timer.timers[0].cancel).toHaveBeenCalled()
+    net.reply(RESULT, { body: { ...MW, status: 'running', stage: 'payment', order: { status: 'running', stage: 'payment' } } })
+    await flow.refreshProgress()
+    expect(flow.result.value.stage).toBe('payment')
+    expect(flow.error.value).toBeNull()
+    expect(timer.timers).toHaveLength(2)
+    expect(timer.timers[1].ms).toBe(3000)
+  })
+
+  it('refreshProgress 只在第 ④ 屏有效', async () => {
+    const { flow, net } = await toConfirm()
+    const n = net.calls.length
+    await flow.refreshProgress()
+    expect(net.calls.length).toBe(n)
+    expect(flow.screen.value).toBe('confirm')
+  })
+
+  it('refreshLookup 只请求售后查询接口，不改屏也不改提交状态', async () => {
+    const { flow, net, timer } = await toProgress()
+    net.reply(RESULT, { body: { ...MW, status: 'failed_precharge', order: { status: 'failed_precharge', stage: '' } } })
+    net.reply(LOOKUP, new TypeError('Failed to fetch'))
+    await runTick(timer.timers[0])
+    expect(flow.screen.value).toBe('result')
+    expect(flow.lookup.value).toBeNull()
+
+    // 售后查询还是断网：留在第 ⑤ 屏，给出错文字
+    const n1 = net.calls.length
+    await flow.refreshLookup()
+    expect(net.calls.slice(n1).map((c) => c.path)).toEqual([LOOKUP])
+    expect(flow.screen.value).toBe('result')
+    expect(flow.error.value?.kind).toBe('network')
+
+    const n2 = net.calls.length
+    net.reply(LOOKUP, { body: { cdk_code: CODE, status: 'unused', used: false, can_resubmit: true, guide: 'retry_later' } })
+    await flow.refreshLookup()
+    expect(net.calls.slice(n2).map((c) => c.path)).toEqual([LOOKUP])
+    expect(flow.screen.value).toBe('result')
+    expect(flow.submitState.value).toBe('idle')
+    expect(flow.error.value).toBeNull()
+    expect(flow.lookup.value?.can_resubmit).toBe(true)
+    expect(flow.busy.value).toBe(false)
+  })
+
+  it('refreshLookup 只在第 ⑤ 屏有效', async () => {
+    const { flow, net } = await toProgress()
+    const n = net.calls.length
+    await flow.refreshLookup()
+    expect(net.calls.length).toBe(n)
+  })
+})
+
+describe('任务 13 修复第 1 轮：recoverGrace 返回有没有真的发请求', () => {
+  const RECOVER = '/api/v1/public/cdk/recover-subscription'
+  it('发了请求返回 true（解除、待处理、出错、断网都算）', async () => {
+    for (const reply of [
+      { body: { status: 'cleared', preflight: { ...MW_ELIGIBLE, preflight_token: 'pf_2' } } },
+      { body: { status: 'pending' } },
+      { status: 400, body: {} },
+      new TypeError('Failed to fetch'),
+    ]) {
+      const { flow, net } = await toConfirm({ body: { ...MW_ELIGIBLE, subscription_recovery_required: true } })
+      net.reply(RECOVER, reply as never)
+      expect(await flow.recoverGrace()).toBe(true)
+      expect(net.count(RECOVER)).toBe(1)
+    }
+  })
+  it('被守卫挡掉返回 false：不用恢复、票已交出去', async () => {
+    const plain = await toConfirm()
+    expect(await plain.flow.recoverGrace()).toBe(false)
+    const { flow, net } = await toConfirm({ body: { ...MW_ELIGIBLE, subscription_recovery_required: true } })
+    net.reply(RECOVER, { body: { status: 'pending' } })
+    expect(await flow.recoverGrace()).toBe(true)
+    expect(await flow.recoverGrace()).toBe(false)
+    expect(net.count(RECOVER)).toBe(1)
   })
 })

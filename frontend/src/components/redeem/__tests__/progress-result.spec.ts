@@ -29,13 +29,14 @@ const progress = (o: Record<string, unknown> = {}) => ({
 
 const lookup = (o: Record<string, unknown> = {}) => ({ cdk_code: 'SXC-AAAA-BBBB', used: true, status: 'used', ...o })
 const result = (o: Record<string, unknown> = {}) => ({
-  planText: 'Plus', status: 'completed', kind: 'card_supply', product: 'chatgpt',
+  code: 'SXC-AAAA-BBBB', planText: 'Plus', status: 'completed', kind: 'card_supply', product: 'chatgpt',
   maskedEmail: 'bu***@example.com', lookup: lookup({ renewal: 'off' }), ...o,
 })
 
 describe('第 ④ 屏：开通中', () => {
-  it('三行：1 个勾、1 个转圈、1 个空心圆，当前行标 aria-current', async () => {
+  it('三行：1 个勾、1 个转圈、1 个空心圆，当前行标 aria-current，列表变化会播报', async () => {
     const html = await render(ProgressStep, progress())
+    expect(html).toMatch(/<ol[^>]*aria-live="polite"/)
     expect(count(html, 'data-testid="prog-check"')).toBe(1)
     expect(count(html, 'data-testid="prog-spin"')).toBe(1)
     expect(count(html, 'data-testid="prog-hollow"')).toBe(1)
@@ -140,10 +141,10 @@ describe('第 ⑤ 屏：失败或转人工（结果卡和首页同一个组件�
     const t = text(await render(ResultStep, result({ status: 'failed_precharge', attemptsLeft: 1, lookup: failed({ can_resubmit: true, guide: 'retry_later' }) })))
     expect(t).toContain('如果付款后再失败一次，这张码会转人工处理。')
   })
-  it('次数提醒只给本站付款的码：上游发码型即使带了 1 也不提醒', async () => {
+  it('次数提醒不按 kind 过滤：没有预览的恢复路径上 kind 是 upstream，也照样提醒', async () => {
     const t = text(await render(ResultStep, result({ kind: 'upstream', status: 'failed', attemptsLeft: 1, lookup: failed({ can_resubmit: true, guide: 'retry_later' }) })))
     expect(t).toContain('没开通成功，没有扣款，这张码还能用')
-    expect(t).not.toContain('再失败一次')
+    expect(t).toContain('如果付款后再失败一次，这张码会转人工处理。')
   })
   it('attemptsLeft 为 2 时没有次数提醒', async () => {
     const t = text(await render(ResultStep, result({ status: 'failed_precharge', attemptsLeft: 2, lookup: failed({ can_resubmit: true, guide: 'retry_later' }) })))
@@ -167,5 +168,27 @@ describe('第 ⑤ 屏：失败或转人工（结果卡和首页同一个组件�
     expect(html).toContain('data-testid="result-unknown"')
     expect(text(html)).toContain('暂时查不到，请稍后再试')
     expect(html).not.toContain('data-testid="result-success"')
+  })
+})
+
+describe('第 ⑤ 屏：结果卡上带码的按钮按页面传的卡密区分（任务 13 修复第 1 轮）', () => {
+  // 渲染测试里点不了按钮：setup 完成后直接调组件里接结果卡 redeem 事件的函数，事件经 props 上的监听函数收回来
+  async function clickWith(props: Record<string, unknown>, emitted: string) {
+    const got: string[] = []
+    const app = createSSRApp(defineComponent({
+      render: () => h(ResultStep, { ...props, onRetry: () => got.push('retry'), onUseCode: (c: string) => got.push('useCode:' + c) }),
+    }))
+    app.mixin({ created() { if ((this as any).$.type === ResultStep) (this as any).$.setupState.onRedeem(emitted) } }) // eslint-disable-line @typescript-eslint/no-explicit-any
+    app.use(createI18n({ legacy: false, globalInjection: true, locale: 'zh', fallbackLocale: 'zh', messages: { zh, en } }))
+    await renderToString(app)
+    return got
+  }
+  const failedLookup = lookup({ cdk_code: 'SXC-FROM-LOOKUP', used: false, status: 'failed', can_resubmit: true, guide: 'retry_later' })
+
+  it('和页面传的 code 相同（不区分大小写）：retry，不看 lookup 里的码', async () => {
+    expect(await clickWith(result({ code: 'SXC-AAAA-BBBB', status: 'failed', lookup: failedLookup }), 'sxc-aaaa-bbbb')).toEqual(['retry'])
+  })
+  it('不同：useCode 带新码', async () => {
+    expect(await clickWith(result({ code: 'SXC-AAAA-BBBB', status: 'failed', lookup: failedLookup }), 'SXC-FROM-LOOKUP')).toEqual(['useCode:SXC-FROM-LOOKUP'])
   })
 })

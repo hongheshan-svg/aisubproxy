@@ -8,9 +8,11 @@ import { codeAction } from '../../lib/redeemPage'
 import CodeStatusCard from './CodeStatusCard.vue'
 
 const props = defineProps<{
+  /** 当前卡密（页面传 flow.code），用来区分结果卡上的按钮是同一张码还是换来的新码 */
+  code: string
   planText: string
   status: string
-  /** 供卡型（本站付款）还是上游发码型。只有供卡型的结果带「付款后失败次数」，其余不按它分支 */
+  /** 供卡型（本站付款）还是上游发码型。保留给以后的服务商，现在不按它分支 */
   kind: 'card_supply' | 'upstream'
   product: string
   maskedEmail: string
@@ -37,12 +39,9 @@ const renewalText = computed(() => {
   const r = props.lookup?.renewal
   return r === 'off' ? t('redeemUi.result.renewalOff') : r === 'closing' ? t('redeemUi.result.renewalClosing') : ''
 })
-// 「付款后再失败一次就转人工」只有本站付款的码才有这个次数
-const cardAttempts = computed(() => (props.kind === 'card_supply' ? props.attemptsLeft : undefined))
-
 // 结果卡上带码的按钮：同一张码是「换个账号再试」，换来的新码交给页面重新开始（裁决 R28）
 function onRedeem(code: string) {
-  if (codeAction(code, props.lookup?.cdk_code ?? '') === 'retry') emit('retry')
+  if (codeAction(code, props.code) === 'retry') emit('retry')
   else emit('useCode', code)
 }
 </script>
@@ -63,7 +62,7 @@ function onRedeem(code: string) {
     <button type="button" class="u-btn-secondary res-btn" data-testid="result-reset" @click="emit('reset')">{{ t('redeemUi.home.another') }}</button>
   </section>
 
-  <CodeStatusCard v-else-if="lookup" :result="lookup" context="result" :attempts-left="cardAttempts" @redeem="onRedeem" @reset="emit('reset')" />
+  <CodeStatusCard v-else-if="lookup" :result="lookup" context="result" :attempts-left="attemptsLeft" @redeem="onRedeem" @reset="emit('reset')" />
 
   <!-- 没开通成功、售后结果也没取到：页面在下面给「查一下结果」 -->
   <section v-else class="u-card res" data-testid="result-unknown">

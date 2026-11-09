@@ -31,7 +31,8 @@ function fakeFlow(o: Record<string, unknown> = {}) {
     blockingCode: ref(s.blockingCode), blockingReason: ref(s.blockingReason), extra: ref(s.extra), result: ref(s.result),
     lookup: ref(s.lookup), error: ref(s.error), busy: ref(s.busy), submitState: ref(s.submitState),
     progressStartedAt: ref(s.progressStartedAt), canRecover: computed(() => s.canRecover), confirmView: computed(() => s.confirmView),
-    preview: noop, preflight: noop, redeem: noop, checkResult: noop, recoverGrace: noop, changeAccount: noop, reset: noop, restore: () => false,
+    preview: noop, preflight: noop, redeem: noop, checkResult: noop, refreshProgress: noop, refreshLookup: noop, recoverGrace: async () => false,
+    changeAccount: noop, reset: noop, restore: () => false,
   }
 }
 

@@ -5,6 +5,7 @@
 // 资金安全：
 // - 兑换请求只在买家点「确认开通」时由 flow.redeem() 发一次，页面从不自动重发；
 // - 不确定是否已提交时只有「查一下结果」，页面上的换码入口一律锁住；
+// - 第 ④⑤ 屏已经建单：「查一下结果」只调 refreshProgress / refreshLookup，不会回到「确认开通」（裁决 R30）；
 // - 恢复订阅先弹确认框，买家确认后才调 recoverGrace()。
 // 登录信息（第 ② 屏提交的内容）只放在本页一个普通变量里：不存储、不进网址、不写日志；
 // 换账号、换码、进入开通后就清掉，刷新后自然没有。
@@ -26,7 +27,8 @@ import { isCardSupply, isCreditCode } from '../../lib/mwredeem'
 import { planLabelT } from '../../lib/plan'
 import { targetPlanOf } from '../../lib/redeemAccount'
 import {
-  canSwitchCode, makeRecoverAction, nextProgress, productOf, queryCode, recheckAction, showCheckButton, showGracePending, switchCodeEntry, ticksState, waitedLong,
+  canSwitchCode, checkActionFor, graceConfirmArgs, makeRecoverAction, makeStartOver, nextProgress, productOf, queryCode, recheckAction,
+  showCheckButton, showGracePending, switchCodeEntry, ticksState, waitedLong,
 } from '../../lib/redeemPage'
 import { progressRows, type ProgressView } from '../../lib/redeemProgress'
 
@@ -38,8 +40,8 @@ const router = useRouter()
 const flow = useRedeemFlow()
 // 直接用流程的 ref：传给 ConfirmStep 的 account、confirmView、preview 是稳定引用，提交失败回到空闲时不会清掉买家的勾选
 const {
-  screen, previewInfo, account, blockingCode, blockingReason, extra, result, lookup, error, busy, submitState,
-  progressStartedAt, canRecover, confirmView, checkResult,
+  screen, code, previewInfo, account, blockingCode, blockingReason, extra, result, lookup, error, busy, submitState,
+  progressStartedAt, canRecover, confirmView,
 } = flow
 
 // 登录信息：普通变量，不做成响应式，也不交给模板
@@ -85,15 +87,21 @@ function clearLocal() {
   recoverTried.value = false
 }
 
-/** 换一张卡密：重来，网址跟着改（刷新后还是这张码），有新码就预览（裁决 R28）。不确定是否已提交时不动。 */
-function startOver(next = '') {
-  if (!canSwitchCode(submitState.value)) return
-  const c = next.trim()
-  clearLocal()
-  flow.reset()
-  codeInput.value = c
-  void router.replace({ query: c ? { code: c } : {} })
-  if (c) void flow.preview(c)
+/** 换一张卡密：编排见 makeStartOver（不确定是否已提交时什么都不做）。 */
+const startOver = makeStartOver({
+  canSwitch: () => canSwitchCode(submitState.value),
+  clearLocal,
+  reset: () => flow.reset(),
+  setInput: (c) => { codeInput.value = c },
+  replaceQuery: (query) => { void router.replace({ query }) },
+  preview: (c) => { void flow.preview(c) },
+})
+
+/** 「查一下结果」：按屏选方法，第 ④⑤ 屏不会用 checkResult（裁决 R30）。 */
+const CHECKS = { checkResult: flow.checkResult, refreshProgress: flow.refreshProgress, refreshLookup: flow.refreshLookup }
+function onCheck() {
+  const action = checkActionFor(screen.value, submitState.value)
+  if (action) void CHECKS[action]()
 }
 
 function onCredential(p: CredentialPayload) {
@@ -113,10 +121,11 @@ function onChangeAccount() {
 }
 
 const recover = makeRecoverAction(
-  () => dialog.confirm(t('grace.confirm'), { title: t('grace.title'), okText: t('grace.confirmAction'), cancelText: t('grace.dismiss'), danger: true }),
+  () => dialog.confirm(...graceConfirmArgs(t)),
   () => flow.recoverGrace(),
 )
 async function onRecover() {
+  // 只有真的发了恢复请求才算点过，被守卫挡掉时不显示「还没确认取消」
   if (await recover()) recoverTried.value = true
 }
 
@@ -171,15 +180,16 @@ onUnmounted(() => {
           @change-account="onChangeAccount"
           @recover="onRecover"
           @recheck="onRecheck"
-          @check-result="checkResult()"
+          @check-result="onCheck"
         />
-        <p v-if="gracePending" class="u-warn recharge-gap" role="status" data-testid="grace-pending">{{ t('grace.pending') }}</p>
+        <p v-if="gracePending" class="u-warn recharge-gap" role="status" data-testid="grace-pending">{{ t('redeemUi.grace.pending') }}</p>
       </template>
 
       <ProgressStep v-else-if="screen === 'progress'" :plan-text="planText" :view="progress" :waited-long="waited" />
 
       <ResultStep
         v-else
+        :code="code"
         :plan-text="planText"
         :status="result.status"
         :kind="kind"
@@ -195,7 +205,7 @@ onUnmounted(() => {
 
       <template v-if="checkButton">
         <p v-if="error?.message" class="u-error recharge-gap" role="alert" data-testid="page-error">{{ error.message }}</p>
-        <button type="button" class="u-btn-secondary recharge-btn" data-testid="page-check-result" :disabled="busy" @click="checkResult()">
+        <button type="button" class="u-btn-secondary recharge-btn" data-testid="page-check-result" :disabled="busy" @click="onCheck">
           {{ t('redeemUi.errors.checkResult') }}
         </button>
       </template>
@@ -213,7 +223,7 @@ onUnmounted(() => {
 .recharge-btn { width: 100%; margin-top: 12px; }
 .recharge-switch {
   display: block; min-height: 48px; margin: 12px auto 0; padding: 0 12px;
-  font: inherit; font-size: 15px; background: none; border: 0;
+  font: inherit; font-size: 15px; background: none; border: 0; border-radius: 14px;
 }
 .recharge-hint { margin: 16px 0 0; font-size: 14px; color: var(--u-muted); text-align: center; }
 </style>

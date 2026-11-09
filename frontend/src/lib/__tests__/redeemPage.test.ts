@@ -1,7 +1,7 @@
 // 兑换页的分支判断（纯函数）：页面本身没有 jsdom 点不动，分支都在这里测。
 import { describe, expect, it, vi } from 'vitest'
 import {
-  canSwitchCode, codeAction, makeRecoverAction, nextProgress, productOf, queryCode, recheckAction, showCheckButton, showGracePending, switchCodeEntry, ticksState, waitedLong,
+  canSwitchCode, checkActionFor, codeAction, graceConfirmArgs, makeRecoverAction, makeStartOver, nextProgress, productOf, queryCode, recheckAction, showCheckButton, showGracePending, switchCodeEntry, ticksState, waitedLong,
 } from '../redeemPage'
 import type { ProgressView } from '../redeemProgress'
 
@@ -138,22 +138,30 @@ describe('nextProgress：开通中的三行，每次带上一次的行', () => {
 // 以下三条由旧的 scripts/test-grace-recovery.mjs（测旧页面内部）改测到新模块
 describe('makeRecoverAction：恢复订阅先确认', () => {
   it('买家取消：不调恢复', async () => {
-    const recover = vi.fn(async () => undefined)
+    const recover = vi.fn(async () => true)
     const run = makeRecoverAction(async () => false, recover)
     expect(await run()).toBe(false)
     expect(recover).not.toHaveBeenCalled()
   })
-  it('买家确认：调一次恢复', async () => {
-    const recover = vi.fn(async () => undefined)
-    const run = makeRecoverAction(async () => true, recover)
-    expect(await run()).toBe(true)
-    expect(recover).toHaveBeenCalledTimes(1)
+  it('买家取消：不调恢复（恢复返回什么都一样）', async () => {
+    const recover = vi.fn(async () => true)
+    expect(await makeRecoverAction(async () => false, recover)()).toBe(false)
+    expect(recover).not.toHaveBeenCalled()
+  })
+  it('买家确认：调一次恢复，返回它有没有真的发了请求', async () => {
+    const sent = vi.fn(async () => true)
+    expect(await makeRecoverAction(async () => true, sent)()).toBe(true)
+    expect(sent).toHaveBeenCalledTimes(1)
+    // 被流程的守卫挡掉（没发请求）：返回 false，页面不显示「还没确认取消」
+    const blocked = vi.fn(async () => false)
+    expect(await makeRecoverAction(async () => true, blocked)()).toBe(false)
+    expect(blocked).toHaveBeenCalledTimes(1)
   })
   it('确认框开着或恢复在途时再点：不再弹框，也不再调恢复', async () => {
     let answer!: (v: boolean) => void
     const confirm = vi.fn(() => new Promise<boolean>((r) => { answer = r }))
-    let finish!: () => void
-    const recover = vi.fn(() => new Promise<void>((r) => { finish = r }))
+    let finish!: (sent: boolean) => void
+    const recover = vi.fn(() => new Promise<boolean>((r) => { finish = r }))
     const run = makeRecoverAction(confirm, recover)
     const first = run()
     expect(await run()).toBe(false) // 确认框还开着
@@ -162,7 +170,7 @@ describe('makeRecoverAction：恢复订阅先确认', () => {
     await Promise.resolve()
     expect(recover).toHaveBeenCalledTimes(1)
     expect(await run()).toBe(false) // 恢复请求还在途
-    finish()
+    finish(true)
     expect(await first).toBe(true)
     expect(confirm).toHaveBeenCalledTimes(1)
     expect(recover).toHaveBeenCalledTimes(1)
@@ -171,5 +179,65 @@ describe('makeRecoverAction：恢复订阅先确认', () => {
     answer(false)
     expect(await again).toBe(false)
     expect(confirm).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('checkActionFor：「查一下结果」按钮调哪个方法（裁决 R30）', () => {
+  const states = ['idle', 'submitting', 'unknown'] as const
+  it('只有第 ③ 屏不确定是否已提交时才用 checkResult', () => {
+    expect(checkActionFor('confirm', 'unknown')).toBe('checkResult')
+    expect(checkActionFor('confirm', 'idle')).toBeNull()
+    expect(checkActionFor('confirm', 'submitting')).toBeNull()
+  })
+  it('第 ④ 屏用 refreshProgress，第 ⑤ 屏用 refreshLookup，任何提交状态下都不用 checkResult', () => {
+    for (const st of states) {
+      expect(checkActionFor('progress', st)).toBe('refreshProgress')
+      expect(checkActionFor('result', st)).toBe('refreshLookup')
+    }
+  })
+  it('第 ①② 屏没有这个按钮', () => {
+    for (const st of states) {
+      expect(checkActionFor('code', st)).toBeNull()
+      expect(checkActionFor('credential', st)).toBeNull()
+    }
+  })
+})
+
+describe('makeStartOver：换一张卡密的编排', () => {
+  function deps(can: boolean) {
+    const log: string[] = []
+    const run = makeStartOver({
+      canSwitch: () => can,
+      clearLocal: () => log.push('clearLocal'),
+      reset: () => log.push('reset'),
+      setInput: (c) => log.push('input:' + c),
+      replaceQuery: (q) => log.push('replace:' + JSON.stringify(q)),
+      preview: (c) => log.push('preview:' + c),
+    })
+    return { run, log }
+  }
+  it('有新码：守卫 → 清内存 → 重来 → 改网址 → 预览，按这个顺序', () => {
+    const { run, log } = deps(true)
+    run('  SXC-NEW1 ')
+    expect(log).toEqual(['clearLocal', 'reset', 'input:SXC-NEW1', 'replace:{"code":"SXC-NEW1"}', 'preview:SXC-NEW1'])
+  })
+  it('没有新码：清掉网址里的码，不预览', () => {
+    const { run, log } = deps(true)
+    run()
+    expect(log).toEqual(['clearLocal', 'reset', 'input:', 'replace:{}'])
+  })
+  it('不能换码（不确定是否已提交）：什么都不调', () => {
+    const { run, log } = deps(false)
+    run('SXC-NEW1')
+    run()
+    expect(log).toEqual([])
+  })
+})
+
+describe('graceConfirmArgs：恢复订阅确认框用买家口吻的新文案（裁决 R31）', () => {
+  it('全部取 redeemUi.grace.*，危险样式', () => {
+    const [message, opts] = graceConfirmArgs((k) => k)
+    expect(message).toBe('redeemUi.grace.confirm')
+    expect(opts).toEqual({ title: 'redeemUi.grace.title', okText: 'redeemUi.grace.confirmAction', cancelText: 'redeemUi.grace.dismiss', danger: true })
   })
 })

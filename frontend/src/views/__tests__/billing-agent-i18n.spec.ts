@@ -75,8 +75,17 @@ describe('两页渲染', () => {
 
 // 页面里还有只在点击后才出现的文字（结果区、报错、toast）：SSR 看不到，改查源码——模板和脚本（去掉注释）里不能再有中文，
 // 用到的每个 t('…') 键两种语言都要有。
+// cutBlocks 删掉所有「open … close」整段（含两端）；没有 close 时删到末尾。按位置截取、反复到没有为止，不用正则替换
+function cutBlocks(src: string, open: string, close: string) {
+  let out = src
+  for (let i = out.indexOf(open); i !== -1; i = out.indexOf(open)) {
+    const j = out.indexOf(close, i + open.length)
+    out = out.slice(0, i) + (j === -1 ? '' : out.slice(j + close.length))
+  }
+  return out
+}
 function stripComments(src: string) {
-  return src.replace(/<!--[\s\S]*?-->/g, '').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+  return cutBlocks(src, '<!--', '-->').replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
 }
 function lookup(o: any, path: string): unknown {
   return path.split('.').reduce((a, k) => (a == null ? a : a[k]), o)
@@ -88,7 +97,7 @@ for (const [name, file, ns] of [
 ] as const) {
   describe(name + '源码', () => {
     const src = stripComments(readFileSync(join(SRC, file), 'utf8'))
-    const code = src.replace(/<style[\s\S]*?<\/style>/g, '')
+    const code = cutBlocks(src, '<style', '</style>')
     it('模板和脚本里没有写死的中文', () => {
       expect(code.split('\n').filter((l) => CJK.test(l))).toEqual([])
     })

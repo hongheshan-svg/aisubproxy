@@ -156,7 +156,9 @@ MarsWallex（供卡型）码的预检只解析 Session、检查码能不能用�
 | 符合 `eligible` | 规则通过 | 200，发预检票；带 `account_checked: true`、`current_plan`（当前套餐，如 `free`、`plus`、`pro`）、`subscription_has_active` |
 | 不符合 `ineligible` | 规则不通过 | 200，**不发预检票**；带 `account_checked: true`、`current_plan`、`subscription_has_active`、`blocking_code`（引擎放弃码）、`blocking_reason`（给买家看的中文原因和办法） |
 | 登录信息无效 `session_invalid` | `ParseSession` 失败，或 `Refresh`、`Account` 返回未授权 | 400，`error_code: "session_invalid"`，提示「登录信息已失效，请回到 ChatGPT 刷新那个页面，再重新复制」 |
-| 查不了 `unknown` | 套餐配置读不到、代理没配、网络出错、ChatGPT 限流、被 Cloudflare 拦截、超时、超过次数上限、引擎没启动 | 200，照常发预检票；带 `account_checked: false` |
+| 查不了 `unknown` | 套餐配置读不到、代理没配、网络出错、ChatGPT 限流、被 Cloudflare 拦截、超时、超过次数上限 | 200，照常发预检票；带 `account_checked: false` |
+
+付款引擎没启动时，兑换前的就绪检查先返回 503（暂不可用），不会走到这一步。
 
 字段名跟现有前端读取逻辑对齐（`applyAccountFromPreflight` 读 `current_plan`、`subscription_has_active`、`blocking_reason`），不用 `plan`、`has_active_subscription`：前端会把预检里的 `plan` 当成当前套餐，而 `has_active_subscription` 前端不读。§6.4 是 `blocking_code` 到买家文案的对照表，前端按 `blocking_code` 显示中英文；后端的 `blocking_reason` 是没有对照时的兜底。
 
@@ -453,6 +455,7 @@ gofmt、go vet、golangci-lint、`go test -race`（paybrowser 单独跑）、gov
 **升级后要确认：**
 - 打开后台「站点外观」，确认主色和 Logo 是想要的。以前选过的皮肤只影响后台。
 - 刷新所有开着的后台页面，旧页面不认识新的设置项。
+- 本站的兑换锁、账号核对的次数限制和缓存都放在进程内存里，只支持单实例部署；多实例部署时这些限制不生效。
 - 用手机打开首页，粘贴一张测试码，用一个已有订阅的账号点「核对账号并开通」，应停在第 ③ 屏并说明账号已有订阅、不会扣款。
 
 **行为变化：**

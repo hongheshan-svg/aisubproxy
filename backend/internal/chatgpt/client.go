@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/url"
+	"sort"
 	"strings"
 
 	fhttp "github.com/bogdanfinn/fhttp"
@@ -40,6 +41,7 @@ type Client struct {
 	http     tls_client.HttpClient
 	jar      *cookiejar.Jar
 	deviceID string
+	secrets  []string // 代理地址里的账号密码等，返回错误前换成 ***（见 scrubErr）
 }
 
 // New 创建客户端；proxyURL 为空则直连，仅接受 http、https、socks5。
@@ -50,7 +52,9 @@ func New(proxyURL string) (*Client, error) {
 		tls_client.WithForceHttp1(),
 		tls_client.WithNotFollowRedirects(),
 	}
+	var secrets []string
 	if p := strings.TrimSpace(proxyURL); p != "" {
+		secrets = proxySecrets(p)
 		u, err := url.Parse(p)
 		if err != nil || u.Host == "" {
 			return nil, errors.New("代理地址格式无效")
@@ -64,13 +68,61 @@ func New(proxyURL string) (*Client, error) {
 	}
 	h, err := tls_client.NewHttpClient(tls_client.NewNoopLogger(), opts...)
 	if err != nil {
-		return nil, fmt.Errorf("创建 HTTP 客户端失败: %w", err)
+		return nil, scrubErr(fmt.Errorf("创建 HTTP 客户端失败: %w", err), secrets)
 	}
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		return nil, fmt.Errorf("创建 cookie 存储失败: %w", err)
 	}
-	return &Client{BaseURL: defaultBaseURL, http: h, jar: jar, deviceID: newDeviceID()}, nil
+	return &Client{BaseURL: defaultBaseURL, http: h, jar: jar, deviceID: newDeviceID(), secrets: secrets}, nil
+}
+
+// proxySecrets 列出代理地址里不能出现在错误文本里的写法：整条地址、账号密码（原样和 URL 编码的）、单独的密码。
+// 没有账号密码的代理返回 nil：地址本身不是秘密，留着便于排查。不足 4 个字符的写法不替换，免得把错误说明换得面目全非。
+func proxySecrets(p string) []string {
+	u, err := url.Parse(p)
+	if err != nil || u.User == nil {
+		return nil
+	}
+	user := u.User.Username()
+	pw, hasPw := u.User.Password()
+	cands := []string{p, u.String(), u.User.String()}
+	if hasPw {
+		cands = append(cands, user+":"+pw, pw, url.QueryEscape(pw), url.PathEscape(pw))
+	}
+	var out []string
+	for _, c := range cands {
+		if len(c) >= 4 {
+			out = append(out, c)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return len(out[i]) > len(out[j]) }) // 长的先换，免得被短的拆开
+	return out
+}
+
+// scrubbedError 是换掉了代理账号密码的错误：Error() 只给换过的文本，Unwrap 指向原错误，errors.Is / errors.As 照常可用。
+type scrubbedError struct {
+	msg string
+	err error
+}
+
+func (e *scrubbedError) Error() string { return e.msg }
+func (e *scrubbedError) Unwrap() error { return e.err }
+
+// scrubErr 把错误文本里的 secrets 换成 ***；没有可换的时原样返回。
+func scrubErr(err error, secrets []string) error {
+	if err == nil || len(secrets) == 0 {
+		return err
+	}
+	msg := err.Error()
+	red := msg
+	for _, s := range secrets {
+		red = strings.ReplaceAll(red, s, "***")
+	}
+	if red == msg {
+		return err
+	}
+	return &scrubbedError{msg: red, err: err}
 }
 
 // ErrInternal 表示请求过程中 HTTP 库内部出错（panic，或返回了空响应），不是 ChatGPT 的回应，不能当作账号状态的证据。
@@ -91,7 +143,7 @@ func (c *Client) do(ctx context.Context, method, path string, headers map[string
 	}
 	req, err := fhttp.NewRequestWithContext(ctx, method, strings.TrimRight(c.BaseURL, "/")+path, rd)
 	if err != nil {
-		return nil, err
+		return nil, scrubErr(err, c.secrets)
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", userAgent)
@@ -111,7 +163,7 @@ func (c *Client) do(ctx context.Context, method, path string, headers map[string
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("请求 ChatGPT 失败: %w", err)
+		return nil, scrubErr(fmt.Errorf("请求 ChatGPT 失败: %w", err), c.secrets) // 底层错误可能带代理地址
 	}
 	if resp == nil || resp.Body == nil {
 		return nil, ErrInternal
@@ -122,7 +174,7 @@ func (c *Client) do(ctx context.Context, method, path string, headers map[string
 	}
 	b, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes))
 	if err != nil {
-		return nil, fmt.Errorf("读取 ChatGPT 响应失败: %w", err)
+		return nil, scrubErr(fmt.Errorf("读取 ChatGPT 响应失败: %w", err), c.secrets)
 	}
 	if isCFBlocked(resp.StatusCode, resp.Header.Get("cf-mitigated"), resp.Header.Get("Content-Type"), resp.Header.Get("Server"), b) {
 		return nil, fmt.Errorf("%w（HTTP %d）", ErrBlocked, resp.StatusCode)

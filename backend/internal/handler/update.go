@@ -347,7 +347,10 @@ func runSeamlessUpdate(target, username string) {
 	})
 	// 备份当前在跑的版本（容器里第一次升级时就是镜像里的程序、前端和版本号）
 	bak := filepath.Join(updDir, "backup-"+time.Now().Format("20060102-150405"))
-	_ = os.MkdirAll(bak, 0o755)
+	if err := makeBackupDir(bak); err != nil {
+		failUpdate("创建备份目录失败，已中止更新: " + err.Error())
+		return
+	}
 	// 备份旧二进制
 	if _, err := os.Stat(l.CurBin); err == nil {
 		_ = copyFile(l.CurBin, filepath.Join(bak, "cdk-recharge"))

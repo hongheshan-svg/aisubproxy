@@ -86,6 +86,8 @@ func main() {
 	}
 	// 数据库已打开、HTTP 已开始监听：在线升级的新版本算启动成功，清零启动次数；退回过镜像版本的在这里告警
 	handler.RuntimeBootCompleted()
+	// 老版本留下的升级备份按 umask 落盘，启动时收紧到只有本用户能读
+	handler.TightenUpdateBackups()
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(ln) }()
 	select {

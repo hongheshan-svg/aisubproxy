@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest'
 import zh from '../../i18n/locales/zh'
 import en from '../../i18n/locales/en'
-import { accountFromPreflight, blockingKey, confirmState, type AccountSummary } from '../redeemAccount'
+import { accountFromPreflight, blockingKey, canConfirm, confirmState, type AccountSummary } from '../redeemAccount'
 
 const checkedAccount: AccountSummary = {
   maskedEmail: 'al***@example.com',
@@ -142,5 +142,28 @@ describe('blockingKey', () => {
     expect(blockingKey('')).toBeNull()
     expect(blockingKey('something_else')).toBeNull()
     expect(blockingKey('session_invalid')).toBeNull()
+  })
+})
+
+describe('canConfirm：确认开通按钮何时可点', () => {
+  const ok = { confirmView: 'ok' as const, submitState: 'idle' as const, selfChecked: false, isCredit: false, agreedTerms: false }
+  it('可以开通：直接可点；点数码要勾须知', () => {
+    expect(canConfirm(ok)).toBe(true)
+    expect(canConfirm({ ...ok, isCredit: true })).toBe(false)
+    expect(canConfirm({ ...ok, isCredit: true, agreedTerms: true })).toBe(true)
+  })
+  it('请自己确认：勾了确认框才可点', () => {
+    const sc = { ...ok, confirmView: 'self_check' as const }
+    expect(canConfirm(sc)).toBe(false)
+    expect(canConfirm({ ...sc, selfChecked: true })).toBe(true)
+    expect(canConfirm({ ...sc, selfChecked: true, isCredit: true })).toBe(false)
+  })
+  it('不能用、要恢复：一律不可点', () => {
+    expect(canConfirm({ ...ok, confirmView: 'blocked', selfChecked: true, agreedTerms: true })).toBe(false)
+    expect(canConfirm({ ...ok, confirmView: 'recover', selfChecked: true, agreedTerms: true })).toBe(false)
+  })
+  it('提交中或不确定：一律锁住', () => {
+    expect(canConfirm({ ...ok, submitState: 'submitting' })).toBe(false)
+    expect(canConfirm({ ...ok, submitState: 'unknown' })).toBe(false)
   })
 })

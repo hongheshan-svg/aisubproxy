@@ -77,3 +77,16 @@ export function blockingKey(code: string): string | null {
   const k = Object.prototype.hasOwnProperty.call(BLOCKING_KEYS, code) ? BLOCKING_KEYS[code] : undefined
   return k ? `redeemUi.blocking.${k}` : null
 }
+
+/** 「确认开通」按钮可点吗：只有「可以开通」或「请自己确认且已勾选」才可能；点数码另要勾须知；提交中和不确定时一律锁住。 */
+export function canConfirm(i: {
+  confirmView: ConfirmState
+  submitState: 'idle' | 'submitting' | 'unknown'
+  selfChecked: boolean
+  isCredit: boolean
+  agreedTerms: boolean
+}): boolean {
+  if (i.submitState !== 'idle') return false
+  if (i.confirmView !== 'ok' && !(i.confirmView === 'self_check' && i.selfChecked)) return false
+  return !i.isCredit || i.agreedTerms
+}

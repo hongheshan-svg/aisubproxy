@@ -1,5 +1,18 @@
 // 第 ③ 屏「核对账号」的账号摘要和状态判断（规格 §5.4、§6.4）。纯函数：不碰 DOM、存储和网络。
+import { claudeTargetPlan } from './claude'
 import { maskEmail } from './sessionCheck'
+
+/** 预览数据 → 带产品前缀的档位（码种判断只写这一份）。Grok / X 预览带 product 时补前缀，裸 premium_monthly 两家都有。 */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function targetPlanOf(info: any): string {
+  const plan = String(info?.plan || info?.plan_type || '').toLowerCase()
+  const product = String(info?.product || '').toLowerCase()
+  const claude = claudeTargetPlan(plan, product)
+  if (claude) return claude
+  if (plan && product === 'grok' && !plan.startsWith('grok_')) return 'grok_' + plan
+  if (plan && product === 'x' && !plan.startsWith('x_')) return 'x_' + plan
+  return plan
+}
 
 export interface AccountSummary {
   /** 脱敏后的邮箱，完整邮箱不进摘要 */

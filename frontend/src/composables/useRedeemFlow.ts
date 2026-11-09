@@ -12,11 +12,11 @@ import { computed, getCurrentScope, onScopeDispose, ref, type ComputedRef, type 
 import { i18n } from '../i18n'
 import type { LookupResult } from '../lib/aftersale'
 import { lookupAftersale, type LookupMessages } from '../lib/aftersaleClient'
-import { claudeRedeemBody, claudeTargetPlan, isClaudePlan } from '../lib/claude'
+import { claudeRedeemBody, isClaudePlan } from '../lib/claude'
 import { isGrokPlan } from '../lib/grok'
 import { isCardSupply, isCreditCode, redeemRejectedBeforeOrder, withCreditTerms } from '../lib/mwredeem'
 import { planSatisfied } from '../lib/plan'
-import { accountFromPreflight, confirmState, type AccountSummary, type ConfirmState } from '../lib/redeemAccount'
+import { accountFromPreflight, confirmState, targetPlanOf, type AccountSummary, type ConfirmState } from '../lib/redeemAccount'
 import { isXPremiumPlan } from '../lib/x-premium'
 
 export type Screen = 'code' | 'credential' | 'confirm' | 'progress' | 'result'
@@ -184,17 +184,7 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
 
   // ---------- 码的种类（旧 RechargeView 的 targetPlan、isGrok、isClaude、isMW） ----------
 
-  function targetPlan(): string {
-    const info = previewInfo.value
-    const plan = String(info?.plan || info?.plan_type || '').toLowerCase()
-    // 预览带 product 时 Grok / X 补上产品前缀再判，裸 premium_monthly 两家都有
-    const product = String(info?.product || '').toLowerCase()
-    const claude = claudeTargetPlan(plan, product)
-    if (claude) return claude
-    if (plan && product === 'grok' && !plan.startsWith('grok_')) return 'grok_' + plan
-    if (plan && product === 'x' && !plan.startsWith('x_')) return 'x_' + plan
-    return plan
-  }
+  const targetPlan = () => targetPlanOf(previewInfo.value)
   const isGrok = (plan: string) => isGrokPlan(plan) && !isXPremiumPlan(plan)
   const isMW = () => isCardSupply(previewInfo.value?.provider_kind || resultKind)
 

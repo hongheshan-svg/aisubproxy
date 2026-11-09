@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"mime/multipart"
 	"net/http"
@@ -145,5 +146,60 @@ func TestSiteLogoDeleteAndAudit(t *testing.T) {
 	}
 	if len(got) != 2 || got[0] != "update_site_logo|image/png 40" || got[1] != "delete_site_logo|" {
 		t.Fatalf("审计不对: %v", got)
+	}
+}
+
+func TestSiteLogoUploadErrorMessages(t *testing.T) {
+	dbtest.Open(t)
+	r := logoRouter()
+	uploadLogo(r, "a.png", pngBytes)
+	before, _ := db.GetSetting("site_logo")
+	w := uploadLogo(r, "big.png", append(append([]byte{}, pngBytes...), make([]byte, 1<<20)...))
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "Logo 不能超过 256 KB，请换一张小一点的图片") {
+		t.Fatalf("1MB 应 400 且给出大小提示: %d %s", w.Code, w.Body.String())
+	}
+	exact := append(append([]byte{}, pngBytes...), make([]byte, siteLogoMaxBytes+1-len(pngBytes))...)
+	if w := uploadLogo(r, "x.png", exact); w.Code != 400 || !strings.Contains(w.Body.String(), "请换一张小一点的图片") {
+		t.Fatalf("256KB+1 文案: %d %s", w.Code, w.Body.String())
+	}
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	mw.WriteField("other", "x")
+	mw.Close()
+	req := httptest.NewRequest("POST", "/settings/logo", &buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	nw := httptest.NewRecorder()
+	r.ServeHTTP(nw, req)
+	if nw.Code != 400 || !strings.Contains(nw.Body.String(), "没有收到图片，请选择一张 PNG、JPG 或 WebP 图片再上传") {
+		t.Fatalf("无 file 字段: %d %s", nw.Code, nw.Body.String())
+	}
+	if after, _ := db.GetSetting("site_logo"); after != before {
+		t.Fatal("失败的上传不能改库")
+	}
+}
+
+// 只有 site_logo 和 site_logo_type、没有 site_logo_version：按没有 Logo 处理。
+func TestSiteLogoMissingVersionMeansNoLogo(t *testing.T) {
+	dbtest.Open(t)
+	r := logoRouter()
+	db.SetSettings(map[string]string{
+		"site_logo":      base64.StdEncoding.EncodeToString(pngBytes),
+		"site_logo_type": "image/png",
+	})
+	if w := doReq(r, "GET", "/site/logo", nil); w.Code != 404 {
+		t.Fatalf("应 404: %d", w.Code)
+	}
+	if publicSiteJSON(t)["logo_version"] != "" {
+		t.Fatal("logo_version 应为空")
+	}
+}
+
+func TestSiteLogoBadStoredTypeIs404(t *testing.T) {
+	dbtest.Open(t)
+	r := logoRouter()
+	uploadLogo(r, "a.png", pngBytes)
+	db.SetSetting("site_logo_type", "text/html")
+	if w := doReq(r, "GET", "/site/logo", nil); w.Code != 404 {
+		t.Fatalf("类型被改坏应 404: %d", w.Code)
 	}
 }

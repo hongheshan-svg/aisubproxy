@@ -179,6 +179,8 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
   let stopPoll: (() => void) | null = null
   // 换卡密、换账号、重来时加一，丢掉还在路上的旧响应
   let seq = 0
+  // 查到终态、开始取售后结果时加一：手动查进度和定时查询可能同时在途，晚到的那次回复要丢掉
+  let pollGen = 0
 
   try {
     storage?.removeItem(OLD_PROGRESS_KEY)
@@ -375,6 +377,7 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
 
   async function finish(s: number) {
     stopPolling()
+    pollGen++ // 要在第一个 await 之前：取售后结果期间屏还是第 ④ 屏
     const res = await lookupAftersale(code.value, lookupMessages(), fetchFn)
     if (s !== seq) return
     lookup.value = res.result ?? null
@@ -401,14 +404,17 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
 
   /** 查一次进度。返回 true 表示查到了单、还没结束。 */
   async function pollOnce(s: number): Promise<boolean> {
+    const g = pollGen
+    // 回复到的时候已经换了码、已经开始取售后结果或已离开第 ④ 屏：这次回复作废，不改状态、不写缓存、不报错
+    const stale = () => s !== seq || g !== pollGen || screen.value !== 'progress'
     let res: Awaited<ReturnType<typeof api>>
     try {
       res = await api(redemptionToken ? `${API}/result?token=${encodeURIComponent(redemptionToken)}` : byCodePath(code.value))
     } catch {
-      if (s === seq) error.value = flowError('network') // 继续按原频率查
+      if (!stale()) error.value = flowError('network') // 继续按原频率查
       return false
     }
-    if (s !== seq) return false
+    if (stale()) return false
     const { r, data } = res
     if (r.status === 404) {
       // 没有这笔单（例如兑换没有建单）：停止查询，不对着不存在的单一直转圈
@@ -674,14 +680,14 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
     const s = seq
     busy.value = true
     try {
-      const msgs = lookupMessages()
-      const res = await lookupAftersale(code.value, msgs, fetchFn)
+      const res = await lookupAftersale(code.value, lookupMessages(), fetchFn)
       if (s !== seq) return
       if (res.result) {
         lookup.value = res.result
         error.value = null
       } else {
-        error.value = flowError(res.error === msgs.network ? 'network' : 'invalid', res.error)
+        // lookupAftersale 只给文字、不给出错种类，靠文字相等来分会随文案改动判错；这里一律按没连上处理
+        error.value = flowError('network')
       }
     } finally {
       if (s === seq) busy.value = false

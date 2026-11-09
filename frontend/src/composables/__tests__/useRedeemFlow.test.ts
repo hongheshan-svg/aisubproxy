@@ -46,7 +46,8 @@ const MW_ELIGIBLE = {
 const MW_QUEUED = { ...MW, redemption_token: 'rt_A', status: 'queued', message: '', order: { status: 'queued', stage: 'queued' } }
 
 // 'hang'：请求发出后一直等不到回复（模拟提交途中刷新或关页）
-type Reply = { status?: number; body?: unknown } | Error | 'hang'
+// wait：等这个 Promise 完成后才回复（模拟两次请求的回复先后颠倒）；fail：等完后按断网抛错
+type Reply = { status?: number; body?: unknown; wait?: Promise<unknown>; fail?: Error } | Error | 'hang'
 interface Call { url: string; path: string; init?: RequestInit; body?: any }
 
 // 每个路径一串预设响应，按顺序用，用到最后一个后一直重复它
@@ -64,6 +65,8 @@ function fakeFetch(routes: Record<string, Reply | Reply[]> = {}) {
     const r = q.length > 1 ? q.shift()! : q[0]
     if (r === 'hang') return new Promise<Response>(() => {})
     if (r instanceof Error) throw r
+    if (r.wait) await r.wait
+    if (r.fail) throw r.fail
     return new Response(JSON.stringify(r.body ?? {}), { status: r.status ?? 200 })
   })
   const count = (path: string) => calls.filter((c) => c.path === path).length
@@ -845,5 +848,150 @@ describe('任务 13 修复第 1 轮：recoverGrace 返回有没有真的发请�
     expect(await flow.recoverGrace()).toBe(true)
     expect(await flow.recoverGrace()).toBe(false)
     expect(net.count(RECOVER)).toBe(1)
+  })
+})
+
+describe('任务 13 修复第 2 轮：手动查进度和定时查询同时在途', () => {
+  const RUNNING = { ...MW, status: 'running', stage: 'payment', order: { status: 'running', stage: 'payment' } }
+  const COMPLETED = { ...MW, status: 'completed', order: { status: 'completed', stage: '' } }
+  const LOOKUP_OK = { cdk_code: CODE, status: 'used', used: true, plan: 'plus', renewal: 'off' }
+  // 手动放行的闸门
+  function gate() {
+    let open!: () => void
+    const p = new Promise<void>((r) => { open = r })
+    return { p, open }
+  }
+  // 让已经发出的请求走到等待回复那一步
+  const flush = () => new Promise((r) => setTimeout(r, 0))
+
+  async function toProgress() {
+    const ctx = await toConfirm()
+    ctx.net.reply(REDEEM, { body: MW_QUEUED })
+    await ctx.flow.redeem()
+    expect(ctx.flow.screen.value).toBe('progress')
+    expect(ctx.timer.timers).toHaveLength(1)
+    return ctx
+  }
+  function saved(storage: ReturnType<typeof memStorage>) {
+    return JSON.parse(storage.getItem(KEY) || '{}')
+  }
+
+  it('定时查询先查到 completed 进了第 ⑤ 屏，手动查进度晚到的 running 回复不能盖掉结果', async () => {
+    const { flow, net, storage, timer } = await toProgress()
+    const g = gate()
+    // 第一次（手动）的回复要等闸门，第二次（定时）直接回 completed
+    net.reply(RESULT, { wait: g.p, body: RUNNING }, { body: COMPLETED })
+    net.reply(LOOKUP, { body: LOOKUP_OK })
+
+    const manual = flow.refreshProgress()
+    await flush()
+    await runTick(timer.timers[0])
+    expect(flow.screen.value).toBe('result')
+    expect(flow.result.value.status).toBe('completed')
+
+    g.open()
+    await manual
+    expect(flow.screen.value).toBe('result')
+    expect(flow.result.value.status).toBe('completed')
+    expect(flow.lookup.value?.renewal).toBe('off')
+    expect(net.count(LOOKUP)).toBe(1)
+    expect(saved(storage).screen).toBe('result')
+    expect(saved(storage).result.status).toBe('completed')
+    expect(flow.busy.value).toBe(false)
+  })
+
+  it('取售后结果还没回来时，晚到的 running 回复也不能改状态，也不能重新开始定时查询', async () => {
+    const { flow, net, storage, timer } = await toProgress()
+    const gManual = gate()
+    const gLookup = gate()
+    net.reply(RESULT, { wait: gManual.p, body: RUNNING }, { body: COMPLETED })
+    net.reply(LOOKUP, { wait: gLookup.p, body: LOOKUP_OK })
+
+    const manual = flow.refreshProgress()
+    await flush()
+    const tick = runTick(timer.timers[0]) // 查到 completed，正在等售后结果
+    await flush()
+    expect(flow.result.value.status).toBe('completed')
+
+    gManual.open()
+    await manual
+    expect(flow.result.value.status).toBe('completed')
+
+    gLookup.open()
+    await tick
+    expect(flow.screen.value).toBe('result')
+    expect(flow.result.value.status).toBe('completed')
+    expect(net.count(LOOKUP)).toBe(1)
+    expect(timer.timers).toHaveLength(1)
+    expect(saved(storage).result.status).toBe('completed')
+  })
+
+  it('两边都查到 completed：售后结果只取一次', async () => {
+    const { flow, net, timer } = await toProgress()
+    const gManual = gate()
+    const gLookup = gate()
+    net.reply(RESULT, { wait: gManual.p, body: COMPLETED }, { body: COMPLETED })
+    net.reply(LOOKUP, { wait: gLookup.p, body: LOOKUP_OK })
+
+    const manual = flow.refreshProgress()
+    await flush()
+    const tick = runTick(timer.timers[0])
+    await flush()
+    gManual.open()
+    await flush()
+    gLookup.open()
+    await Promise.all([manual, tick])
+    expect(flow.screen.value).toBe('result')
+    expect(net.count(LOOKUP)).toBe(1)
+  })
+
+  it('进了第 ⑤ 屏后，手动查进度晚到的出错回复不在结果屏上显示错误（服务器出错、断网）', async () => {
+    for (const late of [{ status: 503, body: {} }, { fail: new TypeError('Failed to fetch') }]) {
+      const { flow, net, timer } = await toProgress()
+      const g = gate()
+      net.reply(RESULT, { wait: g.p, ...late }, { body: COMPLETED })
+      net.reply(LOOKUP, { body: LOOKUP_OK })
+
+      const manual = flow.refreshProgress()
+      await flush()
+      await runTick(timer.timers[0])
+      expect(flow.screen.value).toBe('result')
+      g.open()
+      await manual
+      expect(flow.error.value).toBeNull()
+    }
+  })
+})
+
+describe('任务 13 修复第 2 轮：refreshLookup 不靠文案判断出错种类', () => {
+  async function toResult() {
+    const ctx = await toConfirm()
+    ctx.net.reply(REDEEM, { body: { ...MW_QUEUED, status: 'failed_precharge', order: { status: 'failed_precharge', stage: '' } } })
+    ctx.net.reply(LOOKUP, new TypeError('Failed to fetch'))
+    await ctx.flow.redeem()
+    expect(ctx.flow.screen.value).toBe('result')
+    return ctx
+  }
+
+  it('售后查询 404：按网络错误显示「没连上，请再试一次」', async () => {
+    const { flow, net } = await toResult()
+    net.reply(LOOKUP, { status: 404, body: { message: '未找到' } })
+    await flow.refreshLookup()
+    expect(flow.error.value).toEqual({ kind: 'network', message: '没连上，请再试一次' })
+    expect(flow.screen.value).toBe('result')
+  })
+
+  it('服务器出错带了原文：不照搬原文，按网络错误显示', async () => {
+    const { flow, net } = await toResult()
+    net.reply(LOOKUP, { status: 502, body: { error: '上游超时' } })
+    await flow.refreshLookup()
+    expect(flow.error.value).toEqual({ kind: 'network', message: '没连上，请再试一次' })
+  })
+
+  it('断网：按网络错误显示', async () => {
+    const { flow, net } = await toResult()
+    net.reply(LOOKUP, new TypeError('Failed to fetch'))
+    await flow.refreshLookup()
+    expect(flow.error.value).toEqual({ kind: 'network', message: '没连上，请再试一次' })
   })
 })

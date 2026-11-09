@@ -501,6 +501,9 @@ export default {
       homeFormat: '卡密格式不对，请检查后重新粘贴。',
       homeNotFound: '查不到这张卡密，请核对后重新粘贴。',
       homeNetwork: '没连上，请检查网络后再试一次。',
+      sessionInvalid: '登录信息已失效，请回到 ChatGPT 刷新那个页面，再重新复制',
+      rejected: '这张卡密暂时不能开通。请稍后再试，或联系卖家。',
+      badReply: '服务器的回复不完整，请再试一次。',
     },
   },
 }

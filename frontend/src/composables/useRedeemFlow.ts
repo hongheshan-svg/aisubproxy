@@ -4,10 +4,11 @@
 // 资金安全：
 // - 同一张码同一时间只发一次兑换请求：redeem() 在第一个 await 之前同步把 submitState 置为 submitting。
 // - 兑换请求发出后没收到回复（fetch 抛错），不知道服务器收没收到：submitState 置为 unknown，
-//   之后只能 checkResult() 按卡密查结果，redeem() 不再发请求，刷新页面后也一样。
+//   之后只能 checkResult() 按卡密查结果，redeem()、reset()、preview() 都不动作。
+//   发请求前就把「提交中」写进缓存：提交途中刷新或关页，回来也只能查结果。
 // - 429 不自动重试；任何失败都不会自动再兑换一次。
 // - 刷新后恢复到第 ③ 屏用缓存的预检票开通，票过期回第 ② 屏，不自动重提。
-import { getCurrentScope, onScopeDispose, ref, type Ref } from 'vue'
+import { computed, getCurrentScope, onScopeDispose, ref, type ComputedRef, type Ref } from 'vue'
 import { i18n } from '../i18n'
 import type { LookupResult } from '../lib/aftersale'
 import { lookupAftersale, type LookupMessages } from '../lib/aftersaleClient'
@@ -15,7 +16,7 @@ import { claudeRedeemBody, claudeTargetPlan, isClaudePlan } from '../lib/claude'
 import { isGrokPlan } from '../lib/grok'
 import { isCardSupply, isCreditCode, redeemRejectedBeforeOrder, withCreditTerms } from '../lib/mwredeem'
 import { planSatisfied } from '../lib/plan'
-import { accountFromPreflight, type AccountSummary } from '../lib/redeemAccount'
+import { accountFromPreflight, confirmState, type AccountSummary, type ConfirmState } from '../lib/redeemAccount'
 import { isXPremiumPlan } from '../lib/x-premium'
 
 export type Screen = 'code' | 'credential' | 'confirm' | 'progress' | 'result'
@@ -47,6 +48,10 @@ export interface RedeemFlow {
   busy: Ref<boolean>
   submitState: Ref<SubmitState>
   progressStartedAt: Ref<number | null>
+  /** 有可用的预检票且账号要先恢复订阅：为真显示「恢复订阅」，为假显示「重新核对」 */
+  canRecover: Readonly<Ref<boolean>>
+  /** 第 ③ 屏的状态，和 redeem() 的拦截用同一套判断（含当前套餐已满足） */
+  confirmView: ComputedRef<ConfirmState>
   preview(code: string): Promise<void>
   preflight(credential: { mode: 'session'; session: string }): Promise<void>
   redeem(opts?: { agreeCreditTerms?: boolean; claudeOrgId?: string; grokSession?: string }): Promise<void>
@@ -90,8 +95,9 @@ const MESSAGE_KEY: Partial<Record<FlowErrorKind, string>> = {
   rate_limited: 'redeemUi.errors.rateLimited',
   ticket_expired: 'redeemUi.errors.previewExpired',
   submit_unknown: 'redeemUi.errors.submitUnknown',
+  rejected: 'redeemUi.errors.rejected', // 服务器没给原因时的兜底
 }
-/** 出错：有固定文案的种类用语言包；rejected、invalid 用服务器给的原因。 */
+/** 出错：有固定文案的种类用语言包；rejected 优先用服务器给的原因，invalid 由调用处传文案。 */
 function flowError(kind: FlowErrorKind, message?: string): FlowError {
   const key = MESSAGE_KEY[kind]
   const text = message || (key ? t(key) : '')
@@ -161,9 +167,9 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
   const submitState = ref<SubmitState>('idle')
   const progressStartedAt = ref<number | null>(null)
 
-  // 不对外的票据：页面用不到，只在这里带进请求
+  // 不对外的票据：页面用不到，只在这里带进请求。预检票是 ref，canRecover 要跟着它变
   let redemptionToken = ''
-  let preflightToken = ''
+  const preflightTicket = ref('')
   let resultKind = '' // 结果响应里的 provider_kind；按卡密恢复时没有预览，靠它认 MarsWallex
   let stopPoll: (() => void) | null = null
   // 换卡密、换账号、重来时加一，丢掉还在路上的旧响应
@@ -199,6 +205,17 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
     return planSatisfied(acc.currentPlan, plan, previewInfo.value?.plan_flow)
   }
 
+  const confirmView = computed<ConfirmState>(() => confirmState({
+    account: account.value,
+    blockingCode: blockingCode.value,
+    blockingReason: blockingReason.value,
+    satisfied: alreadySatisfied(),
+  }))
+  const canRecover = computed(() => {
+    const acc = account.value
+    return !!preflightTicket.value && !!acc && (acc.recoveryRequired || acc.delinquent)
+  })
+
   // ---------- 请求 ----------
 
   async function api(path: string, init: RequestInit = {}) {
@@ -232,12 +249,13 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
       code: code.value,
       redemptionToken,
       // 不能用这个账号开通时票没有用处，不存，刷新后回第 ② 屏
-      preflightToken: blockingCode.value || blockingReason.value ? '' : preflightToken,
+      preflightToken: blockingCode.value || blockingReason.value ? '' : preflightTicket.value,
       previewInfo: previewInfo.value,
       account: account.value,
       result: { status: result.value.status, stage: result.value.stage },
       progressStartedAt: progressStartedAt.value,
-      submitUnknown: submitState.value === 'unknown',
+      // 提交中也记下：请求在途时刷新或关页，回来不知道服务器收没收到
+      submitUnknown: submitState.value !== 'idle',
       savedAt: now(),
     }
     try {
@@ -295,7 +313,7 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
   }
 
   function clearAccountCheck() {
-    preflightToken = ''
+    preflightTicket.value = ''
     account.value = null
     blockingCode.value = ''
     blockingReason.value = ''
@@ -351,6 +369,8 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
   async function enterProgress(data: any, s: number, fallbackStatus = '') {
     applyResult(data)
     if (!result.value.status && fallbackStatus) result.value = { ...result.value, status: fallbackStatus }
+    // 预检票里封着整份登录信息，查进度用不上，不再留着
+    preflightTicket.value = ''
     screen.value = 'progress'
     if (progressStartedAt.value === null) progressStartedAt.value = now()
     save()
@@ -415,7 +435,8 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
   // ---------- 对外操作 ----------
 
   async function preview(raw: string) {
-    if (busy.value || submitState.value === 'submitting') return
+    // 提交中或不确定是否已提交：只能查结果，不能换码重来
+    if (busy.value || submitState.value !== 'idle') return
     const c = String(raw || '').trim()
     clearFlow()
     removeSaved()
@@ -456,8 +477,7 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
       }
       const tok = data?.redemption_token || data?.data?.redemption_token || data?.token || ''
       if (!tok) {
-        // 服务器的回复不完整，没法继续
-        error.value = flowError('network')
+        error.value = flowError('network', t('redeemUi.errors.badReply'))
         return
       }
       redemptionToken = String(tok)
@@ -482,6 +502,7 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
   }
 
   async function preflight(credential: { mode: 'session'; session: string }) {
+    if (screen.value !== 'credential' && screen.value !== 'confirm') return
     if (busy.value || submitState.value !== 'idle' || !redemptionToken || !code.value) return
     // 旧的核对结果等回复到了再换掉：在第 ③ 屏重新核对时不闪；请求期间 busy 挡住开通
     error.value = null
@@ -499,7 +520,7 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
       const { r, data } = res
       const httpErr = httpError(r.status)
       if (httpErr) return backToCredential(httpErr)
-      if (r.status === 400 && data?.error_code === 'session_invalid') return backToCredential(flowError('invalid', serverText(data)))
+      if (r.status === 400 && data?.error_code === 'session_invalid') return backToCredential(flowError('invalid', t('redeemUi.errors.sessionInvalid')))
       if (!r.ok || (data && typeof data.code === 'number' && data.code !== 0)) return backToCredential(flowError('rejected', serverText(data)))
 
       const body = data?.data && typeof data.data === 'object' ? data.data : data || {}
@@ -507,9 +528,11 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
       const bCode = String(body.blocking_code || '')
       const bReason = String(body.blocking_reason || '')
       const plan = targetPlan()
-      // Grok 不发票；Claude 没票时开通带 Organization ID。其余码没有票又没说为什么，没法开通
-      if (!ticket && !bCode && !bReason && !isGrok(plan) && !isClaudePlan(plan)) return backToCredential(flowError('network'))
-      preflightToken = ticket
+      // Grok 不发票；Claude 没票时开通带 Organization ID。其余码没有票又没说为什么：回复不完整
+      if (!ticket && !bCode && !bReason && !isGrok(plan) && !isClaudePlan(plan)) {
+        return backToCredential(flowError('network', t('redeemUi.errors.badReply')))
+      }
+      preflightTicket.value = ticket
       account.value = accountFromPreflight(data)
       blockingCode.value = bCode
       blockingReason.value = bReason
@@ -529,23 +552,22 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
     const clientRequestId = 'web-' + deviceId.slice(0, 8) + '-' + now()
     if (isClaudePlan(plan)) {
       // 有票带票；没票（与 Grok 一样）带页面传来的 Organization ID
-      if (!preflightToken && !opts.claudeOrgId) return null
-      return claudeRedeemBody(redemptionToken, preflightToken, opts.claudeOrgId || '', clientRequestId)
+      if (!preflightTicket.value && !opts.claudeOrgId) return null
+      return claudeRedeemBody(redemptionToken, preflightTicket.value, opts.claudeOrgId || '', clientRequestId)
     }
     if (isGrok(plan)) {
       if (!opts.grokSession) return null
       return { redemption_token: redemptionToken, credential: { mode: 'session', session: opts.grokSession }, client_request_id: clientRequestId }
     }
-    if (!preflightToken) return null
-    const body = { redemption_token: redemptionToken, preflight_token: preflightToken, client_request_id: clientRequestId }
+    if (!preflightTicket.value) return null
+    const body = { redemption_token: redemptionToken, preflight_token: preflightTicket.value, client_request_id: clientRequestId }
     return isMW() ? withCreditTerms(body, previewInfo.value, !!opts.agreeCreditTerms) : body
   }
 
   async function redeem(opts: { agreeCreditTerms?: boolean; claudeOrgId?: string; grokSession?: string } = {}) {
     // 以下检查和上锁都在第一个 await 之前完成：连点时第二次调用看到 submitting 直接返回
     if (submitState.value !== 'idle' || busy.value || screen.value !== 'confirm') return
-    const acc = account.value
-    if (blockingCode.value || blockingReason.value || (acc && (acc.recoveryRequired || acc.delinquent)) || alreadySatisfied()) return
+    if (confirmView.value === 'blocked' || confirmView.value === 'recover') return
     if (isMW() && isCreditCode(previewInfo.value) && !opts.agreeCreditTerms) return
     const body = redeemBody(opts)
     if (!body) {
@@ -555,6 +577,7 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
     submitState.value = 'submitting'
     busy.value = true
     error.value = null
+    save() // 请求发出前就记下「提交中」
     const s = seq
 
     let res: Awaited<ReturnType<typeof api>>
@@ -575,12 +598,17 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
     const { r, data } = res
     if (r.status === 429) {
       error.value = flowError('rate_limited')
+      save()
       return
     }
     // MarsWallex 被拒且没建单（熔断、未就绪、跨服务商冲突、票失效）：不跳去查一个不存在的单
     if (isMW() && redeemRejectedBeforeOrder(r.status, data)) {
-      if (r.status === 400) backToCredential(flowError('ticket_expired'))
-      else error.value = flowError('rejected', serverText(data))
+      if (r.status === 400) {
+        backToCredential(flowError('ticket_expired'))
+      } else {
+        error.value = flowError('rejected', serverText(data))
+        save()
+      }
       return
     }
     // 其余情况可能已经建单：去查进度
@@ -628,45 +656,56 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
   }
 
   async function recoverGrace() {
-    const acc = account.value
-    if (busy.value || submitState.value !== 'idle' || !preflightToken || !acc || !(acc.recoveryRequired || acc.delinquent)) return
-    const token = preflightToken
-    // 票只用一次：处理后要用接口回的新票，旧票不能再拿来开通
-    preflightToken = ''
+    if (busy.value || submitState.value !== 'idle' || !canRecover.value) return
+    const token = preflightTicket.value
+    // 票只用一次：交出去以后只要没确认解除就作废，页面改为「重新核对」，刷新后也不能拿它再发
+    preflightTicket.value = ''
     error.value = null
     const s = seq
     busy.value = true
+    // 没确认解除（待处理、出错、网络断）：票清空，仍按「要先恢复订阅」显示，并写进缓存
+    const unconfirmed = (err: FlowError | null) => {
+      preflightTicket.value = ''
+      if (account.value) account.value = { ...account.value, recoveryRequired: true }
+      error.value = err
+      save()
+    }
     try {
       let res: Awaited<ReturnType<typeof api>>
       try {
         res = await post(`${API}/recover-subscription`, { redemption_token: redemptionToken, preflight_token: token, confirmed: true })
       } catch {
-        if (s === seq) error.value = flowError('network', t('grace.refreshFailed'))
+        if (s === seq) unconfirmed(flowError('network', t('grace.refreshFailed')))
         return
       }
       if (s !== seq) return
       const { r, data } = res
       if (r.status === 429) {
         // 被限流时服务器没处理，票还能用
-        preflightToken = token
+        preflightTicket.value = token
         error.value = flowError('rate_limited')
+        save()
         return
       }
       if (!r.ok || (typeof data?.code === 'number' && data.code !== 0)) {
-        error.value = flowError(r.status >= 500 ? 'network' : 'rejected', t('grace.refreshFailed'))
+        unconfirmed(flowError(r.status >= 500 ? 'network' : 'rejected', t('grace.refreshFailed')))
         return
       }
       const out = data?.data || data
       const pf = out?.preflight
       if (pf) {
         account.value = accountFromPreflight(pf)
-        preflightToken = String(pf.preflight_token || '')
         blockingCode.value = String(pf.blocking_code || '')
         blockingReason.value = String(pf.blocking_reason || '')
       }
-      // 没确认解除（或没拿到新票）就仍按「要先恢复订阅」显示，等买家重新核对
-      if ((out?.status !== 'cleared' || !preflightToken) && account.value) account.value = { ...account.value, recoveryRequired: true }
-      save()
+      const fresh = String(pf?.preflight_token || '')
+      if (out?.status === 'cleared' && fresh) {
+        // 确认解除并拿到新票：按新的账号信息显示，开通用新票
+        preflightTicket.value = fresh
+        save()
+        return
+      }
+      unconfirmed(null)
     } finally {
       if (s === seq) busy.value = false
     }
@@ -694,7 +733,8 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
   }
 
   function reset(opts: { keepCode?: boolean } = {}) {
-    if (submitState.value === 'submitting') return
+    // 提交中或不确定是否已提交：只能查结果，不能清掉「提交中」的记录重来
+    if (submitState.value !== 'idle') return
     const keep = opts.keepCode ? code.value : ''
     clearFlow()
     removeSaved()
@@ -703,11 +743,13 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
   }
 
   function restore(queryCode: string): boolean {
+    // 兑换请求在途：不改状态，也不丢掉它的回复
+    if (submitState.value === 'submitting') return false
     const saved = readSaved()
     if (!saved) return false
     const q = String(queryCode || '').trim()
     const savedCode = String(saved.code || '').trim()
-    if (!savedCode || (q && savedCode !== q)) {
+    if (!savedCode || (q && savedCode.toLowerCase() !== q.toLowerCase())) {
       removeSaved()
       return false
     }
@@ -733,7 +775,7 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
     if (st === 'confirm' && saved.submitUnknown === true) {
       // 刷新前兑换请求没收到回复：仍然只能查结果
       account.value = savedAccount(saved.account)
-      preflightToken = String(saved.preflightToken || '')
+      preflightTicket.value = String(saved.preflightToken || '')
       submitState.value = 'unknown'
       error.value = flowError('submit_unknown')
       screen.value = 'confirm'
@@ -741,7 +783,7 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
     }
     if (st === 'confirm' && saved.preflightToken) {
       account.value = savedAccount(saved.account)
-      preflightToken = String(saved.preflightToken)
+      preflightTicket.value = String(saved.preflightToken)
       screen.value = 'confirm'
       return true
     }
@@ -756,6 +798,6 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
 
   return {
     screen, code, previewInfo, account, blockingCode, blockingReason, extra, result, lookup, error, busy, submitState,
-    progressStartedAt, preview, preflight, redeem, checkResult, recoverGrace, changeAccount, reset, restore,
+    progressStartedAt, canRecover, confirmView, preview, preflight, redeem, checkResult, recoverGrace, changeAccount, reset, restore,
   }
 }

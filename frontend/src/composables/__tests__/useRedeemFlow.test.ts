@@ -45,7 +45,8 @@ const MW_ELIGIBLE = {
 }
 const MW_QUEUED = { ...MW, redemption_token: 'rt_A', status: 'queued', message: '', order: { status: 'queued', stage: 'queued' } }
 
-type Reply = { status?: number; body?: unknown } | Error
+// 'hang'：请求发出后一直等不到回复（模拟提交途中刷新或关页）
+type Reply = { status?: number; body?: unknown } | Error | 'hang'
 interface Call { url: string; path: string; init?: RequestInit; body?: any }
 
 // 每个路径一串预设响应，按顺序用，用到最后一个后一直重复它
@@ -61,6 +62,7 @@ function fakeFetch(routes: Record<string, Reply | Reply[]> = {}) {
     const q = queues.get(path)
     if (!q || q.length === 0) throw new Error('没有预设响应：' + url)
     const r = q.length > 1 ? q.shift()! : q[0]
+    if (r === 'hang') return new Promise<Response>(() => {})
     if (r instanceof Error) throw r
     return new Response(JSON.stringify(r.body ?? {}), { status: r.status ?? 200 })
   })
@@ -240,12 +242,13 @@ describe('useRedeemFlow', () => {
   it('登录信息无效停在第 ② 屏', async () => {
     const net = fakeFetch({
       [PREVIEW]: { body: MW_PREVIEW },
-      [PREFLIGHT]: { status: 400, body: { ...MW, error_code: 'session_invalid', error: '登录信息已失效，请回到 ChatGPT 刷新那个页面，再重新复制' } },
+      [PREFLIGHT]: { status: 400, body: { ...MW, error_code: 'session_invalid', error: '会话解析失败：缺少 sessionToken' } },
     })
     const { flow } = makeFlow(net)
     await flow.preview(CODE)
     await flow.preflight({ mode: 'session', session: SESSION_RAW })
     expect(flow.screen.value).toBe('credential')
+    // 用语言包文案（规格 §5.4 原句），不用后端原文
     expect(flow.error.value).toEqual({ kind: 'invalid', message: '登录信息已失效，请回到 ChatGPT 刷新那个页面，再重新复制' })
     expect(flow.account.value).toBeNull()
   })
@@ -422,11 +425,16 @@ describe('useRedeemFlow', () => {
   })
 
   it('恢复订阅没确认解除：仍要先恢复，不能开通', async () => {
-    const { flow, net } = await toConfirm({ body: { ...MW_ELIGIBLE, subscription_is_delinquent: true } })
-    net.reply('/api/v1/public/cdk/recover-subscription', { body: { status: 'pending' } })
+    const { flow, net, storage } = await toConfirm({ body: { ...MW_ELIGIBLE, subscription_is_delinquent: true } })
+    expect(flow.canRecover.value).toBe(true)
+    net.reply('/api/v1/public/cdk/recover-subscription', { body: { status: 'pending', preflight: { ...MW_ELIGIBLE, preflight_token: 'pf_2', subscription_is_delinquent: true } } })
     await flow.recoverGrace()
     expect(flow.account.value?.delinquent).toBe(true)
     expect(flow.account.value?.recoveryRequired).toBe(true)
+    expect(flow.canRecover.value).toBe(false)
+    expect(flow.confirmView.value).toBe('recover')
+    expect(storage.getItem(KEY)).not.toContain('pf_1')
+    expect(storage.getItem(KEY)).not.toContain('pf_2')
     // 旧票已交出去，再点恢复也不发
     await flow.recoverGrace()
     expect(net.count('/api/v1/public/cdk/recover-subscription')).toBe(1)
@@ -532,5 +540,159 @@ describe('useRedeemFlow', () => {
     expect(timer.timers[0].cancel).toHaveBeenCalled()
     expect(flow.error.value?.kind).toBe('rejected')
     expect(net.count(REDEEM)).toBe(1)
+  })
+})
+
+describe('修复第 1 轮', () => {
+  it('提交途中刷新或关页，回来只能查结果', async () => {
+    const { flow, net, storage } = await toConfirm()
+    net.reply(REDEEM, 'hang')
+    void flow.redeem()
+    expect(flow.submitState.value).toBe('submitting')
+    expect(storage.getItem(KEY)).toContain('"submitUnknown":true')
+
+    const net2 = fakeFetch({ [REDEEM]: { body: MW_QUEUED } })
+    const flow2 = useRedeemFlow({ fetchFn: net2.fn, storage, now: () => NOW, every: manualEvery().every, deviceId: 'web-test-device' })
+    expect(flow2.restore(CODE)).toBe(true)
+    expect(flow2.screen.value).toBe('confirm')
+    expect(flow2.submitState.value).toBe('unknown')
+    expect(flow2.error.value?.kind).toBe('submit_unknown')
+    await flow2.redeem()
+    expect(net2.count(REDEEM)).toBe(0)
+  })
+
+  it('有明确结果后清掉提交标记：429 和其他被拒', async () => {
+    const { flow, net, storage } = await toConfirm()
+    net.reply(REDEEM, { status: 429, body: { error: 'too many requests' } })
+    await flow.redeem()
+    expect(storage.getItem(KEY)).toContain('"submitUnknown":false')
+    net.reply(REDEEM, { status: 409, body: { ...MW, error: '该账号正在其他服务商处理中' } })
+    await flow.redeem()
+    expect(flow.error.value?.kind).toBe('rejected')
+    expect(storage.getItem(KEY)).toContain('"submitUnknown":false')
+  })
+
+  it('不确定是否已提交时，重来和重新预览都不动作', async () => {
+    const { flow, net, storage } = await toConfirm()
+    net.reply(REDEEM, new TypeError('Failed to fetch'))
+    await flow.redeem()
+    expect(flow.submitState.value).toBe('unknown')
+    const before = net.calls.length
+    flow.reset()
+    await flow.preview('ANOTHER-CODE')
+    expect(flow.submitState.value).toBe('unknown')
+    expect(flow.screen.value).toBe('confirm')
+    expect(flow.code.value).toBe(CODE)
+    expect(storage.getItem(KEY)).toContain('"submitUnknown":true')
+    expect(net.calls.length).toBe(before)
+  })
+
+  it('提交中调 restore 直接返回 false，不改状态', async () => {
+    const { flow, net } = await toConfirm()
+    net.reply(REDEEM, 'hang')
+    void flow.redeem()
+    expect(flow.restore('')).toBe(false)
+    expect(flow.submitState.value).toBe('submitting')
+    expect(flow.screen.value).toBe('confirm')
+    expect(flow.code.value).toBe(CODE)
+  })
+
+  it('恢复订阅失败后刷新，不能拿旧票再发', async () => {
+    const RECOVER = '/api/v1/public/cdk/recover-subscription'
+    const { flow, net, storage } = await toConfirm({ body: { ...MW_ELIGIBLE, subscription_recovery_required: true } })
+    net.reply(RECOVER, new TypeError('Failed to fetch'))
+    await flow.recoverGrace()
+    expect(flow.canRecover.value).toBe(false)
+    expect(storage.getItem(KEY)).not.toContain('pf_1')
+
+    const net2 = fakeFetch({ [RECOVER]: { body: { status: 'cleared' } } })
+    const flow2 = useRedeemFlow({ fetchFn: net2.fn, storage, now: () => NOW, every: manualEvery().every, deviceId: 'web-test-device' })
+    flow2.restore(CODE)
+    expect(flow2.canRecover.value).toBe(false)
+    await flow2.recoverGrace()
+    expect(net2.count(RECOVER)).toBe(0)
+  })
+
+  it('恢复订阅遇到 429 把票还回去，还能再恢复', async () => {
+    const RECOVER = '/api/v1/public/cdk/recover-subscription'
+    const { flow, net, storage } = await toConfirm({ body: { ...MW_ELIGIBLE, subscription_recovery_required: true } })
+    net.reply(RECOVER, { status: 429, body: {} })
+    await flow.recoverGrace()
+    expect(flow.error.value?.kind).toBe('rate_limited')
+    expect(flow.canRecover.value).toBe(true)
+    expect(storage.getItem(KEY)).toContain('pf_1')
+  })
+
+  it('恢复订阅接口报错：清票，用恢复失败的文案', async () => {
+    const RECOVER = '/api/v1/public/cdk/recover-subscription'
+    const { flow, net, storage } = await toConfirm({ body: { ...MW_ELIGIBLE, subscription_recovery_required: true } })
+    net.reply(RECOVER, { status: 400, body: { error: 'bad' } })
+    await flow.recoverGrace()
+    expect(flow.canRecover.value).toBe(false)
+    expect(flow.error.value).toEqual({ kind: 'rejected', message: '暂时无法确认处理结果，请重新检测账号，不要重复取消。' })
+    expect(storage.getItem(KEY)).not.toContain('pf_1')
+  })
+
+  it('服务器没给原因的被拒用兜底文案', async () => {
+    const { flow, net } = await toConfirm()
+    net.reply(REDEEM, { status: 403, body: { ...MW } })
+    await flow.redeem()
+    expect(flow.error.value).toEqual({ kind: 'rejected', message: '这张卡密暂时不能开通。请稍后再试，或联系卖家。' })
+  })
+
+  it('服务器回复不完整时不说「没连上」', async () => {
+    const BAD = { kind: 'network', message: '服务器的回复不完整，请再试一次。' }
+    const net = fakeFetch({ [PREVIEW]: { body: { ...MW_PREVIEW, redemption_token: '' } } })
+    const { flow } = makeFlow(net)
+    await flow.preview(CODE)
+    expect(flow.error.value).toEqual(BAD)
+
+    const net2 = fakeFetch({ [PREVIEW]: { body: MW_PREVIEW }, [PREFLIGHT]: { body: { ...MW, account_checked: true, current_plan: 'free' } } })
+    const flow2 = makeFlow(net2).flow
+    await flow2.preview(CODE)
+    await flow2.preflight({ mode: 'session', session: SESSION_RAW })
+    expect(flow2.error.value).toEqual(BAD)
+    expect(flow2.screen.value).toBe('credential')
+  })
+
+  it('核对账号只在第 ②、③ 屏执行', async () => {
+    const { flow, net } = await toConfirm()
+    net.reply(REDEEM, { body: MW_QUEUED })
+    await flow.redeem()
+    expect(flow.screen.value).toBe('progress')
+    await flow.preflight({ mode: 'session', session: SESSION_RAW })
+    expect(net.count(PREFLIGHT)).toBe(1)
+    expect(flow.screen.value).toBe('progress')
+  })
+
+  it('confirmView 和开通的判断一致：当前套餐已满足算不能用', async () => {
+    const ok = await toConfirm()
+    expect(ok.flow.confirmView.value).toBe('ok')
+
+    const unchecked = await toConfirm({ body: { ...MW_ELIGIBLE, account_checked: false, current_plan: undefined, subscription_has_active: undefined } })
+    expect(unchecked.flow.confirmView.value).toBe('self_check')
+
+    const satisfied = await toConfirm({ body: { ...MW_ELIGIBLE, current_plan: 'plus', subscription_has_active: true } })
+    expect(satisfied.flow.blockingCode.value).toBe('')
+    expect(satisfied.flow.confirmView.value).toBe('blocked')
+    satisfied.net.reply(REDEEM, { body: MW_QUEUED })
+    await satisfied.flow.redeem()
+    expect(satisfied.net.count(REDEEM)).toBe(0)
+  })
+
+  it('restore 比对卡密时去掉首尾空白、不区分大小写', async () => {
+    const { storage } = await toConfirm()
+    const flow2 = useRedeemFlow({ fetchFn: fakeFetch().fn, storage, now: () => NOW, every: manualEvery().every, deviceId: 'd' })
+    expect(flow2.restore('  mw-plus-aaaa-bbbb ')).toBe(true)
+    expect(flow2.screen.value).toBe('confirm')
+  })
+
+  it('进第 ④ 屏后缓存里不再有预检票', async () => {
+    const { flow, net, storage } = await toConfirm()
+    expect(storage.getItem(KEY)).toContain('pf_1')
+    net.reply(REDEEM, { body: MW_QUEUED })
+    await flow.redeem()
+    expect(flow.screen.value).toBe('progress')
+    expect(storage.getItem(KEY)).not.toContain('pf_1')
   })
 })

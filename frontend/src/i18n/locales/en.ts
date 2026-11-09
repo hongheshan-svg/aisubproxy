@@ -501,6 +501,9 @@ export default {
       homeFormat: 'The code format is wrong. Check it and paste it again.',
       homeNotFound: 'This code was not found. Check it and paste it again.',
       homeNetwork: 'Could not connect. Check your network and try again.',
+      sessionInvalid: 'Your login info has expired. Go back to ChatGPT, refresh that page, then copy it again.',
+      rejected: 'This code cannot be activated right now. Try again later, or contact the seller.',
+      badReply: 'The server reply was incomplete. Please try again.',
     },
   },
 }

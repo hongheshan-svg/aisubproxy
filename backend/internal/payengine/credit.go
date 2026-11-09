@@ -31,31 +31,10 @@ const (
 	CardSavedUnknown = "unknown"   // 读不到已存卡，无法判断
 )
 
-// creditPlanTypes 是可以买点数的账号套餐类型（accounts/check 的 plan_type，比较时转小写）：Plus 与 Pro 各档。
-// 取值依据前端包与开通单的期望套餐类型，上线前要在测试账号上核对（见报告）。
-var creditPlanTypes = map[string]bool{"plus": true, "prolite": true, "pro": true, "promax": true}
-
-// defaultBillingCurrency 是账号接口没有返回计费币种时按什么算：前端包里缺省也按美元。
-// 按错了只会多放弃（地区币种对不上），打开支付页后还会再核对一次页面币种。
-const defaultBillingCurrency = "USD"
-
 // checkCredit 是点数单的账号检查。任一条件不满足就放弃：这时还没建结账会话、没取卡、没注资。
 func (s *Service) checkCredit(ctx context.Context, j *job, acc chatgpt.Account) error {
-	if strings.TrimSpace(acc.AccountID) == "" {
-		return abort("credit_account_unknown", "账号接口没有返回账号 ID，无法购买点数")
-	}
-	if !acc.HasActiveSubscription {
-		return abort("credit_no_subscription", "账号没有生效中的订阅：点数只卖给已订阅 Plus 或 Pro 的账号")
-	}
-	if pt := strings.ToLower(strings.TrimSpace(acc.PlanType)); !creditPlanTypes[pt] {
-		return abort("credit_plan_ineligible", "账号套餐类型 %q 不能买点数：只限 Plus 或 Pro", acc.PlanType)
-	}
-	switch acc.Structure {
-	case "personal":
-	case "":
-		return abort("credit_not_personal", "账号接口没有返回账号类型，无法确认是个人账号，不能买点数")
-	default:
-		return abort("credit_not_personal", "账号不是个人账号（%s），不能买点数", acc.Structure)
+	if f := creditAccountEligibility(acc); f != nil {
+		return f
 	}
 	delinquent := acc.IsDelinquent
 	if delinquent == nil {
@@ -68,18 +47,8 @@ func (s *Service) checkCredit(ctx context.Context, j *job, acc chatgpt.Account) 
 		}
 		delinquent = info.IsDelinquent
 	}
-	if delinquent == nil {
-		return abort("credit_delinquency_unknown", "账号接口与订阅接口都没有返回欠费状态，无法确认账号没有欠费")
-	}
-	if *delinquent {
-		return abort("credit_delinquent", "账号有欠费，不能买点数")
-	}
-	cur := acc.BillingCurrency
-	if cur == "" {
-		cur = defaultBillingCurrency
-	}
-	if !strings.EqualFold(cur, j.o.Currency) {
-		return abort("credit_currency_mismatch", "账号计费币种是 %s，与码的地区币种 %s 不一致：点数按账号计费币种付款", cur, j.o.Currency)
+	if f := creditBillingEligibility(acc, delinquent, j.o.Currency); f != nil {
+		return f
 	}
 	return nil
 }

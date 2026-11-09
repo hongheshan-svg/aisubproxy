@@ -553,8 +553,8 @@ func (s *Service) check(ctx context.Context, j *job) error {
 		s.snapshotCredit(ctx, j)
 		return nil
 	}
-	if acc.HasActiveSubscription {
-		return abort("already_subscribed", "账号已有有效订阅（%s），不能直接开通", acc.PlanType)
+	if f := subscriptionEligibility(acc); f != nil {
+		return f
 	}
 	return nil
 }

@@ -1,14 +1,12 @@
 <template>
-  <div class="u-page">
-    <UserPageHeader :eyebrow="t('hero.batchEyebrow')" :title="t('batch.title')" :subtitle="t('batch.subtitle')" />
-    <div class="u-main max-w-3xl">
-
-      <RedeemModeTabs />
+  <UserShell>
+    <UserPageHeader :title="t('batch.title')" :subtitle="t('batch.subtitle')" back />
+    <main class="u-page batch-page">
       <p class="hint-line text-sm text-muted mb-3">{{ t('xPremium.batchHint') }}</p>
       <p class="hint-line text-sm text-muted mb-3">{{ t('grok.batchHint') }}</p>
       <p class="hint-line text-sm text-muted mb-3">{{ t('claude.batchHint') }}</p>
 
-      <div class="card space-y-4">
+      <div class="u-card space-y-4">
         <div class="flex items-start gap-3 pb-3 border-b bd">
           <div
             class="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 text-white text-[10px] font-bold leading-tight text-center"
@@ -31,7 +29,7 @@
             <textarea
               v-model="cdkText"
               rows="6"
-              class="input mono text-sm min-h-[120px]"
+              class="u-input u-mono text-sm min-h-[120px]"
               :placeholder="t('batch.cdkPlaceholder')"
             />
             <p class="text-xs text-muted mt-1">
@@ -47,7 +45,7 @@
             <div class="flex gap-2">
               <button
                 type="button"
-                class="btn-secondary !py-1.5 flex-1"
+                class="u-btn-secondary !py-1.5 flex-1"
                 :class="{ 'ring-2': credMode === 'session' }"
                 @click="credMode = 'session'"
               >
@@ -55,7 +53,7 @@
               </button>
               <button
                 type="button"
-                class="btn-secondary !py-1.5 flex-1"
+                class="u-btn-secondary !py-1.5 flex-1"
                 :class="{ 'ring-2': credMode === 'mailbox' }"
                 @click="credMode = 'mailbox'"
               >
@@ -78,7 +76,7 @@
             <textarea
               v-model="mailboxText"
               rows="6"
-              class="input mono text-sm min-h-[120px]"
+              class="u-input u-mono text-sm min-h-[120px]"
               :placeholder="t('batch.mailboxPlaceholder')"
             />
             <p class="text-xs text-muted">
@@ -106,7 +104,7 @@
 
           <button
             type="button"
-            class="btn-primary w-full"
+            class="u-btn-primary w-full"
             :disabled="verifying || parsedCdks.length === 0"
             @click="handleVerifyBatch"
           >
@@ -152,7 +150,7 @@
             <textarea
               v-model="mailboxText"
               rows="4"
-              class="input mono text-sm"
+              class="u-input u-mono text-sm"
               :placeholder="t('batch.mailboxPlaceholder')"
             />
             <p class="text-xs text-muted">{{ t('batch.mailboxRecognized', { n: parsedMailboxes.length }) }}</p>
@@ -194,7 +192,7 @@
                 ref="sessionBoxRef"
                 v-model="sessionInput"
                 rows="5"
-                class="input mono text-xs min-h-[100px]"
+                class="u-input u-mono text-xs min-h-[100px]"
                 :placeholder="t('batch.sessionPlaceholder')"
                 :disabled="submitting || autoSubmitting"
                 @input="sessionError = ''"
@@ -212,7 +210,7 @@
                 ref="sessionBoxRef"
                 v-model="sessionInput"
                 rows="3"
-                class="input mono text-xs min-h-[72px]"
+                class="u-input u-mono text-xs min-h-[72px]"
                 :placeholder="t('batch.mailboxLinePlaceholder')"
                 :disabled="submitting || autoSubmitting"
                 @input="sessionError = ''"
@@ -222,7 +220,7 @@
             <div class="flex flex-col gap-2">
               <button
                 type="button"
-                class="btn-primary w-full"
+                class="u-btn-primary w-full"
                 :disabled="!sessionInput.trim() || submitting || autoSubmitting"
                 @click="handleSubmitSession"
               >
@@ -231,8 +229,7 @@
               <button
                 v-if="credMode === 'session' ? sessionPool.length > 0 : mailboxPool.length > 0"
                 type="button"
-                class="btn-secondary w-full !border-0 text-white"
-                style="background: var(--good, #16a34a)"
+                class="u-btn-primary w-full"
                 :disabled="submitting || autoSubmitting"
                 @click="handleAutoSubmitAll"
               >
@@ -318,26 +315,28 @@
           <button
             v-if="stats.ok > 0"
             type="button"
-            class="btn-secondary w-full"
+            class="u-btn-secondary w-full"
             style="color: var(--good, #16a34a); border-color: color-mix(in srgb, var(--good, #16a34a) 40%, var(--brd))"
             @click="exportBatchSuccess"
           >
             {{ t('batch.exportOk', { n: stats.ok }) }}
           </button>
-          <button type="button" class="btn-secondary w-full" @click="resetAll">
+          <button type="button" class="u-btn-secondary w-full" @click="resetAll">
             {{ t('batch.reset') }}
           </button>
         </template>
       </div>
-    </div>
-  </div>
+      <UserFooter />
+    </main>
+  </UserShell>
 </template>
 
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import UserPageHeader from '../../components/UserPageHeader.vue'
-import RedeemModeTabs from '../../components/RedeemModeTabs.vue'
+import UserShell from '../../components/redeem/UserShell.vue'
+import UserFooter from '../../components/redeem/UserFooter.vue'
 import ExcelImportBlock from '../../components/ExcelImportBlock.vue'
 import { chunkTokens, nextPollPlan, parsePollResponse } from '../../lib/batch-poll'
 import SessionHelp from '../../components/SessionHelp.vue'
@@ -1179,6 +1178,7 @@ onUnmounted(() => stopAllPolls())
 </script>
 
 <style scoped>
+.user-ui .batch-page { max-width: 768px; }
 .text-good { color: var(--good, #16a34a); }
 .text-warn { color: var(--warn, #d97706); }
 .text-err { color: var(--err, #dc2626); }

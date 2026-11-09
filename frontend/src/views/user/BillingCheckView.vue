@@ -1,114 +1,84 @@
 <template>
-  <div class="u-page">
-    <UserPageHeader :eyebrow="t('hero.billingEyebrow')" :title="t('redeemTabs.billing')" :subtitle="t('hero.billingSub')" />
-    <div class="u-main max-w-3xl space-y-6">
-      <RedeemModeTabs class="!mb-0" />
-      <div class="card space-y-4">
-        <div class="flex gap-2">
-          <button
-            type="button"
-            class="btn-secondary !py-1.5"
-            :class="{ 'ring-2 ring-offset-1': mode === 'cdk' }"
-            style="--tw-ring-color: var(--primary)"
-            @click="mode = 'cdk'"
-          >卡密查询</button>
-          <button
-            type="button"
-            class="btn-secondary !py-1.5"
-            :class="{ 'ring-2 ring-offset-1': mode === 'session' }"
-            style="--tw-ring-color: var(--primary)"
-            @click="mode = 'session'"
-          >Session 查询</button>
+  <UserShell>
+    <UserPageHeader :title="t('redeemTabs.billing')" :subtitle="t('hero.billingSub')" back />
+    <main class="u-page bill">
+      <div class="u-card bill-stack">
+        <div class="bill-modes">
+          <button type="button" class="u-btn-secondary bill-mode" :class="{ 'is-on': mode === 'cdk' }" :aria-pressed="mode === 'cdk'" @click="mode = 'cdk'">卡密查询</button>
+          <button type="button" class="u-btn-secondary bill-mode" :class="{ 'is-on': mode === 'session' }" :aria-pressed="mode === 'session'" @click="mode = 'session'">Session 查询</button>
         </div>
 
         <template v-if="mode === 'cdk'">
-          <div class="rounded-xl bg-soft p-4 text-sm text-muted">
-            输入兑换用的 CDK。系统使用兑换预检时保存的 session 去拉取账单（无需再贴 token）。
-            若从未用 session 完成过兑换，请改用「Session 查询」。
-          </div>
-          <div class="form-group">
-            <label>CDK 卡密</label>
+          <p class="u-help bill-note">
+            输入兑换用的 CDK。系统会使用兑换时保存的登录信息去拉取账单（无需再粘贴）。
+            若从未用 Session 完成过兑换，请改用「Session 查询」。
+          </p>
+          <label class="bill-label">
+            CDK 卡密
             <input
               v-model="cdkCode"
-              class="input mono"
+              class="u-input u-mono"
               placeholder="SXC-XXXX-XXXX-XXXX-XXXX"
               @keyup.enter="query"
             />
-          </div>
+          </label>
         </template>
 
         <template v-else>
-          <div class="rounded-xl bg-soft p-4 text-sm text-muted">
+          <p class="u-help bill-note">
             <SessionHelp />
-            <span class="block mt-1">{{ t('sessionHelp.tokenRule') }}</span>
-          </div>
-          <div class="form-group">
-            <label>完整 Session JSON</label>
+            <span class="bill-block">{{ t('sessionHelp.tokenRule') }}</span>
+          </p>
+          <label class="bill-label">
+            完整 Session 内容
             <textarea
               v-model="tokenInput"
-              class="input h-36 font-mono text-xs"
-              placeholder='{"user":{...},"accessToken":"eyJ...","sessionToken":"eyJ..."}'
+              class="u-input u-mono bill-area"
+              placeholder="粘贴完整的 Session 内容"
             />
-          </div>
+          </label>
         </template>
 
-        <div v-if="error" class="alert alert-error">{{ error }}</div>
-        <button
-          class="btn-primary w-full"
-          :disabled="loading || !canSubmit"
-          @click="query"
-        >
+        <p v-if="error" class="u-error" role="alert">{{ error }}</p>
+        <button class="u-btn-primary bill-submit" :disabled="loading || !canSubmit" @click="query">
           {{ loading ? '查询中…' : '查询订阅与账单' }}
         </button>
       </div>
 
-      <div v-if="summary" class="card space-y-3">
-        <div class="flex items-center justify-between">
-          <h2 class="text-xl font-semibold text-ink">订阅摘要</h2>
-          <el-tag v-if="authSource" size="small" type="info">{{ authSource === 'cdk' ? '来自卡密绑定' : '来自 session' }}</el-tag>
+      <section v-if="summary" class="u-card bill-stack bill-gap">
+        <div class="bill-row-head">
+          <h2 class="bill-h">订阅摘要</h2>
+          <span v-if="authSource" class="u-help bill-src">{{ authSource === 'cdk' ? '来自卡密绑定' : '来自 Session' }}</span>
         </div>
-        <div class="grid sm:grid-cols-2 gap-2 text-sm">
-          <div class="flex justify-between gap-2 border-b bd py-2">
-            <span class="text-muted">方案</span>
-            <b class="text-ink">{{ planLabel }}</b>
-          </div>
-          <div class="flex justify-between gap-2 border-b bd py-2">
-            <span class="text-muted">有效订阅</span>
-            <b>{{ summary.has_active_subscription ? '是' : '否' }}</b>
-          </div>
-          <div class="flex justify-between gap-2 border-b bd py-2">
-            <span class="text-muted">自动续费</span>
-            <b>{{ summary.will_renew == null ? '—' : (summary.will_renew ? '开启' : '已关闭') }}</b>
-          </div>
-          <div class="flex justify-between gap-2 border-b bd py-2">
-            <span class="text-muted">计费</span>
-            <b class="mono">{{ summary.billing_currency || '—' }} {{ summary.billing_period || '' }}</b>
-          </div>
-          <div class="flex justify-between gap-2 border-b bd py-2 sm:col-span-2">
-            <span class="text-muted">到期 / 续费</span>
-            <b class="mono text-sm">{{ summary.active_until || summary.expires_at || summary.renews_at || '—' }}</b>
-          </div>
-        </div>
-      </div>
+        <dl class="bill-list">
+          <div class="bill-item"><dt>方案</dt><dd>{{ planLabel }}</dd></div>
+          <div class="bill-item"><dt>有效订阅</dt><dd>{{ summary.has_active_subscription ? '是' : '否' }}</dd></div>
+          <div class="bill-item"><dt>自动续费</dt><dd>{{ summary.will_renew == null ? '—' : (summary.will_renew ? '开启' : '已关闭') }}</dd></div>
+          <div class="bill-item"><dt>计费</dt><dd class="u-mono">{{ summary.billing_currency || '—' }} {{ summary.billing_period || '' }}</dd></div>
+          <div class="bill-item"><dt>到期 / 续费</dt><dd class="u-mono">{{ summary.active_until || summary.expires_at || summary.renews_at || '—' }}</dd></div>
+        </dl>
+      </section>
 
-      <div v-if="invoices" class="card space-y-3">
-        <h2 class="text-xl font-semibold text-ink">付款账单（{{ invoices.length }}）</h2>
-        <p v-if="billingNote" class="text-sm text-subtle">{{ billingNote }}</p>
-        <p v-if="!invoices.length" class="text-sm text-muted">无付款账单记录。</p>
-        <div v-for="inv in invoices" :key="inv.id || inv.number" class="rounded-xl bg-soft p-4 text-sm space-y-2">
-          <div class="flex flex-wrap items-center justify-between gap-2">
-            <b class="mono">{{ formatAmount(inv.total, inv.currency) }}</b>
-            <span class="text-muted">{{ inv.paid ? '已付' : (inv.status || '未付') }} · {{ formatTs(inv.created) }}</span>
+      <section v-if="invoices" class="u-card bill-stack bill-gap">
+        <h2 class="bill-h">付款账单（{{ invoices.length }}）</h2>
+        <p v-if="billingNote" class="u-help bill-note">{{ billingNote }}</p>
+        <p v-if="!invoices.length" class="u-help bill-note">无付款账单记录。</p>
+        <div v-for="inv in invoices" :key="inv.id || inv.number" class="bill-inv">
+          <div class="bill-inv-head">
+            <b class="u-mono">{{ formatAmount(inv.total, inv.currency) }}</b>
+            <span class="u-help bill-note">{{ inv.paid ? '已付' : (inv.status || '未付') }} · {{ formatTs(inv.created) }}</span>
           </div>
-          <div v-if="inv.description" class="text-subtle text-xs">{{ inv.description }}</div>
-          <div class="flex gap-3">
-            <a v-if="inv.hosted_invoice_url" class="app-link" :href="inv.hosted_invoice_url" target="_blank" rel="noopener">账单链接</a>
-            <a v-if="inv.invoice_pdf" class="app-link" :href="inv.invoice_pdf" target="_blank" rel="noopener">PDF</a>
+          <div v-if="inv.description" class="u-help bill-note">{{ inv.description }}</div>
+          <div class="bill-links">
+            <a v-if="inv.hosted_invoice_url" class="u-link" :href="inv.hosted_invoice_url" target="_blank" rel="noopener">账单链接</a>
+            <a v-if="inv.invoice_pdf" class="u-link" :href="inv.invoice_pdf" target="_blank" rel="noopener">PDF</a>
           </div>
         </div>
-      </div>
-    </div>
-  </div>
+      </section>
+
+      <UserFooter />
+    </main>
+  </UserShell>
 </template>
 
 <script setup lang="ts">
@@ -116,7 +86,8 @@ import { computed, ref, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import UserPageHeader from '../../components/UserPageHeader.vue'
-import RedeemModeTabs from '../../components/RedeemModeTabs.vue'
+import UserShell from '../../components/redeem/UserShell.vue'
+import UserFooter from '../../components/redeem/UserFooter.vue'
 import SessionHelp from '../../components/SessionHelp.vue'
 import { pickBillingNote } from '../../lib/billingNote'
 const { t } = useI18n({ useScope: 'global' })
@@ -202,3 +173,26 @@ async function query() {
   }
 }
 </script>
+
+<style scoped>
+.bill-stack { display: flex; flex-direction: column; gap: 14px; }
+.bill-gap { margin-top: 16px; }
+.bill-modes { display: flex; gap: 8px; }
+.bill-mode { flex: 1; font-size: 16px; padding: 8px 12px; }
+.bill-mode.is-on { background: var(--u-tint); }
+.bill-note { margin: 0; }
+.bill-block { display: block; margin-top: 4px; }
+.bill-label { display: flex; flex-direction: column; gap: 6px; font-size: 15px; font-weight: 600; }
+.bill-area { min-height: 144px; font-size: 14px; resize: vertical; }
+.bill-submit { width: 100%; }
+.bill-row-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.bill-h { margin: 0; font-size: 18px; font-weight: 700; }
+.bill-src { margin: 0; }
+.bill-list { margin: 0; display: flex; flex-direction: column; }
+.bill-item { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--u-line); font-size: 15px; }
+.bill-item dt { color: var(--u-muted); }
+.bill-item dd { margin: 0; font-weight: 600; text-align: right; word-break: break-all; }
+.bill-inv { background: var(--u-tint); border-radius: 14px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; font-size: 15px; }
+.bill-inv-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+.bill-links { display: flex; gap: 16px; }
+</style>

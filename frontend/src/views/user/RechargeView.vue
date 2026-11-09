@@ -154,7 +154,7 @@ onUnmounted(() => {
 
 <template>
   <UserShell>
-    <UserPageHeader :title="headerTitle" :subtitle="screen === 'code' ? t('redeemUi.home.subtitle') : ''" compact />
+    <UserPageHeader :title="headerTitle" :subtitle="screen === 'code' ? t('redeemUi.home.subtitle') : ''" back />
     <main class="u-page recharge">
       <ProgressTicks :code-label="codeLabel" :current="ticks.current" :done="ticks.done" />
 

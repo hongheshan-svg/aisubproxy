@@ -12,6 +12,10 @@ vi.mock('../../components/UserPageHeader.vue', () => ({
   default: defineComponent({ props: ['title', 'subtitle'], setup: (p: any) => () => h('header', [p.title, p.subtitle]) }),
 }))
 
+// 真实页头要引入语言/明暗切换按钮（碰 document），换成替身，页头本身用 importActual 取回
+vi.mock('../../components/LanguageToggle.vue', () => ({ default: defineComponent({ setup: () => () => h('i', { class: 'lang-stub' }) }) }))
+vi.mock('../../components/ThemeToggle.vue', () => ({ default: defineComponent({ setup: () => () => h('i', { class: 'theme-stub' }) }) }))
+
 // 查询模块引入全局 i18n（加载时碰 document），首页渲染用不到它，换成替身
 vi.mock('../../i18n', () => ({ i18n: { global: { t: (k: string) => k } } }))
 
@@ -279,5 +283,50 @@ describe('批量结果的失败原因', () => {
 
   it('CSV 行列不变，message 列带原因，引号转义', () => {
     expect(csvRow(row)).toBe('"C1","failed","0","","","","使用失败（原因：bad, ""quoted""）"')
+  })
+})
+
+describe('用户端页头', () => {
+  async function header(props: Record<string, unknown> = {}) {
+    const Real = (await vi.importActual<any>('../../components/UserPageHeader.vue')).default
+    return render(Real, 'zh', { title: '标题', ...props })
+  }
+
+  it('有 logoVersion 时渲染 Logo 图片，没有时不渲染 img', async () => {
+    const { siteBrand } = await import('../../theme')
+    const old = siteBrand.value
+    try {
+      siteBrand.value = { ...old, logoVersion: 'v123' }
+      expect(await header()).toContain('<img src="/api/v1/public/site/logo?v=v123"')
+      siteBrand.value = { ...old, logoVersion: '' }
+      expect(await header()).not.toContain('<img')
+    } finally {
+      siteBrand.value = old
+    }
+  })
+
+  it('back 为真时有返回首页链接，默认没有', async () => {
+    const withBack = await header({ back: true })
+    expect(withBack).toContain('href="/"')
+    expect(text(withBack)).toContain('返回首页')
+    expect(text(await header())).not.toContain('返回首页')
+  })
+
+  it('页头不含皮肤选择（皮肤选择只在后台，这条防回退）', async () => {
+    const html = await header({ back: true })
+    expect(html).not.toMatch(/skin-picker|SkinPicker|data-skin-option/i)
+  })
+})
+
+describe('用户端页脚', () => {
+  it('三个链接：常见问题、批量兑换、账单查询；首页内用 #help，其他页用 /#help', async () => {
+    const UserFooter = (await import('../../components/redeem/UserFooter.vue')).default
+    const other = await render(UserFooter)
+    expect(other).toContain('href="/#help"')
+    expect(other).toContain('href="/batch"')
+    expect(other).toContain('href="/billing"')
+    expect(text(other)).toContain('常见问题')
+    const home = await render(UserFooter, 'zh', { home: true })
+    expect(home).toContain('href="#help"')
   })
 })

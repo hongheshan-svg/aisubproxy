@@ -5,6 +5,7 @@ import { useRouter } from 'vue-router'
 import UserShell from '../components/redeem/UserShell.vue'
 import UserPageHeader from '../components/UserPageHeader.vue'
 import CodeEntry from '../components/redeem/CodeEntry.vue'
+import UserFooter from '../components/redeem/UserFooter.vue'
 import CodeStatusCard from '../components/redeem/CodeStatusCard.vue'
 import SessionHelp from '../components/SessionHelp.vue'
 import { useCodeLookup } from '../composables/useCodeLookup'
@@ -29,11 +30,6 @@ function onReset() {
 
 function goRedeem(c: string) {
   router.push(`/recharge?code=${encodeURIComponent(c)}`)
-}
-
-function toFaq(e: Event) {
-  e.preventDefault()
-  document.getElementById('help')?.scrollIntoView({ behavior: 'smooth' })
 }
 
 // session 和 claude 的答案是固定说明（带链接或两段），在模板里单独渲染
@@ -80,11 +76,7 @@ const faqs = computed(() => ['entry', 'pending', 'session', 'claude', 'used', 'f
         </details>
       </section>
 
-      <footer class="home-foot">
-        <a href="#help" class="u-link" @click="toFaq">{{ t('redeemUi.home.footerFaq') }}</a>
-        <router-link to="/batch" class="u-link">{{ t('redeemUi.home.footerBatch') }}</router-link>
-        <router-link to="/billing" class="u-link">{{ t('redeemUi.home.footerBilling') }}</router-link>
-      </footer>
+      <UserFooter home />
     </main>
   </UserShell>
 </template>
@@ -102,5 +94,4 @@ const faqs = computed(() => ['entry', 'pending', 'session', 'claude', 'used', 'f
 details[open] > .faq-q::after { content: '−'; }
 .faq-a { margin-top: 10px; font-size: 15px; color: var(--u-muted); }
 .faq-a p { margin: 0 0 8px; }
-.home-foot { margin-top: 32px; display: flex; flex-wrap: wrap; gap: 8px 20px; font-size: 14px; }
 </style>

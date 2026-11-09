@@ -61,6 +61,14 @@ describe('买家可见文字不含内部用语', () => {
     expect(found, `模板命中：\n${found.join('\n')}`).toEqual([])
   })
 
+  it('账单页模板和 SessionHelp 的中文文案里没有单独的「Session」', () => {
+    const tpl = templateOf(readFileSync(join(SRC, 'views/user/BillingCheckView.vue'), 'utf8'))
+    expect(tpl.match(/.*Session(?!Help).*/g) ?? []).toEqual([])
+    const help: string[] = []
+    flatten((zh as any).sessionHelp, 'zh.sessionHelp', help)
+    expect(help.filter(([, v]) => v.includes('Session')).map(([k]) => k)).toEqual([])
+  })
+
   for (const [name, messages] of [['zh', zh], ['en', en]] as const) {
     it(`${name} 语言包相关子树里没有禁用词`, () => {
       const entries: Array<[string, string]> = []

@@ -28,7 +28,7 @@ import AfterSaleResult from '../../components/AfterSaleResult.vue'
 import { lookupAftersale } from '../../lib/aftersaleClient'
 import { batchMessage, csvRow } from '../../lib/aftersale'
 
-const SESSION_TEXT = '先在浏览器中登录需要操作的 ChatGPT 账号，再打开 chatgpt.com/api/auth/session，复制完整 JSON。Session 包含账号凭据，请仅在你确认可信的对应服务页使用，并按页面提示核对目标账号。'
+const SESSION_TEXT = '先在浏览器中登录需要操作的 ChatGPT 账号，再打开 chatgpt.com/api/auth/session，复制完整 JSON。登录信息包含账号凭据，请仅在你确认可信的对应服务页使用，并按页面提示核对目标账号。'
 const CLAUDE_TEXT = '填写目标组织的 Organization ID，格式为 UUID。两次输入必须一致，并确认目标账号目前为免费账号。该流程使用 Organization ID。'
 
 async function render(comp: any, locale: 'zh' | 'en' = 'zh', props: Record<string, unknown> = {}) {

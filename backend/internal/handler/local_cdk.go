@@ -383,7 +383,7 @@ func localCDKReady(c *gin.Context, cs provider.CardSupply, row db.LocalCDK) bool
 	return false
 }
 
-// localCDKPreflight 预检：不调 ZovoCard、不落库。会只读地核对一次买家账号（见 inspectLocalAccount），
+// localCDKPreflight 预检：不调服务商、不落库。会只读地核对一次买家账号（见 inspectLocalAccount），
 // 账号符合或暂时查不了才把会话封进预检令牌；账号不符合不发令牌，兑换接口自然拒绝。
 func localCDKPreflight(c *gin.Context, cs provider.CardSupply, body map[string]any) {
 	c.Header("Cache-Control", "no-store")

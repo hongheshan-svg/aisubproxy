@@ -62,6 +62,9 @@
 }
 
 /* 居中一栏，最宽 520px，内容左对齐 */
+.user-ui input[type='checkbox'],
+.user-ui input[type='radio'] { accent-color: var(--u-primary); }
+
 .user-ui .u-page {
   box-sizing: border-box;
   width: 100%;

@@ -74,7 +74,8 @@ function submit() {
     emit('submit', { credential: { mode: 'session', session }, agreeCreditTerms: agreedTerms.value })
   } else {
     const r = checkPastedSession(raw.value, { now: Date.now() })
-    if (!r.ok) return
+    // 粘贴之后、点击之前登录信息可能刚好过期：不能静默返回，要和 SessionPasteBox 一样给出原因
+    if (!r.ok) { localError.value = t(`redeemUi.paste.${r.problem}`); return }
     emit('submit', { credential: { mode: 'session', session: r.value }, agreeCreditTerms: agreedTerms.value })
   }
 }

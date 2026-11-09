@@ -155,3 +155,28 @@ describe('DeviceGuide', () => {
     expect(html).toContain('登录信息相当于账号钥匙')
   })
 })
+
+describe('第 ② 屏：粘贴后、点击前登录信息过期', () => {
+  // 项目没有 DOM 环境（无 jsdom / happy-dom），也不新装依赖：渲染后直接调组件的 submit()，检查 localError 和 submit 事件。
+  // localError 就是 data-testid="credential-error" 那一行显示的内容（shownError = localError || error.message）
+  it('点击时按当下时间重查，过期就给出提示、不发出 submit', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
+    try {
+      const session = JSON.stringify({ user: { email: 'bun@example.com' }, sessionToken: 'fake-token', expires: '2026-01-01T01:00:00Z' })
+      const onSubmit = vi.fn()
+      let state: any
+      const app = createSSRApp(defineComponent({ render: () => h(CredentialStep, { ...props(mwNoSub), onSubmit }) }))
+      app.mixin({ created() { if ((this as any).$.type === CredentialStep) { state = (this as any).$.setupState; Object.assign(state, { raw: session }) } } })
+      app.use(createI18n({ legacy: false, globalInjection: true, locale: 'zh', fallbackLocale: 'zh', messages: { zh, en } }))
+      const html = await renderToString(app)
+      expect(html).not.toMatch(/data-testid="credential-next"[^>]*disabled/)
+      vi.setSystemTime(new Date('2026-01-01T02:00:00Z'))
+      state.submit()
+      expect(state.localError).toBe(zh.redeemUi.paste.expired)
+      expect(onSubmit).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})

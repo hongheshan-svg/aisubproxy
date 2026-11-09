@@ -4,8 +4,8 @@ export default {
 
   sessionHelp: {
     before: '先在浏览器中登录需要操作的 ChatGPT 账号，再打开 ',
-    after: '，复制完整 JSON。Session 包含账号凭据，请仅在你确认可信的对应服务页使用，并按页面提示核对目标账号。',
-    tokenRule: '请粘贴完整的 Session 内容，不能只填其中一段凭据。',
+    after: '，复制完整 JSON。登录信息包含账号凭据，请仅在你确认可信的对应服务页使用，并按页面提示核对目标账号。',
+    tokenRule: '请粘贴完整的登录信息，不能只填其中一段凭据。',
   },
   claude: {
     credential: '填写 Claude Organization ID',

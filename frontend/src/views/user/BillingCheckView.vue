@@ -5,13 +5,13 @@
       <div class="u-card bill-stack">
         <div class="bill-modes">
           <button type="button" class="u-btn-secondary bill-mode" :class="{ 'is-on': mode === 'cdk' }" :aria-pressed="mode === 'cdk'" @click="mode = 'cdk'">卡密查询</button>
-          <button type="button" class="u-btn-secondary bill-mode" :class="{ 'is-on': mode === 'session' }" :aria-pressed="mode === 'session'" @click="mode = 'session'">Session 查询</button>
+          <button type="button" class="u-btn-secondary bill-mode" :class="{ 'is-on': mode === 'session' }" :aria-pressed="mode === 'session'" @click="mode = 'session'">登录信息查询</button>
         </div>
 
         <template v-if="mode === 'cdk'">
           <p class="u-help bill-note">
             输入兑换用的 CDK。系统会使用兑换时保存的登录信息去拉取账单（无需再粘贴）。
-            若从未用 Session 完成过兑换，请改用「Session 查询」。
+            若从未用登录信息完成过兑换，请改用「登录信息查询」。
           </p>
           <label class="bill-label">
             CDK 卡密
@@ -30,11 +30,11 @@
             <span class="bill-block">{{ t('sessionHelp.tokenRule') }}</span>
           </p>
           <label class="bill-label">
-            完整 Session 内容
+            完整登录信息
             <textarea
               v-model="tokenInput"
               class="u-input u-mono bill-area"
-              placeholder="粘贴完整的 Session 内容"
+              placeholder="粘贴完整的登录信息"
             />
           </label>
         </template>
@@ -48,7 +48,7 @@
       <section v-if="summary" class="u-card bill-stack bill-gap">
         <div class="bill-row-head">
           <h2 class="bill-h">订阅摘要</h2>
-          <span v-if="authSource" class="u-help bill-src">{{ authSource === 'cdk' ? '来自卡密绑定' : '来自 Session' }}</span>
+          <span v-if="authSource" class="u-help bill-src">{{ authSource === 'cdk' ? '来自卡密绑定' : '来自登录信息' }}</span>
         </div>
         <dl class="bill-list">
           <div class="bill-item"><dt>方案</dt><dd>{{ planLabel }}</dd></div>

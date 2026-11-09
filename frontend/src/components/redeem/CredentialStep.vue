@@ -118,6 +118,8 @@ function submit() {
 .step-check { min-height: 48px; display: flex; gap: 10px; align-items: flex-start; font-size: 15px; color: var(--u-ink); }
 .step-check input { margin-top: 4px; width: 18px; height: 18px; }
 .step-next { width: 100%; gap: 10px; }
+/* 组织 ID 的格式提示很长，375 宽下用小一号字才显示得全 */
+input[data-testid^='claude-org']::placeholder { font-size: 13px; }
 .step-spin {
   width: 18px; height: 18px; border-radius: 50%;
   border: 3px solid currentColor; border-right-color: transparent;

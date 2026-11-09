@@ -585,6 +585,10 @@ export default {
       daily_limit: '代理换码已达今日上限（{limit} 张），请联系管理员',
       unavailable: '换码暂时不可用，请稍后再试',
       outcome_unknown: '发码结果不明，已转人工核对，请勿重试',
+      code_unrecognized: '无法识别的卡密',
+      service_unavailable: '兑换暂时不可用，请稍后再试',
+      busy: '该卡密正在处理中，请勿重复提交',
+      not_eligible_unpaid: '不符合换码条件（需充值失败且未发起支付）',
     },
   },
   // 账单查询页（/billing）。errors.* 的键是后端 error_code。

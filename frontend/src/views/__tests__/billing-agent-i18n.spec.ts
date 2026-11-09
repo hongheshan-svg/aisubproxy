@@ -108,6 +108,8 @@ const SWAP_CODES = [
   'rate_limited', 'disabled', 'invalid_request', 'locked', 'wrong_password', 'code_required', 'provider_unsupported',
   'code_not_found', 'no_failed_record', 'charge_unconfirmed', 'already_succeeded', 'not_eligible', 'plan_unknown',
   'region_unknown', 'conflict', 'daily_limit', 'unavailable', 'outcome_unknown',
+  // 本站码（MarsWallex）路径和分派层新增的码
+  'code_unrecognized', 'service_unavailable', 'busy', 'not_eligible_unpaid',
 ]
 const BILLING_CODES = ['invalid_request', 'input_required', 'session_invalid', 'lookup_failed', 'binding_not_found', 'billing_unavailable']
 
@@ -135,6 +137,9 @@ describe('错误码都有中英文文案', () => {
     expect(g.t('agentSwap.errors.locked', { retry_after_minutes: 37 })).toBe('换码口令错误次数过多，已暂停换码，请 37 分钟后再试')
     expect(g.t('agentSwap.errors.daily_limit', { limit: 20 })).toBe('代理换码已达今日上限（20 张），请联系管理员')
     expect(g.t('agentSwap.errors.wrong_password')).toBe('密码错误')
+    expect(g.t('agentSwap.errors.code_unrecognized')).toBe('无法识别的卡密')
+    expect(g.t('agentSwap.errors.busy')).toBe('该卡密正在处理中，请勿重复提交')
+    expect(g.t('agentSwap.errors.not_eligible_unpaid')).toBe('不符合换码条件（需充值失败且未发起支付）')
     expect(g.t('billingCheck.errors.binding_not_found')).toBe('未找到该卡密绑定的账号。请确认兑换时使用了 session 凭证，或改用直接粘贴 session 查询。')
     expect(g.t('billingCheck.errors.billing_unavailable')).toBe('账单服务暂时不可用，请稍后再试，或改用直接粘贴 session 查询。')
   })

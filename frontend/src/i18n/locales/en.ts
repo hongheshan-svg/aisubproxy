@@ -585,6 +585,10 @@ export default {
       daily_limit: 'The daily reissue limit ({limit}) has been reached. Contact the administrator.',
       unavailable: 'Reissue is temporarily unavailable. Try again later.',
       outcome_unknown: 'The outcome of issuing is unknown and has been sent for manual review. Do not retry.',
+      code_unrecognized: 'That code is not recognized. Check it and try again.',
+      service_unavailable: 'Redemption is temporarily unavailable. Try again later.',
+      busy: 'This code is being processed. Do not submit it again.',
+      not_eligible_unpaid: 'Not eligible for reissue. The top-up must have failed before any payment was started.',
     },
   },
   // Billing page. Keys under errors.* are the backend error_code values.

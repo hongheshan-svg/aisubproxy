@@ -881,12 +881,12 @@ func localCDKExchange(c *gin.Context, cs provider.CardSupply, code, ip string) {
 		err = db.ErrLocalCDKNotFound
 	}
 	if errors.Is(err, db.ErrLocalCDKNotFound) {
-		c.JSON(http.StatusNotFound, gin.H{"error": "本站未找到该完整卡密（仅支持本站发过的码）"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "本站未找到该完整卡密（仅支持本站发过的码）", "error_code": "code_not_found"})
 		return
 	}
 	if err != nil {
 		log.Printf("[local-cdk] 查询码失败: %v", err)
-		localReply(c, http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试"})
+		localReply(c, http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试", "error_code": "unavailable"})
 		return
 	}
 	codeHash := db.HashCDKCode(norm)
@@ -896,44 +896,44 @@ func localCDKExchange(c *gin.Context, cs provider.CardSupply, code, ip string) {
 	}
 	unlock, ok := lockLocalCDK(row.ID)
 	if !ok {
-		localReply(c, http.StatusConflict, gin.H{"error": localCDKBusyText})
+		localReply(c, http.StatusConflict, gin.H{"error": localCDKBusyText, "error_code": "busy"})
 		return
 	}
 	defer unlock()
 	if row, err = db.GetLocalCDK(ctx, row.ID); err != nil { // 拿到锁之后重读，等锁之前的那份可能已经过期
 		log.Printf("[local-cdk] 码重读失败: %v", err)
-		localReply(c, http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试"})
+		localReply(c, http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试", "error_code": "unavailable"})
 		return
 	}
 	v, err := db.LocalCDKViewOf(ctx, row)
 	if err != nil {
 		log.Printf("[local-cdk] 码 %d 派生状态失败: %v", row.ID, err)
-		localReply(c, http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试"})
+		localReply(c, http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试", "error_code": "unavailable"})
 		return
 	}
 	if v.Status != db.LocalCDKUnused {
-		localReply(c, http.StatusBadRequest, gin.H{"error": "不符合换码条件（需充值失败且未发起支付）", "status": v.Status})
+		localReply(c, http.StatusBadRequest, gin.H{"error": "不符合换码条件（需充值失败且未发起支付）", "error_code": "not_eligible_unpaid", "status": v.Status})
 		return
 	}
 	// 只看这张码自己的单：继承来的次数不算它失败过，从未兑换就换等于白拿新码
 	if v.Latest == nil {
-		localReply(c, http.StatusBadRequest, gin.H{"error": "该卡密尚无兑换失败记录，不能换新码", "hint": "仅限充值失败且未扣款的卡密"})
+		localReply(c, http.StatusBadRequest, gin.H{"error": "该卡密尚无兑换失败记录，不能换新码", "error_code": "no_failed_record", "hint": "仅限充值失败且未扣款的卡密"})
 		return
 	}
 	// 新码也是这家新发的码，硬门槛照样要过（按这张码的种类：订阅开通码、点数码分别计算）
 	switch passed, err := db.HasRealSucceededPayOrder(ctx, row.Provider, payengine.PlanKind(row.PlanKey)); {
 	case err != nil:
 		log.Printf("[local-cdk] 查询真实付款记录失败: %v", err)
-		localReply(c, http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试"})
+		localReply(c, http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试", "error_code": "unavailable"})
 		return
 	case !passed:
-		localReply(c, http.StatusServiceUnavailable, gin.H{"error": localCDKUnavailableText})
+		localReply(c, http.StatusServiceUnavailable, gin.H{"error": localCDKUnavailableText, "error_code": "service_unavailable"})
 		return
 	}
 	fresh, err := provider.GenerateCode(cs)
 	if err != nil {
 		log.Printf("[local-cdk] 生成新码失败: %v", err)
-		localReply(c, http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试"})
+		localReply(c, http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试", "error_code": "unavailable"})
 		return
 	}
 	// OldID 必须是 0：这张记录的 old_upstream_id 指卡台的码 ID，人工定论时会拿它去禁用卡台的码，本地 ID 不能填进去
@@ -948,11 +948,11 @@ func localCDKExchange(c *gin.Context, cs provider.CardSupply, code, ip string) {
 	case errors.Is(err, db.ErrAgentExchangeDailyLimit):
 		limit := agentSwapDailyLimit()
 		opsAlertDaily("agent-swap-daily-limit", fmt.Sprintf("代理换码已达今日上限（%d 张），后续请求已拒绝。如果不是正常业务量，请检查换码密码是否泄露。", limit), time.Now())
-		localReply(c, http.StatusTooManyRequests, gin.H{"error": fmt.Sprintf("代理换码已达今日上限（%d 张），请联系管理员", limit)})
+		localReply(c, http.StatusTooManyRequests, gin.H{"error": fmt.Sprintf("代理换码已达今日上限（%d 张），请联系管理员", limit), "error_code": "daily_limit", "limit": limit})
 		return
 	case err != nil:
 		log.Printf("[local-cdk] 码 %d 换码占位失败: %v", row.ID, err)
-		localReply(c, http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试"})
+		localReply(c, http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试", "error_code": "unavailable"})
 		return
 	}
 	// 新码加密存一份，客户查旧码时售后查询靠它显示新码；主密钥有问题时留空，不挡换码
@@ -968,11 +968,11 @@ func localCDKExchange(c *gin.Context, cs provider.CardSupply, code, ip string) {
 			log.Printf("[local-cdk] 换码记录 %d 释放占位失败: %v", exID, rerr)
 		}
 		if errors.Is(err, db.ErrLocalCDKNotExchangeable) {
-			localReply(c, http.StatusBadRequest, gin.H{"error": "不符合换码条件（需充值失败且未发起支付）"})
+			localReply(c, http.StatusBadRequest, gin.H{"error": "不符合换码条件（需充值失败且未发起支付）", "error_code": "not_eligible_unpaid"})
 			return
 		}
 		log.Printf("[local-cdk] 码 %d 换码失败: %v", row.ID, err)
-		localReply(c, http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试"})
+		localReply(c, http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试", "error_code": "unavailable"})
 		return
 	}
 	if err := db.FinishAgentCDKExchange(exID, newID, fresh.Prefix); err != nil {

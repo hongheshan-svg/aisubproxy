@@ -287,7 +287,7 @@ func localReply(c *gin.Context, status int, h gin.H) {
 func routeCode(c *gin.Context, code string) (provider.Provider, bool) {
 	p, err := provider.ForCode(code)
 	if err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": unrecognizedCodeText})
+		c.JSON(http.StatusNotFound, gin.H{"error": unrecognizedCodeText, "error_code": "code_unrecognized"})
 		return nil, false
 	}
 	return p, true
@@ -350,7 +350,7 @@ func upstreamOrFail(c *gin.Context, p provider.Provider) (upstreamAdapter, bool)
 	a, ok := upstreamAdapterFor(p.Name())
 	if !ok {
 		log.Printf("[provider] 上游 %s 没有适配器", p.Name())
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "兑换通道暂时不可用，请稍后再试"})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "兑换通道暂时不可用，请稍后再试", "error_code": "service_unavailable"})
 		return nil, false
 	}
 	return a, true

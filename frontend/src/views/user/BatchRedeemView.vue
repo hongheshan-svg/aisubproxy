@@ -91,7 +91,7 @@
             />
             <button
               type="button"
-              class="w-full py-2.5 rounded-xl border border-dashed text-sm font-medium disabled:opacity-40"
+              class="w-full min-h-[48px] py-2.5 rounded-xl border border-dashed text-sm font-medium disabled:opacity-40"
               style="border-color: color-mix(in srgb, var(--primary) 45%, var(--brd)); color: var(--primary)"
               :disabled="importing"
               @click="mailboxFileRef?.click()"
@@ -1179,6 +1179,11 @@ onUnmounted(() => stopAllPolls())
 
 <style scoped>
 .user-ui .batch-page { max-width: 768px; }
+/* 本页还在用旧变量名：这里把它们接到用户端配色，不再随后台皮肤变 */
+.user-ui .batch-page {
+  --primary: var(--u-primary); --soft: var(--u-tint); --muted: var(--u-muted); --ink: var(--u-ink); --ink-2: var(--u-muted);
+  --brd: var(--u-line); --err: var(--u-error-ink); --warn: var(--u-warn-ink); --good: var(--u-primary);
+}
 .text-good { color: var(--good, #16a34a); }
 .text-warn { color: var(--warn, #d97706); }
 .text-err { color: var(--err, #dc2626); }

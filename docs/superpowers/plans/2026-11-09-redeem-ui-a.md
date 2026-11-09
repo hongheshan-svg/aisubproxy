@@ -1059,7 +1059,91 @@ cd .. && gitleaks git --log-opts="origin/master..HEAD" --redact --no-banner .
 
 ---
 
+### 任务 17：核对通过自动开通（2026-11-09 变更 2）
+
+照规格 §6.3「下一步」和 §6.4.1。资金安全优先：一次预检最多自动提交一次，任何拿不准的情况都停在第 ③ 屏。
+
+**文件：**
+- 改：`frontend/src/composables/useRedeemFlow.ts`、`frontend/src/composables/__tests__/useRedeemFlow.test.ts`
+- 新建：`frontend/src/components/redeem/CreditTermsBox.vue`（点数须知和勾选，第 ②③ 屏共用）
+- 改：`frontend/src/components/redeem/CredentialStep.vue`、`frontend/src/components/redeem/ConfirmStep.vue`、`frontend/src/components/redeem/__tests__/credential.spec.ts`、`frontend/src/components/redeem/__tests__/confirm.spec.ts`
+- 改：`frontend/src/lib/redeemPage.ts` 及其测试、`frontend/src/views/user/RechargeView.vue`、`frontend/src/views/__tests__/recharge.spec.ts`
+- 改：`frontend/src/i18n/locales/zh.ts`、`frontend/src/i18n/locales/en.ts`
+
+**接口：**
+- `useRedeemFlow` 新增：
+  - `autoSubmitting: Ref<boolean>`：从 `checkAndRedeem` 开始到它返回一直为 true；
+  - `checkAndRedeem(credential: { mode: 'session'; session: string }, opts: { agreeCreditTerms?: boolean; claudeOrgId?: string; grokSession?: string }): Promise<void>`：
+    - 先记下当前代次 `seq`，`autoSubmitting = true`，`await preflight(credential)`；
+    - 回来后只有同时满足才调 `await redeem(opts)`：代次没变、`screen === 'confirm'`、`confirmView === 'ok'`、`submitState === 'idle'`、`busy === false`；
+    - 不满足就停在原处（第 ② 屏出错或第 ③ 屏），不重试；
+    - `finally` 里 `autoSubmitting = false`；
+    - 已经在 `autoSubmitting` 时再调用直接返回。
+  - `preflight` 和 `redeem` 原有守卫不变；第 ③ 屏「重新核对」照旧调 `preflight`，不自动提交。
+- `CredentialStep`：
+  - props 加 `submitting: boolean`；
+  - emit 改为 `submit({ credential, grokSession?, claudeOrgId?, agreeCreditTerms: boolean })`。
+- `ConfirmStep`：props 加 `termsAgreed: boolean`。为 true 时不显示须知和勾选，按已同意处理；为 false 时照旧显示。
+- `CreditTermsBox`：`v-model: boolean`，prop `disabled: boolean`；内容就是现在 ConfirmStep 里的 `redeemUi.creditTerms.*` 那块，`data-testid="credit-terms"`，勾选框 `data-testid="agree-terms"`。
+- `lib/redeemPage.ts` 新增 `shownScreen(screen: Screen, autoSubmitting: boolean): Screen`：`screen === 'confirm' && autoSubmitting` 时返回 `'credential'`，其余原样返回。自动开通途中第 ③ 屏不闪出来，第 ② 屏按钮显示「正在提交…」。
+
+**文案**（中英文都加，键名照下面）：
+- `redeemUi.next.button` 改为「核对账号并开通」（英文 `Check account and activate`）；
+- 新增 `redeemUi.next.irreversible`：「点下面按钮后先核对账号，没问题就直接开始付款开通，不能撤回。」（英文 `After you tap the button we check the account first. If it's fine, payment and activation start right away and can't be undone.`）；
+- 新增 `redeemUi.next.submitting`：「正在提交…」（英文 `Submitting…`）；
+- `redeemUi.next.checking` 保持「正在核对账号…」。
+
+- [ ] **第 1 步：写失败的测试**
+  - `useRedeemFlow.test.ts`，用现有的假 fetch：
+    - 预检结论「可以开通」：`/preflight` 一次、`/redeem` 恰好一次，请求体带预检票；点数码带 `agree_credit_terms: true`；最后在第 ④ 屏，`autoSubmitting` 为 false；
+    - 预检结论「不能用」「要先恢复订阅」「请自己确认」各一个用例：`/redeem` 零次，停在第 ③ 屏；
+    - 自动提交时 `/redeem` 抛错：`submitState` 为 `unknown`，停在第 ③ 屏，`/redeem` 只发过一次；之后再调 `checkAndRedeem` 不会再发 `/redeem`；
+    - 自动提交时 `/redeem` 回 429：停在第 ③ 屏、带限流提示，`/redeem` 只发过一次，不自动重试；
+    - 预检途中调 `reset()` 或 `changeAccount()`：预检回来后 `/redeem` 零次；
+    - 连调两次 `checkAndRedeem`：`/preflight`、`/redeem` 各一次；
+    - 点数码 `agreeCreditTerms: false`：`/redeem` 零次，停在第 ③ 屏「可以开通」；
+    - 在第 ③ 屏调 `preflight`（重新核对）得到「可以开通」：`/redeem` 零次；
+    - 预检进行中、提交进行中 `autoSubmitting` 都为 true。
+  - `credential.spec.ts`：
+    - 按钮文字「核对账号并开通」，按钮上方有 `redeemUi.next.irreversible` 那句；
+    - MarsWallex 点数码显示 `credit-terms`，没勾选时按钮带 `disabled`；非点数码不显示；
+    - `submitting: true` 时按钮显示「正在提交…」并带 `disabled`。
+  - `confirm.spec.ts`：点数码 `termsAgreed: true` 时没有 `credit-terms`，「可以开通」状态按钮可点；`termsAgreed: false` 时照旧有。
+  - `redeemPage` 测试：`shownScreen('confirm', true) === 'credential'`，`shownScreen('confirm', false) === 'confirm'`，`shownScreen('progress', true) === 'progress'`。
+
+- [ ] **第 2 步：运行，确认失败**
+
+运行：`cd frontend && npx vitest run src/composables/__tests__/useRedeemFlow.test.ts src/components/redeem/__tests__ src/lib`
+预期：FAIL（`checkAndRedeem`、`shownScreen` 不存在，文案不符）。
+
+- [ ] **第 3 步：实现。**
+  - `RechargeView.vue`：
+    - 第 ② 屏提交调 `flow.checkAndRedeem`；
+    - 屏的切换用 `shownScreen(screen, autoSubmitting)`；
+    - `CredentialStep` 的 `busy` 传 `busy || autoSubmitting`，`submitting` 传 `autoSubmitting && submitState === 'submitting'`；
+    - 买家在第 ② 屏勾过的须知存在一个普通的 `termsAgreed` ref（不是敏感数据），传给 `ConfirmStep`；换账号、换码时清掉；
+    - 第 ③ 屏「确认开通」兜底照旧调 `flow.redeem`；
+    - 文件头的资金安全注释改成：兑换请求只在两种情况下各发一次——第 ② 屏核对通过后自动发、第 ③ 屏买家点「确认开通」。
+  - 改 `ConfirmStep.vue` 时，「请自己确认」的勾选和其他状态保持不变。
+
+- [ ] **第 4 步：运行**
+
+运行：`cd frontend && npx vitest run && npm run build`
+预期：全部 PASS，构建成功。
+
+- [ ] **第 5 步：提交**
+
+```bash
+F=(frontend/src/composables/useRedeemFlow.ts frontend/src/composables/__tests__/useRedeemFlow.test.ts frontend/src/components/redeem/CreditTermsBox.vue frontend/src/components/redeem/CredentialStep.vue frontend/src/components/redeem/ConfirmStep.vue frontend/src/components/redeem/__tests__/credential.spec.ts frontend/src/components/redeem/__tests__/confirm.spec.ts frontend/src/lib/redeemPage.ts frontend/src/views/user/RechargeView.vue frontend/src/views/__tests__/recharge.spec.ts frontend/src/i18n/locales/zh.ts frontend/src/i18n/locales/en.ts)
+git add "${F[@]}"   # 另加 redeemPage 的测试文件
+git commit -m "feat(frontend): 账号核对通过就直接开通，不用再点一次确认"
+```
+
+- [ ] **第 6 步：重截第 ② ③ 屏**（亮暗、375 和 1280 宽），存到 `/Volumes/ExtSSD/projects/aisubproxy/.playwright-mcp/redeem-ui-a/`。
+
+---
+
 ## 上线时要做的（不在本计划里执行）
 
 - 发版说明照规格 §10.1，按「升级注意」三块写在最前面。
-- 真实环境验证照规格 §10.2：要用户同意并在场，用真实账号在 VPS 上走到第 ③ 屏，只核对账号、不点开通，Session 不进对话。
+- 真实环境验证照规格 §10.2：要用户同意并在场，用一个已有订阅的真实账号确认停在第 ③ 屏、没有下单；核对通过会自动付款，验证真实开通要用户另行同意。Session 不进对话。

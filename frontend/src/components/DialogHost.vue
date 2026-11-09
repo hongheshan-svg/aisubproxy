@@ -13,13 +13,15 @@
   </div>
 
   <!-- 弹窗 -->
-  <div v-if="d" class="modal-mask fixed inset-0 z-[9998] flex items-center justify-center p-4" @click.self="onCancel">
-    <div class="card card-solid w-full max-w-md" role="dialog" aria-modal="true" @keydown.enter="onEnter" @keydown.esc="onCancel">
-      <h3 class="text-lg font-semibold text-ink mb-2">{{ d.title }}</h3>
-      <div v-if="d.message" class="text-sm text-muted whitespace-pre-line mb-4">{{ d.message }}</div>
+  <!-- 用户端页面（不在 UserShell 里）的弹窗：外面套一层 user-ui 取 --u-* 配色，display: contents 不影响布局 -->
+  <div v-if="d" class="dlg-wrap" :class="{ 'user-ui': userSide }" :data-theme="userSide ? themeMode : undefined" :style="userSide ? brandColorVars(siteBrand.primary) : undefined">
+  <div class="modal-mask fixed inset-0 z-[9998] flex items-center justify-center p-4" @click.self="onCancel">
+    <div :class="userSide ? 'u-card dlg-user w-full max-w-md' : 'card card-solid w-full max-w-md'" role="dialog" aria-modal="true" @keydown.enter="onEnter" @keydown.esc="onCancel">
+      <h3 :class="userSide ? 'dlg-title' : 'text-lg font-semibold text-ink mb-2'">{{ d.title }}</h3>
+      <div v-if="d.message" :class="userSide ? 'dlg-msg whitespace-pre-line' : 'text-sm text-muted whitespace-pre-line mb-4'">{{ d.message }}</div>
 
       <input v-if="d.kind === 'prompt'" ref="inputEl" v-model="d.value" :placeholder="d.placeholder"
-        class="input w-full mb-4" @keydown.enter.prevent="onEnter" />
+        :class="userSide ? 'u-input dlg-input' : 'input w-full mb-4'" @keydown.enter.prevent="onEnter" />
 
       <div v-if="d.kind === 'select'" class="flex flex-col gap-2 mb-4">
         <button v-for="(o, i) in d.options" :key="i"
@@ -30,18 +32,26 @@
         </button>
       </div>
 
-      <div class="flex justify-end gap-2">
-        <button v-if="d.kind !== 'alert'" class="btn-secondary" @click="onCancel">{{ d.cancelText || '取消' }}</button>
+      <div class="flex justify-end gap-2" :class="{ 'dlg-actions': userSide }">
+        <button v-if="d.kind !== 'alert'" :class="userSide ? 'u-btn-secondary' : 'btn-secondary'" @click="onCancel">{{ d.cancelText || '取消' }}</button>
         <button v-if="d.kind === 'alert' || d.kind === 'confirm' || d.kind === 'prompt'"
-          :class="d.danger ? 'btn-danger' : 'btn-primary'" @click="onEnter">{{ d.okText || '确定' }}</button>
+          :class="userSide ? ['u-btn-primary', { 'dlg-danger': d.danger }] : (d.danger ? 'btn-danger' : 'btn-primary')" @click="onEnter">{{ d.okText || '确定' }}</button>
       </div>
     </div>
+  </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, ref, watch, nextTick } from 'vue'
+import { useRoute } from 'vue-router'
 import { dialogState, resolveActive } from '../lib/dialog'
+import { brandColorVars } from '../lib/brandColor'
+import { isAdminPath } from '../router/routes'
+import { siteBrand, themeMode } from '../theme'
+
+const route = useRoute()
+const userSide = computed(() => !isAdminPath(route.path) && !route.path.startsWith('/agent'))
 
 const d = computed(() => dialogState.active)
 const inputEl = ref<HTMLInputElement | null>(null)
@@ -68,6 +78,18 @@ function onCancel() {
 </script>
 
 <style scoped>
+.dlg-wrap { display: contents; }
+.dlg-user { padding: 20px; }
+.dlg-title { margin: 0 0 8px; font-size: 20px; font-weight: 700; line-height: 1.4; color: var(--u-ink); }
+.dlg-msg { margin: 0 0 16px; font-size: 16px; line-height: 1.6; color: var(--u-muted); }
+.dlg-input { margin-bottom: 16px; }
+.dlg-actions > button { flex: 1 1 0; font-size: 16px; }
+/* 窄屏两个按钮上下排，主操作在上，字不换行 */
+@media (max-width: 480px) {
+  .dlg-actions { flex-direction: column-reverse; }
+  .dlg-actions > button { flex: none; width: 100%; }
+}
+.dlg-actions > .dlg-danger { background: var(--u-error-ink); border-color: var(--u-error-ink); color: var(--u-surface); }
 .toast {
   pointer-events: auto;
   display: flex;

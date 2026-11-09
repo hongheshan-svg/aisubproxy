@@ -169,3 +169,61 @@
 ## 10. 与小项目 ② 的先后
 
 小项目 ②（账单页、代理换码页英文界面，分支 `feat/billing-agent-i18n`）也改 `agent_exchange.go`。② 先合并；本分支开工前 rebase 到最新 master，再开始第 1 个任务。
+
+## 11. 清单核对后的修订（2026-11-10）
+
+写计划前，在临时副本上把本规格真删了一遍（编译、lint、deadcode、测试），逐文件清单见 `docs/superpowers/plans/2026-11-10-remove-zovocard-inventory.md`。据此修订如下，以本节为准：
+
+1. **共用件比 5.1 列的多**。还要挪：
+   - `IsXPremiumPlan`、`IsGrokPlan`、`IsClaudePlan`（连同 `grokPlanRe`、`claudeBarePlans`）挪到 `provider` 包，保留的发码入口靠它们按档位推断产品线；
+   - `issueProduct` 挪到 `handler/local_cdk_admin.go`；
+   - `str`、`toString`、`deviceFrom` 挪出 `cardplatform_cdk.go`；
+   - `maskEmailForAdmin`、`keepHead`、`adminName` 挪出 `card_health.go`。
+2. **第 4 节第 6 条的条件成立**：本站码换码会产生「结果不明」（`unknown`）和「旧码待禁用」（`disabling`）。因此保留以下几样，只去掉卡台字样和「作废卡台旧码」一步：
+   - 定论接口 `AdminResolveAgentExchange`；
+   - 前端定论表单；
+   - `retryAgentExchangeDisables` 里本站码那一支（`OldUpstreamID<=0`）；
+   - `escalateAgentExchanges`。
+
+   定论「已发新码」时，本站码要填的新码 ID 是 `local_cdks.id`。
+3. **历史 ZovoCard 换码记录**（`old_upstream_id>0`，停在「结果不明」或「旧码待禁用」）：按 D1 不改数据、不自动收尾。
+   - 「结果不明」的照常能人工定论；
+   - 「旧码待禁用」的会一直停在列表里。
+   - 更新说明的「升级前必须做」写明：先把 ZovoCard 码的这两类记录处理完。
+4. **代理换码的资金测试**大多建在假卡台上。删之前先确认本站码路径有等价覆盖，没有的先补、看它通过，再删旧的。要覆盖：并发只发一张、失败释放可重试、结果不明保留占位、单日上限、两种定论。
+5. **全局默认服务商失效**（存的是 zovocard 或为空）：
+   - 「卡服务商」页的提示改成「全局默认服务商 "<名字>" 已不存在，请到「卡服务商」页重新选择」（原来会显示成「按  处理」）；
+   - 默认为空、按产品线又有配置时，也给出「没有设置全局默认服务商，请到「卡服务商」页选择」；
+   - 后台发码在这种情况下回 400「没有可用的默认服务商，请到「卡服务商」页重新选择」，不再回 500。
+
+   不自动换家。
+6. **D5 更正**：总览里来自卡台的是 4 格（CDK 总数、可用 CDK、已兑换、兑换订单），4 格都去掉。
+7. **以下几处要读旧数据，作为 D1「不再读写」的例外保留**。它们都是敏感数据或安全保护：
+   - `SweepCDKSessions` 借 `cardplatform_cdk_codes` 提前清理用户会话；
+   - 启动时的 `MigrateWebhookPayloads`（清洗 Webhook 原文里的卡号、CVV）；
+   - `upstreamKeysConfigured` 把 `card_api_key` 算作动钱密钥（有它就强制 JWT_SECRET）。
+
+   启动检查没有可删的项，只把文案里的「卡台」改成「旧版」。
+8. **规格没列、也要删的**：
+   - 顶栏的「卡台·未配置」环境标记（`AdminLayout.vue` 与 `lib/adminui.ts` 的 `zovoEnv`）；
+   - 公开接口 `GET /api/v1/public/cdk/plans`：数据全来自卡台，前端没用，写进更新说明。
+9. **用户可见的行为变化补充**（写进更新说明）：
+   - 已发出、没兑换的 ZovoCard 码从此不能兑换，也查不到（售后查询回「未找到该卡密记录」）；
+   - 预检、兑换请求里既没码也没令牌时，回「无法识别的卡密」；
+   - 代理换码记录接口改路径（`/api/v1/admin/agent-exchanges`），定论结果里不再有 `old_disabled`。
+10. **文档**：
+    - `docs/cdk-list-region.md`、`docs/x-premium-subscriptions.md` 整篇只讲被删功能，整篇删；
+    - `docs/UI-UPGRADE.md` 讲的是另一个叫 cardplatform 的 UI 项目，属历史记录，不动；
+    - `docs/marswallex-openapi-zh.md` 开头两处「卡台」指 MarsWallex 自己，改成「卡服务」。
+11. **最终搜索的白名单**在 3.2、3.3 之外再加：
+    - `.push.env.example`（提交身份）；
+    - `automation/`（另一个叫 cardplatform 的取卡项目）；
+    - `frontend/index.html` 的皮肤编号；
+    - `.gitleaks.toml` 注释；
+    - `db/cdk_session.go` 的迁移；
+    - 前端测试里「卡台」作为界面禁用词的列表；
+    - 审计动作 `cardplatform_*` 的显示名；
+    - 第 7 条保留的几处。
+
+    `deploy/docker-deploy.sh` 装完后的提示里「卡台 API Key」是给用户看的，要改。
+12. **`CDKeyManagement.vue`** 去掉卡台那一类以后基本是重写。这页同时挂着「代理换码」标签，要有渲染测试，并在真实页面上点一遍两个标签。

@@ -743,8 +743,8 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
   }
 
   function restore(queryCode: string): boolean {
-    // 兑换请求在途：不改状态，也不丢掉它的回复
-    if (submitState.value === 'submitting') return false
+    // 兑换请求在途或不确定是否已提交：不改状态、不动缓存，也不丢掉在途请求的回复
+    if (submitState.value !== 'idle') return false
     const saved = readSaved()
     if (!saved) return false
     const q = String(queryCode || '').trim()

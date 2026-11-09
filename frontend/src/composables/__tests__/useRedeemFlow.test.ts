@@ -587,6 +587,19 @@ describe('修复第 1 轮', () => {
     expect(net.calls.length).toBe(before)
   })
 
+  it('不确定是否已提交时用另一张码 restore，不动码 A 的缓存', async () => {
+    const { flow, net, storage } = await toConfirm()
+    net.reply(REDEEM, new TypeError('Failed to fetch'))
+    await flow.redeem()
+    expect(flow.submitState.value).toBe('unknown')
+    expect(flow.restore('ANOTHER-CODE')).toBe(false)
+    expect(flow.submitState.value).toBe('unknown')
+    expect(flow.code.value).toBe(CODE)
+    const saved = storage.getItem(KEY)
+    expect(saved).toContain('"submitUnknown":true')
+    expect(saved).toContain(CODE)
+  })
+
   it('提交中调 restore 直接返回 false，不改状态', async () => {
     const { flow, net } = await toConfirm()
     net.reply(REDEEM, 'hang')

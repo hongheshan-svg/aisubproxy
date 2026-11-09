@@ -67,7 +67,7 @@ export function planLabelT(value: string, t: TFn): string {
   if (n === 'pro_5x_renew') return t('redeemUi.plan.pro5xRenew')
   if (n === 'pro_20x_renew' || n.includes('renew')) return t('redeemUi.plan.pro20xRenew')
   if (n === 'plus_half' || n.includes('plus_half') || n.includes('plus 半价')) return t('redeemUi.plan.plusHalf')
-  if (n === 'free') return t('redeemUi.plan.free')
+  if (!n || n === 'free') return t('redeemUi.plan.free')
   return planLabel(value)
 }
 

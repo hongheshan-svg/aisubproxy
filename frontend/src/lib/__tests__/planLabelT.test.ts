@@ -9,7 +9,7 @@ const tOf = (locale: 'zh' | 'en') => {
   const i = createI18n({ legacy: false, locale, messages: { zh, en } })
   return (k: string, p?: Record<string, unknown>) => String(i.global.t(k, p as never))
 }
-const PLANS = ['free', '', 'plus', 'plus_half', 'pro_5x', 'pro_5x_renew', 'pro_20x_renew', 'credit250', 'claude_pro',
+const PLANS = ['free', '', '  ', 'plus', 'plus_half', 'pro_5x', 'pro_5x_renew', 'pro_20x_renew', 'credit250', 'claude_pro',
   'grok_plus_monthly', 'grok_super_yearly', 'grok_premium_monthly_half', 'x_premium_monthly', 'team']
 
 describe('planLabelT', () => {

@@ -2,7 +2,8 @@ import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { agentGuardDecision } from '../lib/agentSession'
 
-import { OPS_BASE, routes } from './routes'
+import { setSkinFontsAllowed } from '../theme'
+import { OPS_BASE, isAdminPath, routes } from './routes'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -62,5 +63,8 @@ router.beforeEach(async (to) => {
     return OPS_BASE
   }
 })
+
+// Google 字体只在后台页面加载，用户端不拉
+router.afterEach((to) => setSkinFontsAllowed(isAdminPath(to.path)))
 
 export default router

@@ -22,6 +22,10 @@ const BRAND_KEY = 'site-brand'
 export interface SiteBrand {
   name: string
   sub: string
+  /** 用户端主色 #RRGGBB（后台站点外观设置） */
+  primary?: string
+  /** Logo 版本号，空串表示没有 Logo */
+  logoVersion?: string
 }
 
 export interface SkinMeta {
@@ -211,8 +215,16 @@ function readSkin(): SkinId {
   return SKINS.some((s) => s.id === v) ? v : 'zovo'
 }
 
-// 默认：卡台新版 + 夜间（与 index.html 首屏脚本、后端 /public/site 默认值保持一致）
-export const themeMode = ref<ThemeMode>((localStorage.getItem(MODE_KEY) as ThemeMode) || 'dark')
+function readMode(): ThemeMode {
+  try {
+    const v = localStorage.getItem(MODE_KEY)
+    if (v === 'light' || v === 'dark' || v === 'auto') return v
+  } catch { /* 取不到本机记录，按站点设置 */ }
+  return 'auto'
+}
+
+// 默认跟随系统（后台 theme_mode 没设过也是 auto）；卡台新版皮肤不变
+export const themeMode = ref<ThemeMode>(readMode())
 export const siteSkin = ref<SkinId>(readSkin())
 
 function loadBrand(): SiteBrand {
@@ -220,7 +232,14 @@ function loadBrand(): SiteBrand {
     const raw = localStorage.getItem(BRAND_KEY)
     if (raw) {
       const o = JSON.parse(raw)
-      if (o?.name) return { name: String(o.name), sub: String(o.sub || '') }
+      if (o?.name) {
+        return {
+          name: String(o.name),
+          sub: String(o.sub || ''),
+          primary: o.primary ? String(o.primary) : undefined,
+          logoVersion: o.logoVersion ? String(o.logoVersion) : undefined,
+        }
+      }
     }
   } catch { /* ignore */ }
   return { name: 'CDK Portal', sub: 'Card Platform Redeem' }
@@ -229,7 +248,7 @@ function loadBrand(): SiteBrand {
 export const siteBrand = ref<SiteBrand>(loadBrand())
 
 function systemPrefersDark(): boolean {
-  return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)
+  return !!(typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)
 }
 
 export function isDark(): boolean {
@@ -322,7 +341,15 @@ function applySkin() {
   const primaryOn = !dark && meta.primaryOnLight ? meta.primaryOnLight : (meta.primaryOn || '#ffffff')
   syncElementPlus(primary, primaryOn, dark)
   root.style.colorScheme = dark ? 'dark' : 'light'
-  ensureSkinFonts(meta)
+  if (skinFontsAllowed) ensureSkinFonts(meta)
+}
+
+// Google 字体只在后台页面加载；用户端不拉。路由切换时由 router 调 setSkinFontsAllowed。
+let skinFontsAllowed = false
+export function setSkinFontsAllowed(on: boolean): void {
+  const turnedOn = on && !skinFontsAllowed
+  skinFontsAllowed = on
+  if (turnedOn) ensureSkinFonts(currentSkinMeta.value)
 }
 
 // 字体按皮肤按需加载：原来 index.html 一次拉 9 个字族（含中文 Noto Sans/Serif SC）且阻塞渲染。
@@ -351,7 +378,7 @@ export function applyThemeAll() {
 
 export function setTheme(mode: ThemeMode) {
   themeMode.value = mode
-  localStorage.setItem(MODE_KEY, mode)
+  try { localStorage.setItem(MODE_KEY, mode) } catch { /* 存不了就只在本次生效 */ }
   applyThemeAll()
 }
 
@@ -376,8 +403,10 @@ export function setSiteBrand(patch: Partial<SiteBrand>) {
   siteBrand.value = {
     name: (patch.name ?? siteBrand.value.name).trim() || 'CDK Portal',
     sub: (patch.sub ?? siteBrand.value.sub).trim(),
+    primary: patch.primary ?? siteBrand.value.primary,
+    logoVersion: patch.logoVersion ?? siteBrand.value.logoVersion,
   }
-  localStorage.setItem(BRAND_KEY, JSON.stringify(siteBrand.value))
+  try { localStorage.setItem(BRAND_KEY, JSON.stringify(siteBrand.value)) } catch { /* 存不了就只在本次生效 */ }
 }
 
 export function initTheme() {

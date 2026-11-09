@@ -25,27 +25,33 @@ var secretSettingKeys = map[string]bool{
 // 已在后台选过皮肤的站点保持原样（存了 skin 设置项就不走默认）。
 const (
 	defaultSiteSkin  = "zovo"
-	defaultThemeMode = "dark"
+	defaultThemeMode = "auto"
+	// 主色默认值（深青）
+	defaultPrimaryColor = "#0F6B5F"
 )
 
 // PublicSiteConfig GET /api/v1/public/site — 用户端拉品牌/皮肤（无鉴权）
 func PublicSiteConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
-		"installed":  db.IsInstalled(),
-		"brand_name": settingOr("brand_name", "Recharge Portal"),
-		"brand_sub":  settingOr("brand_sub", "Account Upgrade Service"),
-		"skin":       settingOr("skin", defaultSiteSkin),
-		"theme_mode": settingOr("theme_mode", defaultThemeMode),
+		"installed":     db.IsInstalled(),
+		"brand_name":    settingOr("brand_name", "Recharge Portal"),
+		"brand_sub":     settingOr("brand_sub", "Account Upgrade Service"),
+		"skin":          settingOr("skin", defaultSiteSkin),
+		"theme_mode":    settingOr("theme_mode", defaultThemeMode),
+		"primary_color": settingOr("primary_color", defaultPrimaryColor),
+		"logo_version":  currentLogoVersion(),
 	})
 }
 
 // AdminGetSettings GET /api/v1/admin/settings
 func AdminGetSettings(c *gin.Context) {
 	out := gin.H{
-		"brand_name": settingOr("brand_name", "Recharge Portal"),
-		"brand_sub":  settingOr("brand_sub", "Account Upgrade Service"),
-		"skin":       settingOr("skin", defaultSiteSkin),
-		"theme_mode": settingOr("theme_mode", defaultThemeMode),
+		"brand_name":    settingOr("brand_name", "Recharge Portal"),
+		"brand_sub":     settingOr("brand_sub", "Account Upgrade Service"),
+		"skin":          settingOr("skin", defaultSiteSkin),
+		"theme_mode":    settingOr("theme_mode", defaultThemeMode),
+		"primary_color": settingOr("primary_color", defaultPrimaryColor),
+		"logo_version":  currentLogoVersion(),
 	}
 	// 非密钥可读
 	for k, isSecret := range secretSettingKeys {
@@ -75,6 +81,7 @@ type adminSettingsBody struct {
 	BrandSub      *string `json:"brand_sub"`
 	Skin          *string `json:"skin"`
 	ThemeMode     *string `json:"theme_mode"`
+	PrimaryColor  *string `json:"primary_color"`
 	CardAPIBase   *string `json:"card_api_base"`
 	CardAPIKey    *string `json:"card_api_key"`
 	WebhookSecret *string `json:"webhook_secret"`
@@ -122,6 +129,14 @@ func AdminPutSettings(c *gin.Context) {
 		}
 	}
 	var writes []struct{ key, val string }
+	if body.PrimaryColor != nil {
+		pc := strings.ToUpper(strings.TrimSpace(*body.PrimaryColor))
+		if err := validPrimaryColor(pc); err != nil {
+			bad(err.Error())
+			return
+		}
+		writes = append(writes, struct{ key, val string }{"primary_color", pc})
+	}
 	for _, it := range []textItem{
 		{"brand_name", body.BrandName, 40, "站点名称"},
 		{"brand_sub", body.BrandSub, 80, "副标题"},

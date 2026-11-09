@@ -273,6 +273,7 @@ func setupRoutes(r *gin.Engine) {
 
 		// 公开站点配置（品牌/皮肤，无密钥）
 		public.GET("/site", handler.PublicSiteConfig)
+		public.GET("/site/logo", handler.PublicSiteLogo)
 
 		// 卡台 CDK 公开兑换 BFF + 实时服务费展示
 		pubCDK := public.Group("/cdk")
@@ -463,6 +464,8 @@ func setupRoutes(r *gin.Engine) {
 			// 站点设置（品牌/皮肤/卡台密钥保险箱）
 			admin.GET("/settings", handler.AdminGetSettings)
 			admin.PUT("/settings", handler.AdminPutSettings)
+			admin.POST("/settings/logo", handler.AdminUploadSiteLogo)
+			admin.DELETE("/settings/logo", handler.AdminDeleteSiteLogo)
 			// Telegram 告警：令牌加密保存、只写不读；测试消息同步发送并返回结果
 			// 功能开关：代理商功能（代理商后台、异次元对接、代理商菜单）默认关闭
 			admin.GET("/features", handler.AdminGetFeatures)

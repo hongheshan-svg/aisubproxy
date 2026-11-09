@@ -35,7 +35,7 @@ func TestLocalCDKEndToEnd(t *testing.T) {
 
 	e := newLocalEnv(t)
 	e.seedRealPayment()
-	e.gpt.subscribedFrom = 2 // 第 1 次 Account 是步骤 2 的预检，还是 free
+	e.gpt.subscribedFrom = 3 // 第 1 次 Account 是预检时的账号核对，第 2 次是付款时的 check，都还是 free
 	e.start()
 
 	const email = "buyer@example.com"
@@ -354,10 +354,11 @@ func TestLocalCDKOneOrderIndexStopsDirectSubmit(t *testing.T) {
 func TestLocalCDKInvalidSessionRejectedBeforeFunding(t *testing.T) {
 	e := newLocalEnv(t)
 	e.seedRealPayment()
-	e.gpt.refreshErr = chatgpt.ErrUnauthorized
 	e.start()
 	code, id := e.issueCode("plus", "PH")
 	token, pf := e.preflight(code, localSession("buyer@example.com"))
+	// 预检时会话还有效，到付款时才失效（预检时就失效的情况由 TestLocalPreflightSessionInvalid 覆盖）
+	e.gpt.setRefreshErr(chatgpt.ErrUnauthorized)
 	if w := e.redeem(token, pf); w.Code != http.StatusOK {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}
@@ -941,8 +942,8 @@ func TestLocalCDKPreviewFields(t *testing.T) {
 	}
 }
 
-// 预检响应不能带 plan：前端把它当账号当前套餐，会误判「已满足」。
-func TestLocalCDKPreflightOmitsCurrentPlan(t *testing.T) {
+// 预检响应不能带 plan：前端把它当账号当前套餐，会误判「已满足」。当前套餐走 current_plan（核对过账号才有）。
+func TestLocalCDKPreflightOmitsPlan(t *testing.T) {
 	e := newLocalEnv(t)
 	e.seedRealPayment()
 	code, _ := e.issueCode("plus", "PH")
@@ -952,10 +953,13 @@ func TestLocalCDKPreflightOmitsCurrentPlan(t *testing.T) {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}
 	m := localJSON(t, w)
-	for _, k := range []string{"plan", "currentPlan", "current_plan", "subscription_has_active", "code"} {
+	for _, k := range []string{"plan", "currentPlan", "code"} {
 		if _, ok := m[k]; ok {
 			t.Fatalf("不该有 %s: %v", k, m)
 		}
+	}
+	if m["account_checked"] != true || m["current_plan"] != "free" || m["subscription_has_active"] != false {
+		t.Fatalf("核对过账号应带 current_plan 等字段: %v", m)
 	}
 	if m["email"] != "buyer@example.com" || m["preflight_token"] == "" {
 		t.Fatalf("%v", m)

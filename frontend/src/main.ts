@@ -5,6 +5,7 @@ import App from './App.vue'
 import router from './router'
 import './style.css'
 import './styles/skins.css'
+import './styles/user-theme.css'
 import { useAuthStore } from './stores/auth'
 import { initTheme, setSiteBrand, setSkin, setTheme, type SkinId, type ThemeMode } from './theme'
 import { i18n } from './i18n'
@@ -18,9 +19,12 @@ async function loadPublicSite() {
     const d = await r.json()
     // 品牌 + 整站主题：管理员在后台设定，对所有用户生效
     if (d.brand_name) setSiteBrand({ name: d.brand_name, sub: d.brand_sub || '' })
+    // 用户端主色与 Logo 版本（没有 Logo 时 logo_version 为空串）
+    setSiteBrand({ primary: d.primary_color || undefined, logoVersion: d.logo_version || '' })
     if (d.skin) setSkin(d.skin as SkinId)
     // 明暗：用户本机偏好优先；无偏好时跟服务端默认
-    const hasLocalMode = !!localStorage.getItem('theme-mode')
+    let hasLocalMode = false
+    try { hasLocalMode = !!localStorage.getItem('theme-mode') } catch { /* 取不到按站点设置 */ }
     if (!hasLocalMode && d.theme_mode) setTheme(d.theme_mode as ThemeMode)
   } catch {
     /* offline / first boot */

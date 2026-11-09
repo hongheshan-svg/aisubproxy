@@ -1,33 +1,23 @@
 <template>
-  <!-- 用户页统一页头：顶栏（品牌 + 语言/明暗）+ 居中标题区（标签、标题、说明、信任徽章）。
-       结构各皮肤共用，外观由 styles/skins.css 按 data-skin 决定。 -->
-  <header class="u-topbar">
-    <router-link to="/" class="u-brand" :aria-label="t('common.backHome')">
-      <span class="u-logo" aria-hidden="true">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h12l4 6-10 12L2 9z" /><path d="M11 3 8 9l4 12 4-12-3-6" /><path d="M2 9h20" /></svg>
-      </span>
-      <span class="u-brand-text">
-        <strong>{{ brand.name || t('home.brand') }}</strong>
-        <small>{{ brand.sub || t('home.brandSub') }}</small>
-      </span>
-    </router-link>
-    <div class="u-tools">
-      <LanguageToggle />
-      <ThemeToggle />
+  <!-- 用户端页头：Logo（有就显示）、站名、语言/明暗切换；可选「返回首页」；下方是页面标题和说明。
+       只放在 UserShell 里使用，颜色走 --u-*。 -->
+  <header class="uh" :style="maxWidth ? { maxWidth: `${maxWidth}px` } : undefined">
+    <div class="uh-bar">
+      <router-link v-if="back" to="/" class="u-link uh-back">{{ t('common.backHome') }}</router-link>
+      <div class="uh-brand" :class="{ 'uh-brand--end': !back }">
+        <img v-if="logoSrc" :src="logoSrc" alt="" class="uh-logo" />
+        <span class="uh-name">{{ brand.name || t('home.brand') }}</span>
+      </div>
+      <div class="uh-tools">
+        <LanguageToggle />
+        <ThemeToggle />
+      </div>
+    </div>
+    <div class="uh-hero">
+      <h1 class="u-title">{{ title }}</h1>
+      <p v-if="subtitle" class="u-help uh-sub">{{ subtitle }}</p>
     </div>
   </header>
-
-  <section class="u-hero" :class="{ 'u-hero--compact': compact }">
-    <span v-if="eyebrow" class="u-eyebrow"><i aria-hidden="true" />{{ eyebrow }}</span>
-    <h1 class="u-title">{{ title }}</h1>
-    <p v-if="subtitle" class="u-sub">{{ subtitle }}</p>
-    <ul v-if="badges" class="u-badges">
-      <li v-for="b in badgeList" :key="b">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><path d="m9 12 2 2 4-4" /></svg>
-        {{ b }}
-      </li>
-    </ul>
-  </section>
 </template>
 
 <script setup lang="ts">
@@ -40,12 +30,35 @@ import { siteBrand } from '../theme'
 withDefaults(defineProps<{
   title: string
   subtitle?: string
-  eyebrow?: string
-  badges?: boolean
-  compact?: boolean
-}>(), { subtitle: '', eyebrow: '', badges: false, compact: false })
+  /** 为真时左侧显示「返回首页」 */
+  back?: boolean
+  /** 页面正文比默认 520px 宽时传入同样的宽度（px），让页头和正文左边对齐 */
+  maxWidth?: number
+}>(), { subtitle: '', back: false, maxWidth: 0 })
 
 const { t } = useI18n({ useScope: 'global' })
 const brand = siteBrand
-const badgeList = computed(() => [t('hero.badgeOfficial'), t('hero.badgeSelf'), t('hero.badgeTrack')])
+const logoSrc = computed(() => {
+  const v = brand.value.logoVersion
+  return v ? `/api/v1/public/site/logo?v=${encodeURIComponent(v)}` : ''
+})
 </script>
+
+<style scoped>
+.uh { box-sizing: border-box; width: 100%; max-width: 520px; margin: 0 auto; padding: 16px 16px 0; text-align: left; }
+.uh-bar { display: flex; align-items: center; gap: 12px; min-height: 48px; }
+.uh-back { display: inline-flex; align-items: center; min-height: 48px; font-size: 15px; white-space: nowrap; }
+.uh-brand { display: flex; align-items: center; gap: 8px; min-width: 0; flex: 1; justify-content: center; }
+.uh-brand--end { justify-content: flex-start; }
+.uh-logo { height: 28px; width: auto; max-width: 96px; object-fit: contain; flex: none; }
+.uh-name { font-size: 15px; font-weight: 700; color: var(--u-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.uh-tools { display: flex; align-items: center; gap: 4px; flex: none; margin-left: auto; }
+/* 语言、明暗两个按钮是各皮肤共用的 btn-ghost，在用户端改用 --u-* 配色并保证 48px 高 */
+.uh-tools :deep(.btn-ghost) {
+  box-sizing: border-box; min-height: 48px; min-width: 48px; padding: 0 12px;
+  color: var(--u-ink); background: var(--u-surface); border: 1px solid var(--u-line); border-radius: 14px;
+  font-size: 15px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
+}
+.uh-hero { padding-top: 16px; }
+.uh-sub { margin: 0; }
+</style>

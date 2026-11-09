@@ -3,6 +3,11 @@ import type { RouteRecordRaw } from 'vue-router'
 // 管理端入口故意不用 /admin，降低扫路径风险。API 仍为 /api/v1/admin/*（服务端鉴权）。
 export const OPS_BASE = '/ops'
 
+/** 是否后台页面（后台皮肤的 Google 字体只在这些页面加载）。 */
+export function isAdminPath(path: string): boolean {
+  return path === OPS_BASE || path.startsWith(OPS_BASE + '/')
+}
+
 export const routes: RouteRecordRaw[] = [
   {
     path: '/',

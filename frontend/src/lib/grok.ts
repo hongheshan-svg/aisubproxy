@@ -31,6 +31,12 @@ export function grokBarePlan(value: string): string {
 
 const TIER_LABEL: Record<string, string> = { plus: 'Plus', premium: 'Premium', super: 'Super', ultra: 'Ultra' }
 
+/** Grok 档位拆成各部分，供按语言包拼名称；认不出返回 null。 */
+export function grokTierLabel(value: string): { tier: string; yearly: boolean; half: boolean } | null {
+  const m = grokBarePlan(value).match(/^(plus|premium|super|ultra)_(monthly|yearly)(_half)?$/)
+  return m ? { tier: TIER_LABEL[m[1]], yearly: m[2] === 'yearly', half: !!m[3] } : null
+}
+
 export function grokPlanLabel(value: string): string {
   const m = grokBarePlan(value).match(/^(plus|premium|super|ultra)_(monthly|yearly)(_half)?$/)
   if (!m) return value

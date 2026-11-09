@@ -148,32 +148,6 @@
 .stepper li.is-current .stepper-label { color: var(--ink); font-weight: 600; }
 .stepper-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
 
-/* 模式页签（立即兑换 / 批量 / 查询 / 账单）：默认 = 分段控件 */
-.redeem-tabs.card {
-  background: var(--tabs-bg, var(--surface-2));
-  border: var(--tabs-border, 1px solid var(--brd));
-  border-radius: var(--tabs-radius, calc(var(--card-radius, var(--radius-lg)) - 2px));
-  box-shadow: var(--tabs-shadow, none);
-}
-.redeem-tab {
-  display: block;
-  text-align: center;
-  padding: 0.62rem 0.5rem;
-  border-radius: var(--tab-radius, var(--radius-md));
-  font-size: 0.875rem;
-  font-weight: 600;
-  letter-spacing: var(--tab-track, 0);
-  text-transform: var(--tab-case, none);
-  color: var(--ink-2);
-  transition: background-color 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
-}
-.redeem-tab:hover { color: var(--ink); background: color-mix(in srgb, var(--primary) 8%, transparent); }
-.redeem-tab.active {
-  color: var(--tab-active-fg, var(--ink));
-  background: var(--tab-active-bg, var(--surface-solid));
-  box-shadow: var(--tab-active-shadow, 0 1px 2px rgba(0, 0, 0, 0.08), 0 4px 12px -6px rgba(0, 0, 0, 0.18));
-}
-
 /* 首页服务卡片 */
 .svc-card { display: flex; flex-direction: column; }
 .svc-card > :last-child { margin-top: auto; padding-top: 1.25rem; }
@@ -371,7 +345,7 @@ html[data-skin='cyber'] .u-eyebrow::after { content: '_'; animation: cyber-caret
 @keyframes cyber-caret { 50% { opacity: 0; } }
 html[data-skin='cyber'] .u-title { text-shadow: 0 0 28px rgba(34, 211, 238, 0.45); }
 /* HUD 四角标：只给用户页面板，后台表格不加 */
-html[data-skin='cyber'] .u-main .card:not(.redeem-tabs) {
+html[data-skin='cyber'] .u-main .card {
   background:
     linear-gradient(var(--primary), var(--primary)) top left / 16px 2px no-repeat,
     linear-gradient(var(--primary), var(--primary)) top left / 2px 16px no-repeat,
@@ -574,7 +548,7 @@ html.dark[data-skin='forest'] {
   --badge-border: 1px solid #2a4237;
   --dot-bg: #13201a;
 }
-html[data-skin='forest'] .u-main .card:not(.redeem-tabs) {
+html[data-skin='forest'] .u-main .card {
   box-shadow: inset 3px 0 0 var(--primary), var(--card-shadow);
 }
 
@@ -801,8 +775,7 @@ html[data-skin='rose'] .u-eyebrow::after { content: ''; width: 28px; height: 1px
 html[data-skin='rose'] .u-badges li + li::before { content: '·'; margin-right: 10px; color: var(--ink-3); }
 html[data-skin='rose'] .u-badges { gap: 10px; }
 html[data-skin='rose'] .u-badges li { padding: 0; }
-html[data-skin='rose'] .u-main .card:not(.redeem-tabs) { border-top: 3px solid var(--ink); }
-html[data-skin='rose'] .redeem-tabs.card { border-bottom: 1px solid var(--brd) !important; padding-bottom: 0 !important; }
+html[data-skin='rose'] .u-main .card { border-top: 3px solid var(--ink); }
 html[data-skin='rose'] .u-main h2 { font-family: 'Instrument Serif', 'Source Serif 4', 'Noto Serif SC', serif; font-weight: 400; font-size: 1.7rem; }
 html[data-skin='rose'] .input { border-width: 0 0 1px; padding-left: 2px; }
 html[data-skin='rose'] textarea.input { border-width: 1px; padding-left: 12px; }
@@ -916,8 +889,8 @@ html[data-skin='paper'] .u-title {
   text-underline-offset: 12px;
   text-decoration-skip-ink: none;
 }
-html[data-skin='paper'] .u-main .card:not(.redeem-tabs) { position: relative; }
-html[data-skin='paper'] .u-main .card:not(.redeem-tabs)::before {
+html[data-skin='paper'] .u-main .card { position: relative; }
+html[data-skin='paper'] .u-main .card::before {
   content: '';
   position: absolute;
   top: -11px;

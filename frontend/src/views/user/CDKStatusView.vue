@@ -1,180 +1,119 @@
 <template>
-  <div class="u-page">
-    <UserPageHeader :eyebrow="t('hero.lookupEyebrow')" :title="t('cdkLookup.title')" :subtitle="t('cdkLookup.subtitle')" />
-    <div class="u-main max-w-3xl">
-
-      <RedeemModeTabs />
-
-      <div class="card animate-slideInUp space-y-5">
-        <div class="flex gap-2">
-          <button
-            type="button"
-            class="btn-secondary !py-1.5 flex-1"
-            :class="{ 'ring-2': mode === 'single' }"
-            @click="setMode('single')"
-          >
+  <UserShell>
+    <UserPageHeader :title="t('cdkLookup.title')" :subtitle="t('cdkLookup.subtitle')" :max-width="mode === 'batch' && batchResults.length ? 960 : 0" back />
+    <main class="u-page lk" :class="{ 'lk-wide': mode === 'batch' && batchResults.length }">
+      <div class="u-card lk-stack">
+        <div class="lk-modes">
+          <button type="button" class="u-btn-secondary lk-mode" :class="{ 'is-on': mode === 'single' }" :aria-pressed="mode === 'single'" @click="setMode('single')">
             {{ t('cdkLookup.modeSingle') }}
           </button>
-          <button
-            type="button"
-            class="btn-secondary !py-1.5 flex-1"
-            :class="{ 'ring-2': mode === 'batch' }"
-            @click="setMode('batch')"
-          >
+          <button type="button" class="u-btn-secondary lk-mode" :class="{ 'is-on': mode === 'batch' }" :aria-pressed="mode === 'batch'" @click="setMode('batch')">
             {{ t('cdkLookup.modeBatch') }}
           </button>
         </div>
 
         <template v-if="mode === 'single'">
-          <h2 class="text-xl font-bold text-ink">{{ t('cdkLookup.queryTitle') }}</h2>
-          <div class="rounded-xl bg-soft p-4 text-sm text-muted">
-            {{ t('cdkLookup.queryHint') }}
-          </div>
-          <div class="form-group">
-            <label>{{ t('cdkLookup.cdkLabel') }}</label>
+          <h2 class="lk-h">{{ t('cdkLookup.queryTitle') }}</h2>
+          <p class="u-help lk-note">{{ t('cdkLookup.queryHint') }}</p>
+          <label class="lk-label">
+            {{ t('cdkLookup.cdkLabel') }}
             <input
               v-model="cdkCode"
               type="text"
               :placeholder="t('cdkLookup.cdkPlaceholder')"
-              class="input mono"
+              class="u-input u-mono"
               @keyup.enter="query"
             />
-          </div>
-          <button
-            @click="query"
-            :disabled="!cdkCode.trim() || querying"
-            class="btn-primary w-full disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <span v-if="!querying">{{ t('cdkLookup.queryBtn') }}</span>
-            <span v-else class="flex items-center justify-center gap-2">
-              <span class="spinner"></span>{{ t('common.querying') }}
-            </span>
+          </label>
+          <button type="button" class="u-btn-primary lk-submit" :disabled="!cdkCode.trim() || querying" @click="query">
+            {{ querying ? t('common.querying') : t('cdkLookup.queryBtn') }}
           </button>
         </template>
 
         <template v-else>
-          <h2 class="text-xl font-bold text-ink">{{ t('cdkLookup.modeBatch') }}</h2>
-          <div class="rounded-xl bg-soft p-4 text-sm text-muted">
-            {{ t('cdkLookup.batchHint', { max: LOOKUP_BATCH_MAX }) }}
-          </div>
-          <div class="form-group">
-            <label>{{ t('cdkLookup.batchLabel') }}</label>
+          <h2 class="lk-h">{{ t('cdkLookup.modeBatch') }}</h2>
+          <p class="u-help lk-note">{{ t('cdkLookup.batchHint', { max: LOOKUP_BATCH_MAX }) }}</p>
+          <label class="lk-label">
+            {{ t('cdkLookup.batchLabel') }}
             <textarea
               v-model="batchText"
               rows="8"
-              class="input mono text-sm min-h-[160px]"
+              class="u-input u-mono lk-area"
               :placeholder="t('cdkLookup.batchPlaceholder')"
             />
-            <p class="text-xs text-muted mt-1">
-              {{ t('cdkLookup.batchRecognized', { n: parsedCodes.length }) }}
-              <span v-if="parsedCodes.length > LOOKUP_BATCH_MAX" class="text-warn">
-                · {{ t('cdkLookup.batchTruncated', { max: LOOKUP_BATCH_MAX }) }}
-              </span>
-            </p>
-          </div>
-          <button
-            @click="queryBatch"
-            :disabled="parsedCodes.length === 0 || querying"
-            class="btn-primary w-full disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            <span v-if="!querying">{{ t('cdkLookup.batchQueryBtn') }}</span>
-            <span v-else class="flex items-center justify-center gap-2">
-              <span class="spinner"></span>{{ t('common.querying') }}
-            </span>
+          </label>
+          <p class="u-help lk-note">
+            {{ t('cdkLookup.batchRecognized', { n: parsedCodes.length }) }}
+            <span v-if="parsedCodes.length > LOOKUP_BATCH_MAX">· {{ t('cdkLookup.batchTruncated', { max: LOOKUP_BATCH_MAX }) }}</span>
+          </p>
+          <button type="button" class="u-btn-primary lk-submit" :disabled="parsedCodes.length === 0 || querying" @click="queryBatch">
+            {{ querying ? t('common.querying') : t('cdkLookup.batchQueryBtn') }}
           </button>
         </template>
 
-        <p v-if="error" class="text-sm" style="color: var(--err)">{{ error }}</p>
+        <p v-if="error" class="u-error" role="alert">{{ error }}</p>
       </div>
 
-      <div v-if="mode === 'single' && result" class="mt-8 card animate-slideInUp">
-        <h2 class="text-xl font-bold text-ink mb-6">{{ t('cdkLookup.resultTitle') }}</h2>
-        <AfterSaleResult :result="result" />
+      <CodeStatusCard
+        v-if="mode === 'single' && result"
+        class="lk-gap"
+        :result="result"
+        context="home"
+        @redeem="goRedeemCard"
+        @reset="reset"
+      />
 
-        <div class="mt-6">
-          <button @click="reset" class="btn-secondary w-full">{{ t('cdkLookup.queryOther') }}</button>
-        </div>
-      </div>
-
-      <div v-if="mode === 'batch' && batchResults.length" class="mt-8 card animate-slideInUp space-y-4">
-        <div class="flex flex-wrap items-center justify-between gap-3">
-          <h2 class="text-xl font-bold text-ink">{{ t('cdkLookup.resultTitle') }}</h2>
-          <div class="flex flex-wrap gap-2">
-            <button type="button" class="btn-secondary !py-1.5 !px-3 text-sm" @click="copyUsedEmails">
-              {{ t('cdkLookup.copyEmails') }}
-            </button>
-            <button type="button" class="btn-secondary !py-1.5 !px-3 text-sm" @click="exportCsv">
-              {{ t('cdkLookup.exportCsv') }}
-            </button>
+      <section v-if="mode === 'batch' && batchResults.length" class="u-card lk-stack lk-gap">
+        <div class="lk-head">
+          <h2 class="lk-h">{{ t('cdkLookup.resultTitle') }}</h2>
+          <div class="lk-tools">
+            <button type="button" class="u-btn-secondary lk-small" @click="copyUsedEmails">{{ t('cdkLookup.copyEmails') }}</button>
+            <button type="button" class="u-btn-secondary lk-small" @click="exportCsv">{{ t('cdkLookup.exportCsv') }}</button>
           </div>
         </div>
-        <div class="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center text-sm">
-          <div class="rounded-lg py-2" style="background: color-mix(in srgb, var(--good, #16a34a) 12%, transparent)">
-            {{ t('cdkLookup.summaryUsed', { n: batchSummary.used }) }}
-          </div>
-          <div class="rounded-lg py-2" style="background: color-mix(in srgb, var(--err, #dc2626) 12%, transparent)">
-            {{ t('cdkLookup.summaryFailed', { n: batchSummary.failed }) }}
-          </div>
-          <div class="rounded-lg bg-soft py-2">
-            {{ t('cdkLookup.summaryUnused', { n: batchSummary.unused }) }}
-          </div>
-          <div class="rounded-lg py-2" style="background: color-mix(in srgb, var(--primary) 12%, transparent)">
-            {{ t('cdkLookup.summaryProcessing', { n: batchSummary.processing }) }}
-          </div>
-          <div class="rounded-lg py-2" style="background: color-mix(in srgb, var(--warn, #d97706) 12%, transparent)">
-            {{ t('cdkLookup.summaryUnknown', { n: batchSummary.unknown }) }}
-          </div>
-          <div v-if="batchSummary.replaced" class="rounded-lg py-2" style="background: color-mix(in srgb, var(--primary) 12%, transparent)">
-            {{ t('cdkLookup.summaryReplaced', { n: batchSummary.replaced }) }}
-          </div>
-          <div v-if="batchSummary.unsupported" class="rounded-lg bg-soft py-2">
-            {{ t('cdkLookup.summaryUnsupported', { n: batchSummary.unsupported }) }}
-          </div>
-        </div>
-        <div class="overflow-x-auto rounded-xl border bd">
-          <table class="w-full text-sm">
+        <ul class="lk-sum">
+          <li>{{ t('cdkLookup.summaryUsed', { n: batchSummary.used }) }}</li>
+          <li>{{ t('cdkLookup.summaryFailed', { n: batchSummary.failed }) }}</li>
+          <li>{{ t('cdkLookup.summaryUnused', { n: batchSummary.unused }) }}</li>
+          <li>{{ t('cdkLookup.summaryProcessing', { n: batchSummary.processing }) }}</li>
+          <li>{{ t('cdkLookup.summaryUnknown', { n: batchSummary.unknown }) }}</li>
+          <li v-if="batchSummary.replaced">{{ t('cdkLookup.summaryReplaced', { n: batchSummary.replaced }) }}</li>
+          <li v-if="batchSummary.unsupported">{{ t('cdkLookup.summaryUnsupported', { n: batchSummary.unsupported }) }}</li>
+        </ul>
+        <div class="lk-table-wrap">
+          <table class="lk-table">
             <thead>
-              <tr class="bg-soft text-left text-muted">
-                <th class="px-3 py-2 font-medium">#</th>
-                <th class="px-3 py-2 font-medium">{{ t('cdkLookup.cdkCode') }}</th>
-                <th class="px-3 py-2 font-medium">{{ t('cdkLookup.useStatus') }}</th>
-                <th class="px-3 py-2 font-medium">{{ t('cdkLookup.rechargeEmail') }}</th>
-                <th class="px-3 py-2 font-medium">{{ t('cdkLookup.plan') }}</th>
-                <th class="px-3 py-2 font-medium">{{ t('cdkLookup.usedAt') }}</th>
-                <th class="px-3 py-2 font-medium"></th>
+              <tr>
+                <th>#</th>
+                <th>{{ t('cdkLookup.cdkCode') }}</th>
+                <th>{{ t('cdkLookup.useStatus') }}</th>
+                <th>{{ t('cdkLookup.rechargeEmail') }}</th>
+                <th>{{ t('cdkLookup.plan') }}</th>
+                <th>{{ t('cdkLookup.usedAt') }}</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
-              <tr v-for="(row, i) in batchResults" :key="row.cdk_code + i" class="border-t bd">
-                <td class="px-3 py-2 text-muted tabular-nums">{{ i + 1 }}</td>
-                <td class="px-3 py-2 font-mono break-all">{{ row.cdk_code }}</td>
-                <td class="px-3 py-2 font-semibold whitespace-nowrap" :style="{ color: statusColor(row.status) }">
-                  {{ statusText(row.status) }}
-                </td>
-                <td class="px-3 py-2 font-mono break-all">{{ row.account_email || t('cdkLookup.emailEmpty') }}</td>
-                <td class="px-3 py-2">{{ row.plan || t('cdkLookup.emailEmpty') }}</td>
-                <td class="px-3 py-2 text-muted whitespace-nowrap">{{ fmtLookupTime(row.used_at) || row.used_at || t('cdkLookup.emailEmpty') }}</td>
-                <td class="px-3 py-2 text-right whitespace-nowrap">
-                  <button
-                    v-if="row.can_resubmit"
-                    type="button"
-                    class="btn-primary !py-1 !px-3 text-xs"
-                    @click="goRedeem(row.cdk_code)"
-                  >{{ t('cdkLookup.resubmit') }}</button>
-                  <button
-                    v-else-if="row.status === 'unused'"
-                    type="button"
-                    class="btn-secondary !py-1 !px-3 text-xs"
-                    @click="goRedeem(row.cdk_code)"
-                  >{{ t('cdkLookup.goRedeem') }}</button>
+              <tr v-for="(row, i) in batchResults" :key="row.cdk_code + i">
+                <td>{{ i + 1 }}</td>
+                <td class="u-mono lk-break">{{ row.cdk_code }}</td>
+                <td class="lk-status" :class="`lk-status--${statusTone(row.status)}`">{{ statusText(row.status) }}</td>
+                <td class="u-mono lk-break">{{ row.account_email || t('cdkLookup.emailEmpty') }}</td>
+                <td>{{ row.plan || t('cdkLookup.emailEmpty') }}</td>
+                <td class="lk-nowrap">{{ fmtLookupTime(row.used_at) || row.used_at || t('cdkLookup.emailEmpty') }}</td>
+                <td class="lk-nowrap">
+                  <button v-if="row.can_resubmit" type="button" class="u-btn-primary lk-small" @click="goRedeem(row.cdk_code)">{{ t('cdkLookup.resubmit') }}</button>
+                  <button v-else-if="row.status === 'unused'" type="button" class="u-btn-secondary lk-small" @click="goRedeem(row.cdk_code)">{{ t('cdkLookup.goRedeem') }}</button>
                 </td>
               </tr>
             </tbody>
           </table>
         </div>
-      </div>
-    </div>
-  </div>
+      </section>
+
+      <UserFooter />
+    </main>
+  </UserShell>
 </template>
 
 <script setup lang="ts">
@@ -182,11 +121,12 @@ import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import UserPageHeader from '../../components/UserPageHeader.vue'
-import RedeemModeTabs from '../../components/RedeemModeTabs.vue'
+import UserShell from '../../components/redeem/UserShell.vue'
+import UserFooter from '../../components/redeem/UserFooter.vue'
+import CodeStatusCard from '../../components/redeem/CodeStatusCard.vue'
 import { parseCdks } from '../../lib/batch-session'
 import { copyToClipboard } from '../../lib/clipboard'
 import { toast } from '../../lib/ui'
-import AfterSaleResult from '../../components/AfterSaleResult.vue'
 import { batchSummary as summarize, csvRow, fmtLookupTime, type LookupResult } from '../../lib/aftersale'
 
 const { t } = useI18n({ useScope: 'global' })
@@ -212,17 +152,21 @@ function statusText(status: string) {
   return label === key ? status : label
 }
 
-function statusColor(status: string) {
-  if (status === 'used') return 'var(--good, #16a34a)'
-  if (status === 'failed') return 'var(--err, #dc2626)'
-  if (status === 'unused') return 'var(--ink)'
-  if (status === 'processing') return 'var(--primary)'
-  if (status === 'disabled' || status === 'expired' || status === 'unknown') return 'var(--warn, #d97706)'
-  return 'var(--ink)'
+function statusTone(status: string) {
+  if (status === 'used') return 'ok'
+  if (status === 'failed') return 'err'
+  if (status === 'processing') return 'primary'
+  if (status === 'disabled' || status === 'expired' || status === 'unknown') return 'warn'
+  return 'ink'
 }
 
 function goRedeem(code: string) {
   router.push({ path: '/recharge', query: { cdk: code } })
+}
+
+// 单张查询结果卡上的「去兑换」：带着码回到兑换页
+function goRedeemCard(code: string) {
+  router.push(`/recharge?code=${encodeURIComponent(code)}`)
 }
 
 async function query() {
@@ -313,3 +257,33 @@ function reset() {
   cdkCode.value = ''
 }
 </script>
+
+<style scoped>
+.lk-wide { max-width: 960px; }
+.lk-stack { display: flex; flex-direction: column; gap: 14px; }
+.lk-gap { margin-top: 16px; }
+.lk-modes { display: flex; gap: 8px; }
+.lk-mode { flex: 1; font-size: 16px; padding: 8px 12px; }
+.lk-mode.is-on { background: var(--u-tint); }
+.lk-h { margin: 0; font-size: 18px; font-weight: 700; }
+.lk-note { margin: 0; }
+.lk-label { display: flex; flex-direction: column; gap: 6px; font-size: 15px; font-weight: 600; }
+.lk-area { min-height: 160px; font-size: 14px; resize: vertical; }
+.lk-submit { width: 100%; }
+.lk-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.lk-tools { display: flex; flex-wrap: wrap; gap: 8px; }
+.lk-small { min-height: 48px; padding: 6px 14px; font-size: 15px; }
+.lk-sum { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; font-size: 14px; }
+.lk-sum li { background: var(--u-tint); border-radius: 14px; padding: 8px 12px; }
+.lk-table-wrap { overflow-x: auto; border: 1px solid var(--u-line); border-radius: 14px; }
+.lk-table { width: 100%; min-width: 720px; border-collapse: collapse; font-size: 14px; }
+.lk-table th { text-align: left; padding: 10px 12px; color: var(--u-muted); font-weight: 600; background: var(--u-tint); }
+.lk-table td { padding: 10px 12px; border-top: 1px solid var(--u-line); vertical-align: middle; }
+.lk-break { white-space: nowrap; }
+.lk-nowrap { white-space: nowrap; }
+.lk-status { font-weight: 600; white-space: nowrap; }
+.lk-status--ok { color: var(--u-primary); }
+.lk-status--err { color: var(--u-error-ink); }
+.lk-status--warn { color: var(--u-warn-ink); }
+.lk-status--primary { color: var(--u-primary); }
+</style>

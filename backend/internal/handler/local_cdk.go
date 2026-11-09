@@ -47,14 +47,17 @@ const (
 
 // 公开接口限流：每 IP 每小时。兑换页一张码要调 3 次变更接口；结果接口 3 秒轮询一次，批量页还是多张一起轮询，所以额度差得多。
 // 限流在 PublicGuard、LookupGuard 里做，读请求体之前、按码分派之前，本地码和上游型服务商的码都算。
+// 另有一项按码限流（localRateInspect）：预检查买家账号，每张码每小时 10 次，键是码的数据库 ID，不是 IP。
 const (
 	localRateMutate = "mutate"
 	localRateQuery  = "query"
 	localRateSwap   = "swap" // 代理换码接口，每 IP 每小时 20 次
-	localRateWindow = time.Hour
+	// 预检时查买家账号，键是码的数据库 ID 而不是 IP：每张码每小时 10 次，超了按「查不了」处理（见 inspectLocalAccount）
+	localRateInspect = "inspect"
+	localRateWindow  = time.Hour
 )
 
-var localRateLimits = map[string]int{localRateMutate: 300, localRateQuery: 6000, localRateSwap: 20}
+var localRateLimits = map[string]int{localRateMutate: 300, localRateQuery: 6000, localRateSwap: 20, localRateInspect: 10}
 
 // localRateMaxKeys 是限流表最多记多少个键。满了再来新键就淘汰窗口开始得最早的那个（O(1)），
 // 不在请求路径里遍历整张表；一小时以前的键由 sweepLocalRate 每分钟清一次。测试可调小。
@@ -142,6 +145,7 @@ func resetLocalRate() {
 	localRateHits = map[string]*localRateEntry{}
 	localRateOrder = list.New()
 	localRateMu.Unlock()
+	resetInspectCache() // 测试里每个库的码 ID 都从 1 开始，账号核对的缓存要一起清
 }
 
 func localRateKeys() int {
@@ -349,6 +353,11 @@ func localCredentialSession(c *gin.Context, body map[string]any) (string, bool) 
 }
 
 func parseLocalSession(c *gin.Context, raw string) (chatgpt.Session, bool) {
+	return parseLocalSessionAs(c, raw, gin.H{"error": "会话无效，请粘贴完整的 session JSON"})
+}
+
+// parseLocalSessionAs 同 parseLocalSession，只是解析失败时回 invalid 这份 400 响应。预检用它回 session_invalid，兑换保持原样。
+func parseLocalSessionAs(c *gin.Context, raw string, invalid gin.H) (chatgpt.Session, bool) {
 	if raw == "" {
 		localReply(c, http.StatusBadRequest, gin.H{"error": "请先粘贴完整的 session JSON"})
 		return chatgpt.Session{}, false
@@ -359,7 +368,7 @@ func parseLocalSession(c *gin.Context, raw string) (chatgpt.Session, bool) {
 	}
 	sess, err := chatgpt.ParseSession(raw)
 	if err != nil {
-		localReply(c, http.StatusBadRequest, gin.H{"error": "会话无效，请粘贴完整的 session JSON"})
+		localReply(c, http.StatusBadRequest, invalid)
 		return chatgpt.Session{}, false
 	}
 	return sess, true
@@ -374,7 +383,8 @@ func localCDKReady(c *gin.Context, cs provider.CardSupply, row db.LocalCDK) bool
 	return false
 }
 
-// localCDKPreflight 预检：不调上游、不落库，通过后把会话封进预检令牌。
+// localCDKPreflight 预检：不调服务商、不落库。会只读地核对一次买家账号（见 inspectLocalAccount），
+// 账号符合或暂时查不了才把会话封进预检令牌；账号不符合不发令牌，兑换接口自然拒绝。
 func localCDKPreflight(c *gin.Context, cs provider.CardSupply, body map[string]any) {
 	c.Header("Cache-Control", "no-store")
 	row, ok := localCDKFromBody(c, cs, body)
@@ -396,7 +406,7 @@ func localCDKPreflight(c *gin.Context, cs provider.CardSupply, body map[string]a
 	if !ok {
 		return
 	}
-	sess, ok := parseLocalSession(c, raw)
+	sess, ok := parseLocalSessionAs(c, raw, gin.H{"error_code": "session_invalid", "error": inspectSessionInvalidText})
 	if !ok {
 		return
 	}
@@ -413,19 +423,48 @@ func localCDKPreflight(c *gin.Context, cs provider.CardSupply, body map[string]a
 		localReply(c, http.StatusConflict, gin.H{"error": crossProviderBusyText})
 		return
 	}
-	token, err := sealLocalPreflight(row.ID, raw, time.Now())
-	if err != nil {
-		log.Printf("[local-cdk] 码 %d 封装预检令牌失败: %v", row.ID, err)
-		localReply(c, http.StatusServiceUnavailable, gin.H{"error": localCDKUnavailableText})
+	verdict, err := inspectLocalAccount(ctx, row, raw, sess.Email)
+	if err != nil { // 买家那边已经断开，没人收响应
 		return
 	}
-	// 不返回 plan：前端把预检里的 plan 当成账号当前套餐。这里没查账号，当前套餐要等引擎 check 才知道
+	if verdict.Kind == payengine.VerdictSessionInvalid {
+		localReply(c, http.StatusBadRequest, gin.H{"error_code": "session_invalid", "error": inspectSessionInvalidText})
+		return
+	}
 	resp := gin.H{
-		"provider":        row.Provider,
-		"preflight_token": token,
-		"email":           sess.Email,
-		"account_email":   sess.Email,
-		"expires_in":      int(localPreflightTTL / time.Second),
+		"provider":      row.Provider,
+		"email":         sess.Email,
+		"account_email": sess.Email,
+	}
+	switch verdict.Kind {
+	case payengine.VerdictIneligible:
+		// 不发预检令牌
+		resp["account_checked"] = true
+		resp["current_plan"] = verdict.CurrentPlan
+		resp["subscription_has_active"] = verdict.HasActiveSubscription
+		resp["blocking_code"] = verdict.BlockingCode
+		resp["blocking_reason"] = inspectBlockingReason(verdict)
+		if verdict.AccountCurrency != "" {
+			resp["account_currency"] = verdict.AccountCurrency
+			resp["code_currency"] = verdict.CodeCurrency
+		}
+	default:
+		token, err := sealLocalPreflight(row.ID, raw, time.Now())
+		if err != nil {
+			log.Printf("[local-cdk] 码 %d 封装预检令牌失败: %v", row.ID, err)
+			localReply(c, http.StatusServiceUnavailable, gin.H{"error": localCDKUnavailableText})
+			return
+		}
+		resp["preflight_token"] = token
+		resp["expires_in"] = int(localPreflightTTL / time.Second)
+		// 符合时带账号当前套餐；查不了时不带，前端据 account_checked:false 让买家自己确认
+		if verdict.Kind == payengine.VerdictEligible {
+			resp["account_checked"] = true
+			resp["current_plan"] = verdict.CurrentPlan
+			resp["subscription_has_active"] = verdict.HasActiveSubscription
+		} else {
+			resp["account_checked"] = false
+		}
 	}
 	for k, val := range localKindFields(row.PlanKey) {
 		resp[k] = val

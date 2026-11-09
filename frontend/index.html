@@ -7,9 +7,7 @@
     <meta name="color-scheme" content="dark light" />
     <meta name="theme-color" content="#0c0c11" />
     <title>CDK Portal</title>
-    <!-- 字体按皮肤由 theme.ts 按需加载（不阻塞首屏）；这里只预连 -->
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <!-- 用户端不加载 Google 字体；后台皮肤的字体由 theme.ts 只在后台页面按需加载 -->
     <style>
       /* 样式表到达前的首屏底色，避免夜间模式先闪一下白 */
       /* 只给 html：body 要保持透明，否则会盖住主题的固定氛围层 */
@@ -19,8 +17,9 @@
     <script>
       (function () {
         try {
-          // 默认：卡台新版(zovo) + 夜间。与 theme.ts、后端 /public/site 的默认值保持一致
-          var mode = localStorage.getItem('theme-mode') || 'dark'
+          // 默认：卡台新版(zovo) + 跟随系统。与 theme.ts、后端 /public/site 的默认值保持一致
+          var mode = localStorage.getItem('theme-mode')
+          if (mode !== 'light' && mode !== 'dark' && mode !== 'auto') mode = 'auto'
           var skin = localStorage.getItem('site-skin') || 'zovo'
           var dark =
             mode === 'dark' ||

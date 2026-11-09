@@ -1,76 +1,81 @@
 <template>
-  <div class="u-page">
-    <UserPageHeader compact title="卡密补发" subtitle="仅限充值失败且未扣款的卡密。验证通过后将作废旧码并下发一张同套餐新码。" />
-    <div class="u-main mx-auto w-full max-w-md space-y-4">
-      <div class="card space-y-4">
-        <div>
-          <label class="text-xs text-muted">代理密码</label>
-          <el-input
-            v-model="password"
-            type="password"
-            show-password
-            size="large"
-            placeholder="管理员下发的个人密码"
-            autocomplete="off"
-          />
-        </div>
-        <div>
-          <label class="text-xs text-muted">失败的完整卡密</label>
-          <el-input
+  <UserShell>
+    <UserPageHeader title="卡密补发" subtitle="仅限充值失败且未扣款的卡密。验证通过后将作废旧码并下发一张同套餐新码。" back />
+    <main class="u-page swap">
+      <div class="u-card swap-stack">
+        <label class="swap-label">
+          代理密码
+          <span class="swap-pw">
+            <input
+              v-model="password"
+              :type="showPw ? 'text' : 'password'"
+              class="u-input"
+              placeholder="管理员下发的个人密码"
+              autocomplete="off"
+            />
+            <button type="button" class="u-link swap-pw-toggle" :aria-pressed="showPw" @click="showPw = !showPw">
+              {{ showPw ? t('redeemUi.hidePassword') : t('redeemUi.showPassword') }}
+            </button>
+          </span>
+        </label>
+        <label class="swap-label">
+          失败的完整卡密
+          <textarea
             v-model="code"
-            type="textarea"
-            :rows="3"
-            size="large"
+            rows="3"
+            class="u-input u-mono swap-area"
             placeholder="粘贴完整 CDK"
-            class="mono"
           />
-        </div>
-        <el-button
-          type="primary"
-          size="large"
-          class="!w-full"
-          :loading="busy"
-          :disabled="locked || !password.trim() || !code.trim()"
+        </label>
+        <button
+          type="button"
+          class="u-btn-primary swap-submit"
+          :disabled="busy || locked || !password.trim() || !code.trim()"
           @click="doExchange"
         >
           {{ busy ? '处理中…' : locked ? '结果不明，已锁定' : '换发新卡密' }}
-        </el-button>
-        <p v-if="error" class="alert alert-error text-sm" role="alert">{{ error }}</p>
-        <p v-if="locked" class="alert alert-warning text-sm font-semibold" role="alert">
+        </button>
+        <p v-if="error" class="u-error" role="alert">{{ error }}</p>
+        <p v-if="locked" class="u-warn swap-strong" role="alert">
           上一次换码的结果不明，新码可能已经发出。为避免重复发码，提交按钮已锁定。请勿重试，也不要刷新后再换，联系管理员核对。
         </p>
       </div>
 
-      <div v-if="result" class="card space-y-3">
-        <div class="alert alert-success text-sm">{{ result.message || '换发成功' }}</div>
+      <section v-if="result" class="u-card swap-stack swap-gap">
+        <p class="u-help swap-ok">{{ result.message || '换发成功' }}</p>
         <div>
-          <div class="text-xs text-muted mb-1">新卡密（仅显示一次，请立即复制）</div>
-          <div class="mono break-all text-sm p-3 rounded-lg bg-muted/20 border border-line">
-            {{ result.new_code }}
-          </div>
+          <div class="u-help swap-cap">新卡密（仅显示一次，请立即复制）</div>
+          <div class="u-mono swap-code">{{ result.new_code }}</div>
         </div>
-        <div class="flex gap-2">
-          <el-button type="primary" @click="copyNew">复制新码</el-button>
-          <el-button @click="reset">再换一张</el-button>
+        <div class="swap-actions">
+          <button type="button" class="u-btn-primary" @click="copyNew">复制新码</button>
+          <button type="button" class="u-btn-secondary" @click="reset">再换一张</button>
         </div>
-        <div class="text-xs text-subtle space-y-0.5">
+        <div class="u-help swap-meta">
           <div>套餐：{{ result.plan || '—' }}</div>
           <div>旧单状态：{{ result.order_status || '—' }}</div>
           <div>旧码前缀：{{ result.old_code_prefix || '—' }}</div>
         </div>
-      </div>
-    </div>
-  </div>
+      </section>
+
+      <UserFooter />
+    </main>
+  </UserShell>
 </template>
 
 <script setup lang="ts">
 import { ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { dialog } from '../../lib/dialog'
 import { copyToClipboard } from '../../lib/clipboard'
 import { swapFailure } from '../../lib/provider'
 import UserPageHeader from '../../components/UserPageHeader.vue'
+import UserShell from '../../components/redeem/UserShell.vue'
+import UserFooter from '../../components/redeem/UserFooter.vue'
 
+const { t } = useI18n({ useScope: 'global' })
 const password = ref('')
+const showPw = ref(false)
 const code = ref('')
 const busy = ref(false)
 const error = ref('')
@@ -125,3 +130,20 @@ function reset() {
   error.value = ''
 }
 </script>
+
+<style scoped>
+.swap-pw { display: flex; align-items: center; gap: 10px; }
+.swap-pw .u-input { flex: 1; min-width: 0; }
+.swap-pw-toggle { flex: none; min-height: 48px; padding: 0 4px; font: inherit; font-size: 15px; background: none; border: 0; }
+.swap-stack { display: flex; flex-direction: column; gap: 14px; }
+.swap-gap { margin-top: 16px; }
+.swap-label { display: flex; flex-direction: column; gap: 6px; font-size: 15px; font-weight: 600; }
+.swap-area { min-height: 96px; font-size: 14px; resize: vertical; }
+.swap-submit { width: 100%; }
+.swap-strong { margin: 0; font-weight: 600; }
+.swap-ok { margin: 0; color: var(--u-ink); font-size: 15px; font-weight: 600; }
+.swap-cap { margin: 0 0 6px; }
+.swap-code { word-break: break-all; font-size: 15px; padding: 12px 14px; background: var(--u-tint); border: 1px solid var(--u-line); border-radius: 14px; }
+.swap-actions { display: flex; flex-wrap: wrap; gap: 10px; }
+.swap-meta { margin: 0; display: flex; flex-direction: column; gap: 2px; }
+</style>

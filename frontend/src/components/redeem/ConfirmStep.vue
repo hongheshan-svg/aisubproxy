@@ -159,7 +159,7 @@ function submit() {
 .step-title { margin: 0; font-size: 20px; font-weight: 700; color: var(--u-ink); }
 .step-rows { margin: 0; display: flex; flex-direction: column; gap: 10px; }
 .step-row { display: flex; justify-content: space-between; gap: 12px; font-size: 15px; }
-.step-row dt { color: var(--u-muted); }
+.step-row dt { color: var(--u-muted); flex: none; max-width: 45%; }
 .step-row dd { margin: 0; color: var(--u-ink); font-weight: 600; text-align: right; overflow-wrap: anywhere; }
 .step-points { margin: 0; font-size: 15px; font-weight: 600; color: var(--u-ink); }
 .step-irreversible { margin: 0; font-size: 14px; color: var(--u-muted); }

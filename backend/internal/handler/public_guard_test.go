@@ -1,12 +1,15 @@
 package handler
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/gin-gonic/gin"
 )
 
 // bigJSON 是一个超过 256 KB 的合法 JSON：码是 ZovoCard 的，进了业务逻辑就会转发上游。
@@ -49,6 +52,9 @@ func TestPublicBodyTooLarge(t *testing.T) {
 			if w.Code != http.StatusRequestEntityTooLarge || !strings.Contains(w.Body.String(), "请求太大") {
 				t.Fatalf("%s %s: %d %s", path, name, w.Code, w.Body.String())
 			}
+			if !strings.Contains(w.Body.String(), `"error_code":"body_too_large"`) {
+				t.Fatalf("%s %s: 缺 error_code: %s", path, name, w.Body.String())
+			}
 		}
 	}
 	if e.zovo.count() != 0 {
@@ -72,6 +78,8 @@ func TestPublicRateLimitBeforeBody(t *testing.T) {
 	body := &readCounter{r: strings.NewReader(bigJSON())}
 	if w := e.doBody("POST", "/public/cdk/redeem", body, ip); w.Code != http.StatusTooManyRequests {
 		t.Fatalf("超额应 429: %d %s", w.Code, w.Body.String())
+	} else if !strings.Contains(w.Body.String(), "请求过于频繁，请稍后再试") || !strings.Contains(w.Body.String(), `"error_code":"rate_limited"`) {
+		t.Fatalf("429 的 error 文字或 error_code 不对: %s", w.Body.String())
 	}
 	if body.reads.Load() != 0 {
 		t.Fatal("限流应在读请求体之前")
@@ -82,5 +90,24 @@ func TestPublicRateLimitBeforeBody(t *testing.T) {
 	}
 	if w := e.doBody("POST", "/public/cdk/preview", strings.NewReader(`{"code":"ZC-FAKE-0001"}`), "198.51.100.8"); w.Code != http.StatusOK {
 		t.Fatalf("别的 IP 不受影响: %d", w.Code)
+	}
+}
+
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) { return 0, errors.New("连接断了") }
+
+// 读请求体出错（不是超大）：400，原文 invalid request 不变，带 error_code。
+func TestPublicGuardReadErrorCode(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.POST("/x", publicGuard(func(*gin.Context) string { return localRateQuery }), func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	req := httptest.NewRequest("POST", "/x", failingReader{})
+	req.ContentLength = -1
+	req.RemoteAddr = "203.0.113.77:1234"
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), `"error":"invalid request"`) || !strings.Contains(w.Body.String(), `"error_code":"invalid_request"`) {
+		t.Fatalf("读体出错应 400 且带 invalid_request: %d %s", w.Code, w.Body.String())
 	}
 }

@@ -60,11 +60,16 @@ func noteSwapPasswordFailure() {
 
 // swapLockedText 是锁定期间给请求方的提示，wait 向上取整到分钟。
 func swapLockedText(wait time.Duration) string {
+	return fmt.Sprintf("换码口令错误次数过多，已暂停换码，请 %d 分钟后再试", swapLockedMinutes(wait))
+}
+
+// swapLockedMinutes 把剩余锁定时间向上取整到分钟，至少 1；error_code=locked 的响应用它给 retry_after_minutes。
+func swapLockedMinutes(wait time.Duration) int {
 	mins := int((wait + time.Minute - 1) / time.Minute)
 	if mins < 1 {
 		mins = 1
 	}
-	return fmt.Sprintf("换码口令错误次数过多，已暂停换码，请 %d 分钟后再试", mins)
+	return mins
 }
 
 // 口令错误按北京日计数：只记次数和来源，不记口令内容。
@@ -238,7 +243,7 @@ func agentExchangeConflict(c *gin.Context, state string) {
 	case db.AgentExchangeUnknown:
 		msg = "该卡密上次换码结果不明，已转人工核对，请勿重试"
 	}
-	c.JSON(http.StatusConflict, gin.H{"error": msg, "state": state})
+	c.JSON(http.StatusConflict, gin.H{"error": msg, "error_code": "conflict", "state": state})
 }
 
 // agentExchangeUnknown 发码结果不明：保留占位、告警、转人工。占位状态写库失败时行留在 pending，由维护循环升级。
@@ -252,7 +257,7 @@ func agentExchangeUnknown(c *gin.Context, exID, oldID int64, reason string) {
 	db.WriteAudit("agent-swap", "agent_cdk_exchange_unknown",
 		fmt.Sprintf("id=%d old=%d reason=%s", exID, oldID, reason), c.ClientIP())
 	opsAlert(fmt.Sprintf("代理换码结果不明，已转人工：记录 %d，旧码 ID %d，原因：%s。请先到卡台核对是否已发码，再到后台定论。", exID, oldID, reason))
-	c.JSON(http.StatusBadGateway, gin.H{"error": "发码结果不明，已转人工核对，请勿重试", "outcome": "unknown"})
+	c.JSON(http.StatusBadGateway, gin.H{"error": "发码结果不明，已转人工核对，请勿重试", "error_code": "outcome_unknown", "outcome": "unknown"})
 }
 
 // orderLooksUnpaid 订单终态失败且无扣款证据。
@@ -302,11 +307,11 @@ func orderLooksUnpaid(status, stage string, finalMinor int64, events []map[strin
 func PublicAgentCDKExchange(c *gin.Context) {
 	ip := c.ClientIP()
 	if !swapRateAllow(ip) {
-		c.JSON(http.StatusTooManyRequests, gin.H{"error": "请求过于频繁，请稍后再试"})
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "请求过于频繁，请稍后再试", "error_code": "rate_limited"})
 		return
 	}
 	if !agentSwapPasswordConfigured() {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "管理员尚未启用代理换码功能"})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "管理员尚未启用代理换码功能", "error_code": "disabled"})
 		return
 	}
 	var req struct {
@@ -314,23 +319,23 @@ func PublicAgentCDKExchange(c *gin.Context) {
 		Code     string `json:"code"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request", "error_code": "invalid_request"})
 		return
 	}
 	if ok, wait := swapPasswordFails.allowed(swapPasswordFailKey); !ok {
-		c.JSON(http.StatusTooManyRequests, gin.H{"error": swapLockedText(wait)})
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": swapLockedText(wait), "error_code": "locked", "retry_after_minutes": swapLockedMinutes(wait)})
 		return
 	}
 	if !verifyAgentSwapPassword(req.Password) {
 		agentSwapWrongPassword(ip)
 		noteSwapPasswordFailure()
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "密码错误"})
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "密码错误", "error_code": "wrong_password"})
 		return
 	}
 	noteAgentSwapPasswordUsed(req.Password)
 	code := strings.TrimSpace(req.Code)
 	if code == "" || len(code) < 10 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请输入完整卡密"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请输入完整卡密", "error_code": "code_required"})
 		return
 	}
 	p, ok := routeCode(c, code)
@@ -348,7 +353,7 @@ func PublicAgentCDKExchange(c *gin.Context) {
 	}
 	ex, ok := a.(upstreamExchanger)
 	if !ok {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "该服务商不支持代理换码"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "该服务商不支持代理换码", "error_code": "provider_unsupported"})
 		return
 	}
 	ex.Exchange(c, code, ip)
@@ -365,7 +370,7 @@ func zovoCardExchange(c *gin.Context, code, ip string) {
 
 	upstreamID, plan, prefix, localStatus, ok := db.LookupStoredCDKByCode(code)
 	if !ok || upstreamID <= 0 {
-		c.JSON(http.StatusNotFound, gin.H{"error": "本站未找到该完整卡密（仅支持本站发过的码）"})
+		c.JSON(http.StatusNotFound, gin.H{"error": "本站未找到该完整卡密（仅支持本站发过的码）", "error_code": "code_not_found"})
 		return
 	}
 	plan = strings.ToLower(strings.TrimSpace(plan))
@@ -383,8 +388,9 @@ func zovoCardExchange(c *gin.Context, code, ip string) {
 	if total == 0 || len(list) == 0 {
 		// 从未进兑换：不允许「白嫖」新码
 		c.JSON(http.StatusBadRequest, gin.H{
-			"error": "该卡密尚无兑换失败记录，不能换新码",
-			"hint":  "仅限充值失败且未扣款的卡密",
+			"error":      "该卡密尚无兑换失败记录，不能换新码",
+			"error_code": "no_failed_record",
+			"hint":       "仅限充值失败且未扣款的卡密",
 		})
 		return
 	}
@@ -406,7 +412,7 @@ func zovoCardExchange(c *gin.Context, code, ip string) {
 		if err != nil {
 			// 详情拉不到就不知道有没有扣款：按结果不明拒绝，不占位、不发码
 			log.Printf("[agent-exchange] 拉订单详情失败 old=%d order=%d: %v", upstreamID, orderID, err)
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "暂时无法确认订单扣款情况，请稍后重试"})
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "暂时无法确认订单扣款情况，请稍后重试", "error_code": "charge_unconfirmed"})
 			return
 		}
 		if evs := extractOrderEvents(detailRaw); len(evs) > 0 {
@@ -430,7 +436,7 @@ func zovoCardExchange(c *gin.Context, code, ip string) {
 	for _, it := range list {
 		st := strings.ToLower(strAny(it["status"]))
 		if st == "completed" || st == "success" || st == "paid" {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "该卡密已有成功充值记录，不能换新码"})
+			c.JSON(http.StatusBadRequest, gin.H{"error": "该卡密已有成功充值记录，不能换新码", "error_code": "already_succeeded"})
 			return
 		}
 	}
@@ -438,6 +444,7 @@ func zovoCardExchange(c *gin.Context, code, ip string) {
 	if !orderLooksUnpaid(status, stage, finalMinor, events) {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":        "不符合换码条件（需充值失败且未扣款）",
+			"error_code":   "not_eligible",
 			"order_status": status,
 			"order_stage":  stage,
 			"final_amount": finalMinor,
@@ -451,7 +458,7 @@ func zovoCardExchange(c *gin.Context, code, ip string) {
 		plan = upstreamCDKPlan(c, cli, upstreamID)
 	}
 	if plan == "" {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "无法确认原卡密的套餐，暂不能补发，请联系管理员"})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "无法确认原卡密的套餐，暂不能补发，请联系管理员", "error_code": "plan_unknown"})
 		return
 	}
 
@@ -463,7 +470,7 @@ func zovoCardExchange(c *gin.Context, code, ip string) {
 		country, known = upstreamCDKRegion(c, cli, upstreamID)
 	}
 	if !known {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "无法确认原卡密的付款地区，暂不能补发，请联系管理员"})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "无法确认原卡密的付款地区，暂不能补发，请联系管理员", "error_code": "region_unknown"})
 		return
 	}
 	// 发一张同套餐、同地区的新码（带本站选卡偏好；跳过未启动卡头）
@@ -482,11 +489,11 @@ func zovoCardExchange(c *gin.Context, code, ip string) {
 	case errors.Is(err, db.ErrAgentExchangeDailyLimit):
 		limit := agentSwapDailyLimit()
 		opsAlertDaily("agent-swap-daily-limit", fmt.Sprintf("代理换码已达今日上限（%d 张），后续请求已拒绝。如果不是正常业务量，请检查换码密码是否泄露。", limit), time.Now())
-		c.JSON(http.StatusTooManyRequests, gin.H{"error": fmt.Sprintf("代理换码已达今日上限（%d 张），请联系管理员", limit)})
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": fmt.Sprintf("代理换码已达今日上限（%d 张），请联系管理员", limit), "error_code": "daily_limit", "limit": limit})
 		return
 	case err != nil:
 		log.Printf("[agent-exchange] 占位失败 old=%d: %v", upstreamID, err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试", "error_code": "unavailable"})
 		return
 	}
 

@@ -1,16 +1,16 @@
 <template>
   <UserShell>
-    <UserPageHeader title="卡密补发" subtitle="仅限充值失败且未扣款的卡密。验证通过后将作废旧码并下发一张同套餐新码。" back />
+    <UserPageHeader :title="t('agentSwap.title')" :subtitle="t('agentSwap.subtitle')" back />
     <main class="u-page swap">
       <div class="u-card swap-stack">
         <label class="swap-label">
-          代理密码
+          {{ t('agentSwap.passwordLabel') }}
           <span class="swap-pw">
             <input
               v-model="password"
               :type="showPw ? 'text' : 'password'"
               class="u-input"
-              placeholder="管理员下发的个人密码"
+              :placeholder="t('agentSwap.passwordPlaceholder')"
               autocomplete="off"
             />
             <button type="button" class="u-link swap-pw-toggle" :aria-pressed="showPw" @click="showPw = !showPw">
@@ -19,12 +19,12 @@
           </span>
         </label>
         <label class="swap-label">
-          失败的完整卡密
+          {{ t('agentSwap.codeLabel') }}
           <textarea
             v-model="code"
             rows="3"
             class="u-input u-mono swap-area"
-            placeholder="粘贴完整 CDK"
+            :placeholder="t('agentSwap.codePlaceholder')"
           />
         </label>
         <button
@@ -33,28 +33,28 @@
           :disabled="busy || locked || !password.trim() || !code.trim()"
           @click="doExchange"
         >
-          {{ busy ? '处理中…' : locked ? '结果不明，已锁定' : '换发新卡密' }}
+          {{ busy ? t('agentSwap.busy') : locked ? t('agentSwap.lockedButton') : t('agentSwap.submit') }}
         </button>
         <p v-if="error" class="u-error" role="alert">{{ error }}</p>
         <p v-if="locked" class="u-warn swap-strong" role="alert">
-          上一次换码的结果不明，新码可能已经发出。为避免重复发码，提交按钮已锁定。请勿重试，也不要刷新后再换，联系管理员核对。
+          {{ t('agentSwap.lockedNotice') }}
         </p>
       </div>
 
       <section v-if="result" class="u-card swap-stack swap-gap">
-        <p class="u-help swap-ok">{{ result.message || '换发成功' }}</p>
+        <p class="u-help swap-ok">{{ result.message ? t('agentSwap.resultMessage') : t('agentSwap.resultFallback') }}</p>
         <div>
-          <div class="u-help swap-cap">新卡密（仅显示一次，请立即复制）</div>
+          <div class="u-help swap-cap">{{ t('agentSwap.newCodeCaption') }}</div>
           <div class="u-mono swap-code">{{ result.new_code }}</div>
         </div>
         <div class="swap-actions">
-          <button type="button" class="u-btn-primary" @click="copyNew">复制新码</button>
-          <button type="button" class="u-btn-secondary" @click="reset">再换一张</button>
+          <button type="button" class="u-btn-primary" @click="copyNew">{{ t('agentSwap.copy') }}</button>
+          <button type="button" class="u-btn-secondary" @click="reset">{{ t('agentSwap.again') }}</button>
         </div>
         <div class="u-help swap-meta">
-          <div>套餐：{{ result.plan || '—' }}</div>
-          <div>旧单状态：{{ result.order_status || '—' }}</div>
-          <div>旧码前缀：{{ result.old_code_prefix || '—' }}</div>
+          <div>{{ t('agentSwap.metaPlan', { v: result.plan || '—' }) }}</div>
+          <div>{{ t('agentSwap.metaOldStatus', { v: result.order_status || '—' }) }}</div>
+          <div>{{ t('agentSwap.metaOldPrefix', { v: result.old_code_prefix || '—' }) }}</div>
         </div>
       </section>
 
@@ -68,12 +68,12 @@ import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { dialog } from '../../lib/dialog'
 import { copyToClipboard } from '../../lib/clipboard'
-import { swapFailure } from '../../lib/provider'
+import { swapFailureT } from '../../lib/apiError'
 import UserPageHeader from '../../components/UserPageHeader.vue'
 import UserShell from '../../components/redeem/UserShell.vue'
 import UserFooter from '../../components/redeem/UserFooter.vue'
 
-const { t } = useI18n({ useScope: 'global' })
+const { t, te } = useI18n({ useScope: 'global' })
 const password = ref('')
 const showPw = ref(false)
 const code = ref('')
@@ -99,16 +99,16 @@ async function doExchange() {
     })
     const d = await r.json().catch(() => ({}))
     if (!r.ok) {
-      const f = swapFailure(r.status, d)
+      const f = swapFailureT(r.status, d, t, te)
       error.value = f.message
       if (f.locked) locked.value = true
       return
     }
     result.value = d
-    dialog.toast('已换发新码，请立即复制', 'ok')
+    dialog.toast(t('agentSwap.toastIssued'), 'ok')
   } catch {
     // 请求发出后连接中断：服务端可能已经发了码
-    const f = swapFailure(0, {})
+    const f = swapFailureT(0, {}, t, te)
     error.value = f.message
     locked.value = true
   } finally {
@@ -120,7 +120,7 @@ async function copyNew() {
   const c = String(result.value?.new_code || '')
   if (!c) return
   const ok = await copyToClipboard(c)
-  dialog.toast(ok ? '已复制' : '复制失败，请手动全选', ok ? 'ok' : 'err')
+  dialog.toast(ok ? t('agentSwap.toastCopied') : t('agentSwap.toastCopyFailed'), ok ? 'ok' : 'err')
 }
 
 function reset() {

@@ -65,13 +65,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, onServerPrefetch, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { siteBrand, setSiteBrand, setSkin, setTheme, siteSkin, themeMode, applyThemeAll, type SkinId, type ThemeMode } from '../../theme'
 import SkinPicker from '../../components/SkinPicker.vue'
 import { authFetch } from '../../lib/api'
 import { dialog } from '../../lib/dialog'
-import { checkLogoFile, checkPrimary, LOGO_ACCEPT, PRESET_COLORS } from '../../lib/siteAppearance'
+import { applySettings, checkLogoFile, checkPrimary, LOGO_ACCEPT, PRESET_COLORS } from '../../lib/siteAppearance'
 
 const form = reactive({
   brand_name: siteBrand.value.name,
@@ -92,21 +92,22 @@ async function load() {
     const r = await authFetch('/api/v1/admin/settings')
     if (!r.ok) return
     const d = await r.json()
-    form.brand_name = d.brand_name || form.brand_name
-    form.brand_sub = d.brand_sub || form.brand_sub
-    if (d.primary_color) form.primary_color = d.primary_color
-    logoVersion.value = d.logo_version || ''
-    setSiteBrand({ name: form.brand_name, sub: form.brand_sub, primary: form.primary_color, logoVersion: logoVersion.value })
-    if (d.skin) {
-      savedSkin.value = d.skin as SkinId
-      setSkin(d.skin as SkinId)
+    const next = applySettings(d, { ...form, logoVersion: logoVersion.value })
+    form.brand_name = next.brand_name
+    form.brand_sub = next.brand_sub
+    form.primary_color = next.primary_color
+    logoVersion.value = next.logoVersion
+    // 服务端没存主色时，不把页面上的默认色写进 siteBrand
+    setSiteBrand({ name: form.brand_name, sub: form.brand_sub, logoVersion: next.logoVersion, ...(next.serverPrimary ? { primary: next.serverPrimary } : {}) })
+    if (next.skin) {
+      savedSkin.value = next.skin as SkinId
+      setSkin(next.skin as SkinId)
     }
-    // 设置里没有明暗时，后端默认就是跟随系统
-    setTheme((d.theme_mode || 'auto') as ThemeMode)
+    // 只有服务端存了明暗才改；没存时不动本机偏好，页面默认选中 auto 靠 themeMode 的初始值
+    if (next.theme) setTheme(next.theme as ThemeMode)
   } catch { /* ignore */ }
 }
 onMounted(load)
-onServerPrefetch(load) // 仅测试用的服务端渲染会走这里，浏览器里不会触发
 
 onBeforeUnmount(() => {
   if (dirty.value) setSkin(savedSkin.value)
@@ -158,9 +159,9 @@ async function onLogoPick(e: Event) {
   }
   logoBusy.value = true
   try {
-    const form = new FormData()
-    form.append('file', file)
-    const r = await authFetch('/api/v1/admin/settings/logo', { method: 'POST', body: form })
+    const fd = new FormData()
+    fd.append('file', file)
+    const r = await authFetch('/api/v1/admin/settings/logo', { method: 'POST', body: fd })
     if (!r.ok) {
       dialog.toast(await errText(r, '上传失败'), 'err')
       return

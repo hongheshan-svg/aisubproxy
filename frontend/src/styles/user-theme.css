@@ -13,6 +13,8 @@
   --u-warn-ink: #7A5410;
   --u-error-bg: #FDECEA;
   --u-error-ink: #B42318;
+  --u-disabled-bg: #C9D8D5;
+  --u-disabled-ink: #3A524D;
 
   background: var(--u-bg);
   color: var(--u-ink);
@@ -34,6 +36,8 @@
   --u-warn-ink: #F0C878;
   --u-error-bg: #331614;
   --u-error-ink: #F4A39B;
+  --u-disabled-bg: #22403B;
+  --u-disabled-ink: #9DB5B0;
   color-scheme: dark;
 }
 
@@ -51,6 +55,8 @@
     --u-warn-ink: #F0C878;
     --u-error-bg: #331614;
     --u-error-ink: #F4A39B;
+    --u-disabled-bg: #22403B;
+    --u-disabled-ink: #9DB5B0;
     color-scheme: dark;
   }
 }
@@ -117,7 +123,10 @@
   border: 3px solid var(--u-primary);
 }
 .user-ui .u-btn-primary:disabled,
-.user-ui .u-btn-secondary:disabled { opacity: 0.5; cursor: not-allowed; }
+.user-ui .u-btn-secondary:disabled { cursor: not-allowed; color: var(--u-disabled-ink); }
+/* 禁用不靠透明度：文字和底色各有专门的颜色，亮暗两种下都看得清 */
+.user-ui .u-btn-primary:disabled { background: var(--u-disabled-bg); border-color: var(--u-disabled-bg); }
+.user-ui .u-btn-secondary:disabled { background: transparent; border-color: var(--u-disabled-bg); }
 
 .user-ui .u-link {
   color: var(--u-primary);

@@ -104,6 +104,8 @@ type fakePool struct {
 	backfill  func(context.Context, int) (cardpool.BackfillState, error)
 	// lastWebhook 未设置时 LastWebhookAt 返回 errFakeUnset，引擎按「不确定」处理：不告警、不改超时说明
 	lastWebhook func() (time.Time, bool, error)
+	// renew 未设置时 RenewLease 视为续租成功：续租失败只记时间线，不影响其他测试关心的流程
+	renew func(*cardpool.Lease, time.Time) error
 
 	relMu    sync.Mutex
 	releases []releaseCall
@@ -191,6 +193,14 @@ func (p *fakePool) BackfillRecent(c context.Context, days int) (cardpool.Backfil
 	return cardpool.BackfillState{}, errFakeUnset
 }
 
+func (p *fakePool) RenewLease(_ context.Context, l *cardpool.Lease, until time.Time) error {
+	p.hit("RenewLease", l, until)
+	if p.renew != nil {
+		return p.renew(l, until)
+	}
+	return nil
+}
+
 func (p *fakePool) LastWebhookAt(context.Context) (time.Time, bool, error) {
 	p.hit("LastWebhookAt")
 	if p.lastWebhook != nil {
@@ -207,6 +217,8 @@ type fakeChatGPT struct {
 	checkout                            chatgpt.Checkout
 	// accountFn 非 nil 时优先于 account / accountErr，n 为第几次调用 Account（从 1 起）。
 	accountFn func(n int) (chatgpt.Account, error)
+	// accountCtx 非 nil 时优先于其余全部，能看到调用方的 ctx（测单次检查超时）。
+	accountCtx func(ctx context.Context, s chatgpt.Session, n int) (chatgpt.Account, error)
 	// accountSess 非 nil 时优先于 accountFn，能按会话（例如邮箱）区分单据。
 	accountSess func(s chatgpt.Session, n int) (chatgpt.Account, error)
 
@@ -274,8 +286,11 @@ func (g *fakeChatGPT) Refresh(_ context.Context, s *chatgpt.Session) error {
 	return nil
 }
 
-func (g *fakeChatGPT) Account(_ context.Context, s chatgpt.Session) (chatgpt.Account, error) {
+func (g *fakeChatGPT) Account(c context.Context, s chatgpt.Session) (chatgpt.Account, error) {
 	g.hit("Account", s.AccessToken)
+	if g.accountCtx != nil {
+		return g.accountCtx(c, s, g.count("Account"))
+	}
 	if g.accountSess != nil {
 		return g.accountSess(s, g.count("Account"))
 	}

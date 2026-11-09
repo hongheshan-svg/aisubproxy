@@ -104,14 +104,20 @@ func (s *Service) verifyLoop(ctx context.Context) {
 	}
 }
 
+// verifyLeaseAhead 是确认阶段每次续租续到多久之后。两次续租之间最多隔一次检查（VerifyCheck，默认 45 秒），远小于它；
+// 进程停了就不再续，租约照常到期回收。
+const verifyLeaseAhead = 5 * time.Minute
+
 // verifyDue 接管无人处理的已提交单，再检查到期的确认中单据。
 // 恢复没做完时：不接管（恢复本身会转，同时做会互相抢），被拒单也不定论（宽限期可能还没补上，按过期的 verify_until 会定成 declined）；
 // 其余单据定论都是安全方向（成功或转人工），照常检查。
+// 一张一张查：每查一张之前先给所有确认中的单续租（renewVerifyLeases），单次检查最多 VerifyCheck（verifyOne）。
 func (s *Service) verifyDue(ctx context.Context) {
 	recovered := s.recovered.Load()
 	if recovered {
 		s.adoptSubmitted(ctx)
 	}
+	s.renewVerifyLeases(ctx) // 没有到期单据的轮次也续：等 Retry-After 的单两次检查之间可能隔好几分钟
 	list, err := dueVerifying(ctx, s.now().Unix())
 	if err != nil {
 		if ctx.Err() == nil {
@@ -119,6 +125,7 @@ func (s *Service) verifyDue(ctx context.Context) {
 		}
 		return
 	}
+	renewed := true
 	for i := range list {
 		if ctx.Err() != nil {
 			return
@@ -126,18 +133,98 @@ func (s *Service) verifyDue(ctx context.Context) {
 		if !recovered && isDeclinedOutcome(list[i].PageOutcome) {
 			continue
 		}
+		if !renewed {
+			s.renewVerifyLeases(ctx) // 前面的单可能查了很久
+		}
+		renewed = false
 		s.verifyOne(ctx, &list[i])
 	}
 }
 
-// verifyOne 检查一张确认中的单据。检查中 panic 时这张单转人工（recoverVerify），下一轮就不会再拿到它反复出错。
+// renewVerifyLeases 把所有确认中单据的卡租约续到 verifyLeaseAhead 之后（已知问题 G4）：付款步骤可能用掉大半个租约，
+// 确认又是一张一张查的，不续的话确认还没定论，卡就被释放去回收。没有租约、所属服务商没有卡池的单跳过（后者由 verifyOrder 转人工）。
+// 续租失败（多半是租约已被卡池收回）只记时间线，同一原因只记一次，不影响确认本身。
+func (s *Service) renewVerifyLeases(ctx context.Context) {
+	list, err := ordersInStates(ctx, StateVerifying)
+	if err != nil {
+		if ctx.Err() == nil {
+			log.Printf("[payengine] 读取确认中单据失败，这一轮没有续租: %v", err)
+		}
+		return
+	}
+	until := s.now().Add(verifyLeaseAhead)
+	for i := range list {
+		if ctx.Err() != nil {
+			return
+		}
+		j := &job{o: &list[i]}
+		l := leaseFromOrder(j.o)
+		pool, ok := s.jobPool(j)
+		if l == nil || !ok {
+			continue
+		}
+		err := pool.RenewLease(ctx, l, until)
+		if ctx.Err() != nil {
+			return
+		}
+		s.noteVerifyErr(ctx, j, "lease", "确认期间续租卡租约失败，卡可能已被卡池收回：", err)
+	}
+}
+
+// verifyOne 检查一张确认中的单据，单次最多 VerifyCheck：一张单卡住（代理不通、接口不返回）不能拖住后面的单。
+// 检查中 panic 时这张单转人工（recoverVerify），下一轮就不会再拿到它反复出错。
 func (s *Service) verifyOne(ctx context.Context, o *Order) {
 	defer func() {
 		if r := recover(); r != nil {
 			s.recoverVerify(ctx, o.OrderNo, r)
 		}
 	}()
-	s.verifyOrder(ctx, o)
+	cctx, cancel := context.WithTimeout(ctx, s.t.VerifyCheck)
+	defer cancel()
+	s.verifyOrder(cctx, o)
+	if ctx.Err() != nil {
+		return // 停机：下次启动接着查
+	}
+	if cctx.Err() != nil {
+		s.verifyCheckTimedOut(ctx, o.OrderNo)
+		return
+	}
+	s.noteVerifyErr(ctx, &job{o: o}, "timeout", "", nil)
+}
+
+// verifyCheckTimedOut 处理单次检查超过 VerifyCheck 的单据。检查到一半被打断时，verifyOrder 和停机一样不下结论，单据原样留着。
+// 还没到最后期限（verifyFinalDeadline）：记一次时间线，按 VerifyEvery 再查。
+// 过了最后期限还查不完：和一直查不到账号一样转人工，否则这张单每轮超时、每轮续租，一直占着卡。
+func (s *Service) verifyCheckTimedOut(ctx context.Context, no string) {
+	o, err := getOrder(ctx, no)
+	if err != nil {
+		log.Printf("[payengine] 单据 %s 确认检查超时后重读失败，下一轮再查: %v", no, err)
+		return
+	}
+	if o.State != StateVerifying {
+		return // 超时前已经定论
+	}
+	j := &job{o: o}
+	text := fmt.Sprintf("本次确认检查超过 %s 没有结果", s.t.VerifyCheck)
+	final := verifyFinalDeadline(s.t, o)
+	if s.now().Unix() >= final {
+		s.verifyEscalate(ctx, j, "verify_unreachable", "确认超时："+text+"，无法确认账号是否已开通，请人工核对")
+		return
+	}
+	s.noteVerifyErr(ctx, j, "timeout", "", errors.New(text+"，等下次检查"))
+	s.verifyRescheduleAfter(ctx, j, s.t.VerifyEvery, final)
+}
+
+// verifyFinalDeadline 是一张确认中单据最晚什么时候必须定论（Unix 秒）：verify_until，被拒或校验错误的单再加 declineExtra。
+func verifyFinalDeadline(t Timeouts, o *Order) int64 {
+	var until int64
+	if o.VerifyUntil != nil {
+		until = *o.VerifyUntil
+	}
+	if isDeclinedOutcome(o.PageOutcome) {
+		until += declineExtra(t, o.PageOutcome)
+	}
+	return until
 }
 
 // recoverVerify 处理确认时 panic 的单据：重读单据，还在确认中就走转人工的老路径（释放租约、告警），错误码 internal_error。

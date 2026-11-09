@@ -1088,13 +1088,16 @@ describe('任务 17：第 ② 屏核对通过自动开通（规格 §6.4.1）', 
     ['changeAccount()', (f) => f.changeAccount()],
   ]
   for (const [name, act] of MIDWAY) {
-    it(`核对途中调 ${name}：核对回来后不发兑换请求`, async () => {
+    it(`核对途中调 ${name}：autoSubmitting 立即为假，核对回来后不发兑换请求（裁决 R40）`, async () => {
       const g = gate()
       const { flow, net } = await toCredential({ [PREFLIGHT]: { wait: g.p, body: MW_ELIGIBLE }, [REDEEM]: { body: MW_QUEUED } })
       const pending = flow.checkAndRedeem(CRED, {})
       await flush()
       expect(net.count(PREFLIGHT)).toBe(1)
+      expect(flow.autoSubmitting.value).toBe(true)
       act(flow)
+      // 不等旧核对回来：新码或新账号的第 ② 屏按钮马上能点
+      expect(flow.autoSubmitting.value).toBe(false)
       g.open()
       await pending
       expect(net.count(REDEEM)).toBe(0)
@@ -1102,6 +1105,45 @@ describe('任务 17：第 ② 屏核对通过自动开通（规格 §6.4.1）', 
       expect(flow.autoSubmitting.value).toBe(false)
     })
   }
+
+  it('核对途中换码后立刻核对新码：新核对照常发出，旧核对回来不清掉新的 autoSubmitting，只为新核对开通一次（裁决 R40）', async () => {
+    const CODE_B = 'MW-PLUS-CCCC-DDDD'
+    const gOld = gate()
+    const gNew = gate()
+    const net = fakeFetch({
+      [PREVIEW]: [{ body: MW_PREVIEW }, { body: { ...MW_PREVIEW, redemption_token: 'rt_B' } }],
+      [PREFLIGHT]: [{ wait: gOld.p, body: MW_ELIGIBLE }, { wait: gNew.p, body: { ...MW_ELIGIBLE, preflight_token: 'pf_2' } }],
+      [REDEEM]: { body: { ...MW_QUEUED, redemption_token: 'rt_B' } },
+    })
+    const { flow } = makeFlow(net)
+    await flow.preview(CODE)
+    const oldRun = flow.checkAndRedeem(CRED, {})
+    await flush()
+    expect(net.count(PREFLIGHT)).toBe(1)
+
+    flow.reset()
+    await flow.preview(CODE_B)
+    expect(flow.screen.value).toBe('credential')
+    const newRun = flow.checkAndRedeem(CRED, {})
+    await flush()
+    expect(net.count(PREFLIGHT)).toBe(2)
+    expect(net.calls.filter((c) => c.path === PREFLIGHT)[1].body).toMatchObject({ code: CODE_B, redemption_token: 'rt_B' })
+    expect(flow.autoSubmitting.value).toBe(true)
+
+    // 旧核对先回来：回复按代次丢掉，不清新调用的 autoSubmitting，也不开通
+    gOld.open()
+    await oldRun
+    expect(flow.autoSubmitting.value).toBe(true)
+    expect(flow.screen.value).toBe('credential')
+    expect(net.count(REDEEM)).toBe(0)
+
+    gNew.open()
+    await newRun
+    expect(net.count(REDEEM)).toBe(1)
+    expect(net.calls.find((c) => c.path === REDEEM)!.body).toMatchObject({ redemption_token: 'rt_B', preflight_token: 'pf_2' })
+    expect(flow.screen.value).toBe('progress')
+    expect(flow.autoSubmitting.value).toBe(false)
+  })
 
   it('连调两次：核对、兑换各只发一次', async () => {
     const { flow, net } = await toCredential({ [PREFLIGHT]: { body: MW_ELIGIBLE }, [REDEEM]: { body: MW_QUEUED } })

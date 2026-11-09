@@ -58,7 +58,7 @@ export interface RedeemFlow {
   preview(code: string): Promise<void>
   preflight(credential: { mode: 'session'; session: string }): Promise<void>
   redeem(opts?: RedeemOpts): Promise<void>
-  /** 从 checkAndRedeem 开始到它返回一直为真：页面据此在自动开通途中仍显示第 ② 屏 */
+  /** checkAndRedeem 在途时为真（换码、换账号时立即变回假）：页面据此在自动开通途中仍显示第 ② 屏 */
   autoSubmitting: Ref<boolean>
   /** 第 ② 屏「核对账号并开通」：这次核对结论是「可以开通」才调一次 redeem()；其余停在原处，不重试 */
   checkAndRedeem(credential: { mode: 'session'; session: string }, opts: RedeemOpts): Promise<void>
@@ -338,6 +338,7 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
     busy.value = false
     submitState.value = 'idle'
     progressStartedAt.value = null
+    autoSubmitting.value = false // 在途的旧核对回来会按代次丢掉，不用等它
   }
 
   /** 预检票不能用了：回第 ② 屏重新核对账号，卡密和预览保留。 */
@@ -641,7 +642,8 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
       if (s !== seq || screen.value !== 'confirm' || confirmView.value !== 'ok' || submitState.value !== 'idle' || busy.value) return
       await redeem(opts)
     } finally {
-      autoSubmitting.value = false
+      // 代次变了时 reset / changeAccount 已经清过，这时可能已有新的一次在途，不能替它清
+      if (s === seq) autoSubmitting.value = false
     }
   }
 
@@ -787,6 +789,7 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
     clearAccountCheck()
     error.value = null
     busy.value = false
+    autoSubmitting.value = false
     result.value = emptyResult()
     lookup.value = null
     progressStartedAt.value = null

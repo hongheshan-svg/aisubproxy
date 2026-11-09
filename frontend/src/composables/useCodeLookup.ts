@@ -11,13 +11,18 @@ export function useCodeLookup(deps: { fetchFn?: typeof fetch } = {}) {
   const doFetch = deps.fetchFn ?? ((...a: Parameters<typeof fetch>) => fetch(...a))
   const t = (k: string) => i18n.global.t(`redeemUi.errors.${k}`) as string
 
+  // 每次查询一个序号；clear() 作废在途的请求，它返回后不再写结果
+  let seq = 0
+
   async function submit(raw: string) {
     // 回车加点按钮、网速慢时连点：只认第一次
     if (busy.value || !raw.trim()) return
+    const mine = ++seq
     busy.value = true
     error.value = ''
     result.value = null
     let status = 0
+    let ok = false
     try {
       const r = await lookupAftersale(
         raw,
@@ -25,18 +30,30 @@ export function useCodeLookup(deps: { fetchFn?: typeof fetch } = {}) {
         async (...a) => {
           const resp = await doFetch(...a)
           status = resp.status
+          ok = resp.ok
           return resp
         },
       )
+      if (mine !== seq) return
       result.value = r.result ?? null
-      // 后端的 400 文字是中文，英文界面也会照搬，统一换成语言包里的说法
-      error.value = r.error && status === 400 ? t('homeFormat') : r.error
+      error.value = r.error ? errorText(r.error, status, ok) : ''
     } finally {
-      busy.value = false
+      if (mine === seq) busy.value = false
     }
   }
 
+  // 后端的错误文字是中文，英文界面也会照搬，所以按状态码统一换成语言包的说法
+  function errorText(fallback: string, status: number, ok: boolean): string {
+    if (status === 0 || status === 404) return fallback // 网络异常、找不到：lookupAftersale 已用语言包文字
+    if (status === 400) return t('homeFormat')
+    if (status === 429) return t('rateLimited')
+    if (status >= 500) return t('homeNetwork')
+    return ok ? fallback : t('badReply')
+  }
+
   function clear() {
+    seq++
+    busy.value = false
     result.value = null
     error.value = ''
   }

@@ -19,7 +19,7 @@ const { t } = useI18n({ useScope: 'global' })
       :placeholder="t('redeemUi.home.inputPlaceholder')"
       :aria-label="t('redeemUi.home.inputPlaceholder')"
       :aria-invalid="error ? 'true' : undefined"
-      :disabled="busy"
+      :readonly="busy"
       @input="emit('update:modelValue', ($event.target as HTMLInputElement).value)"
     />
     <p v-if="error" class="u-error" role="alert" data-testid="code-error">{{ error }}</p>

@@ -24,9 +24,10 @@ const showManualNote = computed(() => inResult.value && isManual.value)
 
 const toneClass = computed(() => `card-tone--${view.value.tone}`)
 
-const copied = ref(false)
-async function copy(code: string) {
-  copied.value = await copyToClipboard(code)
+// 记下刚复制的是哪一个按钮，「复制新码」和「复制卡密」各显示各的「已复制」
+const copiedKey = ref<'new' | 'code' | ''>('')
+async function copy(kind: 'new' | 'code', text: string) {
+  copiedKey.value = (await copyToClipboard(text)) ? kind : ''
 }
 </script>
 
@@ -63,8 +64,8 @@ async function copy(code: string) {
       <button v-if="view.actions.includes('redeem')" type="button" class="u-btn-primary" @click="emit('redeem', result.cdk_code)">{{ t('cdkLookup.goRedeem') }}</button>
       <button v-if="view.actions.includes('resubmit')" type="button" class="u-btn-primary" data-testid="status-retry" @click="emit('redeem', result.cdk_code)">{{ t('redeemUi.result.retryButton') }}</button>
       <button v-if="view.replacement && view.actions.includes('redeem_replacement')" type="button" class="u-btn-primary" data-testid="redeem-replacement" @click="emit('redeem', view.replacement.code)">{{ t('redeemUi.result.useNewCode') }}</button>
-      <button v-if="view.replacement && view.actions.includes('copy_replacement')" type="button" class="u-btn-secondary" data-testid="copy-replacement" @click="copy(view.replacement.code)">{{ copied ? t('redeemUi.result.copied') : t('aftersale.copyNew') }}</button>
-      <button v-if="showManualNote" type="button" class="u-btn-secondary" data-testid="copy-code" @click="copy(result.cdk_code)">{{ copied ? t('redeemUi.result.copied') : t('redeemUi.result.copyCode') }}</button>
+      <button v-if="view.replacement && view.actions.includes('copy_replacement')" type="button" class="u-btn-secondary" data-testid="copy-replacement" @click="copy('new', view.replacement.code)">{{ copiedKey === 'new' ? t('redeemUi.result.copied') : t('aftersale.copyNew') }}</button>
+      <button v-if="showManualNote" type="button" class="u-btn-secondary" data-testid="copy-code" @click="copy('code', result.cdk_code)">{{ copiedKey === 'code' ? t('redeemUi.result.copied') : t('redeemUi.result.copyCode') }}</button>
       <button type="button" class="u-btn-secondary" data-testid="status-reset" @click="emit('reset')">{{ t('redeemUi.home.another') }}</button>
     </div>
   </section>

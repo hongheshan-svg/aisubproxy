@@ -62,10 +62,50 @@ describe('useCodeLookup', () => {
     expect(l2.error.value).toBe(i18n.global.t('redeemUi.errors.homeFormat'))
   })
 
-  it('再次查询先清掉上一次的结果和错误；clear 全部清空', async () => {
-    const l = useCodeLookup({ fetchFn: (async () => res(200, { cdk_code: 'A', status: 'used', used: true })) as any })
+  it.each([
+    [429, 'rateLimited'],
+    [500, 'homeNetwork'],
+    [503, 'homeNetwork'],
+    [403, 'badReply'],
+  ])('HTTP %i 显示语言包文字，不用后端返回的中文', async (status, key) => {
+    const l = useCodeLookup({ fetchFn: (async () => res(status, { error: '后端中文错误', message: '后端中文消息' })) as any })
+    await l.submit('SXC-AAAA')
+    expect(l.error.value).toBe(i18n.global.t(`redeemUi.errors.${key}`))
+    expect(l.error.value).not.toContain('后端')
+    expect(l.result.value).toBeNull()
+  })
+
+  it('请求挂起时 clear()，旧请求结束后不会把结果写回，也能马上再查', async () => {
+    let release!: (r: Response) => void
+    const f = vi.fn(() => new Promise<Response>((ok) => { release = ok }))
+    const l = useCodeLookup({ fetchFn: f as any })
+    const p = l.submit('SXC-AAAA')
+    l.clear()
+    expect(l.busy.value).toBe(false)
+    release(res(200, { cdk_code: 'SXC-AAAA', status: 'used', used: true }))
+    await p
+    expect(l.result.value).toBeNull()
+    expect(l.error.value).toBe('')
+    expect(l.busy.value).toBe(false)
+  })
+
+  it('查第二张码时，发出请求的同时旧结果已清空', async () => {
+    const f = vi.fn(async () => res(200, { cdk_code: 'A', status: 'used', used: true }))
+    const l = useCodeLookup({ fetchFn: f as any })
     await l.submit('A')
     expect(l.result.value).not.toBeNull()
+    let release!: (r: Response) => void
+    f.mockImplementation((() => new Promise<Response>((ok) => { release = ok })) as any)
+    const p = l.submit('B')
+    expect(l.result.value).toBeNull()
+    release(res(200, { cdk_code: 'B', status: 'unused', used: false }))
+    await p
+    expect(l.result.value?.cdk_code).toBe('B')
+  })
+
+  it('clear 清空结果和错误', async () => {
+    const l = useCodeLookup({ fetchFn: (async () => res(200, { cdk_code: 'A', status: 'used', used: true })) as any })
+    await l.submit('A')
     l.clear()
     expect(l.result.value).toBeNull()
     expect(l.error.value).toBe('')

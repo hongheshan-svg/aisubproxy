@@ -17,6 +17,7 @@ vi.mock('../../i18n', () => ({ i18n: { global: { t: (k: string) => k } } }))
 
 import HomeView from '../HomeView.vue'
 import CodeStatusCard from '../../components/redeem/CodeStatusCard.vue'
+import CodeEntry from '../../components/redeem/CodeEntry.vue'
 import ProgressTicks from '../../components/redeem/ProgressTicks.vue'
 import SessionHelp from '../../components/SessionHelp.vue'
 import AfterSaleResult from '../../components/AfterSaleResult.vue'
@@ -211,6 +212,13 @@ describe('首页新组件', () => {
     expect(s).toContain('没开通成功，已转人工处理')
     expect(s).toContain('请联系卖家，把卡密发给他')
     expect(html).toContain('data-testid="copy-code"')
+  })
+
+  it('输入框忙时用 readonly 不用 disabled（不丢焦点）', async () => {
+    const html = await render(CodeEntry, 'zh', { modelValue: 'A', busy: true, error: '' })
+    const input = html.match(/<input[^>]*>/)![0]
+    expect(input).toContain('readonly')
+    expect(input).not.toContain('disabled')
   })
 
   it('顶部三格：认出码前叫核对卡密，认出后用套餐名，完成后叫已开通', async () => {

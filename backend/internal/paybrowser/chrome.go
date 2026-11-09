@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -78,7 +77,7 @@ const (
 	checkTimeout = 30 * time.Second
 
 	profilePrefix = "cdk-pay-chrome-" // 临时用户目录的名字前缀
-	// staleProfileAge：超过这么久没有变化的用户目录才算崩溃残留。一单用浏览器的时间远短于此。
+	// staleProfileAge：没有主人锁的用户目录（老版本留下的）超过这么久没有变化才算崩溃残留。一单用浏览器的时间远短于此。
 	staleProfileAge = time.Hour
 )
 
@@ -120,7 +119,8 @@ type Browser struct {
 	ctx         context.Context // 标签页的 chromedp 上下文，存活到 Close
 	cancelTab   context.CancelFunc
 	cancelAlloc context.CancelFunc
-	dir         string // 临时用户目录（含会话 cookie）
+	dir         string   // 临时用户目录（含会话 cookie）
+	lock        *os.File // 用户目录的主人锁（见 profile_lock.go），Close 删完目录才放；没拿到时为 nil
 	mode        string
 	shotDir     string
 	started     bool // Chrome 已成功启动，Close 时可尝试正常关闭
@@ -168,6 +168,11 @@ func Launch(ctx context.Context, o LaunchOptions) (*Browser, error) {
 	if err != nil {
 		return nil, fmt.Errorf("创建 Chrome 临时目录失败: %w", err)
 	}
+	// 主人锁：进程崩溃、被杀或重载后，下一轮清理拿得到锁就立即删这个目录。拿不到锁不影响付款，残留按老规则（1 小时没变化）清
+	lock, err := holdProfileLock(dir)
+	if err != nil {
+		log.Printf("[paybrowser] Chrome 临时目录的主人锁没拿到，残留按 1 小时规则清理: %v", err)
+	}
 	mode, display := modeHeadless, ""
 	if env, ok := pickDisplay(); ok {
 		mode = modeHeadful
@@ -180,6 +185,7 @@ func Launch(ctx context.Context, o LaunchOptions) (*Browser, error) {
 	sandbox, err := sandboxOptions(dir, display)
 	if err != nil {
 		_ = os.RemoveAll(dir)
+		releaseProfileLock(lock)
 		return nil, err
 	}
 
@@ -218,7 +224,7 @@ func Launch(ctx context.Context, o LaunchOptions) (*Browser, error) {
 	tabCtx, cancelTab := chromedp.NewContext(allocCtx, chromedp.WithLogf(quiet), chromedp.WithErrorf(quiet))
 	b := &Browser{
 		ctx: tabCtx, cancelTab: cancelTab, cancelAlloc: func() { cancelAlloc(); abort() },
-		dir: dir, mode: mode, shotDir: o.ShotDir,
+		dir: dir, lock: lock, mode: mode, shotDir: o.ShotDir,
 	}
 
 	// 首次 Run 才真正拉起 Chrome，不能给它挂会取消的上下文（取消会杀掉浏览器），所以另起协程等待。
@@ -278,29 +284,11 @@ func (b *Browser) answerDialog(ev any) {
 	}
 }
 
-// CleanStaleProfiles 删除系统临时目录下崩溃残留的 Chrome 用户目录（里面有用户会话 cookie）。
-// 只删超过 staleProfileAge 没有变化的目录：同一台机器上别的实例可能正在用同前缀的目录，随时调用都安全。
-// ReadDir 不跟随符号链接（链接的 IsDir 为 false，直接跳过），RemoveAll 也不会穿过目录里的链接。失败只打日志。
+// CleanStaleProfiles 删除系统临时目录下崩溃残留的 Chrome 用户目录（里面有用户会话 cookie），规则见 cleanProfilesIn：
+// 有主人锁的，主人不在了就立即删（先结束用它的孤儿 Chrome）；没有锁的老目录只删超过 staleProfileAge 没有变化的。
+// 同一台机器上别的实例正在用的目录不会动，随时调用都安全。失败只打日志。
 func CleanStaleProfiles() {
-	tmp := os.TempDir()
-	entries, err := os.ReadDir(tmp)
-	if err != nil {
-		log.Printf("[paybrowser] 读取临时目录失败: %v", err)
-		return
-	}
-	cutoff := time.Now().Add(-staleProfileAge)
-	for _, e := range entries {
-		if !e.IsDir() || !strings.HasPrefix(e.Name(), profilePrefix) {
-			continue
-		}
-		dir := filepath.Join(tmp, e.Name())
-		if profileChangedSince(dir, cutoff) {
-			continue
-		}
-		if err := os.RemoveAll(dir); err != nil {
-			log.Printf("[paybrowser] 删除残留的 Chrome 临时目录 %s 失败: %v", e.Name(), err)
-		}
-	}
+	cleanProfilesIn(os.TempDir(), time.Now(), killProfileProcs)
 }
 
 // profileChangedSince 报告用户目录本身或其第一层内容在 cutoff 之后是否有变化。
@@ -356,6 +344,7 @@ func (b *Browser) Close() {
 		b.cancelTab()
 		b.cancelAlloc() // 等 Chrome 进程退出
 		_ = os.RemoveAll(b.dir)
+		releaseProfileLock(b.lock) // 删完目录才放锁：放早了，别的清理会以为主人不在
 	})
 }
 

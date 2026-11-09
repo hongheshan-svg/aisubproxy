@@ -194,16 +194,29 @@ func validateProfile(p *marswallex.CardholderProfile, today time.Time) error {
 }
 
 // scrubProfile 把文本里出现的敏感资料替换为 ***（平台错误信息可能回显字段值）；不足 4 个字的值不处理。
+// 中文姓名例外：两个字以上就换（中文名基本不到 4 个字），姓和名连写的也换；单字的姓不单独换，免得把说明里的常用字都换掉。
 func scrubProfile(text string, p *marswallex.CardholderProfile) string {
-	vals := []string{p.IDNo, p.SSN, p.DateOfBirth, p.Mobile, p.Email}
-	for _, a := range []marswallex.Address{p.ResidentialAddress, p.BillingAddress} {
-		vals = append(vals, a.Address, a.City, a.State, a.PostCode)
+	type secret struct {
+		v   string
+		min int // 至少多少个字才替换
 	}
-	vals = append(vals, p.IDPhotoFileIDs...)
-	sort.Slice(vals, func(i, j int) bool { return len(vals[i]) > len(vals[j]) }) // 长的先换，免得被短值拆开
-	for _, v := range vals {
-		if utf8.RuneCountInString(v) >= 4 {
-			text = strings.ReplaceAll(text, v, "***")
+	var vals []secret
+	add := func(min int, vs ...string) {
+		for _, v := range vs {
+			vals = append(vals, secret{strings.TrimSpace(v), min})
+		}
+	}
+	add(4, p.IDNo, p.SSN, p.DateOfBirth, p.Mobile, p.Email, p.IDPeriodBegin, p.IDPeriodEnd)
+	for _, a := range []marswallex.Address{p.ResidentialAddress, p.BillingAddress} {
+		add(4, a.Address, a.City, a.State, a.PostCode)
+	}
+	add(4, p.IDPhotoFileIDs...)
+	last, first := strings.TrimSpace(p.ChineseLastName), strings.TrimSpace(p.ChineseFirstName)
+	add(2, last+first, last, first)
+	sort.Slice(vals, func(i, j int) bool { return len(vals[i].v) > len(vals[j].v) }) // 长的先换，免得被短值拆开
+	for _, s := range vals {
+		if utf8.RuneCountInString(s.v) >= s.min {
+			text = strings.ReplaceAll(text, s.v, "***")
 		}
 	}
 	return text

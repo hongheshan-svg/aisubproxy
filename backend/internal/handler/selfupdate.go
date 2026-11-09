@@ -261,9 +261,49 @@ func backupDatabase(dst string) error {
 	if _, err := os.Stat(dst); err == nil {
 		return fmt.Errorf("备份文件已存在: %s", dst)
 	}
-	_, err := db.DB.Exec(`VACUUM INTO ?`, dst)
-	return err
+	if _, err := db.DB.Exec(`VACUUM INTO ?`, dst); err != nil {
+		return err
+	}
+	// VACUUM INTO 按 umask 落盘（通常 0644）：整库里有用户邮箱、付款记录等，只给本用户读写。收不紧就不留这份备份
+	if err := os.Chmod(dst, 0o600); err != nil {
+		_ = os.Remove(dst)
+		return fmt.Errorf("收紧备份文件权限失败: %w", err)
+	}
+	return nil
 }
+
+// makeBackupDir 建升级备份目录，权限 0700：备份里有整库（用户邮箱、付款记录等），同机其他用户不能进。
+// 已存在的目录 MkdirAll 不改权限，所以再 Chmod 一次。
+func makeBackupDir(dir string) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	return os.Chmod(dir, 0o700)
+}
+
+// tightenBackups 把 updDir 下已有的 backup-* 目录收紧到 0700、里面的整库备份收紧到 0600。
+// 老版本按 umask 落盘（通常 0755 / 0644）。只动真目录和普通文件，符号链接不跟随。失败只打日志。
+func tightenBackups(updDir string) {
+	dirs, _ := filepath.Glob(filepath.Join(updDir, "backup-*"))
+	for _, d := range dirs {
+		if st, err := os.Lstat(d); err != nil || !st.IsDir() {
+			continue
+		}
+		if err := os.Chmod(d, 0o700); err != nil {
+			log.Printf("[update] 收紧备份目录 %s 权限失败: %v", filepath.Base(d), err)
+		}
+		f := filepath.Join(d, "cdk_recharge.db")
+		if st, err := os.Lstat(f); err != nil || !st.Mode().IsRegular() {
+			continue
+		}
+		if err := os.Chmod(f, 0o600); err != nil {
+			log.Printf("[update] 收紧备份 %s 的数据库权限失败: %v", filepath.Base(d), err)
+		}
+	}
+}
+
+// TightenUpdateBackups 启动时收紧已有升级备份的权限（见 tightenBackups）。
+func TightenUpdateBackups() { tightenBackups(currentUpdateLayout().UpdDir) }
 
 // pruneBackups 只保留最新的 keep 个 backup-* 目录（目录名含时间戳，按名称排序即按时间排序）。
 func pruneBackups(updDir string, keep int) {

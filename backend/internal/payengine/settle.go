@@ -22,8 +22,9 @@ import (
 const (
 	shotRetention  = 7 * 24 * time.Hour // 截图保留时长
 	shotCleanEvery = 24 * time.Hour     // 截图清理间隔
-	// profileCleanEvery：崩溃残留的 Chrome 用户目录里有用户会话 cookie，清得比截图勤。
-	profileCleanEvery = time.Hour
+	// profileCleanEvery：崩溃残留的 Chrome 用户目录里有用户会话 cookie，清得比截图勤。主人已退出的目录（见 paybrowser 的主人锁）
+	// 一轮就删，所以残留最长约这么久。
+	profileCleanEvery = 5 * time.Minute
 	txnPageSize       = 100 // 翻交易时每页条数；卡池的分页上限更小时按实际读到的条数继续翻
 	restartMessage    = "服务重启，未提交"
 
@@ -790,7 +791,7 @@ func scrubRecoveryError(err error) string {
 	return truncate(text, errorMessageLimit)
 }
 
-// cleanLoop 启动时清理一次截图，之后截图每天一次、浏览器残留每小时一次（残留的首次清理在 Start 里同步做）。
+// cleanLoop 启动时清理一次截图，之后截图每天一次、浏览器残留每 5 分钟一次（残留的首次清理在 Start 里同步做）。
 func (s *Service) cleanLoop(ctx context.Context) {
 	defer s.loops.Done()
 	safego.Run("清理付款截图", s.cleanShots)

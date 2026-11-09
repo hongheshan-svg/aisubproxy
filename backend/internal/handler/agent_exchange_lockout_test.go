@@ -64,6 +64,10 @@ func TestAgentSwapGlobalLockout(t *testing.T) {
 	if txt := alerts.texts()[0]; !strings.Contains(txt, "换码") || !strings.Contains(txt, "重设") {
 		t.Fatalf("告警要说明是换码口令并给出处理办法: %s", txt)
 	}
+	// 口令在后台「CDK 卡密」页的「代理换码」标签里改（AgentSwapSettings），告警要指到这里，运维照着能找到。
+	if txt := alerts.texts()[0]; !strings.Contains(txt, "「CDK 卡密 → 代理换码」") || strings.Contains(txt, "系统设置") {
+		t.Fatalf("告警要写对重设口令的位置: %s", txt)
+	}
 }
 
 func TestAgentSwapLockoutExpiresAfterWindow(t *testing.T) {

@@ -282,9 +282,15 @@ func TestCloseRemovesProfileDir(t *testing.T) {
 	if _, err := os.Stat(dir); err != nil {
 		t.Fatalf("临时目录应存在: %v", err)
 	}
+	if st, err := os.Lstat(dir + ".lock"); err != nil || st.Mode().Perm() != 0o600 {
+		t.Fatalf("浏览器活着时临时目录旁应有 0600 的主人锁文件: %v %v", st, err)
+	}
 	b.Close()
 	if _, err := os.Stat(dir); !os.IsNotExist(err) {
 		t.Fatalf("Close 后临时目录仍在: %v", err)
+	}
+	if _, err := os.Lstat(dir + ".lock"); !os.IsNotExist(err) {
+		t.Fatalf("Close 后主人锁文件仍在: %v", err)
 	}
 	b.Close()
 }

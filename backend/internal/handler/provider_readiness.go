@@ -216,6 +216,12 @@ func checkCombo(ctx context.Context, engine *payengine.Service, pool *cardpool.S
 	} else if left < rc.FundCents {
 		fail("今日注资额度只剩 %d 分，不足 %d 分", left, rc.FundCents)
 	}
+	if left, err := pool.RemainingDailyFundCount(ctx); err != nil {
+		log.Printf("[provider] 统计今日注资笔数失败: %v", err)
+		fail("今日注资笔数统计失败")
+	} else if left < 1 {
+		fail("今日注资笔数已达上限")
+	}
 	c.OK = len(c.Problems) == 0
 	return c
 }

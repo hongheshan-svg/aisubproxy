@@ -325,6 +325,10 @@
                 <el-form-item label="单日注资累计上限（按北京日）">
                   <el-input v-model="limitText.daily" placeholder="例如 2000.00" inputmode="decimal" data-field="daily_cap" />
                 </el-form-item>
+                <el-form-item label="单日注资笔数上限（按北京日，笔）">
+                  <el-input-number v-model="policy.daily_fund_count_cap" :min="1" :max="100000" :step="10" :precision="0" data-field="daily_count_cap" />
+                  <div class="text-xs text-muted mt-1">充值和带金额的开卡都算一笔，明确失败、没发出的不算。到上限后当天不再注资，发码和兑换也会暂停，北京时间次日 0 点恢复。</div>
+                </el-form-item>
                 <el-form-item label="未选用 MarsWallex 时仍自动补卡">
                   <el-switch v-model="policy.replenish_when_unselected" />
                   <div class="text-xs text-muted mt-1">默认发码服务商不是 MarsWallex 时，自动补卡会暂停并每日告警一次。打开后仍会补卡，会占用主钱包余额。</div>
@@ -616,6 +620,7 @@ interface Policy {
   max_fund_cents: number
   max_wallet_op_cents: number
   daily_fund_cap_cents: number
+  daily_fund_count_cap: number
   replenish_when_unselected: boolean
 }
 
@@ -1367,6 +1372,11 @@ async function savePolicy() {
     policyError.value = bad
     return
   }
+  const countCap = policy.value.daily_fund_count_cap
+  if (!Number.isInteger(countCap) || countCap < 1) {
+    policyError.value = '单日注资笔数上限：须为不小于 1 的整数'
+    return
+  }
   // 资金上限变了要二次确认：写清旧值和新值
   const old = await api<Policy>('/policy')
   if (!old.ok) {
@@ -1380,6 +1390,9 @@ async function savePolicy() {
   chk('单笔注资上限', old.data.max_fund_cents, fund.cents)
   chk('钱包操作上限', old.data.max_wallet_op_cents, wallet.cents)
   chk('单日注资累计上限', old.data.daily_fund_cap_cents, daily.cents)
+  if (old.data.daily_fund_count_cap !== countCap) {
+    changes.push(`单日注资笔数上限：${old.data.daily_fund_count_cap} → ${countCap} 笔`)
+  }
   if (!!old.data.replenish_when_unselected !== !!policy.value.replenish_when_unselected) {
     changes.push(`未选用 MarsWallex 时自动补卡：${policy.value.replenish_when_unselected ? '关 → 开（会占用主钱包余额开卡）' : '开 → 关'}`)
   }

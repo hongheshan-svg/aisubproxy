@@ -12,7 +12,12 @@ vi.mock('../../components/UserPageHeader.vue', () => ({
   default: defineComponent({ props: ['title', 'subtitle'], setup: (p: any) => () => h('header', [p.title, p.subtitle]) }),
 }))
 
+// 查询模块引入全局 i18n（加载时碰 document），首页渲染用不到它，换成替身
+vi.mock('../../i18n', () => ({ i18n: { global: { t: (k: string) => k } } }))
+
 import HomeView from '../HomeView.vue'
+import CodeStatusCard from '../../components/redeem/CodeStatusCard.vue'
+import ProgressTicks from '../../components/redeem/ProgressTicks.vue'
 import SessionHelp from '../../components/SessionHelp.vue'
 import AfterSaleResult from '../../components/AfterSaleResult.vue'
 import { lookupAftersale } from '../../lib/aftersaleClient'
@@ -54,23 +59,30 @@ describe('Session 获取说明', () => {
 })
 
 describe('首页', () => {
-  it('三步充值：验证卡密、填写账号信息、确认兑换，并给出两个入口', async () => {
+  it('只有一个卡密输入框和「继续」，大标题和说明来自新文案', async () => {
     const html = await render(HomeView)
     const s = text(html)
-    expect(html).toContain('data-testid="quick-steps"')
-    for (const w of ['验证卡密', '填写账号信息', '确认兑换']) expect(s).toContain(w)
-    expect(s).toContain('ChatGPT')
-    expect(s).toContain('Claude')
-    expect(html).toContain('href="/recharge"')
-    expect(html).toContain('href="/batch"')
+    expect((html.match(/<input/g) || []).length).toBe(1)
+    expect(html).toContain('data-testid="code-input"')
+    expect(s).toContain('把卡密粘贴到这里')
+    expect(s).toContain('继续')
+    expect(s).toContain('卡密在哪？')
   })
 
-  it('兑换后怎么查：兑换进度、卡密查询、账单查询各有入口', async () => {
+  it('没有旧的入口卡片、快速三步、「兑换后怎么查」和独立的售后查询区块', async () => {
     const html = await render(HomeView)
-    expect(html).toContain('data-testid="query-guide"')
-    expect(html).toContain('href="/history"')
+    for (const id of ['quick-steps', 'query-guide', 'aftersale-lookup', 'aftersale-batch-link']) expect(html).not.toContain(`data-testid="${id}"`)
+    expect(html).not.toContain('svc-card')
+    expect(html).not.toContain('href="/recharge"')
+  })
+
+  it('页脚三个链接：常见问题（页内）、批量兑换、账单查询', async () => {
+    const html = await render(HomeView)
+    expect(html).toContain('href="#help"')
+    expect(html).toContain('href="/batch"')
     expect(html).toContain('href="/billing"')
-    expect(text(html)).toContain('原卡密')
+    const s = text(html)
+    for (const w of ['常见问题', '批量兑换', '账单查询']) expect(s).toContain(w)
   })
 
   it('常见问题：Session 与 Claude 用指定说明，可展开', async () => {
@@ -102,16 +114,8 @@ describe('首页', () => {
   })
 })
 
-describe('首页售后查询', () => {
+describe('售后查询结果展示', () => {
   const base = { cdk_code: 'SXC-AAAA', used: false }
-
-  it('首页有售后查询区块，并链接到批量查询', async () => {
-    const html = await render(HomeView)
-    expect(html).toContain('data-testid="aftersale-lookup"')
-    expect(html).toContain('data-testid="aftersale-batch-link"')
-    expect(html).toContain('href="/history"')
-    expect(text(html)).toContain('售后查询')
-  })
 
   it('已使用：显示打码邮箱和开通时间，不显示到期时间', async () => {
     const html = await render(AfterSaleResult, 'zh', {
@@ -169,6 +173,55 @@ describe('首页售后查询', () => {
     })
     expect(text(html)).not.toMatch(/\baftersale\./)
     expect(text(html)).toContain('Auto-renewal is off')
+  })
+})
+
+describe('首页新组件', () => {
+  const base = { cdk_code: 'SXC-AAAA', used: false }
+
+  it('首页页面上没有用户端禁用词（中英文）', async () => {
+    const banned = ['预检', '通道', '轮询', '阶段', '上游', '卡台', 'Session JSON', 'sessionToken', 'Access Token', 'preflight', 'upstream', 'polling', 'stage', 'channel', 'session token', 'access token']
+    for (const loc of ['zh', 'en'] as const) {
+      const s = text(await render(HomeView, loc)).toLowerCase()
+      for (const w of banned) expect(s).not.toContain(w.toLowerCase())
+    }
+  })
+
+  it('结果卡 home：沿用 afterSaleView 标题，有「换一张卡密」，转人工没有复制卡密', async () => {
+    const html = await render(CodeStatusCard, 'zh', { context: 'home', result: { ...base, status: 'failed', can_resubmit: false } })
+    const s = text(html)
+    expect(s).toContain('已转人工核对')
+    expect(s).toContain('换一张卡密')
+    expect(html).not.toContain('data-testid="copy-code"')
+  })
+
+  it('结果卡 result：可重提换标题和按钮；attemptsLeft 为 1 才加次数提醒', async () => {
+    const result = { ...base, status: 'failed', can_resubmit: true, guide: 'provider_retry' }
+    const one = await render(CodeStatusCard, 'zh', { context: 'result', result, attemptsLeft: 1 })
+    expect(text(one)).toContain('没开通成功，没有扣款，这张码还能用')
+    expect(text(one)).toContain('换个账号再试')
+    expect(text(one)).toContain('如果付款后再失败一次，这张码会转人工处理。')
+    const two = await render(CodeStatusCard, 'zh', { context: 'result', result, attemptsLeft: 2 })
+    expect(text(two)).not.toContain('再失败一次')
+  })
+
+  it('结果卡 result：转人工换标题，有说明和「复制卡密」', async () => {
+    const html = await render(CodeStatusCard, 'zh', { context: 'result', result: { ...base, status: 'failed', can_resubmit: false } })
+    const s = text(html)
+    expect(s).toContain('没开通成功，已转人工处理')
+    expect(s).toContain('请联系卖家，把卡密发给他')
+    expect(html).toContain('data-testid="copy-code"')
+  })
+
+  it('顶部三格：认出码前叫核对卡密，认出后用套餐名，完成后叫已开通', async () => {
+    const a = text(await render(ProgressTicks, 'zh', { codeLabel: null, current: 1, done: false }))
+    expect(a).toContain('核对卡密')
+    expect(a).toContain('确认账号')
+    expect(a).toContain('开通')
+    const b = await render(ProgressTicks, 'zh', { codeLabel: 'Plus 码', current: 3, done: true })
+    expect(text(b)).toContain('Plus 码')
+    expect(text(b)).toContain('已开通')
+    expect((b.match(/tick-check/g) || []).length).toBe(3)
   })
 })
 

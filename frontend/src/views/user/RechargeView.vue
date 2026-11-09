@@ -1,14 +1,16 @@
 <script setup lang="ts">
-// 兑换页（规格 §6.2–§6.6、§7）：按 useRedeemFlow 的 screen 切换五屏。
+// 兑换页（规格 §6.2–§6.6、§7）：按 useRedeemFlow 的 screen 切换五屏；自动开通途中按 shownScreen 仍显示第 ② 屏。
 // 流程判断都在 useRedeemFlow，页面上的分支在 lib/redeemPage（有单测），这里只接线。
 //
 // 资金安全：
-// - 兑换请求只在买家点「确认开通」时由 flow.redeem() 发一次，页面从不自动重发；
+// - 兑换请求只在两种情况下各发一次——第 ② 屏核对通过后自动发（flow.checkAndRedeem）、第 ③ 屏买家点「确认开通」（flow.redeem）；
+//   页面从不自动重发；
 // - 不确定是否已提交时只有「查一下结果」，页面上的换码入口一律锁住；
 // - 第 ④⑤ 屏已经建单：「查一下结果」只调 refreshProgress / refreshLookup，不会回到「确认开通」（裁决 R30）；
 // - 恢复订阅先弹确认框，买家确认后才调 recoverGrace()。
 // 登录信息（第 ② 屏提交的内容）只放在本页一个普通变量里：不存储、不进网址、不写日志；
 // 换账号、换码、进入开通后就清掉，刷新后自然没有。
+// 第 ② 屏勾过的点数须知（termsAgreed）不是敏感数据，也只在内存里：换账号、换码时清掉，刷新后第 ③ 屏照旧显示须知。
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
@@ -28,11 +30,11 @@ import { planLabelT } from '../../lib/plan'
 import { targetPlanOf } from '../../lib/redeemAccount'
 import {
   canSwitchCode, checkActionFor, graceConfirmArgs, makeRecoverAction, makeStartOver, nextProgress, productOf, queryCode, recheckAction,
-  showCheckButton, showGracePending, switchCodeEntry, ticksState, waitedLong,
+  showCheckButton, showGracePending, shownScreen, switchCodeEntry, ticksState, waitedLong,
 } from '../../lib/redeemPage'
 import { progressRows, type ProgressView } from '../../lib/redeemProgress'
 
-type CredentialPayload = { credential: { mode: 'session'; session: string }; grokSession?: string; claudeOrgId?: string }
+type CredentialPayload = { credential: { mode: 'session'; session: string }; grokSession?: string; claudeOrgId?: string; agreeCreditTerms: boolean }
 
 const { t } = useI18n({ useScope: 'global' })
 const route = useRoute()
@@ -41,13 +43,14 @@ const flow = useRedeemFlow()
 // 直接用流程的 ref：传给 ConfirmStep 的 account、confirmView、preview 是稳定引用，提交失败回到空闲时不会清掉买家的勾选
 const {
   screen, code, previewInfo, account, blockingCode, blockingReason, extra, result, lookup, error, busy, submitState,
-  progressStartedAt, canRecover, confirmView,
+  progressStartedAt, canRecover, confirmView, autoSubmitting,
 } = flow
 
 // 登录信息：普通变量，不做成响应式，也不交给模板
 let credential: CredentialPayload | null = null
 const codeInput = ref('')
 const recoverTried = ref(false)
+const termsAgreed = ref(false)
 // 「已经等了 10 分钟」用：每 30 秒更新一次当前时间
 const now = ref(Date.now())
 let clock: ReturnType<typeof setInterval> | null = null
@@ -56,7 +59,9 @@ const plan = computed(() => targetPlanOf(previewInfo.value))
 // 按卡密恢复的进度没有预览，套餐名退回售后查询给的
 const planText = computed(() => (plan.value ? planLabelT(plan.value, t) : lookup.value?.plan || ''))
 const codeLabel = computed(() => (plan.value ? t('redeemUi.ticks.planCode', { plan: planText.value }) : null))
-const ticks = computed(() => ticksState(screen.value, result.value.status))
+// 页面按这一屏显示：自动开通途中第 ③ 屏不闪出来
+const shown = computed(() => shownScreen(screen.value, autoSubmitting.value))
+const ticks = computed(() => ticksState(shown.value, result.value.status))
 const product = computed(() => productOf(plan.value))
 const kind = computed<'card_supply' | 'upstream'>(() => (isCardSupply(previewInfo.value?.provider_kind) ? 'card_supply' : 'upstream'))
 const creditQuantity = computed(() => {
@@ -65,10 +70,10 @@ const creditQuantity = computed(() => {
 })
 const maskedEmail = computed(() => account.value?.maskedEmail || lookup.value?.account_email || '')
 const waited = computed(() => waitedLong(progressStartedAt.value, now.value))
-const switchEntry = computed(() => switchCodeEntry(screen.value, submitState.value))
-const gracePending = computed(() => showGracePending({ tried: recoverTried.value, screen: screen.value, confirmView: confirmView.value, error: error.value }))
-const checkButton = computed(() => showCheckButton({ screen: screen.value, error: error.value, status: result.value.status, hasLookup: !!lookup.value }))
-const headerTitle = computed(() => (screen.value === 'code' ? t('redeemUi.home.title') : t('hero.redeemTitle')))
+const switchEntry = computed(() => switchCodeEntry(shown.value, submitState.value))
+const gracePending = computed(() => showGracePending({ tried: recoverTried.value, screen: shown.value, confirmView: confirmView.value, error: error.value }))
+const checkButton = computed(() => showCheckButton({ screen: shown.value, error: error.value, status: result.value.status, hasLookup: !!lookup.value }))
+const headerTitle = computed(() => (shown.value === 'code' ? t('redeemUi.home.title') : t('hero.redeemTitle')))
 
 // 开通中的三行：每次把上一次的行传进去，认不出的状态保持当前行
 const progress = ref<ProgressView>(progressRows('', ''))
@@ -85,6 +90,7 @@ watch(
 function clearLocal() {
   credential = null
   recoverTried.value = false
+  termsAgreed.value = false
 }
 
 /** 换一张卡密：编排见 makeStartOver（不确定是否已提交时什么都不做）。 */
@@ -104,12 +110,15 @@ function onCheck() {
   if (action) void CHECKS[action]()
 }
 
+/** 第 ② 屏「核对账号并开通」：核对结论是「可以开通」就直接开通，其余停在第 ③ 屏（规格 §6.4.1）。 */
 function onCredential(p: CredentialPayload) {
   credential = p
   recoverTried.value = false
-  void flow.preflight(p.credential)
+  termsAgreed.value = p.agreeCreditTerms
+  void flow.checkAndRedeem(p.credential, { agreeCreditTerms: p.agreeCreditTerms, grokSession: p.grokSession, claudeOrgId: p.claudeOrgId })
 }
 
+/** 第 ③ 屏「确认开通」：自动开通没走成的兜底（刷新恢复、恢复订阅后重新核对、请自己确认、限流后再点）。 */
 function onConfirm(o: { agreeCreditTerms: boolean }) {
   void flow.redeem({ agreeCreditTerms: o.agreeCreditTerms, grokSession: credential?.grokSession, claudeOrgId: credential?.claudeOrgId })
 }
@@ -154,18 +163,25 @@ onUnmounted(() => {
 
 <template>
   <UserShell>
-    <UserPageHeader :title="headerTitle" :subtitle="screen === 'code' ? t('redeemUi.home.subtitle') : ''" back />
+    <UserPageHeader :title="headerTitle" :subtitle="shown === 'code' ? t('redeemUi.home.subtitle') : ''" back />
     <main class="u-page recharge">
       <ProgressTicks :code-label="codeLabel" :current="ticks.current" :done="ticks.done" />
 
-      <template v-if="screen === 'code'">
+      <template v-if="shown === 'code'">
         <CodeEntry v-model="codeInput" :busy="busy" :error="lookup ? '' : error?.message || ''" @submit="startOver(codeInput)" />
         <CodeStatusCard v-if="lookup" class="recharge-gap" :result="lookup" context="home" @redeem="startOver" @reset="startOver()" />
       </template>
 
-      <CredentialStep v-else-if="screen === 'credential'" :preview="previewInfo" :busy="busy" :error="error" @submit="onCredential" />
+      <CredentialStep
+        v-else-if="shown === 'credential'"
+        :preview="previewInfo"
+        :busy="busy || autoSubmitting"
+        :submitting="autoSubmitting && submitState === 'submitting'"
+        :error="error"
+        @submit="onCredential"
+      />
 
-      <template v-else-if="screen === 'confirm'">
+      <template v-else-if="shown === 'confirm'">
         <ConfirmStep
           :preview="previewInfo"
           :account="account"
@@ -176,6 +192,7 @@ onUnmounted(() => {
           :error="error"
           :confirm-view="confirmView"
           :can-recover="canRecover"
+          :terms-agreed="termsAgreed"
           @confirm="onConfirm"
           @change-account="onChangeAccount"
           @recover="onRecover"
@@ -185,7 +202,7 @@ onUnmounted(() => {
         <p v-if="gracePending" class="u-warn recharge-gap" role="status" data-testid="grace-pending">{{ t('redeemUi.grace.pending') }}</p>
       </template>
 
-      <ProgressStep v-else-if="screen === 'progress'" :plan-text="planText" :view="progress" :waited-long="waited" />
+      <ProgressStep v-else-if="shown === 'progress'" :plan-text="planText" :view="progress" :waited-long="waited" />
 
       <ResultStep
         v-else

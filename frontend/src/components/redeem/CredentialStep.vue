@@ -1,22 +1,26 @@
 <script setup lang="ts">
 // 第 ② 屏「粘贴登录信息」（规格 §6.3）。按码种换内容：ChatGPT 码给设备教程和粘贴框，Claude、Grok、X 沿用各自的校验。
 // 登录信息是敏感数据：只在本组件内存里，不写日志、不存浏览器、不进网址。
+// 点「核对账号并开通」后先核对，结论是「可以开通」就直接开通（规格 §6.3「下一步」、§6.4.1），所以点数码的须知在这里就要勾。
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { FlowError } from '../../composables/useRedeemFlow'
 import { claudeCredential, claudeOrgCheck, isClaudePlan, normalizeOrgId } from '../../lib/claude'
 import { detectDevice } from '../../lib/device'
 import { grokCredential, isGrokPlan } from '../../lib/grok'
+import { isCreditCode } from '../../lib/mwredeem'
 import { targetPlanOf } from '../../lib/redeemAccount'
 import { checkPastedSession } from '../../lib/sessionCheck'
 import { isXPremiumPlan, xPremiumCredential } from '../../lib/x-premium'
+import CreditTermsBox from './CreditTermsBox.vue'
 import DeviceGuide from './DeviceGuide.vue'
 import SessionPasteBox from './SessionPasteBox.vue'
 
+// busy：核对或自动开通途中；submitting：自动开通已发出兑换请求
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const props = defineProps<{ preview: any; busy: boolean; error: FlowError | null }>()
+const props = defineProps<{ preview: any; busy: boolean; submitting: boolean; error: FlowError | null }>()
 const emit = defineEmits<{
-  submit: [payload: { credential: { mode: 'session'; session: string }; grokSession?: string; claudeOrgId?: string }]
+  submit: [payload: { credential: { mode: 'session'; session: string }; grokSession?: string; claudeOrgId?: string; agreeCreditTerms: boolean }]
 }>()
 const { t } = useI18n({ useScope: 'global' })
 
@@ -39,6 +43,8 @@ const raw = ref('')
 const orgFirst = ref('')
 const orgSecond = ref('')
 const freeConfirmed = ref(false)
+const agreedTerms = ref(false)
+const isCredit = computed(() => isCreditCode(props.preview))
 const localError = ref('')
 // 改了输入就清掉上一次的本地提示
 watch([raw, orgFirst, orgSecond, freeConfirmed], () => { localError.value = '' })
@@ -48,7 +54,7 @@ const hasInput = computed(() => kind.value === 'claude' ? !!orgFirst.value.trim(
 // 提交时必须按当下时间重查，存下的旧结果可能已过期；check 事件留给只想监听结果的使用方。
 // 其余码有内容就可点，点下去再按各自的规则提示
 const ready = computed(() => kind.value === 'chatgpt' ? checkPastedSession(raw.value, { now: Date.now() }).ok : hasInput.value)
-const canSubmit = computed(() => !props.busy && ready.value)
+const canSubmit = computed(() => !props.busy && !props.submitting && ready.value && (!isCredit.value || agreedTerms.value))
 const shownError = computed(() => localError.value || props.error?.message || '')
 
 function submit() {
@@ -57,19 +63,19 @@ function submit() {
   if (kind.value === 'claude') {
     const bad = claudeOrgCheck(orgFirst.value, orgSecond.value, freeConfirmed.value)
     if (bad) { localError.value = t('claude.err.' + bad); return }
-    emit('submit', { credential: claudeCredential(orgFirst.value), claudeOrgId: normalizeOrgId(orgFirst.value) })
+    emit('submit', { credential: claudeCredential(orgFirst.value), claudeOrgId: normalizeOrgId(orgFirst.value), agreeCreditTerms: agreedTerms.value })
   } else if (kind.value === 'grok') {
     const session = grokCredential(raw.value)
     if (!session) { localError.value = t('grok.invalid'); return }
-    emit('submit', { credential: { mode: 'session', session }, grokSession: session })
+    emit('submit', { credential: { mode: 'session', session }, grokSession: session, agreeCreditTerms: agreedTerms.value })
   } else if (kind.value === 'x') {
     const session = xPremiumCredential(raw.value)
     if (!session) { localError.value = t('xPremium.invalid'); return }
-    emit('submit', { credential: { mode: 'session', session } })
+    emit('submit', { credential: { mode: 'session', session }, agreeCreditTerms: agreedTerms.value })
   } else {
     const r = checkPastedSession(raw.value, { now: Date.now() })
     if (!r.ok) return
-    emit('submit', { credential: { mode: 'session', session: r.value } })
+    emit('submit', { credential: { mode: 'session', session: r.value }, agreeCreditTerms: agreedTerms.value })
   }
 }
 </script>
@@ -102,11 +108,14 @@ function submit() {
       <input id="cred-raw" v-model="raw" data-testid="cred-input" class="u-input u-mono" autocomplete="off" autocapitalize="off" spellcheck="false" :placeholder="kind === 'grok' ? t('grok.placeholder') : t('xPremium.placeholder')" />
     </template>
 
+    <CreditTermsBox v-if="isCredit" v-model="agreedTerms" :disabled="busy || submitting" />
+
     <p v-if="shownError" class="u-error" role="alert" data-testid="credential-error">{{ shownError }}</p>
 
+    <p class="step-irreversible">{{ t('redeemUi.next.irreversible') }}</p>
     <button type="submit" class="u-btn-primary step-next" data-testid="credential-next" :disabled="!canSubmit">
-      <span v-if="busy" class="step-spin" aria-hidden="true" />
-      {{ busy ? t('redeemUi.next.checking') : t('redeemUi.next.button') }}
+      <span v-if="busy || submitting" class="step-spin" aria-hidden="true" />
+      {{ submitting ? t('redeemUi.next.submitting') : busy ? t('redeemUi.next.checking') : t('redeemUi.next.button') }}
     </button>
   </form>
 </template>
@@ -115,6 +124,7 @@ function submit() {
 .step { display: flex; flex-direction: column; gap: 16px; }
 .step-label { font-size: 15px; font-weight: 600; color: var(--u-ink); }
 .step-hint { margin: 0; font-size: 14px; color: var(--u-muted); }
+.step-irreversible { margin: 0; font-size: 14px; color: var(--u-muted); }
 .step-check { min-height: 48px; display: flex; gap: 10px; align-items: flex-start; font-size: 15px; color: var(--u-ink); }
 .step-check input { margin-top: 4px; width: 18px; height: 18px; }
 .step-next { width: 100%; gap: 10px; }

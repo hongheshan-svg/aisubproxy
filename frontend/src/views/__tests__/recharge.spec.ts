@@ -24,14 +24,15 @@ function fakeFlow(o: Record<string, unknown> = {}) {
   const s = {
     screen: 'code', code: '', previewInfo: null, account: null, blockingCode: '', blockingReason: '', extra: {},
     result: { status: '', stage: '', message: '' }, lookup: null, error: null, busy: false, submitState: 'idle',
-    progressStartedAt: null, canRecover: false, confirmView: 'ok', ...o,
+    progressStartedAt: null, canRecover: false, confirmView: 'ok', autoSubmitting: false, ...o,
   }
   return {
     screen: ref(s.screen), code: ref(s.code), previewInfo: ref(s.previewInfo), account: ref(s.account),
     blockingCode: ref(s.blockingCode), blockingReason: ref(s.blockingReason), extra: ref(s.extra), result: ref(s.result),
     lookup: ref(s.lookup), error: ref(s.error), busy: ref(s.busy), submitState: ref(s.submitState),
     progressStartedAt: ref(s.progressStartedAt), canRecover: computed(() => s.canRecover), confirmView: computed(() => s.confirmView),
-    preview: noop, preflight: noop, redeem: noop, checkResult: noop, refreshProgress: noop, refreshLookup: noop, recoverGrace: async () => false,
+    autoSubmitting: ref(s.autoSubmitting),
+    preview: noop, preflight: noop, redeem: noop, checkAndRedeem: noop, checkResult: noop, refreshProgress: noop, refreshLookup: noop, recoverGrace: async () => false,
     changeAccount: noop, reset: noop, restore: () => false,
   }
 }
@@ -96,6 +97,21 @@ describe('兑换页：五屏切换', () => {
     const html = await render({ screen: 'confirm', code: 'SXC-AAAA', previewInfo: plus, account, submitState: 'submitting' })
     expect(html).not.toContain('data-testid="switch-code"')
     expect(html).not.toContain('data-testid="switch-code-locked"')
+  })
+  it('自动开通提交中：整页仍是第 ② 屏，按钮「正在提交…」，第 ③ 屏不闪出来', async () => {
+    const html = await render({ screen: 'confirm', code: 'SXC-AAAA', previewInfo: plus, account, autoSubmitting: true, busy: true, submitState: 'submitting' })
+    expect(html).toMatch(/data-testid="credential-next"[^>]*disabled[^>]*>[\s\S]*正在提交…/)
+    expect(html).not.toContain('data-testid="confirm-title"')
+    expect(text(html)).not.toContain('这个账号可以开通')
+  })
+  it('自动开通核对刚回来、还没发兑换：仍是第 ② 屏，按钮锁住', async () => {
+    const html = await render({ screen: 'confirm', code: 'SXC-AAAA', previewInfo: plus, account, autoSubmitting: true, busy: false, submitState: 'idle' })
+    expect(html).toMatch(/data-testid="credential-next"[^>]*disabled[^>]*>[\s\S]*正在核对账号…/)
+    expect(html).not.toContain('data-testid="confirm-title"')
+  })
+  it('第 ② 屏按钮是「核对账号并开通」', async () => {
+    const html = await render({ screen: 'credential', code: 'SXC-AAAA', previewInfo: plus })
+    expect(text(html)).toContain('核对账号并开通')
   })
   it('第 ④ 屏：开通中三行，第三格是当前格', async () => {
     const html = await render({ screen: 'progress', code: 'SXC-AAAA', previewInfo: plus, result: { status: 'running', stage: 'payment', message: '' }, progressStartedAt: 1 })

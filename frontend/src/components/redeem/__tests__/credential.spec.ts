@@ -19,10 +19,10 @@ async function render(comp: any, locale: 'zh' | 'en', props: Record<string, unkn
   return renderToString(app)
 }
 
-// 渲染测试里没法输入：组件 setup 完成后（created 钩子）直接给粘贴内容这个状态赋值
-async function renderWithRaw(comp: any, props: Record<string, unknown>, raw: string) {
+// 渲染测试里没法输入：组件 setup 完成后（created 钩子）直接给粘贴内容（和须知勾选）这些状态赋值
+async function renderWithRaw(comp: any, props: Record<string, unknown>, raw: string, state: Record<string, unknown> = {}) {
   const app = createSSRApp(defineComponent({ render: () => h(comp, props) }))
-  app.mixin({ created() { if ((this as any).$.type === comp) (this as any).$.setupState.raw = raw } })
+  app.mixin({ created() { if ((this as any).$.type === comp) Object.assign((this as any).$.setupState, { raw, ...state }) } })
   app.use(createI18n({ legacy: false, globalInjection: true, locale: 'zh', fallbackLocale: 'zh', messages: { zh, en } }))
   return renderToString(app)
 }
@@ -35,7 +35,9 @@ const mwSub = { plan: 'plus', provider_kind: 'card_supply', requires_subscriptio
 const grok = { plan: 'premium_monthly', product: 'grok' }
 const xcode = { plan: 'premium_monthly', product: 'x' }
 const claude = { plan: 'max_5x', product: 'claude' }
-const props = (preview: any, extra: Record<string, unknown> = {}) => ({ preview, busy: false, error: null, ...extra })
+const mwCredit = { plan: 'credit250', provider_kind: 'card_supply', requires_subscription: true, requires_credit_terms: true, kind: 'credit', credit_quantity: 250 }
+const props = (preview: any, extra: Record<string, unknown> = {}) => ({ preview, busy: false, submitting: false, error: null, ...extra })
+const validSession = () => JSON.stringify({ user: { email: 'bun@example.com' }, sessionToken: 'fake-token', expires: new Date(Date.now() + 86400000).toISOString() })
 
 describe('第 ② 屏：ChatGPT 码', () => {
   it('没有订阅的条件提醒、三个设备标签、登录信息页链接；没有邮箱密码入口', async () => {
@@ -84,6 +86,45 @@ describe('第 ② 屏：busy 与出错', () => {
   it('出错时直接显示流程给的文字', async () => {
     const html = await render(CredentialStep, 'zh', props(mwNoSub, { error: { kind: 'network', message: '没连上，请再试一次' } }))
     expect(html).toMatch(/class="u-error" role="alert"[^>]*>[^<]*没连上，请再试一次/)
+  })
+})
+
+describe('第 ② 屏：核对通过直接开通（规格 §6.3「下一步」）', () => {
+  it('按钮文字「核对账号并开通」，按钮上方一句不能撤回', async () => {
+    const html = await renderWithRaw(CredentialStep, props(mwNoSub), validSession())
+    expect(html).toMatch(/点下面按钮后先核对账号，没问题就直接开始付款开通，不能撤回。[\s\S]*data-testid="credential-next"[^>]*>[\s\S]*核对账号并开通/)
+  })
+  it('英文按钮和提示', async () => {
+    // 服务端渲染把撇号转成 &#39;
+    const t = text(await render(CredentialStep, 'en', props(mwNoSub))).replace(/&#39;/g, "'")
+    expect(t).toContain('Check account and activate')
+    expect(t).toContain("If it's fine, payment and activation start right away and can't be undone.")
+  })
+  it('MarsWallex 点数码显示须知，没勾选时按钮 disabled', async () => {
+    const html = await renderWithRaw(CredentialStep, props(mwCredit), validSession())
+    expect(html).toContain('data-testid="credit-terms"')
+    expect(html).toContain('data-testid="agree-terms"')
+    expect(text(html)).toContain('点数 12 个月过期，不退款')
+    expect(html).toMatch(/data-testid="credential-next"[^>]*disabled/)
+  })
+  it('点数码勾了须知、登录信息合格时按钮可点', async () => {
+    const html = await renderWithRaw(CredentialStep, props(mwCredit), validSession(), { agreedTerms: true })
+    expect(html).not.toMatch(/data-testid="credential-next"[^>]*disabled/)
+  })
+  it('非点数码不显示须知', async () => {
+    for (const p of [mwNoSub, mwSub, grok, claude, xcode]) {
+      expect(await render(CredentialStep, 'zh', props(p))).not.toContain('data-testid="credit-terms"')
+    }
+  })
+  it('submitting 时按钮是「正在提交…」且带 disabled', async () => {
+    const html = await renderWithRaw(CredentialStep, props(mwNoSub, { submitting: true }), validSession())
+    expect(html).toMatch(/data-testid="credential-next"[^>]*disabled[^>]*>[\s\S]*正在提交…/)
+    expect(text(html)).not.toContain('正在核对账号…')
+  })
+  it('英文点数码界面没有中文和禁用词', async () => {
+    const html = text(await render(CredentialStep, 'en', props(mwCredit, { busy: true, submitting: true })))
+    expect(html).not.toMatch(/[一-鿿]/)
+    for (const w of BANNED) expect(html.toLowerCase()).not.toContain(w.toLowerCase())
   })
 })
 

@@ -94,6 +94,14 @@ function manualEvery() {
 }
 // 手动触发一次查进度，等它跑完
 const runTick = async (t: Timer) => { await (t.fn() as unknown as Promise<void>) }
+// 手动放行的闸门
+function gate() {
+  let open!: () => void
+  const p = new Promise<void>((r) => { open = r })
+  return { p, open }
+}
+// 让已经发出的请求走到等待回复那一步
+const flush = () => new Promise((r) => setTimeout(r, 0))
 
 function makeFlow(net: ReturnType<typeof fakeFetch>, extra: Partial<RedeemDeps> = {}) {
   const storage = memStorage()
@@ -855,14 +863,6 @@ describe('任务 13 修复第 2 轮：手动查进度和定时查询同时在途
   const RUNNING = { ...MW, status: 'running', stage: 'payment', order: { status: 'running', stage: 'payment' } }
   const COMPLETED = { ...MW, status: 'completed', order: { status: 'completed', stage: '' } }
   const LOOKUP_OK = { cdk_code: CODE, status: 'used', used: true, plan: 'plus', renewal: 'off' }
-  // 手动放行的闸门
-  function gate() {
-    let open!: () => void
-    const p = new Promise<void>((r) => { open = r })
-    return { p, open }
-  }
-  // 让已经发出的请求走到等待回复那一步
-  const flush = () => new Promise((r) => setTimeout(r, 0))
 
   async function toProgress() {
     const ctx = await toConfirm()
@@ -993,5 +993,179 @@ describe('任务 13 修复第 2 轮：refreshLookup 不靠文案判断出错种�
     net.reply(LOOKUP, new TypeError('Failed to fetch'))
     await flow.refreshLookup()
     expect(flow.error.value).toEqual({ kind: 'network', message: '没连上，请再试一次' })
+  })
+})
+
+describe('任务 17：第 ② 屏核对通过自动开通（规格 §6.4.1）', () => {
+  const CRED = { mode: 'session' as const, session: SESSION_RAW }
+  const CREDIT = { kind: 'credit', credit_quantity: 250, requires_subscription: true, requires_no_subscription: false, requires_credit_terms: true }
+  const CREDIT_PREVIEW = { ...MW_PREVIEW, plan: 'credit250', plan_type: 'credit250', auto_renew: undefined, ...CREDIT }
+  const CREDIT_ELIGIBLE = { ...MW_ELIGIBLE, current_plan: 'plus', subscription_has_active: true, ...CREDIT }
+
+  // 走到第 ② 屏，后面的核对、兑换按 routes 回复
+  async function toCredential(routes: Record<string, Reply | Reply[]>, preview: unknown = MW_PREVIEW) {
+    const net = fakeFetch({ [PREVIEW]: { body: preview }, ...routes })
+    const ctx = makeFlow(net)
+    await ctx.flow.preview(CODE)
+    expect(ctx.flow.screen.value).toBe('credential')
+    return { ...ctx, net }
+  }
+
+  it('结论「可以开通」：核对一次、兑换恰好一次，带预检票，进第 ④ 屏', async () => {
+    const { flow, net } = await toCredential({ [PREFLIGHT]: { body: MW_ELIGIBLE }, [REDEEM]: { body: MW_QUEUED } })
+    await flow.checkAndRedeem(CRED, {})
+    expect(net.count(PREFLIGHT)).toBe(1)
+    expect(net.count(REDEEM)).toBe(1)
+    expect(net.calls.find((c) => c.path === REDEEM)!.body).toMatchObject({ redemption_token: 'rt_A', preflight_token: 'pf_1' })
+    expect(flow.screen.value).toBe('progress')
+    expect(flow.autoSubmitting.value).toBe(false)
+  })
+
+  it('点数码结论「可以开通」：带上第 ② 屏的须知勾选', async () => {
+    const { flow, net } = await toCredential({ [PREFLIGHT]: { body: CREDIT_ELIGIBLE }, [REDEEM]: { body: MW_QUEUED } }, CREDIT_PREVIEW)
+    await flow.checkAndRedeem(CRED, { agreeCreditTerms: true })
+    expect(net.count(PREFLIGHT)).toBe(1)
+    expect(net.count(REDEEM)).toBe(1)
+    expect(net.calls.find((c) => c.path === REDEEM)!.body).toMatchObject({ preflight_token: 'pf_1', agree_credit_terms: true })
+    expect(flow.screen.value).toBe('progress')
+    expect(flow.autoSubmitting.value).toBe(false)
+  })
+
+  const STOPS: Array<[string, Record<string, unknown>, string]> = [
+    ['不能用', { ...MW_ELIGIBLE, current_plan: 'plus', subscription_has_active: true, blocking_code: 'already_subscribed', blocking_reason: '已有订阅' }, 'blocked'],
+    ['要先恢复订阅', { ...MW_ELIGIBLE, subscription_recovery_required: true }, 'recover'],
+    ['请自己确认', { ...MW_ELIGIBLE, account_checked: false, current_plan: undefined, subscription_has_active: undefined }, 'self_check'],
+  ]
+  for (const [name, reply, view] of STOPS) {
+    it(`结论「${name}」：不发兑换请求，停在第 ③ 屏`, async () => {
+      const { flow, net } = await toCredential({ [PREFLIGHT]: { body: reply }, [REDEEM]: { body: MW_QUEUED } })
+      await flow.checkAndRedeem(CRED, {})
+      expect(flow.screen.value).toBe('confirm')
+      expect(flow.confirmView.value).toBe(view)
+      expect(net.count(REDEEM)).toBe(0)
+      expect(flow.autoSubmitting.value).toBe(false)
+    })
+  }
+
+  it('核对没连上：停在第 ② 屏显示原因，不发兑换请求', async () => {
+    const { flow, net } = await toCredential({ [PREFLIGHT]: new TypeError('Failed to fetch'), [REDEEM]: { body: MW_QUEUED } })
+    await flow.checkAndRedeem(CRED, {})
+    expect(flow.screen.value).toBe('credential')
+    expect(flow.error.value?.kind).toBe('network')
+    expect(net.count(REDEEM)).toBe(0)
+    expect(flow.autoSubmitting.value).toBe(false)
+  })
+
+  it('自动兑换没收到回复：不确定是否已提交，停在第 ③ 屏；再点也不会再发', async () => {
+    const { flow, net } = await toCredential({ [PREFLIGHT]: { body: MW_ELIGIBLE }, [REDEEM]: new TypeError('Failed to fetch') })
+    await flow.checkAndRedeem(CRED, {})
+    expect(flow.submitState.value).toBe('unknown')
+    expect(flow.error.value?.kind).toBe('submit_unknown')
+    expect(flow.screen.value).toBe('confirm')
+    expect(net.count(REDEEM)).toBe(1)
+    expect(flow.autoSubmitting.value).toBe(false)
+
+    net.reply(REDEEM, { body: MW_QUEUED })
+    await flow.checkAndRedeem(CRED, {})
+    expect(net.count(PREFLIGHT)).toBe(1)
+    expect(net.count(REDEEM)).toBe(1)
+    expect(flow.submitState.value).toBe('unknown')
+  })
+
+  it('自动兑换遇到 429：停在第 ③ 屏显示限流，不自动重试', async () => {
+    const { flow, net } = await toCredential({ [PREFLIGHT]: { body: MW_ELIGIBLE }, [REDEEM]: { status: 429, body: { error: 'too many requests' } } })
+    await flow.checkAndRedeem(CRED, {})
+    expect(flow.screen.value).toBe('confirm')
+    expect(flow.error.value).toEqual({ kind: 'rate_limited', message: '操作太频繁，请过几分钟再试' })
+    expect(flow.submitState.value).toBe('idle')
+    await flush()
+    expect(net.count(REDEEM)).toBe(1)
+    expect(flow.autoSubmitting.value).toBe(false)
+  })
+
+  const MIDWAY: Array<[string, (f: ReturnType<typeof useRedeemFlow>) => void]> = [
+    ['reset()', (f) => f.reset({ keepCode: true })],
+    ['changeAccount()', (f) => f.changeAccount()],
+  ]
+  for (const [name, act] of MIDWAY) {
+    it(`核对途中调 ${name}：核对回来后不发兑换请求`, async () => {
+      const g = gate()
+      const { flow, net } = await toCredential({ [PREFLIGHT]: { wait: g.p, body: MW_ELIGIBLE }, [REDEEM]: { body: MW_QUEUED } })
+      const pending = flow.checkAndRedeem(CRED, {})
+      await flush()
+      expect(net.count(PREFLIGHT)).toBe(1)
+      act(flow)
+      g.open()
+      await pending
+      expect(net.count(REDEEM)).toBe(0)
+      expect(flow.screen.value).not.toBe('confirm')
+      expect(flow.autoSubmitting.value).toBe(false)
+    })
+  }
+
+  it('连调两次：核对、兑换各只发一次', async () => {
+    const { flow, net } = await toCredential({ [PREFLIGHT]: { body: MW_ELIGIBLE }, [REDEEM]: { body: MW_QUEUED } })
+    await Promise.all([flow.checkAndRedeem(CRED, {}), flow.checkAndRedeem(CRED, {})])
+    expect(net.count(PREFLIGHT)).toBe(1)
+    expect(net.count(REDEEM)).toBe(1)
+    expect(flow.screen.value).toBe('progress')
+  })
+
+  it('点数码没勾须知：不发兑换请求，停在第 ③ 屏「可以开通」', async () => {
+    const { flow, net } = await toCredential({ [PREFLIGHT]: { body: CREDIT_ELIGIBLE }, [REDEEM]: { body: MW_QUEUED } }, CREDIT_PREVIEW)
+    await flow.checkAndRedeem(CRED, { agreeCreditTerms: false })
+    expect(flow.screen.value).toBe('confirm')
+    expect(flow.confirmView.value).toBe('ok')
+    expect(net.count(REDEEM)).toBe(0)
+    expect(flow.autoSubmitting.value).toBe(false)
+  })
+
+  it('第 ③ 屏「重新核对」得到「可以开通」：不自动开通，要买家自己点（裁决 R36）', async () => {
+    const { flow, net } = await toCredential({
+      [PREFLIGHT]: [{ body: { ...MW_ELIGIBLE, subscription_recovery_required: true } }, { body: MW_ELIGIBLE }],
+      [REDEEM]: { body: MW_QUEUED },
+    })
+    await flow.checkAndRedeem(CRED, {})
+    expect(flow.confirmView.value).toBe('recover')
+    await flow.preflight(CRED)
+    expect(net.count(PREFLIGHT)).toBe(2)
+    expect(flow.screen.value).toBe('confirm')
+    expect(flow.confirmView.value).toBe('ok')
+    expect(net.count(REDEEM)).toBe(0)
+  })
+
+  it('不在第 ② 屏时调用不动作：第 ③ 屏「可以开通」也不会被自动开通', async () => {
+    const { flow, net } = await toConfirm()
+    expect(flow.confirmView.value).toBe('ok')
+    net.reply(REDEEM, { body: MW_QUEUED })
+    await flow.checkAndRedeem(CRED, {})
+    expect(net.count(PREFLIGHT)).toBe(1)
+    expect(net.count(REDEEM)).toBe(0)
+    expect(flow.screen.value).toBe('confirm')
+    expect(flow.autoSubmitting.value).toBe(false)
+  })
+
+  it('核对途中、兑换途中 autoSubmitting 都为真，结束后为假', async () => {
+    const gPre = gate()
+    const gRed = gate()
+    const { flow, net } = await toCredential({ [PREFLIGHT]: { wait: gPre.p, body: MW_ELIGIBLE }, [REDEEM]: { wait: gRed.p, body: MW_QUEUED } })
+    expect(flow.autoSubmitting.value).toBe(false)
+    const pending = flow.checkAndRedeem(CRED, {})
+    expect(flow.autoSubmitting.value).toBe(true)
+    await flush()
+    expect(net.count(PREFLIGHT)).toBe(1)
+    expect(flow.busy.value).toBe(true)
+    expect(flow.autoSubmitting.value).toBe(true)
+
+    gPre.open()
+    await vi.waitFor(() => expect(net.count(REDEEM)).toBe(1))
+    expect(flow.submitState.value).toBe('submitting')
+    expect(flow.screen.value).toBe('confirm')
+    expect(flow.autoSubmitting.value).toBe(true)
+
+    gRed.open()
+    await pending
+    expect(flow.autoSubmitting.value).toBe(false)
+    expect(flow.screen.value).toBe('progress')
   })
 })

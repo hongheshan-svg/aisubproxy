@@ -17,6 +17,14 @@ export function queryCode(query: Record<string, unknown>): string {
   return String(first(query.code) || first(query.cdk) || '').trim()
 }
 
+/**
+ * 页面按哪一屏显示（规格 §6.4.1）：自动开通途中整页仍是第 ② 屏，第 ③ 屏不闪出来，第 ② 屏按钮显示「正在提交…」。
+ * 页面上凡是按屏切换的地方都用它的结果。
+ */
+export function shownScreen(screen: Screen, autoSubmitting: boolean): Screen {
+  return screen === 'confirm' && autoSubmitting ? 'credential' : screen
+}
+
 /** 顶部三格：①在第一格，②③在第二格，④⑤在第三格；开通成功才算三格都完成（规格 §6.2）。 */
 export function ticksState(screen: Screen, status: string): { current: 1 | 2 | 3; done: boolean } {
   if (screen === 'code') return { current: 1, done: false }

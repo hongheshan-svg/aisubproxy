@@ -419,8 +419,10 @@ export default {
       expired: 'This login info has expired. Refresh the login info page and copy it again.',
     },
     next: {
-      button: 'Next',
+      button: 'Check account and activate',
       checking: 'Checking the account…',
+      irreversible: "After you tap the button we check the account first. If it's fine, payment and activation start right away and can't be undone.",
+      submitting: 'Submitting…',
     },
     confirm: {
       okTitle: 'This account can be activated',

@@ -29,7 +29,7 @@ const mwCredit = { plan: 'credit250', provider_kind: 'card_supply', requires_sub
 function base(o: Record<string, unknown>) {
   return {
     preview: mwNoSub, account: account(), blockingCode: '', blockingReason: '',
-    extra: {}, submitState: 'idle', error: null, confirmView: 'ok', canRecover: false, ...o,
+    extra: {}, submitState: 'idle', error: null, confirmView: 'ok', canRecover: false, termsAgreed: false, ...o,
   }
 }
 
@@ -63,6 +63,27 @@ describe('第 ③ 屏：可以开通', () => {
   it('当前套餐拿不到时显示暂时查不到', async () => {
     const t = text(await render({ account: account({ currentPlan: '' }) }))
     expect(t).toContain('暂时查不到')
+  })
+})
+
+describe('第 ③ 屏：第 ② 屏已勾过点数须知（termsAgreed）', () => {
+  it('termsAgreed 为真：不再显示须知，「可以开通」按钮可点', async () => {
+    const html = await render({ preview: mwCredit, account: account({ currentPlan: 'plus' }), termsAgreed: true })
+    expect(html).not.toContain('data-testid="credit-terms"')
+    expect(text(html)).toContain('点数：250')
+    expect(html).not.toMatch(/data-testid="confirm-submit"[^>]*disabled/)
+  })
+  it('termsAgreed 为假：照旧显示须知和勾选，按钮禁用', async () => {
+    const html = await render({ preview: mwCredit, account: account({ currentPlan: 'plus' }), termsAgreed: false })
+    expect(html).toContain('data-testid="credit-terms"')
+    expect(html).toContain('data-testid="agree-terms"')
+    expect(html).toMatch(/data-testid="confirm-submit"[^>]*disabled/)
+  })
+  it('termsAgreed 为真但「请自己确认」：须知不显示，自己确认的勾选照旧要勾', async () => {
+    const html = await render({ preview: mwCredit, confirmView: 'self_check', account: null, termsAgreed: true })
+    expect(html).not.toContain('data-testid="credit-terms"')
+    expect(html).toContain('data-testid="confirm-self-check"')
+    expect(html).toMatch(/data-testid="confirm-submit"[^>]*disabled/)
   })
 })
 

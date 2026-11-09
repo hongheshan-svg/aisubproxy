@@ -419,8 +419,10 @@ export default {
       expired: '这份登录信息已过期。请刷新登录信息页，再重新复制。',
     },
     next: {
-      button: '下一步',
+      button: '核对账号并开通',
       checking: '正在核对账号…',
+      irreversible: '点下面按钮后先核对账号，没问题就直接开始付款开通，不能撤回。',
+      submitting: '正在提交…',
     },
     confirm: {
       okTitle: '这个账号可以开通',

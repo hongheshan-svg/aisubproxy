@@ -1,12 +1,14 @@
 <script setup lang="ts">
 // 第 ③ 屏「核对账号」（规格 §6.4）：买家在这里决定要不要点「确认开通」付款。
 // 四种状态（可以开通 / 不能用 / 要先恢复订阅 / 请自己确认）由页面算好用 confirmView 传进来，组件只负责显示和上报点击。
+// 点数码在第 ② 屏勾过须知（termsAgreed）就不再显示须知，按已同意处理（规格 §6.4.1）。
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { FlowError } from '../../composables/useRedeemFlow'
 import { isCardSupply, isCreditCode, isOneMonthCode } from '../../lib/mwredeem'
 import { planLabelT } from '../../lib/plan'
 import { blockingKey, canConfirm, targetPlanOf, type AccountSummary, type ConfirmState } from '../../lib/redeemAccount'
+import CreditTermsBox from './CreditTermsBox.vue'
 
 const props = defineProps<{
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -19,6 +21,7 @@ const props = defineProps<{
   error: FlowError | null
   confirmView: ConfirmState
   canRecover: boolean
+  termsAgreed: boolean
 }>()
 const emit = defineEmits<{
   confirm: [opts: { agreeCreditTerms: boolean }]
@@ -35,6 +38,8 @@ const agreedTerms = ref(false)
 watch(() => [props.account, props.confirmView, props.preview], () => { selfChecked.value = false; agreedTerms.value = false })
 
 const isCredit = computed(() => isCreditCode(props.preview))
+// 有效的同意：第 ② 屏勾过，或在本屏勾选
+const termsOk = computed(() => props.termsAgreed || agreedTerms.value)
 const planName = computed(() => planLabelT(targetPlanOf(props.preview), t))
 const willOpen = computed(() =>
   isCardSupply(props.preview?.provider_kind) && isOneMonthCode(props.preview)
@@ -61,13 +66,13 @@ const blockedText = computed(() => {
 })
 
 const submitEnabled = computed(() =>
-  canConfirm({ confirmView: props.confirmView, submitState: props.submitState, selfChecked: selfChecked.value, isCredit: isCredit.value, agreedTerms: agreedTerms.value }),
+  canConfirm({ confirmView: props.confirmView, submitState: props.submitState, selfChecked: selfChecked.value, isCredit: isCredit.value, agreedTerms: termsOk.value }),
 )
 const showForm = computed(() => props.confirmView === 'ok' || props.confirmView === 'self_check')
 
 function submit() {
   if (!submitEnabled.value) return
-  emit('confirm', { agreeCreditTerms: agreedTerms.value })
+  emit('confirm', { agreeCreditTerms: termsOk.value })
 }
 </script>
 
@@ -123,18 +128,7 @@ function submit() {
           <span>{{ checkText }}</span>
         </label>
 
-        <div v-if="isCredit" class="step-terms" data-testid="credit-terms">
-          <p class="step-terms-title">{{ t('redeemUi.creditTerms.title') }}</p>
-          <ul>
-            <li>{{ t('redeemUi.creditTerms.item1') }}</li>
-            <li>{{ t('redeemUi.creditTerms.item2') }}</li>
-            <li>{{ t('redeemUi.creditTerms.item3') }}</li>
-          </ul>
-          <label class="step-check">
-            <input v-model="agreedTerms" type="checkbox" data-testid="confirm-agree-terms" :disabled="submitState !== 'idle'" />
-            <span>{{ t('redeemUi.creditTerms.agree') }}</span>
-          </label>
-        </div>
+        <CreditTermsBox v-if="isCredit && !termsAgreed" v-model="agreedTerms" :disabled="submitState !== 'idle'" />
       </template>
 
       <p v-if="error?.message" class="u-error" role="alert" data-testid="confirm-error">{{ error.message }}</p>
@@ -165,9 +159,6 @@ function submit() {
 .step-irreversible { margin: 0; font-size: 14px; color: var(--u-muted); }
 .step-check { min-height: 48px; display: flex; gap: 10px; align-items: flex-start; font-size: 15px; color: var(--u-ink); }
 .step-check input { margin-top: 4px; width: 18px; height: 18px; }
-.step-terms { display: flex; flex-direction: column; gap: 4px; font-size: 14px; color: var(--u-ink); }
-.step-terms-title { margin: 0; font-weight: 600; }
-.step-terms ul { margin: 0; padding-left: 20px; color: var(--u-muted); }
 .step-btn { width: 100%; min-height: 48px; border-radius: 14px; gap: 10px; }
 .step-spin {
   width: 18px; height: 18px; border-radius: 50%;

@@ -8,6 +8,8 @@
 //   发请求前就把「提交中」写进缓存：提交途中刷新或关页，回来也只能查结果。
 // - 429 不自动重试；任何失败都不会自动再兑换一次。
 // - 刷新后恢复到第 ③ 屏用缓存的预检票开通，票过期回第 ② 屏，不自动重提。
+// - 自动开通（checkAndRedeem）只认第 ② 屏发起的这一次核对：结论是「可以开通」才调一次 redeem()；
+//   第 ③ 屏重新核对、刷新恢复都不自动开通（规格 §6.4.1）。
 import { computed, getCurrentScope, onScopeDispose, ref, type ComputedRef, type Ref } from 'vue'
 import { i18n } from '../i18n'
 import type { LookupResult } from '../lib/aftersale'
@@ -31,6 +33,7 @@ export interface RedeemDeps {
 }
 export interface FlowResult { status: string; stage: string; message: string; attemptsLeft?: number }
 type SubmitState = 'idle' | 'submitting' | 'unknown'
+type RedeemOpts = { agreeCreditTerms?: boolean; claudeOrgId?: string; grokSession?: string }
 
 export interface RedeemFlow {
   screen: Ref<Screen>
@@ -54,7 +57,11 @@ export interface RedeemFlow {
   confirmView: ComputedRef<ConfirmState>
   preview(code: string): Promise<void>
   preflight(credential: { mode: 'session'; session: string }): Promise<void>
-  redeem(opts?: { agreeCreditTerms?: boolean; claudeOrgId?: string; grokSession?: string }): Promise<void>
+  redeem(opts?: RedeemOpts): Promise<void>
+  /** 从 checkAndRedeem 开始到它返回一直为真：页面据此在自动开通途中仍显示第 ② 屏 */
+  autoSubmitting: Ref<boolean>
+  /** 第 ② 屏「核对账号并开通」：这次核对结论是「可以开通」才调一次 redeem()；其余停在原处，不重试 */
+  checkAndRedeem(credential: { mode: 'session'; session: string }, opts: RedeemOpts): Promise<void>
   /** 只给第 ③ 屏「不确定是否已提交」用：按卡密查，查不到单会回第 ③ 屏让买家自己再点 */
   checkResult(): Promise<void>
   /** 只给第 ④ 屏：立即按单查一次进度，查询停了就重新开始；404 也留在第 ④ 屏，不改提交状态（裁决 R30） */
@@ -171,6 +178,7 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
   const busy = ref(false)
   const submitState = ref<SubmitState>('idle')
   const progressStartedAt = ref<number | null>(null)
+  const autoSubmitting = ref(false)
 
   // 不对外的票据：页面用不到，只在这里带进请求。预检票是 ref，canRecover 要跟着它变
   let redemptionToken = ''
@@ -553,7 +561,7 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
     }
   }
 
-  function redeemBody(opts: { agreeCreditTerms?: boolean; claudeOrgId?: string; grokSession?: string }): Record<string, unknown> | null {
+  function redeemBody(opts: RedeemOpts): Record<string, unknown> | null {
     const plan = targetPlan()
     const clientRequestId = 'web-' + deviceId.slice(0, 8) + '-' + now()
     if (isClaudePlan(plan)) {
@@ -570,7 +578,7 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
     return isMW() ? withCreditTerms(body, previewInfo.value, !!opts.agreeCreditTerms) : body
   }
 
-  async function redeem(opts: { agreeCreditTerms?: boolean; claudeOrgId?: string; grokSession?: string } = {}) {
+  async function redeem(opts: RedeemOpts = {}) {
     // 以下检查和上锁都在第一个 await 之前完成：连点时第二次调用看到 submitting 直接返回
     if (submitState.value !== 'idle' || busy.value || screen.value !== 'confirm') return
     if (confirmView.value === 'blocked' || confirmView.value === 'recover') return
@@ -620,6 +628,21 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
     // 其余情况可能已经建单：去查进度
     if (!r.ok) error.value = r.status >= 500 ? flowError('network') : flowError('rejected', serverText(data))
     await enterProgress(data, s, r.ok ? 'queued' : '')
+  }
+
+  async function checkAndRedeem(credential: { mode: 'session'; session: string }, opts: RedeemOpts) {
+    // 只从第 ② 屏发起、同一时间只有一次：下面看到的核对结论一定来自这次核对
+    if (autoSubmitting.value || screen.value !== 'credential') return
+    const s = seq
+    autoSubmitting.value = true
+    try {
+      await preflight(credential)
+      // 期间换了码或账号、结论不是「可以开通」、已在提交或不确定：停在原处。redeem() 的守卫照旧全部生效
+      if (s !== seq || screen.value !== 'confirm' || confirmView.value !== 'ok' || submitState.value !== 'idle' || busy.value) return
+      await redeem(opts)
+    } finally {
+      autoSubmitting.value = false
+    }
   }
 
   async function checkResult() {
@@ -838,7 +861,7 @@ export function useRedeemFlow(deps: RedeemDeps = {}): RedeemFlow {
 
   return {
     screen, code, previewInfo, account, blockingCode, blockingReason, extra, result, lookup, error, busy, submitState,
-    progressStartedAt, canRecover, confirmView, preview, preflight, redeem, checkResult, refreshProgress, refreshLookup, recoverGrace,
-    changeAccount, reset, restore,
+    progressStartedAt, canRecover, confirmView, preview, preflight, redeem, autoSubmitting, checkAndRedeem, checkResult, refreshProgress,
+    refreshLookup, recoverGrace, changeAccount, reset, restore,
   }
 }

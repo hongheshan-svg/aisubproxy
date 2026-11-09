@@ -1,7 +1,7 @@
 // 兑换页的分支判断（纯函数）：页面本身没有 jsdom 点不动，分支都在这里测。
 import { describe, expect, it, vi } from 'vitest'
 import {
-  canSwitchCode, checkActionFor, codeAction, graceConfirmArgs, makeRecoverAction, makeStartOver, nextProgress, productOf, queryCode, recheckAction, showCheckButton, showGracePending, switchCodeEntry, ticksState, waitedLong,
+  canSwitchCode, checkActionFor, codeAction, graceConfirmArgs, makeRecoverAction, makeStartOver, nextProgress, productOf, queryCode, recheckAction, showCheckButton, showGracePending, shownScreen, switchCodeEntry, ticksState, waitedLong,
 } from '../redeemPage'
 import type { ProgressView } from '../redeemProgress'
 
@@ -29,6 +29,14 @@ describe('ticksState：顶部三格', () => {
   it('第 ⑤ 屏：成功才算全部完成', () => {
     expect(ticksState('result', 'completed')).toEqual({ current: 3, done: true })
     expect(ticksState('result', 'failed')).toEqual({ current: 3, done: false })
+  })
+})
+
+describe('shownScreen：自动开通途中整页仍是第 ② 屏（规格 §6.4.1）', () => {
+  it('第 ③ 屏且正在自动开通时显示第 ② 屏，其余原样', () => {
+    expect(shownScreen('confirm', true)).toBe('credential')
+    expect(shownScreen('confirm', false)).toBe('confirm')
+    expect(shownScreen('progress', true)).toBe('progress')
   })
 })
 

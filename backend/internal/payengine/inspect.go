@@ -51,13 +51,13 @@ func (s *Service) InspectAccount(ctx context.Context, r InspectRequest) (Account
 	if err := ctx.Err(); err != nil {
 		return AccountVerdict{}, err
 	}
-	_, rc, err := ResolvePlan(r.PlanKey, r.Region, false)
-	if err != nil {
-		return unknownVerdict("plan"), nil
-	}
 	sess, err := chatgpt.ParseSession(r.Session)
 	if err != nil {
 		return AccountVerdict{Kind: VerdictSessionInvalid}, nil
+	}
+	_, rc, err := ResolvePlan(r.PlanKey, r.Region, false)
+	if err != nil {
+		return unknownVerdict("plan"), nil
 	}
 	proxies, err := LoadProxies()
 	if err != nil {

@@ -242,3 +242,13 @@ func TestInspectAccountReadOnly(t *testing.T) {
 		t.Fatal("不应碰卡池、浏览器、告警")
 	}
 }
+
+// 步骤顺序：先解析会话，再解析套餐。会话无效时，即使套餐配置也读不到，结论仍是 session_invalid。
+func TestInspectAccountParsesSessionBeforePlan(t *testing.T) {
+	h := newHarness(t)
+	r := inspectReq("no_such_plan")
+	r.Session = "{}"
+	if v, err := h.svc.InspectAccount(ctx, r); err != nil || v.Kind != VerdictSessionInvalid {
+		t.Fatalf("会话无效应优先于套餐错误: %+v %v", v, err)
+	}
+}

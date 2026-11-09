@@ -105,12 +105,20 @@ func TestLocalPreflightIneligibleNoTicket(t *testing.T) {
 	if m["provider"] != "marswallex" || m["email"] != "buyer@example.com" || m["account_email"] != "buyer@example.com" || m["kind"] == nil {
 		t.Fatalf("原有字段应保留: %v", m)
 	}
+	for _, k := range []string{"expires_in", "account_currency", "code_currency"} {
+		if _, ok := m[k]; ok {
+			t.Fatalf("不该有 %s: %v", k, m)
+		}
+	}
 	// 空票去兑换：被拒，且没有建单
 	w := e.do("POST", "/public/cdk/redeem", localBody(t, map[string]any{
 		"redemption_token": mwToken(code), "preflight_token": "", "client_request_id": "c1",
 	}))
 	if w.Code != http.StatusBadRequest {
 		t.Fatalf("空票兑换应被拒绝(400): %d %s", w.Code, w.Body.String())
+	}
+	if e := localJSON(t, w)["error"]; e != "请先完成账号预检" {
+		t.Fatalf("文案不对: %v", e)
 	}
 	if n := cdkOrderCount(t, id); n != 0 {
 		t.Fatalf("不应建单: %d", n)
@@ -290,5 +298,149 @@ func TestLocalPreflightLogNoSecrets(t *testing.T) {
 		if !strings.Contains(text, s) {
 			t.Fatalf("日志应含 %q:\n%s", s, text)
 		}
+	}
+}
+
+// 会话解析不了（引擎也会判 session_invalid）：预检回同样的 400 和 error_code。
+func TestLocalPreflightUnparsableSessionIsInvalid(t *testing.T) {
+	e, g := newInspectEnv(t)
+	code, _ := e.issueCode("plus", "PH")
+	for _, sess := range []string{"{}", "not-json", `{"sessionToken":"x"}`} {
+		w := e.do("POST", "/public/cdk/preflight", localBody(t, map[string]any{
+			"code": code, "redemption_token": mwToken(code), "credential": map[string]any{"mode": "session", "session": sess},
+		}))
+		m := localJSON(t, w)
+		if w.Code != http.StatusBadRequest || m["error_code"] != "session_invalid" || m["error"] != inspectSessionInvalidText {
+			t.Fatalf("%q: %d %v", sess, w.Code, m)
+		}
+	}
+	if g.calls() != 0 {
+		t.Fatalf("不该调 ChatGPT: %d", g.calls())
+	}
+	// 兑换接口对坏会话的返回不变
+	w := e.do("POST", "/public/cdk/redeem", localBody(t, map[string]any{
+		"redemption_token": mwToken(code), "credential": map[string]any{"mode": "session", "session": "{}"},
+	}))
+	if m := localJSON(t, w); w.Code != http.StatusBadRequest || m["error"] != "会话无效，请粘贴完整的 session JSON" || m["error_code"] != nil {
+		t.Fatalf("兑换的返回不该变: %d %v", w.Code, m)
+	}
+}
+
+// 缓存里不存明文邮箱。
+func TestInspectCacheHoldsNoEmail(t *testing.T) {
+	e, _ := newInspectEnv(t)
+	code, id := e.issueCode("plus", "PH")
+	e.inspectPreflight(code, "buyer@example.com")
+	v, ok := inspectCacheGet(inspectCacheKey(id, "buyer@example.com"))
+	if !ok || v.Email != "" {
+		t.Fatalf("应已缓存且不含邮箱: %v %+v", ok, v)
+	}
+}
+
+// 「暂时没法确认」的放弃码不缓存，别的放弃码缓存。
+func TestLocalPreflightUnknownBlockingNotCached(t *testing.T) {
+	e, g := newInspectEnv(t)
+	e.enableCredit()
+	e.seedRealCreditPayment()
+	code, _ := e.issueCode("credit250", "PH")
+	g.set(chatgpt.Account{AccountID: "acc-1", PlanType: "plus", HasActiveSubscription: true, Structure: "personal", BillingCurrency: "PHP"}, nil) // 欠费状态读不到
+	_, m := e.inspectPreflight(code, "buyer@example.com")
+	if m["blocking_code"] != "credit_delinquency_unknown" {
+		t.Fatalf("前提不成立: %v", m)
+	}
+	e.inspectPreflight(code, "buyer@example.com")
+	if g.calls() != 2 {
+		t.Fatalf("credit_delinquency_unknown 不该缓存: %d", g.calls())
+	}
+}
+
+func TestInspectCacheableVerdict(t *testing.T) {
+	for code, want := range map[string]bool{
+		"already_subscribed": true, "credit_currency_mismatch": true, "credit_delinquent": true,
+		"credit_account_unknown": false, "credit_delinquency_unknown": false,
+	} {
+		v := payengine.AccountVerdict{Kind: payengine.VerdictIneligible, BlockingCode: code}
+		if inspectCacheable(v) != want {
+			t.Errorf("%s: 期望缓存=%v", code, want)
+		}
+	}
+	if !inspectCacheable(payengine.AccountVerdict{Kind: payengine.VerdictEligible}) ||
+		inspectCacheable(payengine.AccountVerdict{Kind: payengine.VerdictUnknown}) ||
+		inspectCacheable(payengine.AccountVerdict{Kind: payengine.VerdictSessionInvalid}) {
+		t.Error("eligible 缓存，unknown、session_invalid 不缓存")
+	}
+}
+
+func TestLocalPreflightCacheHitNotCounted(t *testing.T) {
+	e, g := newInspectEnv(t)
+	code, _ := e.issueCode("plus", "PH")
+	for i := 0; i < 5; i++ {
+		e.inspectPreflight(code, "first@example.com")
+	}
+	for i := 0; i < 9; i++ {
+		status, m := e.inspectPreflight(code, "other"+string(rune('a'+i))+"@example.com")
+		if status != 200 || m["account_checked"] != true {
+			t.Fatalf("第 %d 个不同邮箱: %d %v", i+2, status, m)
+		}
+	}
+	if g.calls() != 10 {
+		t.Fatalf("应调 10 次: %d", g.calls())
+	}
+}
+
+func TestLocalPreflightCachesIneligibleNotSessionInvalid(t *testing.T) {
+	e, g := newInspectEnv(t)
+	code, _ := e.issueCode("plus", "PH")
+	g.set(chatgpt.Account{AccountID: "acc-1", PlanType: "plus", HasActiveSubscription: true}, nil)
+	e.inspectPreflight(code, "a@example.com")
+	e.inspectPreflight(code, "a@example.com")
+	if g.calls() != 1 {
+		t.Fatalf("ineligible 应缓存: %d", g.calls())
+	}
+	g.set(chatgpt.Account{}, chatgpt.ErrUnauthorized)
+	e.inspectPreflight(code, "b@example.com")
+	e.inspectPreflight(code, "b@example.com")
+	if g.calls() != 3 {
+		t.Fatalf("session_invalid 不该缓存: %d", g.calls())
+	}
+}
+
+func TestLocalPreflightLimitPerCode(t *testing.T) {
+	e, g := newInspectEnv(t)
+	codeA, _ := e.issueCode("plus", "PH")
+	codeB, _ := e.issueCode("plus", "PH")
+	for i := 0; i < 10; i++ {
+		e.inspectPreflight(codeA, "a"+string(rune('a'+i))+"@example.com")
+	}
+	_, m := e.inspectPreflight(codeA, "az@example.com")
+	if m["account_checked"] != false {
+		t.Fatalf("码 A 用满后应查不了: %v", m)
+	}
+	_, m = e.inspectPreflight(codeB, "b@example.com")
+	if m["account_checked"] != true || g.calls() != 11 {
+		t.Fatalf("码 B 不受影响: %v %d", m, g.calls())
+	}
+}
+
+// 满了先清过期的：a、b 过期，c 没过期。写入 d 时把过期的都清掉（只淘汰最早的话 b 会留下）。
+func TestInspectCacheEvictsExpiredFirst(t *testing.T) {
+	resetInspectCache()
+	t.Cleanup(func() { resetInspectCache(); inspectNow = time.Now; inspectCacheMax = 5000 })
+	now := time.Now()
+	inspectNow = func() time.Time { return now }
+	inspectCacheMax = 3
+	v := payengine.AccountVerdict{Kind: payengine.VerdictEligible}
+	inspectCachePut("a", v)
+	inspectCachePut("b", v)
+	now = now.Add(4 * time.Minute)
+	inspectCachePut("c", v)
+	now = now.Add(2 * time.Minute) // a、b 写入 6 分钟（过期），c 才 2 分钟
+	inspectCachePut("d", v)
+	inspectCacheMu.Lock()
+	n := len(inspectCacheItems)
+	_, hasB := inspectCacheItems["b"]
+	inspectCacheMu.Unlock()
+	if n != 2 || hasB {
+		t.Fatalf("过期的 a、b 应都被清掉，只剩 c、d: 剩 %d 条，b 还在=%v", n, hasB)
 	}
 }

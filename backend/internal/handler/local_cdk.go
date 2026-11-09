@@ -47,6 +47,7 @@ const (
 
 // 公开接口限流：每 IP 每小时。兑换页一张码要调 3 次变更接口；结果接口 3 秒轮询一次，批量页还是多张一起轮询，所以额度差得多。
 // 限流在 PublicGuard、LookupGuard 里做，读请求体之前、按码分派之前，本地码和上游型服务商的码都算。
+// 另有一项按码限流（localRateInspect）：预检查买家账号，每张码每小时 10 次，键是码的数据库 ID，不是 IP。
 const (
 	localRateMutate = "mutate"
 	localRateQuery  = "query"
@@ -352,6 +353,11 @@ func localCredentialSession(c *gin.Context, body map[string]any) (string, bool) 
 }
 
 func parseLocalSession(c *gin.Context, raw string) (chatgpt.Session, bool) {
+	return parseLocalSessionAs(c, raw, gin.H{"error": "会话无效，请粘贴完整的 session JSON"})
+}
+
+// parseLocalSessionAs 同 parseLocalSession，只是解析失败时回 invalid 这份 400 响应。预检用它回 session_invalid，兑换保持原样。
+func parseLocalSessionAs(c *gin.Context, raw string, invalid gin.H) (chatgpt.Session, bool) {
 	if raw == "" {
 		localReply(c, http.StatusBadRequest, gin.H{"error": "请先粘贴完整的 session JSON"})
 		return chatgpt.Session{}, false
@@ -362,7 +368,7 @@ func parseLocalSession(c *gin.Context, raw string) (chatgpt.Session, bool) {
 	}
 	sess, err := chatgpt.ParseSession(raw)
 	if err != nil {
-		localReply(c, http.StatusBadRequest, gin.H{"error": "会话无效，请粘贴完整的 session JSON"})
+		localReply(c, http.StatusBadRequest, invalid)
 		return chatgpt.Session{}, false
 	}
 	return sess, true
@@ -400,7 +406,7 @@ func localCDKPreflight(c *gin.Context, cs provider.CardSupply, body map[string]a
 	if !ok {
 		return
 	}
-	sess, ok := parseLocalSession(c, raw)
+	sess, ok := parseLocalSessionAs(c, raw, gin.H{"error_code": "session_invalid", "error": inspectSessionInvalidText})
 	if !ok {
 		return
 	}
@@ -429,7 +435,6 @@ func localCDKPreflight(c *gin.Context, cs provider.CardSupply, body map[string]a
 		"provider":      row.Provider,
 		"email":         sess.Email,
 		"account_email": sess.Email,
-		"expires_in":    int(localPreflightTTL / time.Second),
 	}
 	switch verdict.Kind {
 	case payengine.VerdictIneligible:
@@ -451,6 +456,7 @@ func localCDKPreflight(c *gin.Context, cs provider.CardSupply, body map[string]a
 			return
 		}
 		resp["preflight_token"] = token
+		resp["expires_in"] = int(localPreflightTTL / time.Second)
 		// 符合时带账号当前套餐；查不了时不带，前端据 account_checked:false 让买家自己确认
 		if verdict.Kind == payengine.VerdictEligible {
 			resp["account_checked"] = true

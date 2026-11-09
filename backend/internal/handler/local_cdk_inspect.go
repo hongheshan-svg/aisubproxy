@@ -121,8 +121,10 @@ func inspectLocalAccount(ctx context.Context, row db.LocalCDK, raw, email string
 			if err != nil {
 				return payengine.AccountVerdict{}, err
 			}
-			if v.Kind == payengine.VerdictEligible || v.Kind == payengine.VerdictIneligible {
-				inspectCachePut(key, v)
+			if inspectCacheable(v) {
+				cached := v
+				cached.Email = "" // 缓存里不存明文邮箱；处理函数用调用方传入的 email，不读这里的
+				inspectCachePut(key, cached)
 			}
 		}
 	}
@@ -151,4 +153,16 @@ func inspectBlockingReason(v payengine.AccountVerdict) string {
 		return "暂时没法确认这个账号能不能加点数。请稍后再试，或换一个账号。"
 	}
 	return inspectBlockingDefault
+}
+
+// inspectCacheable 决定结论能不能缓存。
+// 只缓存 eligible 和 ineligible；「暂时没法确认」的放弃码文案让买家稍后再试，缓存会让重试拿到旧结果，也不缓存。
+func inspectCacheable(v payengine.AccountVerdict) bool {
+	switch v.Kind {
+	case payengine.VerdictEligible:
+		return true
+	case payengine.VerdictIneligible:
+		return v.BlockingCode != "credit_account_unknown" && v.BlockingCode != "credit_delinquency_unknown"
+	}
+	return false
 }

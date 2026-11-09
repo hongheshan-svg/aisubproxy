@@ -943,7 +943,7 @@ func TestLocalCDKPreviewFields(t *testing.T) {
 }
 
 // 预检响应不能带 plan：前端把它当账号当前套餐，会误判「已满足」。当前套餐走 current_plan（核对过账号才有）。
-func TestLocalCDKPreflightOmitsCurrentPlan(t *testing.T) {
+func TestLocalCDKPreflightOmitsPlan(t *testing.T) {
 	e := newLocalEnv(t)
 	e.seedRealPayment()
 	code, _ := e.issueCode("plus", "PH")

@@ -46,7 +46,7 @@ watch([raw, orgFirst, orgSecond, freeConfirmed], () => { localError.value = '' }
 const hasInput = computed(() => kind.value === 'claude' ? !!orgFirst.value.trim() : !!raw.value.trim())
 // ChatGPT 码：本地检查通过才可点。这里每次现算、不用 SessionPasteBox 的 check 事件：登录信息有过期时间，
 // 提交时必须按当下时间重查，存下的旧结果可能已过期；check 事件留给只想监听结果的使用方。
-// ChatGPT 码：其余码有内容就可点，点下去再按各自的规则提示
+// 其余码有内容就可点，点下去再按各自的规则提示
 const ready = computed(() => kind.value === 'chatgpt' ? checkPastedSession(raw.value, { now: Date.now() }).ok : hasInput.value)
 const canSubmit = computed(() => !props.busy && ready.value)
 const shownError = computed(() => localError.value || props.error?.message || '')

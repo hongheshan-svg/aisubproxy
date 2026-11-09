@@ -1,6 +1,6 @@
 export default {
   grok: {"credential": "Grok login", "hint": "Sign in to grok.com, then copy the sso cookie value from DevTools → Application → Cookies → grok.com (or the whole cookie containing sso=). New subscriptions only, fixed USD price.", "placeholder": "sso=… or the sso value", "invalid": "Enter a valid Grok login (the grok.com sso cookie)", "batchHint": "Pair Grok codes with a Grok login in the form sso=… (whole cookie), not a ChatGPT session."},
-  xPremium: {"placeholder": "auth_token", "product": "Product", "credential": "X credentials", "hint": "Only auth_token is needed. New subscriptions use live JPY quotes. Manage automatic renewal in X.", "invalid": "Enter a valid X auth_token", "batchHint": "X codes need an auth_token. Redeem them one at a time on the Redeem page, not with ChatGPT login info."},
+  xPremium: {"placeholder": "auth_token", "product": "Product", "credential": "X credentials", "hint": "Only auth_token is needed. New subscriptions use live JPY quotes. Manage automatic renewal in X.", "invalid": "Enter a valid X auth_token", "batchHint": "Pair X codes with an X auth_token, not ChatGPT login info."},
 
   sessionHelp: {
     before: 'Sign in to the ChatGPT account you want to top up in your browser, then open ',

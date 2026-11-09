@@ -1,6 +1,6 @@
 export default {
   grok: {"credential": "Grok 登录态", "hint": "登录 grok.com 后，在浏览器开发者工具 → Application → Cookies → grok.com 复制 sso 的值（或整段含 sso= 的 Cookie）。仅新订阅，美元固定价。", "placeholder": "sso=… 或 sso 的值", "invalid": "请填写有效的 Grok 登录态（grok.com 的 sso cookie）", "batchHint": "Grok 卡密请配对 Grok 登录态，格式为 sso=…（整段 Cookie），不要使用 ChatGPT Session。"},
-  xPremium: {"placeholder": "JSON：auth_token", "product": "产品", "credential": "X 登录凭据", "hint": "只需要 auth_token。仅新订阅，按日元实时报价；自动续费请在 X 管理。", "invalid": "请填写有效的 X auth_token", "batchHint": "X 卡密需要填写 auth_token，请到「立即兑换」逐张兑换，不要使用 ChatGPT 登录信息。"},
+  xPremium: {"placeholder": "auth_token", "product": "产品", "credential": "X 登录凭据", "hint": "只需要 auth_token。仅新订阅，按日元实时报价；自动续费请在 X 管理。", "invalid": "请填写有效的 X auth_token", "batchHint": "X 卡密请配对 X 的 auth_token，不要使用 ChatGPT 登录信息。"},
 
   sessionHelp: {
     before: '先在浏览器中登录需要操作的 ChatGPT 账号，再打开 ',

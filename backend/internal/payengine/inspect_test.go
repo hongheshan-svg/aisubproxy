@@ -96,7 +96,7 @@ func TestInspectAccountCreditCallsSubscriptionStatus(t *testing.T) {
 	if v.Kind != VerdictIneligible || v.BlockingCode != "credit_delinquency_unknown" {
 		t.Fatalf("两个接口都没有欠费状态: %+v", v)
 	}
-	// 订阅接口出错：未知，不是不符合
+	// 订阅接口未授权：会话无效；其他错误：未知，不是不符合
 	h.gpt.subStatusFn = func(int) (chatgpt.RenewalInfo, error) { return chatgpt.RenewalInfo{}, chatgpt.ErrUnauthorized }
 	v, _ = h.svc.InspectAccount(ctx, inspectReq("credit250"))
 	if v.Kind != VerdictSessionInvalid {

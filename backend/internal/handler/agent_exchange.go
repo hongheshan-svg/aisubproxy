@@ -39,6 +39,34 @@ const (
 	minAgentSwapPasswordLen = 12
 )
 
+// 换码口令是所有代理共用的一个口令，分布式猜口令换 IP 就能绕开每 IP 限流，所以输错按口令全局计数：
+// 1 小时内错 30 次，整个换码接口暂停 1 小时（锁定期间不再比对口令），并告警一次。
+// 正确口令不清零计数，否则猜口令的人能借代理的正常使用无限续命；管理员重设口令立即解锁。
+const (
+	swapPasswordMaxFailures = 30
+	swapPasswordLockWindow  = time.Hour
+	swapPasswordFailKey     = "agent_swap_password"
+)
+
+var swapPasswordFails = newFailLimiter(swapPasswordMaxFailures, swapPasswordLockWindow, 1)
+
+// noteSwapPasswordFailure 记一次口令错误；这一次正好触发锁定时告警。
+func noteSwapPasswordFailure() {
+	swapPasswordFails.failed(swapPasswordFailKey)
+	if ok, _ := swapPasswordFails.allowed(swapPasswordFailKey); !ok {
+		opsAlert(fmt.Sprintf("代理换码口令 1 小时内输错 %d 次，换码接口已暂停 1 小时。如果不是代理自己输错，可能有人在猜口令：请在后台「系统设置」重设换码口令（重设后立即恢复）。", swapPasswordMaxFailures))
+	}
+}
+
+// swapLockedText 是锁定期间给请求方的提示，wait 向上取整到分钟。
+func swapLockedText(wait time.Duration) string {
+	mins := int((wait + time.Minute - 1) / time.Minute)
+	if mins < 1 {
+		mins = 1
+	}
+	return fmt.Sprintf("换码口令错误次数过多，已暂停换码，请 %d 分钟后再试", mins)
+}
+
 // 口令错误按北京日计数：只记次数和来源，不记口令内容。
 var (
 	swapWrongMu  sync.Mutex
@@ -90,6 +118,9 @@ func setAgentSwapPassword(plain string) error {
 	if len(plain) < minAgentSwapPasswordLen {
 		return errPasswordTooShort
 	}
+	if db.IsWeakPassword(plain) {
+		return errPasswordWeak
+	}
 	hash, err := db.HashAdminPassword(plain)
 	if err != nil {
 		return err
@@ -97,10 +128,14 @@ func setAgentSwapPassword(plain string) error {
 	if err := db.SetSetting(agentSwapPasswordKey, hash); err != nil {
 		return err
 	}
+	swapPasswordFails.succeeded(swapPasswordFailKey) // 换了口令，旧口令上的猜测计数作废，立即解锁
 	return db.DeleteSetting(agentSwapWeakKey)
 }
 
-var errPasswordTooShort = &simpleError{"代理换码密码至少 12 位"}
+var (
+	errPasswordTooShort = &simpleError{"代理换码密码至少 12 位"}
+	errPasswordWeak     = &simpleError{"代理换码密码太简单：不能用常见口令、同一字符重复或连续数字，请换一个"}
+)
 
 type simpleError struct{ s string }
 
@@ -282,8 +317,13 @@ func PublicAgentCDKExchange(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 		return
 	}
+	if ok, wait := swapPasswordFails.allowed(swapPasswordFailKey); !ok {
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": swapLockedText(wait)})
+		return
+	}
 	if !verifyAgentSwapPassword(req.Password) {
 		agentSwapWrongPassword(ip)
+		noteSwapPasswordFailure()
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "密码错误"})
 		return
 	}

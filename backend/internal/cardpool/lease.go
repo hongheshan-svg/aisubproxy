@@ -341,9 +341,41 @@ func (s *Service) Release(ctx context.Context, l *Lease, o Outcome) error {
 	return nil
 }
 
+// RenewLease 把租约延到至少 until，只延长不缩短。只对持有该令牌、仍在租用中的卡生效（过期但还没被回收的也能续上）；
+// 已释放、已被回收、换了新租约时返回 ErrLeaseInvalid。付款引擎在确认阶段每次检查前调用：确认还没定论，卡不能被回收（已知问题 G4）。
+func (s *Service) RenewLease(ctx context.Context, l *Lease, until time.Time) error {
+	if l == nil || l.Token == "" || l.CardID == "" {
+		return ErrLeaseInvalid
+	}
+	res, err := db.DB.ExecContext(ctx, `UPDATE mw_cards SET lease_expires_at = MAX(COALESCE(lease_expires_at, 0), ?), updated_at = ?
+		WHERE card_id = ? AND pool_state = ? AND lease_token = ?`,
+		until.Unix(), s.now().Unix(), l.CardID, PoolLeased, l.Token)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n != 1 {
+		return ErrLeaseInvalid
+	}
+	return nil
+}
+
 // releaseCard 在一条语句里释放租约：取过卡号则 use_count + 1；retire_reason 非空或达到使用次数上限转 used，
 // 否则转 releasing；清空租约字段，next_action_at = now。只对持有该令牌的租用中的卡生效，否则返回 ErrLeaseInvalid。
 func (s *Service) releaseCard(ctx context.Context, cardID, token string) error {
+	return s.releaseCardIf(ctx, cardID, token, false)
+}
+
+// releaseExpiredCard 是到期回收用的 releaseCard：释放时再核对一次租约确实已到期。
+// 回收先查出到期的卡再逐张释放，中间被持有者续上的（见 RenewLease）不能照旧释放，返回 ErrLeaseInvalid。
+func (s *Service) releaseExpiredCard(ctx context.Context, cardID, token string) error {
+	return s.releaseCardIf(ctx, cardID, token, true)
+}
+
+func (s *Service) releaseCardIf(ctx context.Context, cardID, token string, onlyExpired bool) error {
 	pol, err := LoadPolicy()
 	if err != nil {
 		// 策略读不出也要释放：LoadPolicy 出错时返回默认值（上限 1，偏保守）
@@ -351,13 +383,18 @@ func (s *Service) releaseCard(ctx context.Context, cardID, token string) error {
 	}
 	now := s.now().Unix()
 	// SQLite 的 SET 表达式一律读取更新前的值
-	res, err := db.DB.ExecContext(ctx, `UPDATE mw_cards SET
+	q := `UPDATE mw_cards SET
 		use_count = use_count + lease_sensitive,
 		pool_state = CASE WHEN retire_reason <> '' OR use_count + lease_sensitive >= ? THEN ? ELSE ? END,
 		lease_token = '', lease_owner = '', lease_expires_at = NULL, lease_sensitive = 0,
 		next_action_at = ?, frozen_since = NULL, updated_at = ?
-		WHERE card_id = ? AND pool_state = ? AND lease_token = ?`,
-		pol.MaxUsesPerCard, PoolUsed, PoolReleasing, now, now, cardID, PoolLeased, token)
+		WHERE card_id = ? AND pool_state = ? AND lease_token = ?`
+	args := []any{pol.MaxUsesPerCard, PoolUsed, PoolReleasing, now, now, cardID, PoolLeased, token}
+	if onlyExpired {
+		q += ` AND (lease_expires_at IS NULL OR lease_expires_at <= ?)`
+		args = append(args, now)
+	}
+	res, err := db.DB.ExecContext(ctx, q, args...)
 	if err != nil {
 		return err
 	}
@@ -395,12 +432,12 @@ func (s *Service) expireLeasesOnce(ctx context.Context) error {
 	}
 	var firstErr error
 	for _, e := range list {
-		err := s.releaseCard(ctx, e.cardID, e.token)
+		err := s.releaseExpiredCard(ctx, e.cardID, e.token)
 		switch {
 		case err == nil:
 			log.Printf("[cardpool] 卡 %s 租约到期，已释放", e.cardID)
 		case errors.Is(err, ErrLeaseInvalid):
-			// 持有者已经释放或续上了新租约
+			// 持有者已经释放、续租（RenewLease）或换了新租约
 		default:
 			log.Printf("[cardpool] 释放到期租约 %s 出错: %v", e.cardID, err)
 			if firstErr == nil {

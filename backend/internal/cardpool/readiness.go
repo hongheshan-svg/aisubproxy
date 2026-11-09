@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 )
@@ -89,6 +90,32 @@ func (s *Service) CheckMainWallet(ctx context.Context, currency string, cents in
 		return err
 	}
 	return checkAvailable(a, "主钱包", currency, cents)
+}
+
+// dailyFundCount 今天（北京日）已经注资多少笔，口径和 insertPendingFund 一致。
+func (s *Service) dailyFundCount(ctx context.Context, now time.Time) (int64, error) {
+	day := beijingDayStart(now)
+	var n int64
+	err := db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM mw_card_orders
+		WHERE kind IN (?, ?) AND created_at >= ? AND created_at < ? AND state NOT IN (?, ?)`,
+		KindRecharge, KindApply, day.Unix(), day.AddDate(0, 0, 1).Unix(), StateFailed, StateNotSent).Scan(&n)
+	return n, err
+}
+
+// RemainingDailyFundCount 今天还能注资多少笔。
+func (s *Service) RemainingDailyFundCount(ctx context.Context) (int64, error) {
+	pol, err := LoadPolicy()
+	if err != nil {
+		return 0, err
+	}
+	used, err := s.dailyFundCount(ctx, s.now())
+	if err != nil {
+		return 0, err
+	}
+	if left := pol.DailyFundCountCap - used; left > 0 {
+		return left, nil
+	}
+	return 0, nil
 }
 
 // RemainingDailyFund 今天还能注资多少分，口径和 insertPendingFund 一致：北京日，明确没动钱的单不算。

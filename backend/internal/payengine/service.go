@@ -29,6 +29,8 @@ type Pool interface {
 	Sensitive(context.Context, *cardpool.Lease) (*cardpool.CardSensitive, error)
 	WaitOTP(context.Context, string, time.Time) (string, error)
 	Release(context.Context, *cardpool.Lease, cardpool.Outcome) error
+	// RenewLease 把租约延到至少 until（只延长不缩短）；令牌对不上、卡已被收回时返回 cardpool.ErrLeaseInvalid。确认阶段每次检查前调用。
+	RenewLease(context.Context, *cardpool.Lease, time.Time) error
 	CardInfo(context.Context, string) (cardpool.CardInfo, error)
 	ListTransactions(context.Context, cardpool.TxnFilter) ([]cardpool.Transaction, int, error)
 	BackfillRecent(context.Context, int) (cardpool.BackfillState, error)
@@ -82,13 +84,14 @@ type Browser interface {
 // Launch 是创建浏览器（启动 Chrome）的时限，这一步在取卡之前，不计入 MaxPayDuration。
 type Timeouts struct {
 	PageLoad, Fill, SubmitResult, OTP, Fund, Verify, VerifyEvery, DeclineGrace, VerifyTick, OutcomeMargin, Backfill time.Duration
+	VerifyCheck                                                                                                     time.Duration // 确认阶段单张单单次检查的时限
 	RenewalTick, SessionKeep                                                                                        time.Duration
 	Launch                                                                                                          time.Duration
 }
 
 // DefaultTimeouts 返回引擎默认超时：页面加载 60 秒、填表 2 分钟、提交后等待页面结果 2 分钟、
 // 验证码 5 分钟、注资 3 分钟、确认 10 分钟（每 15 秒查一次）、被拒后等待授权推送 2 分钟；确认协程每 5 秒扫描一次；
-// 等页面结果的外层时限多给 10 秒；定论失败前补拉交易 30 秒。
+// 等页面结果的外层时限多给 10 秒；定论失败前补拉交易 30 秒；确认阶段单张单单次检查最多 45 秒。
 func DefaultTimeouts() Timeouts {
 	return Timeouts{
 		PageLoad:     60 * time.Second,
@@ -103,6 +106,7 @@ func DefaultTimeouts() Timeouts {
 
 		OutcomeMargin: 10 * time.Second,
 		Backfill:      30 * time.Second,
+		VerifyCheck:   45 * time.Second,
 
 		RenewalTick: defaultRenewalTick,
 		SessionKeep: defaultSessionKeep,
@@ -195,6 +199,9 @@ func New(o Options) *Service {
 	}
 	if t.Backfill <= 0 {
 		t.Backfill = DefaultTimeouts().Backfill
+	}
+	if t.VerifyCheck <= 0 {
+		t.VerifyCheck = DefaultTimeouts().VerifyCheck // 0 会让每次检查立刻超时
 	}
 	if t.RenewalTick <= 0 {
 		t.RenewalTick = defaultRenewalTick

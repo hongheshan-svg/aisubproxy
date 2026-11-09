@@ -258,6 +258,17 @@ func TestReadinessBlocksLocalIssue(t *testing.T) {
 		{"今日注资额度用完", func(e *localEnv) {
 			db.DB.Exec(`INSERT INTO mw_card_orders (out_order_no, kind, amount_cents, state, created_at, updated_at) VALUES ('O1', 'recharge', 200000, 'success', strftime('%s','now'), 1)`)
 		}, "今日注资额度"},
+		{"今日注资笔数用完", func(e *localEnv) {
+			p, err := cardpool.LoadPolicy()
+			if err != nil {
+				t.Fatal(err)
+			}
+			p.DailyFundCountCap = 1
+			if err := cardpool.SavePolicy(p); err != nil {
+				t.Fatal(err)
+			}
+			db.DB.Exec(`INSERT INTO mw_card_orders (out_order_no, kind, amount_cents, state, created_at, updated_at) VALUES ('O2', 'recharge', 100, 'success', strftime('%s','now'), 1)`)
+		}, "今日注资笔数已达上限"},
 		{"付款熔断", func(e *localEnv) {
 			for i := 0; i < 3; i++ {
 				e.insertOrder("admin_test", "admin", 0, fmt.Sprintf("x%d@example.com", i), "failed", "declined", true)

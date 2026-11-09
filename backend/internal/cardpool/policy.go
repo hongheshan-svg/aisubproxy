@@ -19,6 +19,9 @@ const (
 	DefaultDailyFundCapCents int64 = 200000 // 单日注资累计 2000 美元（北京日）
 )
 
+// DefaultDailyFundCountCap 是单日最多注资多少笔（北京日），和金额上限一起挡：必须大于 0，不存在「0 表示不限」。
+const DefaultDailyFundCountCap int64 = 100
+
 // ProductTarget 为单个卡产品的补卡目标与每日开卡上限。
 type ProductTarget struct {
 	Target     int `json:"target"`
@@ -44,6 +47,7 @@ type Policy struct {
 	MaxFundCents      int64 `json:"max_fund_cents"`       // 单笔注资上限
 	MaxWalletOpCents  int64 `json:"max_wallet_op_cents"`  // 单笔钱包转账、兑换上限
 	DailyFundCapCents int64 `json:"daily_fund_cap_cents"` // 单日注资累计上限（北京日）
+	DailyFundCountCap int64 `json:"daily_fund_count_cap"` // 单日最多注资多少笔（北京日），口径同金额上限
 	// ReplenishWhenUnselected 为真时，MarsWallex 没被选用也照常自动补卡（用于预热卡池）。默认暂停，免得白花开卡费。
 	ReplenishWhenUnselected bool `json:"replenish_when_unselected"`
 }
@@ -67,6 +71,7 @@ func DefaultPolicy() Policy {
 		MaxFundCents:         DefaultMaxFundCents,
 		MaxWalletOpCents:     DefaultMaxWalletOpCents,
 		DailyFundCapCents:    DefaultDailyFundCapCents,
+		DailyFundCountCap:    DefaultDailyFundCountCap,
 	}
 }
 
@@ -91,6 +96,7 @@ func (p Policy) Validate() error {
 		{"max_fund_cents", p.MaxFundCents},
 		{"max_wallet_op_cents", p.MaxWalletOpCents},
 		{"daily_fund_cap_cents", p.DailyFundCapCents},
+		{"daily_fund_count_cap", p.DailyFundCountCap},
 	}
 	for _, l := range limits {
 		if l.v <= 0 {
@@ -170,6 +176,7 @@ func (p *Policy) normalizeLimits() {
 		{"max_fund_cents", &p.MaxFundCents, DefaultMaxFundCents},
 		{"max_wallet_op_cents", &p.MaxWalletOpCents, DefaultMaxWalletOpCents},
 		{"daily_fund_cap_cents", &p.DailyFundCapCents, DefaultDailyFundCapCents},
+		{"daily_fund_count_cap", &p.DailyFundCountCap, DefaultDailyFundCountCap},
 	}
 	for _, l := range limits {
 		if *l.v <= 0 {

@@ -54,7 +54,7 @@ func (s *Service) checkWalletLimit(what string, cents int64, by string) error {
 	return nil
 }
 
-// insertPendingFund 写入一张会把钱转到卡上的 pending 单据（转入、带金额的开卡），同一条语句里判断当日累计：
+// insertPendingFund 写入一张会把钱转到卡上的 pending 单据（转入、带金额的开卡），同一条语句里判断当日累计金额和笔数：
 // SQLite 的写语句开始执行就持有写锁，统计和写入之间插不进别的写入，并发绕不过上限。
 //
 // 累计按北京日统计。明确没动钱的单（failed、not_sent）不算；结果不明的（unknown 等）算：钱可能已经转了。
@@ -64,12 +64,15 @@ func (s *Service) insertPendingFund(ctx context.Context, o *Order, pol Policy) e
 	o.State = StatePending
 	o.CreatedAt, o.UpdatedAt = now.Unix(), now.Unix()
 	day := beijingDayStart(now)
-	args := append(o.insertArgs(), KindRecharge, KindApply, day.Unix(), day.AddDate(0, 0, 1).Unix(),
-		StateFailed, StateNotSent, o.AmountCents, pol.DailyFundCapCents)
+	from, to := day.Unix(), day.AddDate(0, 0, 1).Unix()
+	args := append(o.insertArgs(), KindRecharge, KindApply, from, to, StateFailed, StateNotSent, o.AmountCents, pol.DailyFundCapCents,
+		KindRecharge, KindApply, from, to, StateFailed, StateNotSent, pol.DailyFundCountCap)
 	res, err := db.DB.ExecContext(ctx, `INSERT INTO mw_card_orders (`+orderInsertCols+`)
 		SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
 		WHERE (SELECT COALESCE(SUM(amount_cents), 0) FROM mw_card_orders
-			WHERE kind IN (?, ?) AND created_at >= ? AND created_at < ? AND state NOT IN (?, ?)) + ? <= ?`, args...)
+			WHERE kind IN (?, ?) AND created_at >= ? AND created_at < ? AND state NOT IN (?, ?)) + ? <= ?
+		AND (SELECT COUNT(*) FROM mw_card_orders
+			WHERE kind IN (?, ?) AND created_at >= ? AND created_at < ? AND state NOT IN (?, ?)) + 1 <= ?`, args...)
 	if err != nil {
 		return insertOrderErr(o, err)
 	}
@@ -78,6 +81,12 @@ func (s *Service) insertPendingFund(ctx context.Context, o *Order, pol Policy) e
 		return err
 	}
 	if n == 0 {
+		// 被挡下后再数一次今天的笔数，只用来决定提示写哪个上限；拒绝本身已经在上面的语句里原子地定了
+		if used, err := s.dailyFundCount(ctx, now); err == nil && used+1 > pol.DailyFundCountCap {
+			msg := fmt.Sprintf("今日注资已达 %d 笔上限", pol.DailyFundCountCap)
+			s.limitAlert(o.RequestedBy, "fund-daily-count", fmt.Sprintf("%s，已拒绝，未发往平台（操作方 %s）", msg, o.RequestedBy))
+			return badRequest(msg)
+		}
 		msg := fmt.Sprintf("今日注资累计将超过上限 %s（本笔 %s）", centsText(pol.DailyFundCapCents), centsText(o.AmountCents))
 		s.limitAlert(o.RequestedBy, "fund-daily-cap", fmt.Sprintf("%s，已拒绝，未发往平台（操作方 %s）", msg, o.RequestedBy))
 		return badRequest(msg)

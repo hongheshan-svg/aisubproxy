@@ -488,7 +488,7 @@ export default {
       renewalOff: '已关闭',
       renewalClosing: '正在关闭，不用你操作',
       points: '点数：{n}',
-      refreshNote: '回到 ChatGPT 刷新页面就能用了。看不到的话，退出再重新登录。',
+      refreshNote: '回到 {app} 刷新页面就能用了。看不到的话，退出再重新登录。',
       openChatgpt: '打开 ChatGPT',
       openClaude: '打开 Claude',
       openGrok: '打开 Grok',
@@ -516,6 +516,7 @@ export default {
       sessionInvalid: '登录信息已失效，请回到 ChatGPT 刷新那个页面，再重新复制',
       rejected: '这张卡密暂时不能开通。请稍后再试，或联系卖家。',
       badReply: '服务器的回复不完整，请再试一次。',
+      switchCodeLocked: '要换一张卡密，请回首页粘贴新的卡密。',
     },
   },
 }

@@ -424,6 +424,29 @@ describe('useRedeemFlow', () => {
     expect(net.calls.find((c) => c.path === REDEEM)!.body).toMatchObject({ preflight_token: 'pf_2' })
   })
 
+  // 下面两条由旧的 scripts/test-grace-recovery.mjs（测旧页面内部）改测到新模块
+  it('恢复订阅请求在途时再调：不发第二次', async () => {
+    const { flow, net } = await toConfirm({ body: { ...MW_ELIGIBLE, subscription_recovery_required: true } })
+    net.reply('/api/v1/public/cdk/recover-subscription', 'hang')
+    void flow.recoverGrace()
+    await flow.recoverGrace()
+    expect(net.count('/api/v1/public/cdk/recover-subscription')).toBe(1)
+  })
+
+  it('恢复订阅在途时换了账号：回来的结果不再用，不会拿到新票', async () => {
+    const { flow, net } = await toConfirm({ body: { ...MW_ELIGIBLE, subscription_recovery_required: true } })
+    let release!: (r: Response) => void
+    net.mock.mockImplementationOnce(() => new Promise<Response>((r) => { release = r }))
+    const pending = flow.recoverGrace()
+    flow.changeAccount()
+    release(new Response(JSON.stringify({ status: 'cleared', preflight: { ...MW_ELIGIBLE, preflight_token: 'pf_2' } }), { status: 200 }))
+    await pending
+    expect(flow.screen.value).toBe('credential')
+    expect(flow.account.value).toBeNull()
+    expect(flow.canRecover.value).toBe(false)
+    expect(flow.busy.value).toBe(false)
+  })
+
   it('恢复订阅没确认解除：仍要先恢复，不能开通', async () => {
     const { flow, net, storage } = await toConfirm({ body: { ...MW_ELIGIBLE, subscription_is_delinquent: true } })
     expect(flow.canRecover.value).toBe(true)

@@ -488,7 +488,7 @@ export default {
       renewalOff: 'Off',
       renewalClosing: 'Being turned off, nothing for you to do',
       points: 'Credits: {n}',
-      refreshNote: 'Go back to ChatGPT and refresh the page. If you do not see it, sign out and sign in again.',
+      refreshNote: 'Go back to {app} and refresh the page. If you do not see it, sign out and sign in again.',
       openChatgpt: 'Open ChatGPT',
       openClaude: 'Open Claude',
       openGrok: 'Open Grok',
@@ -516,6 +516,7 @@ export default {
       sessionInvalid: 'Your login info has expired. Go back to ChatGPT, refresh that page, then copy it again.',
       rejected: 'This code cannot be activated right now. Try again later, or contact the seller.',
       badReply: 'The server reply was incomplete. Please try again.',
+      switchCodeLocked: 'To use a different code, go back to the home page and paste it there.',
     },
   },
 }

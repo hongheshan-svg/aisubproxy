@@ -70,7 +70,7 @@ func SessionBillingCheck(c *gin.Context) {
 		Code       string `json:"code"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request", "error_code": "invalid_request"})
 		return
 	}
 
@@ -89,14 +89,14 @@ func SessionBillingCheck(c *gin.Context) {
 	}
 
 	if raw == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "请输入卡密，或粘贴 session JSON / accessToken"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": "请输入卡密，或粘贴 session JSON / accessToken", "error_code": "input_required"})
 		return
 	}
 
 	// 用户当场粘贴的 session / accessToken
 	res, err := billingSessionCheck(raw)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "error_code": "session_invalid"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -112,19 +112,20 @@ func billingCheckByCDK(c *gin.Context, cdk string) {
 	email, err := db.GetAccountEmailByCDK(cdk)
 	if err != nil {
 		log.Printf("[billing] 读取卡密绑定的邮箱失败: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询绑定失败"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询绑定失败", "error_code": "lookup_failed"})
 		return
 	}
 	if email == "" {
 		c.JSON(http.StatusNotFound, gin.H{
-			"error": "未找到该卡密绑定的账号。请确认兑换时使用了 session 凭证，或改用直接粘贴 session 查询。",
+			"error":      "未找到该卡密绑定的账号。请确认兑换时使用了 session 凭证，或改用直接粘贴 session 查询。",
+			"error_code": "binding_not_found",
 		})
 		return
 	}
 	inv, err := queryAccounthubInvoices(email)
 	if err != nil {
 		log.Printf("[billing] accounthub 查询失败: %v", err)
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "账单服务暂时不可用，请稍后再试，或改用直接粘贴 session 查询。"})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "账单服务暂时不可用，请稍后再试，或改用直接粘贴 session 查询。", "error_code": "billing_unavailable"})
 		return
 	}
 	// 知道卡密不等于本人（审计 F-1）：邮箱打码，账单只给金额、状态、时间这类摘要，不给账单链接和 PDF。

@@ -71,16 +71,45 @@ func (s *Service) PreviewCard(ctx context.Context, cardID string) (*CardPreview,
 
 var longDigits = regexp.MustCompile(`\d(?:[ -]?\d){11,}`)
 
-// redactPAN 去掉平台错误说明里夹带的长数字串（可能是完整卡号），其余字段原样保留，错误类型不变。
+// redactPAN 去掉错误全文里夹带的长数字串（可能是完整卡号）：平台错误的 Code、Message、被包裹的底层错误都打码，
+// 别的错误对整条文本打码。错误类型不变，errors.Is / errors.As 照常可用；errors.As 取到的平台错误是打过码的副本。
 func redactPAN(err error) error {
+	if err == nil {
+		return nil
+	}
 	var me *marswallex.Error
-	if errors.As(err, &me) {
+	if errors.As(err, &me) && me != nil {
 		cp := *me
+		cp.Code = longDigits.ReplaceAllString(me.Code, "****")
 		cp.Message = longDigits.ReplaceAllString(me.Message, "****")
-		return &cp
+		if me.Err != nil {
+			cp.Err = redactText(me.Err)
+		}
+		if direct, ok := err.(*marswallex.Error); ok && direct == me {
+			return &cp
+		}
+		return &redactedErr{msg: longDigits.ReplaceAllString(err.Error(), "****"), err: &cp}
+	}
+	return redactText(err)
+}
+
+// redactText 对整条错误文本打码；文本里没有长数字串时原样返回。
+func redactText(err error) error {
+	msg := err.Error()
+	if red := longDigits.ReplaceAllString(msg, "****"); red != msg {
+		return &redactedErr{msg: red, err: err}
 	}
 	return err
 }
+
+// redactedErr 是打过码的错误：Error() 只给打码后的文本，Unwrap 指向原错误，供 errors.Is 判断类型。
+type redactedErr struct {
+	msg string
+	err error
+}
+
+func (e *redactedErr) Error() string { return e.msg }
+func (e *redactedErr) Unwrap() error { return e.err }
 
 // panParts 取卡号开头连续 6 位数字作前 6 位（忽略空格与连字符）；后 4 位直接用导入时存库的 lastDigits4，保证预览与导入后一致。
 func panParts(cardNo string) (first6, last4 string) {

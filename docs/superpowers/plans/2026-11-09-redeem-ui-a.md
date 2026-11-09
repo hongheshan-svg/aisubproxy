@@ -17,6 +17,19 @@
 
 **规格：** `docs/superpowers/specs/2026-11-09-redeem-ui-a-design.md`（以下简称「规格」）。执行者两份都要读：计划写的是决定，规格写的是要求和文案原文。
 
+## 2026-11-09 变更：去掉 ZovoCard
+
+用户决定：没有 ZovoCard 卡服务，本计划不再为它做任何事（见规格文首「变更」）。具体：
+- 任务 4 取消；
+- 任务 7：`checkPastedSession` 去掉 `strict`，只有严格规则；`progressRows` 去掉 `kind` 参数和 `reviewing`；
+- 任务 8：去掉 `mailbox.*`；
+- 任务 9：`preflight` 去掉邮箱密码；
+- 任务 11：只有严格检查，没有「改用邮箱和密码」；
+- 任务 13：去掉人工核对那句小字；
+- 任务 16：去掉 ZovoCard 场景。
+
+X、Grok、Claude 的界面照旧。
+
 ## 全局约束
 
 - 后端下单、付款、确认开通、关闭续费的流程一行不动；付款引擎原有测试全部原样通过（规格 §2、§5.3）。
@@ -58,7 +71,7 @@
 3. **每码限流复用 `localRateAllow`**：新增 kind `inspect`，额度 10，键是 `cdk:<码ID>`（`rateIPKey` 对不是 IP 的串原样返回）。命中缓存时不计数。
 4. **币种不一致时预检多返回 `account_currency`、`code_currency`**：规格 §6.4 的文案要用这两个值，§5.4 没列。
 5. **默认主色 #0F6B5F 的暗色版直接用 #3FB8A5**（规格 §3.1 定的值），其余颜色按算法推。
-6. **`progressRows` 多一个可选参数 `prev`**：认不出的状态保持上一次的行（规格 §6.5「保持当前行」）；没有上一次时按第 1 行进行中。返回值多一个 `reviewing` 标记，对应 ZovoCard `_review` 状态的小字。
+6. **`progressRows` 多一个可选参数 `prev`**：认不出的状态保持上一次的行（规格 §6.5「保持当前行」）；没有上一次时按第 1 行进行中。（原有的 `reviewing` 标记随 ZovoCard 一起去掉。）
 7. **新增两个规格没列的纯函数模块**：
    - `src/lib/redeemAccount.ts`：预检结果转账号摘要、第 ③ 屏状态判断、放弃码转文案键；
    - `src/lib/homeRoute.ts`：首页分流。
@@ -288,7 +301,9 @@ git commit -m "feat(handler): MarsWallex 码预检时核对账号，不符合不
 
 ---
 
-### 任务 4：售后查询认出 ZovoCard 的 `failed_precharge`
+### 任务 4：（已取消）售后查询认出 ZovoCard 的 `failed_precharge`
+
+> **已取消（2026-11-09）**：没有 ZovoCard 卡服务，本任务不做，不派实现代理。下面原文只作记录。
 
 **文件：**
 - 修改：`backend/internal/handler/lookup.go:273`（任务表分支）、`:348`（订单分支）
@@ -474,25 +489,24 @@ git commit -m "feat(frontend): 用户端颜色变量与主色推导，亮暗默�
 - `sessionCheck.ts`：
   - `type SessionProblem = 'empty' | 'not_logged_in' | 'access_token' | 'not_json' | 'no_token' | 'no_email' | 'expired'`
   - `type SessionCheck = { ok: true; value: string; maskedEmail?: string } | { ok: false; problem: SessionProblem }`
-  - `checkPastedSession(raw: string, opts: { strict: boolean; now: number }): SessionCheck`：
-    - 规则逐行照规格 §6.3.1 的表。`strict` 为 true 对应 MarsWallex，false 对应 ZovoCard。判断顺序：空 → `eyJ` 开头的三段式 → 不是 JSON → `{}` 或没有字段 → 没有令牌 → 没有邮箱 → 过期。
+  - `checkPastedSession(raw: string, opts: { now: number }): SessionCheck`：
+    - 规则逐行照规格 §6.3.1 的表（只有严格规则）。判断顺序：空 → `eyJ` 开头的三段式 → 不是 JSON → `{}` 或没有字段 → 没有令牌 → 没有邮箱 → 过期。
     - `value` 是去掉首尾空白后的原文。
-    - 宽松模式认 `token.sessionToken`，以及「五段式」或「长度超过 40」的非 JSON 串（与现有 `RechargeView.extractSession` 一致）。
   - `maskEmail(email: string): string`：本地部分不超过 2 个字符时只留 1 个，否则留前 2 个，后接 `***@完整域名`；与后端 `maskEmailForAdmin` 一致。
 - `device.ts`：`detectDevice(ua: string, maxTouchPoints: number): 'ios' | 'android' | 'desktop'`。iPadOS 报 Macintosh 且 `maxTouchPoints > 1` 时算 `ios`。
 - `redeemProgress.ts`：
   - `type RowState = 'done' | 'current' | 'todo'`
-  - `type ProgressView = { rows: [RowState, RowState, RowState]; phase: 'running' | 'done' | 'failed' | 'review'; reviewing: boolean }`
-  - `progressRows(kind: 'card_supply' | 'upstream', status: string, stage: string, prev?: ProgressView['rows']): ProgressView`：
-    - 对应关系逐行照规格 §6.5 两张表；
+  - `type ProgressView = { rows: [RowState, RowState, RowState]; phase: 'running' | 'done' | 'failed' | 'review' }`
+  - `progressRows(status: string, stage: string, prev?: ProgressView['rows']): ProgressView`：
+    - 对应关系逐行照规格 §6.5 的表；
     - 认不出的值：`rows` 取 `prev`，没有就是 `['current','todo','todo']`，`phase: 'running'`；
     - `phase` 为 `failed`、`review` 时，`rows` 照 `prev`。第 ⑤ 屏不显示这些行。
 
 - [ ] **第 1 步：写失败的测试**
   - `sessionCheck.test.ts`：
-    - 规格 §6.3.1 表的每一行，`strict: true` 和 `strict: false` 各测一遍，断言 `ok` 和 `problem`；
+    - 规格 §6.3.1 表的每一行各测一遍，断言 `ok` 和 `problem`；
     - `expires: "不是日期"` 不算过期；`expires` 早于 `now` 算过期；
-    - 重点核查 1：首尾带换行和空格、用 `JSON.stringify(obj, null, 2)` 美化过的多行 JSON，严格模式也通过，`maskedEmail === 'bu***@example.com'`；
+    - 重点核查 1：首尾带换行和空格、用 `JSON.stringify(obj, null, 2)` 美化过的多行 JSON，也通过，`maskedEmail === 'bu***@example.com'`；
     - 重点核查 2：`maskEmail('a@x.com') === 'a***@x.com'`，`maskEmail('ab@x.com') === 'a***@x.com'`，`maskEmail('alice@gmail.com') === 'al***@gmail.com'`。
   - `device.test.ts`：五条真实格式的 UA：
     - iPhone Safari → `ios`；
@@ -501,8 +515,7 @@ git commit -m "feat(frontend): 用户端颜色变量与主色推导，亮暗默�
     - Windows Chrome → `desktop`；
     - macOS Safari 且 `maxTouchPoints: 0` → `desktop`。
   - `redeemProgress.test.ts`：
-    - 规格 §6.5 两张表里每个 status / stage 组合各一条断言；
-    - ZovoCard 的 `card_review` → `['done','current','todo']`、`reviewing: true`、`phase: 'running'`；
+    - 规格 §6.5 表里每个 status / stage 组合各一条断言；
     - 认不出的 `weird` → 带 `prev` 时等于 `prev`，不带时为 `['current','todo','todo']`；
     - MarsWallex 的 `checkout` 在 `card_funding` 之前、之后都是第 2 行进行中，不倒退。
 
@@ -542,7 +555,6 @@ git commit -m "feat(frontend): 登录信息本地检查、设备识别和开通�
 | `cond.*` | 规格 §6.3：两条条件提醒 |
 | `guide.ios.*`、`guide.android.*`、`guide.desktop.*`、`guide.open`、`guide.safety` | 规格 §6.3 设备教程表和安全提醒 |
 | `paste.*` | 规格 §6.3.1：每个 `SessionProblem` 一条提示，`ok`（「✓ 认出账号 {email}」）、`okNoEmail`（「✓ 格式正确」） |
-| `mailbox.*` | 规格 §6.3：「不会复制？改用邮箱和密码」「改回粘贴登录信息」、邮箱、密码 |
 | `next.*` | 「下一步」「正在核对账号…」 |
 | `confirm.*` | 规格 §6.4：四种状态的标题、各行标签、勾选框文字、「点下面按钮后就开始付款开通，不能撤回。」、「确认开通 {plan}」「换一个账号」「正在提交…」 |
 | `blocking.*` | 规格 §6.4 放弃码文案表，每个放弃码一个键，占位符 `{plan}`、`{accountCurrency}`、`{codeCurrency}` |
@@ -618,7 +630,7 @@ export function useRedeemFlow(deps?: RedeemDeps): {
   error: Ref<FlowError | null>; busy: Ref<boolean>; submitState: Ref<'idle' | 'submitting' | 'unknown'>
   progressStartedAt: Ref<number | null>
   preview(code: string): Promise<void>
-  preflight(credential: { mode: 'session'; session: string } | { mode: 'mailbox'; email: string; password: string }): Promise<void>
+  preflight(credential: { mode: 'session'; session: string }): Promise<void>
   redeem(opts?: { agreeCreditTerms?: boolean; claudeOrgId?: string; grokSession?: string }): Promise<void>
   checkResult(): Promise<void>
   recoverGrace(): Promise<void>      // 调用前由页面弹二次确认（沿用 grace.confirm 文案），这里不弹框
@@ -654,7 +666,7 @@ export function useRedeemFlow(deps?: RedeemDeps): {
 
 - [ ] **第 1 步：写失败的测试**
   - `redeemAccount.test.ts`：
-    - `accountFromPreflight`：MarsWallex 返回 `account_checked:false` 时 `checked === false`；ZovoCard 返回不带账号信息时为 `null`；邮箱已脱敏。
+    - `accountFromPreflight`：MarsWallex 返回 `account_checked:false` 时 `checked === false`；不是 MarsWallex 的码、返回不带账号信息时为 `null`；邮箱已脱敏。
     - `confirmState`：四种状态各一条，加两条先后顺序（既要恢复订阅又有放弃码 → `recover`；有放弃码且没查到账号 → `blocked`）。
     - `blockingKey`：规格表里每个码都有键，未知码返回 null。
   - `useRedeemFlow.test.ts`：用假的 `fetchFn`（按路径返回预设响应，并记录调用）、内存 `storage`、可控的 `every`。
@@ -768,19 +780,17 @@ git commit -m "feat(frontend): 首页只留一个卡密输入框，按卡密状�
   - 「打开登录信息页」用 `<a href="https://chatgpt.com/api/auth/session" target="_blank" rel="noopener noreferrer">`；
   - 下方显示安全提醒。
 - `SessionPasteBox.vue`：
-  - props `{ modelValue: string; strict: boolean }`，emits `update:modelValue`、`check(result: SessionCheck)`；
+  - props `{ modelValue: string }`，emits `update:modelValue`、`check(result: SessionCheck)`；
   - 输入或粘贴后立刻在本地检查，框下显示 `redeemUi.paste.*`。
 - `CredentialStep.vue`：
   - props `{ preview: any; busy: boolean; error: FlowError | null }`，emits `submit(credential)`。
   - 条件提醒：`requires_no_subscription` 或 `requires_subscription` 为真时显示（规格 §6.3）。
-  - ChatGPT 码：`DeviceGuide` + `SessionPasteBox`，MarsWallex 码 `strict`，ZovoCard 码宽松。
-  - 只有 ZovoCard 的 ChatGPT 码显示「不会复制？改用邮箱和密码」，条件照 `RechargeView.vue:39`：不是 X、Grok、Claude、MarsWallex。
+  - ChatGPT 码：`DeviceGuide` + `SessionPasteBox`（严格检查）。
   - Claude、Grok、X：沿用各自的校验，只换外观和文案。
   - 「下一步」本地检查通过才可点；`busy` 时显示「正在核对账号…」并锁住。
 
 - [ ] **第 1 步：写失败的测试** `credential.spec.ts`（renderToString，照 `views/__tests__/home.spec.ts` 的 i18n 和 mock 写法）：
   - MarsWallex 订阅码的预览：渲染出条件提醒「这张码只能用在没有订阅的账号上」、三个设备标签、`https://chatgpt.com/api/auth/session` 链接；没有「改用邮箱和密码」。
-  - ZovoCard 的 ChatGPT 码：有「改用邮箱和密码」。
   - Grok、Claude 码：没有设备教程。
   - `busy: true`：按钮文字为「正在核对账号…」且带 `disabled`。
 
@@ -861,7 +871,7 @@ git commit -m "feat(frontend): 核对账号一屏：付款前说清这个账号�
 - `ProgressStep.vue`：
   - props `{ planText: string; view: ProgressView; waitedLong: boolean }`；
   - 三行打勾、当前行转圈、没到的空心圆；
-  - 白卡写「可以关掉这个页面…」，`waitedLong` 时加 10 分钟那句，`view.reviewing` 时显示「正在人工核对，不用你操作」（规格 §6.5）。
+  - 白卡写「可以关掉这个页面…」，`waitedLong` 时加 10 分钟那句（规格 §6.5）。
 - `ResultStep.vue`：
   - props `{ planText: string; status: string; kind: 'card_supply' | 'upstream'; product: string; maskedEmail: string; lookup: LookupResult | null; creditQuantity?: number; attemptsLeft?: number }`；
   - emits `retry()`、`reset()`；
@@ -876,7 +886,7 @@ git commit -m "feat(frontend): 核对账号一屏：付款前说清这个账号�
   - `waitedLong` 用 `progressStartedAt` 和当前时间算，满 10 分钟为真。
 
 - [ ] **第 1 步：写失败的测试** `progress-result.spec.ts`（renderToString）：
-  - `ProgressStep`：`rows ['done','current','todo']` 渲染出 1 个勾、1 个转圈、1 个空心圆；`waitedLong` 时出现 10 分钟那句；`reviewing` 时出现人工核对那句。
+  - `ProgressStep`：`rows ['done','current','todo']` 渲染出 1 个勾、1 个转圈、1 个空心圆；`waitedLong` 时出现 10 分钟那句。
   - `ResultStep` 成功：
     - ChatGPT 订阅码，`lookup.renewal = 'off'`：有「已关闭」，按钮链接 `https://chatgpt.com`；
     - Claude 码：链接 `https://claude.ai`；
@@ -1021,7 +1031,7 @@ git commit -m "feat(admin): 站点外观可以选主色、上传 Logo，皮肤�
 
 - [ ] **第 2 步：用 Playwright 浏览器工具挡住接口，逐张截图**
   - 用 `page.route('**/api/v1/**', ...)` 按场景返回假数据；
-  - 场景：首页（空、出错、用过的码结果卡）、第 ② 屏（MarsWallex、ZovoCard、粘贴通过、粘贴出错）、第 ③ 屏四种状态和「没收到回复」、第 ④ 屏（进行中、等了 10 分钟）、第 ⑤ 屏（成功、可重提、转人工）、`/batch`、`/billing`、`/history`、后台「站点外观」；
+  - 场景：首页（空、出错、用过的码结果卡）、第 ② 屏（MarsWallex、Grok 或 Claude、粘贴通过、粘贴出错）、第 ③ 屏四种状态和「没收到回复」、第 ④ 屏（进行中、等了 10 分钟）、第 ⑤ 屏（成功、可重提、转人工）、`/batch`、`/billing`、`/history`、后台「站点外观」；
   - 每个场景截四张：375px、1280px 宽各配亮色、暗色（用 `emulateMedia({ colorScheme })`，并把 `theme-mode` 设为 `auto`）。
 
 - [ ] **第 3 步：逐张看。**

@@ -341,8 +341,8 @@ Grok、Claude、X 的 `blocking_reason` 由服务商给出，原样显示。
 | `src/styles/user-theme.css`（新） | §3.1 的颜色变量。亮色默认；`[data-theme="dark"]` 和 `@media (prefers-color-scheme: dark)`（跟随系统时）给暗色。只挂在用户端根节点上，不影响后台皮肤 |
 | `src/lib/brandColor.ts`（新） | `contrastRatio(a: string, b: string): number`、`isUsablePrimary(hex: string): boolean`、`darkPrimaryFrom(hex: string): string`、`tintFrom(hex: string): string` |
 | `src/lib/device.ts`（新） | `detectDevice(ua: string, maxTouchPoints: number): 'ios' \| 'android' \| 'desktop'`。iPadOS 报 Macintosh 且有触屏时算 `ios` |
-| `src/lib/sessionCheck.ts`（新） | `checkPastedSession(raw: string, opts: { strict: boolean; now: number }): SessionCheck`，规则见 §6.3.1。`SessionCheck` 为 `{ ok: true; value: string; maskedEmail?: string }` 或 `{ ok: false; problem: 'empty' \| 'not_logged_in' \| 'access_token' \| 'not_json' \| 'no_token' \| 'no_email' \| 'expired' }` |
-| `src/lib/redeemProgress.ts`（新） | `progressRows(kind: 'card_supply' \| 'upstream', status: string, stage: string): { rows: ['done' \| 'current' \| 'todo', …三项]; phase: 'running' \| 'done' \| 'failed' \| 'review' }`，对应关系见 §6.5 |
+| `src/lib/sessionCheck.ts`（新） | `checkPastedSession(raw: string, opts: { now: number }): SessionCheck`，规则见 §6.3.1（只有严格规则）。`SessionCheck` 为 `{ ok: true; value: string; maskedEmail?: string }` 或 `{ ok: false; problem: 'empty' \| 'not_logged_in' \| 'access_token' \| 'not_json' \| 'no_token' \| 'no_email' \| 'expired' }` |
+| `src/lib/redeemProgress.ts`（新） | `progressRows(status: string, stage: string, prev?): { rows: ['done' \| 'current' \| 'todo', …三项]; phase: 'running' \| 'done' \| 'failed' \| 'review' }`，对应关系见 §6.5 |
 | `src/composables/useRedeemFlow.ts`（新） | 兑换流程的状态和接口调用：`preview`、`preflight`、`redeem`、`checkResult`、`recoverGrace`、`reset`。保证同一张码同一时间只有一个兑换请求；兑换请求失败后只能走 `checkResult`。进度缓存见下 |
 | `src/components/redeem/`（新目录） | `CodeEntry.vue`（第 ① 屏，首页和兑换页共用）、`CredentialStep.vue`（②）、`DeviceGuide.vue`、`SessionPasteBox.vue`、`ConfirmStep.vue`（③）、`ProgressStep.vue`（④）、`ResultStep.vue`（⑤）、`ProgressTicks.vue`（顶部三格）、`CodeStatusCard.vue`（结果卡，逻辑仍用 `afterSaleView`） |
 | `src/views/user/RechargeView.vue` | 只负责按 `useRedeemFlow` 的状态切换五屏，目标 300 行以内 |

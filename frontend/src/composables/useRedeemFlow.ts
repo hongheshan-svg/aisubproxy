@@ -51,7 +51,7 @@ export interface RedeemFlow {
   busy: Ref<boolean>
   submitState: Ref<SubmitState>
   progressStartedAt: Ref<number | null>
-  /** 有可用的预检票且账号要先恢复订阅：为真显示「恢复订阅」，为假显示「重新核对」 */
+  /** 有可用的预检票且账号要先恢复订阅：为真显示「取消原订阅」，为假显示「重新核对」 */
   canRecover: Readonly<Ref<boolean>>
   /** 第 ③ 屏的状态，和 redeem() 的拦截用同一套判断（含当前套餐已满足） */
   confirmView: ComputedRef<ConfirmState>

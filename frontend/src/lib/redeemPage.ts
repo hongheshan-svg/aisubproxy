@@ -92,7 +92,7 @@ export function makeStartOver(d: {
 }
 
 /**
- * 「恢复订阅」：先弹确认框，买家确认后才调恢复（裁决 R19）。确认框开着或恢复请求在途时再点不动作，
+ * 「取消原订阅」：先弹确认框，买家确认后才调恢复（裁决 R19）。确认框开着或恢复请求在途时再点不动作，
  * 不会叠出第二个确认框、也不会发第二次。返回恢复有没有真的发了请求（被流程守卫挡掉为 false）。
  */
 export function makeRecoverAction(confirm: () => Promise<boolean>, recover: () => Promise<boolean>): () => Promise<boolean> {
@@ -117,7 +117,7 @@ export function graceConfirmArgs(t: TFn): [string, { title: string; okText: stri
   }]
 }
 
-/** 点过「恢复订阅」后仍要先恢复、又没出错（服务器说还在处理）：第 ③ 屏显示 grace.pending（裁决 R19）。 */
+/** 点过「取消原订阅」后仍要先处理、又没出错（服务器说还在处理）：第 ③ 屏显示 grace.pending（裁决 R19）。 */
 export function showGracePending(i: { tried: boolean; screen: Screen; confirmView: string; error: FlowError | null }): boolean {
   return i.tried && i.screen === 'confirm' && i.confirmView === 'recover' && !i.error
 }

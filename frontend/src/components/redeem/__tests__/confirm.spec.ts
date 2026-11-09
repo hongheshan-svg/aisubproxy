@@ -127,11 +127,14 @@ describe('第 ③ 屏：请自己确认', () => {
 })
 
 describe('第 ③ 屏：要先恢复订阅', () => {
-  it('能恢复：恢复订阅按钮和换一个账号，没有开通按钮', async () => {
+  it('能恢复：取消原订阅按钮和换一个账号，没有开通按钮', async () => {
     const html = await render({ confirmView: 'recover', canRecover: true })
     const t = text(html)
-    expect(t).toContain('这个账号要先恢复订阅')
-    expect(t).toContain('恢复订阅')
+    // 按钮的实际动作是取消欠费或宽限期里的原订阅，标题、说明、按钮用同一个说法（用户 2026-11-09 决定）
+    expect(t).toContain('这个账号要先取消原订阅')
+    expect(t).toContain('要先取消原订阅才能开通')
+    expect(t).toContain('取消原订阅')
+    expect(t).not.toContain('恢复订阅')
     expect(html).toContain('data-testid="confirm-recover"')
     expect(html).not.toContain('data-testid="confirm-recheck"')
     expect(html).not.toContain('confirm-submit')

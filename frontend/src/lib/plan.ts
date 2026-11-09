@@ -1,5 +1,5 @@
 import { isXPremiumPlan } from './x-premium'
-import { grokBarePlan, grokPlanLabel, isGrokPlan } from './grok'
+import { grokBarePlan, grokPlanLabel, grokTierLabel, isGrokPlan } from './grok'
 import { claudePlanLabel, isClaudePlan } from './claude'
 // 档位判定：可读名 + 「账号是否已满足该档」（兑换前的重复购买闸）。
 //
@@ -49,6 +49,26 @@ export function planLabel(value: string): string {
   if (n.includes('team')) return 'Team'
   if (!n || n === 'free') return '免费版'
   return value
+}
+
+type TFn = (key: string, params?: Record<string, unknown>) => string
+
+/** 同 planLabel，但套餐名里的文字走语言包（redeemUi.plan.*），英文界面不出中文。判定顺序与 planLabel 保持一致。 */
+export function planLabelT(value: string, t: TFn): string {
+  const n = String(value || 'free').trim().toLowerCase()
+  if (/^credit\d+$/.test(n)) return t('redeemUi.plan.credits', { n: n.slice(6) })
+  if (isClaudePlan(n)) return claudePlanLabel(n)
+  if (isXPremiumPlan(n)) return planLabel(value)
+  if (isGrokPlan(n)) {
+    const g = grokTierLabel(n)
+    if (!g) return value
+    return `Grok ${g.tier} / ${t(g.yearly ? 'redeemUi.plan.grokYear' : 'redeemUi.plan.grokMonth')}${g.half ? t('redeemUi.plan.grokHalf') : ''}`
+  }
+  if (n === 'pro_5x_renew') return t('redeemUi.plan.pro5xRenew')
+  if (n === 'pro_20x_renew' || n.includes('renew')) return t('redeemUi.plan.pro20xRenew')
+  if (n === 'plus_half' || n.includes('plus_half') || n.includes('plus 半价')) return t('redeemUi.plan.plusHalf')
+  if (n === 'free') return t('redeemUi.plan.free')
+  return planLabel(value)
 }
 
 /**

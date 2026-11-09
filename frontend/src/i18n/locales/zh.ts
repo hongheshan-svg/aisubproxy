@@ -443,6 +443,17 @@ export default {
       recoverHint: '这个账号的原订阅欠费或还在宽限期，要先恢复订阅才能开通。处理完不会自动付款，需要你再点一次「确认开通」。',
       recoverButton: '恢复订阅',
       recheckButton: '重新核对',
+      checkAccount: '我确认这就是要开通的账号',
+    },
+    plan: {
+      free: '免费版',
+      plusHalf: 'Plus 半价',
+      pro5xRenew: 'Pro 5x 续费',
+      pro20xRenew: 'Pro 20x 续费',
+      credits: 'Codex 点数 {n}',
+      grokMonth: '月',
+      grokYear: '年',
+      grokHalf: ' 半价',
     },
     blocking: {
       already_subscribed: '这个账号已经有订阅（{plan}）。这张码只能用在没有订阅的账号上，请换一个账号。',
@@ -453,6 +464,7 @@ export default {
       credit_currency_mismatch: '这个账号按 {accountCurrency} 付款，这张码是 {codeCurrency} 地区的，两者要一致。请换一个账号，或联系卖家换码。',
       credit_account_unknown: '暂时没法确认这个账号能不能加点数。请稍后再试，或换一个账号。',
       credit_delinquency_unknown: '暂时没法确认这个账号能不能加点数。请稍后再试，或换一个账号。',
+      generic: '这个账号暂时不能用这张码，请换一个账号。',
     },
     creditTerms: {
       title: '点数兑换须知',

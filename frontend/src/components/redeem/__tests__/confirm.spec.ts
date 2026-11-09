@@ -146,3 +146,41 @@ describe('第 ③ 屏：提交状态', () => {
     expect(text(html)).toContain('没连上，请再试一次')
   })
 })
+
+describe('第 ③ 屏：英文界面整屏无中文（套餐名走语言包）', () => {
+  const clean = (t: string) => {
+    expect(t).not.toMatch(/[\u4e00-\u9fff]/)
+    for (const w of BANNED) expect(t.toLowerCase()).not.toContain(w.toLowerCase())
+  }
+  it('free 账号加订阅码', async () => clean(text(await render({ account: account({ currentPlan: 'free' }) }, 'en'))))
+  it('点数码 credit250', async () => clean(text(await render({ preview: mwCredit, account: account({ currentPlan: 'plus' }) }, 'en'))))
+  it('already_subscribed 加 plus_half', async () =>
+    clean(text(await render({ confirmView: 'blocked', blockingCode: 'already_subscribed', account: account({ currentPlan: 'plus_half' }) }, 'en'))))
+  it('未知 code 且无原因', async () =>
+    clean(text(await render({ confirmView: 'blocked', blockingCode: 'zzz' }, 'en'))))
+})
+
+describe('第 ③ 屏：不能用的兜底与条件行', () => {
+  it('未知 code 加空 reason：用通用文案，不说「已有订阅」', async () => {
+    const t = text(await render({ confirmView: 'blocked', blockingCode: 'zzz', blockingReason: '' }))
+    expect(t).toContain('这个账号暂时不能用这张码，请换一个账号。')
+    expect(t).not.toContain('已经有订阅')
+  })
+  it('两个标志都没有：不显示条件行，勾选框用通用文字', async () => {
+    const html = await render({ preview: { plan: 'plus', provider_kind: 'card_supply' }, confirmView: 'self_check', account: null })
+    const t = text(html)
+    expect(t).toContain('我确认这就是要开通的账号')
+    expect(t).not.toContain('这张码的条件')
+    expect(html).toMatch(/data-testid="confirm-submit"[^>]*disabled/)
+  })
+  it('requires_subscription 的订阅码：条件和勾选框都按已订阅', async () => {
+    const t = text(await render({ preview: { plan: 'plus', requires_subscription: true }, confirmView: 'self_check' }))
+    expect(t).toContain('我确认这个账号已订阅 Plus 或 Pro')
+    expect(t).toContain('这张码只能用在已订阅')
+  })
+  it('恢复、换账号按钮在提交中禁用', async () => {
+    const html = await render({ confirmView: 'recover', canRecover: true, submitState: 'submitting' })
+    expect(html).toMatch(/data-testid="confirm-recover"[^>]*disabled/)
+    expect(html).toMatch(/data-testid="confirm-change"[^>]*disabled/)
+  })
+})

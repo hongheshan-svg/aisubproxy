@@ -1,11 +1,11 @@
 <script setup lang="ts">
 // 第 ③ 屏「核对账号」（规格 §6.4）：买家在这里决定要不要点「确认开通」付款。
 // 四种状态（可以开通 / 不能用 / 要先恢复订阅 / 请自己确认）由页面算好用 confirmView 传进来，组件只负责显示和上报点击。
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { FlowError } from '../../composables/useRedeemFlow'
 import { isCardSupply, isCreditCode, isOneMonthCode } from '../../lib/mwredeem'
-import { planLabel } from '../../lib/plan'
+import { planLabelT } from '../../lib/plan'
 import { blockingKey, canConfirm, targetPlanOf, type AccountSummary, type ConfirmState } from '../../lib/redeemAccount'
 
 const props = defineProps<{
@@ -31,23 +31,32 @@ const { t } = useI18n({ useScope: 'global' })
 
 const selfChecked = ref(false)
 const agreedTerms = ref(false)
+// 换了账号、状态或码，之前的勾选作废，不能带到新账号上
+watch(() => [props.account, props.confirmView, props.preview], () => { selfChecked.value = false; agreedTerms.value = false })
 
 const isCredit = computed(() => isCreditCode(props.preview))
-const planName = computed(() => planLabel(targetPlanOf(props.preview)))
+const planName = computed(() => planLabelT(targetPlanOf(props.preview), t))
 const willOpen = computed(() =>
   isCardSupply(props.preview?.provider_kind) && isOneMonthCode(props.preview)
     ? t('redeemUi.confirm.withMonth', { plan: planName.value })
     : planName.value,
 )
-const currentText = computed(() => (props.account?.currentPlan ? planLabel(props.account.currentPlan) : t('redeemUi.confirm.unknown')))
+const currentText = computed(() => (props.account?.currentPlan ? planLabelT(props.account.currentPlan, t) : t('redeemUi.confirm.unknown')))
 const showRenewalRow = computed(() => isOneMonthCode(props.preview))
+// 条件行和勾选框按码的标志取：点数码或要求已订阅 → 已订阅；要求无订阅 → 无订阅；都没有 → 不显示条件行，勾选框用通用文字
+const condKind = computed<'sub' | 'nosub' | 'none'>(() =>
+  isCredit.value || props.preview?.requires_subscription ? 'sub' : props.preview?.requires_no_subscription ? 'nosub' : 'none')
+const checkText = computed(() =>
+  condKind.value === 'sub' ? t('redeemUi.confirm.checkSubscribed') : condKind.value === 'nosub' ? t('redeemUi.confirm.checkNoSubscription') : t('redeemUi.confirm.checkAccount'))
+const busy = computed(() => props.submitState !== 'idle')
 
-// 不能用的原因：有对照键用键；没有键用服务商给的原因；两者都空是「当前套餐已满足」
+// 不能用的原因：有对照键用键；没有键用服务商给的原因；码也空是「当前套餐已满足」；有未知码但没原因用通用文案
 const blockedText = computed(() => {
-  const plan = planLabel(props.account?.currentPlan ?? '')
+  const plan = planLabelT(props.account?.currentPlan ?? '', t)
   const key = blockingKey(props.blockingCode)
   if (key) return t(key, { plan, accountCurrency: props.extra?.accountCurrency ?? '', codeCurrency: props.extra?.codeCurrency ?? '' })
   if (props.blockingReason) return props.blockingReason
+  if (props.blockingCode) return t('redeemUi.blocking.generic')
   return t('redeemUi.blocking.already_subscribed', { plan })
 })
 
@@ -86,10 +95,10 @@ function submit() {
 
       <template v-else-if="confirmView === 'recover'">
         <p class="u-warn" data-testid="confirm-recover-note">{{ t('redeemUi.confirm.recoverHint') }}</p>
-        <button v-if="canRecover" type="button" class="u-btn-primary step-btn" data-testid="confirm-recover" @click="emit('recover')">
+        <button v-if="canRecover" type="button" class="u-btn-primary step-btn" data-testid="confirm-recover" :disabled="busy" @click="emit('recover')">
           {{ t('redeemUi.confirm.recoverButton') }}
         </button>
-        <button v-else type="button" class="u-btn-primary step-btn" data-testid="confirm-recheck" @click="emit('recheck')">
+        <button v-else type="button" class="u-btn-primary step-btn" data-testid="confirm-recheck" :disabled="busy" @click="emit('recheck')">
           {{ t('redeemUi.confirm.recheckButton') }}
         </button>
       </template>
@@ -101,17 +110,17 @@ function submit() {
             <div class="step-row"><dt>{{ t('redeemUi.confirm.current') }}</dt><dd>{{ currentText }}</dd></div>
           </template>
           <div class="step-row"><dt>{{ t('redeemUi.confirm.willOpen') }}</dt><dd>{{ willOpen }}</dd></div>
-          <div v-if="isCredit" class="step-row"><dt>{{ t('redeemUi.confirm.points', { n: preview?.credit_quantity ?? '' }) }}</dt></div>
-          <div v-else-if="showRenewalRow" class="step-row"><dt>{{ t('redeemUi.confirm.renewal') }}</dt><dd>{{ t('redeemUi.confirm.renewalWillOff') }}</dd></div>
-          <div v-if="confirmView === 'self_check'" class="step-row">
+          <div v-if="!isCredit && showRenewalRow" class="step-row"><dt>{{ t('redeemUi.confirm.renewal') }}</dt><dd>{{ t('redeemUi.confirm.renewalWillOff') }}</dd></div>
+          <div v-if="confirmView === 'self_check' && condKind !== 'none'" class="step-row">
             <dt>{{ t('redeemUi.confirm.condition') }}</dt>
-            <dd>{{ preview?.requires_subscription ? t('redeemUi.cond.subscription') : t('redeemUi.cond.noSubscription') }}</dd>
+            <dd>{{ condKind === 'sub' ? t('redeemUi.cond.subscription') : t('redeemUi.cond.noSubscription') }}</dd>
           </div>
         </dl>
+        <p v-if="isCredit" class="step-points">{{ t('redeemUi.confirm.points', { n: preview?.credit_quantity ?? '' }) }}</p>
 
         <label v-if="confirmView === 'self_check'" class="step-check">
           <input v-model="selfChecked" type="checkbox" data-testid="confirm-self-check" :disabled="submitState !== 'idle'" />
-          <span>{{ isCredit ? t('redeemUi.confirm.checkSubscribed') : t('redeemUi.confirm.checkNoSubscription') }}</span>
+          <span>{{ checkText }}</span>
         </label>
 
         <div v-if="isCredit" class="step-terms" data-testid="credit-terms">
@@ -138,7 +147,7 @@ function submit() {
         </button>
       </template>
 
-      <button type="button" class="u-btn-secondary step-btn" data-testid="confirm-change" :disabled="submitState === 'submitting'" @click="emit('changeAccount')">
+      <button type="button" class="u-btn-secondary step-btn" data-testid="confirm-change" :disabled="busy" @click="emit('changeAccount')">
         {{ t('redeemUi.confirm.switchAccount') }}
       </button>
     </template>
@@ -152,6 +161,7 @@ function submit() {
 .step-row { display: flex; justify-content: space-between; gap: 12px; font-size: 15px; }
 .step-row dt { color: var(--u-muted); }
 .step-row dd { margin: 0; color: var(--u-ink); font-weight: 600; text-align: right; overflow-wrap: anywhere; }
+.step-points { margin: 0; font-size: 15px; font-weight: 600; color: var(--u-ink); }
 .step-irreversible { margin: 0; font-size: 14px; color: var(--u-muted); }
 .step-check { min-height: 48px; display: flex; gap: 10px; align-items: flex-start; font-size: 15px; color: var(--u-ink); }
 .step-check input { margin-top: 4px; width: 18px; height: 18px; }

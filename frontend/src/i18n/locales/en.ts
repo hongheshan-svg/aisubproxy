@@ -443,6 +443,17 @@ export default {
       recoverHint: 'This account’s previous subscription is overdue or in a grace period and must be restored before activation. Nothing is paid automatically afterwards; press “Confirm and activate” again yourself.',
       recoverButton: 'Restore subscription',
       recheckButton: 'Check again',
+      checkAccount: 'I confirm this is the account I want to upgrade',
+    },
+    plan: {
+      free: 'Free',
+      plusHalf: 'Plus (half price)',
+      pro5xRenew: 'Pro 5x renewal',
+      pro20xRenew: 'Pro 20x renewal',
+      credits: 'Codex credits {n}',
+      grokMonth: 'month',
+      grokYear: 'year',
+      grokHalf: ' half price',
     },
     blocking: {
       already_subscribed: 'This account already has a subscription ({plan}). This code only works on accounts with no subscription. Use a different account.',
@@ -453,6 +464,7 @@ export default {
       credit_currency_mismatch: 'This account pays in {accountCurrency}, but this code is for {codeCurrency}. The two must match. Use a different account, or ask the seller for a different code.',
       credit_account_unknown: 'Cannot confirm right now whether credits can be added to this account. Try again later, or use a different account.',
       credit_delinquency_unknown: 'Cannot confirm right now whether credits can be added to this account. Try again later, or use a different account.',
+      generic: 'This account can’t use this code right now. Please try another account.',
     },
     creditTerms: {
       title: 'Credit redemption terms',

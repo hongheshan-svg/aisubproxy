@@ -5,13 +5,18 @@
       <div class="u-card swap-stack">
         <label class="swap-label">
           代理密码
-          <input
-            v-model="password"
-            type="password"
-            class="u-input"
-            placeholder="管理员下发的个人密码"
-            autocomplete="off"
-          />
+          <span class="swap-pw">
+            <input
+              v-model="password"
+              :type="showPw ? 'text' : 'password'"
+              class="u-input"
+              placeholder="管理员下发的个人密码"
+              autocomplete="off"
+            />
+            <button type="button" class="u-link swap-pw-toggle" :aria-pressed="showPw" @click="showPw = !showPw">
+              {{ showPw ? t('redeemUi.hidePassword') : t('redeemUi.showPassword') }}
+            </button>
+          </span>
         </label>
         <label class="swap-label">
           失败的完整卡密
@@ -60,6 +65,7 @@
 
 <script setup lang="ts">
 import { ref } from 'vue'
+import { useI18n } from 'vue-i18n'
 import { dialog } from '../../lib/dialog'
 import { copyToClipboard } from '../../lib/clipboard'
 import { swapFailure } from '../../lib/provider'
@@ -67,7 +73,9 @@ import UserPageHeader from '../../components/UserPageHeader.vue'
 import UserShell from '../../components/redeem/UserShell.vue'
 import UserFooter from '../../components/redeem/UserFooter.vue'
 
+const { t } = useI18n({ useScope: 'global' })
 const password = ref('')
+const showPw = ref(false)
 const code = ref('')
 const busy = ref(false)
 const error = ref('')
@@ -124,6 +132,9 @@ function reset() {
 </script>
 
 <style scoped>
+.swap-pw { display: flex; align-items: center; gap: 10px; }
+.swap-pw .u-input { flex: 1; min-width: 0; }
+.swap-pw-toggle { flex: none; min-height: 48px; padding: 0 4px; font: inherit; font-size: 15px; background: none; border: 0; }
 .swap-stack { display: flex; flex-direction: column; gap: 14px; }
 .swap-gap { margin-top: 16px; }
 .swap-label { display: flex; flex-direction: column; gap: 6px; font-size: 15px; font-weight: 600; }

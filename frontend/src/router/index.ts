@@ -3,11 +3,13 @@ import { useAuthStore } from '../stores/auth'
 import { agentGuardDecision } from '../lib/agentSession'
 
 import { setSkinFontsAllowed } from '../theme'
+import { hashScroll, prefersReducedMotion } from './scroll'
 import { OPS_BASE, isAdminPath, routes } from './routes'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
   routes,
+  scrollBehavior: (to) => hashScroll(to, prefersReducedMotion()),
 })
 
 let setupChecked = false

@@ -29,7 +29,7 @@ export default {
   grace: {"title": "Previous subscription needs attention", "hint": "The previous subscription is in a grace period or has an overdue renewal. Cancel it and refresh before recharging.", "action": "Cancel previous subscription and recheck", "confirm": "Cancel this account’s grace-period subscription? Grace-period access may end immediately. This only refreshes the account. Click redeem again yourself; no code is consumed and no payment is made automatically.", "pending": "The previous subscription has not been confirmed ended. Recheck the account without repeatedly cancelling or redeeming.", "done": "The previous subscription has ended and the account was refreshed. Review the plan and click redeem again.", "refreshFailed": "The result could not be confirmed. Recheck the account before trying another cancellation.", "processing": "Processing and refreshing…", "recheck": "Recheck account", "dismiss": "Not now", "confirmAction": "Confirm"},
 
   hero: {
-    badgeOfficial: 'Official channel',
+    badgeOfficial: 'Official source',
     badgeSelf: 'Fully self-service',
     badgeTrack: 'Trackable progress',
     redeemEyebrow: 'Redeem',
@@ -359,6 +359,8 @@ export default {
   },
   // Buyer-facing redeem UI copy (spec 2026-11-09-redeem-ui-a §6, §8)
   redeemUi: {
+    showPassword: 'Show',
+    hidePassword: 'Hide',
     home: {
       title: 'Paste your code here',
       subtitle: 'Unused codes go to redemption; used codes show their result right away.',

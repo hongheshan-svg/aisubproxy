@@ -30,6 +30,7 @@ const FILES = [
   ...vueFiles('components/redeem'),
   'components/UserPageHeader.vue',
   'components/SessionHelp.vue',
+  'components/ExcelImportBlock.vue',
 ]
 
 // 取最外层 <template>（行首的 <template> 到最后一个行首的 </template>），不含 <script>
@@ -40,7 +41,7 @@ function templateOf(src: string): string {
   return src.slice(start, end)
 }
 
-const TREES = ['redeemUi', 'home', 'batch', 'cdkLookup', 'aftersale', 'sessionHelp', 'claude', 'grok', 'xPremium', 'grace']
+const TREES = ['redeemUi', 'home', 'batch', 'cdkLookup', 'aftersale', 'sessionHelp', 'claude', 'grok', 'xPremium', 'grace', 'hero', 'redeemTabs']
 
 function flatten(node: unknown, path: string, out: Array<[string, string]>) {
   if (typeof node === 'string') out.push([path, node])

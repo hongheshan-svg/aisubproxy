@@ -359,6 +359,8 @@ export default {
   },
   // 用户端兑换改版文案（规格 2026-11-09-redeem-ui-a §6、§8）
   redeemUi: {
+    showPassword: '显示',
+    hidePassword: '隐藏',
     home: {
       title: '把卡密粘贴到这里',
       subtitle: '没用过的卡密会进入兑换；用过的会直接显示结果。',

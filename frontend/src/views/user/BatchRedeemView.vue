@@ -1,6 +1,6 @@
 <template>
   <UserShell>
-    <UserPageHeader :title="t('batch.title')" :subtitle="t('batch.subtitle')" back />
+    <UserPageHeader :title="t('batch.title')" :subtitle="t('batch.subtitle')" :max-width="768" back />
     <main class="u-page batch-page">
       <p class="hint-line text-sm text-muted mb-3">{{ t('xPremium.batchHint') }}</p>
       <p class="hint-line text-sm text-muted mb-3">{{ t('grok.batchHint') }}</p>

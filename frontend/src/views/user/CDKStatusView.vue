@@ -1,6 +1,6 @@
 <template>
   <UserShell>
-    <UserPageHeader :title="t('cdkLookup.title')" :subtitle="t('cdkLookup.subtitle')" back />
+    <UserPageHeader :title="t('cdkLookup.title')" :subtitle="t('cdkLookup.subtitle')" :max-width="mode === 'batch' && batchResults.length ? 960 : 0" back />
     <main class="u-page lk" :class="{ 'lk-wide': mode === 'batch' && batchResults.length }">
       <div class="u-card lk-stack">
         <div class="lk-modes">

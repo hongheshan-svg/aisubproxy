@@ -1,7 +1,7 @@
 <template>
   <!-- 用户端页头：Logo（有就显示）、站名、语言/明暗切换；可选「返回首页」；下方是页面标题和说明。
        只放在 UserShell 里使用，颜色走 --u-*。 -->
-  <header class="uh">
+  <header class="uh" :style="maxWidth ? { maxWidth: `${maxWidth}px` } : undefined">
     <div class="uh-bar">
       <router-link v-if="back" to="/" class="u-link uh-back">{{ t('common.backHome') }}</router-link>
       <div class="uh-brand" :class="{ 'uh-brand--end': !back }">
@@ -32,7 +32,9 @@ withDefaults(defineProps<{
   subtitle?: string
   /** 为真时左侧显示「返回首页」 */
   back?: boolean
-}>(), { subtitle: '', back: false })
+  /** 页面正文比默认 520px 宽时传入同样的宽度（px），让页头和正文左边对齐 */
+  maxWidth?: number
+}>(), { subtitle: '', back: false, maxWidth: 0 })
 
 const { t } = useI18n({ useScope: 'global' })
 const brand = siteBrand

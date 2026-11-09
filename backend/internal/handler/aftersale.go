@@ -5,8 +5,10 @@ import (
 	"errors"
 	"log"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/tuzi/cdk-recharge-system/internal/provider"
 	"github.com/tuzi/cdk-recharge-system/internal/safego"
@@ -76,12 +78,16 @@ var afterSaleDefaultMessages = map[string]string{
 }
 
 var (
-	// 邮箱：本地部分和域名允许非 ASCII 字母，顶级域名只认 ASCII 字母，免得把紧跟在后面的中文也吞掉。
-	noteEmailRe = regexp.MustCompile(`[\p{L}\p{N}._%+\-]+@[\p{L}\p{N}\-]+(?:\.[\p{L}\p{N}\-]+)*\.[A-Za-z]{2,}`)
-	// 长令牌：20 位以上的连续字母、数字、下划线、横线（JWT、sess_ 这类令牌常被 - 或 _ 切成短段）。
-	noteTokenRe = regexp.MustCompile(`[A-Za-z0-9_-]{20,}`)
-	// 卡号形状的数字：13～19 位，中间允许单个空格或横线。日期、11 位手机号位数不够，不受影响。
-	noteCardRe = regexp.MustCompile(`\b(?:\d[ -]?){12,18}\d\b`)
+	// 邮箱：本地部分和域名允许非 ASCII 字母；@ 也认 URL 编码的 %40。顶级域名先认 ASCII 字母，免得把紧跟在后面的中文也吞掉；
+	// 中文顶级域（.中国 等）也认，这时可能连带吞掉紧跟的中文，宁可多遮。
+	noteEmailRe = regexp.MustCompile(`[\p{L}\p{N}._%+\-]+(?:@|%40)[\p{L}\p{N}\-]+(?:\.[\p{L}\p{N}\-]+)*\.(?:[A-Za-z]{2,}|\p{Han}{2,})`)
+	// 长令牌：20 位以上的连续字母、数字、下划线、横线、+ / =（JWT、sess_ 这类令牌常被 - 或 _ 切成短段，base64 常被 + / 切开）。
+	noteTokenRe = regexp.MustCompile(`[A-Za-z0-9_+/=-]{20,}`)
+	// 卡号形状的数字：13～19 位，中间允许单个空格或横线。不要求单词边界：紧挨字母、下划线的卡号也要遮（代价是 13 位毫秒时间戳也会遮掉）。
+	// 日期、11 位手机号位数不够，不受影响。
+	noteCardRe = regexp.MustCompile(`(?:\d[ -]?){12,18}\d`)
+	// 写日志时额外遮掉的短令牌：8 个字符以上、同时有字母和数字的串（见 sanitizeForLog）。
+	logWordRe = regexp.MustCompile(`[A-Za-z0-9_-]{8,}`)
 )
 
 // sanitizeProviderNote 清洗服务商给的原文：像邮箱、长令牌、卡号的部分换成 ***，再截到 200 个字符。
@@ -101,6 +107,26 @@ func sanitizeProviderNote(s string) string {
 	return strings.TrimSpace(s)
 }
 
+// sanitizeForLog 清洗要写进日志的服务商错误：先把这次查的卡密（原样、规范化后、去掉横线和空格三种写法，不区分大小写）换成 ***，
+// 再按 sanitizeProviderNote 遮邮箱、长令牌、卡号，最后把 8 个字符以上、同时有字母和数字的串也换掉（短码、短令牌）。
+// 排查只需要服务商名和错误类型，日志宁可多遮。
+func sanitizeForLog(s, code string) string {
+	forms := []string{strings.TrimSpace(code), provider.NormalizeCode(code), strings.NewReplacer("-", "", " ", "").Replace(strings.TrimSpace(code))}
+	sort.Slice(forms, func(i, j int) bool { return len(forms[i]) > len(forms[j]) })
+	for _, f := range forms {
+		if len(f) >= 4 {
+			s = regexp.MustCompile(`(?i)`+regexp.QuoteMeta(f)).ReplaceAllString(s, "***")
+		}
+	}
+	s = sanitizeProviderNote(s)
+	return logWordRe.ReplaceAllStringFunc(s, func(w string) string {
+		if strings.ContainsAny(w, "0123456789") && strings.IndexFunc(w, func(r rune) bool { return r < 128 && unicode.IsLetter(r) }) >= 0 {
+			return "***"
+		}
+		return w
+	})
+}
+
 // factsFor 按码找到服务商，调它的查询能力。注册表不认得的码按找不到（Found=false）。
 // 服务商查询 panic 时恢复成 error，日志只有 safego 记的类型和位置。
 // 出错时日志记服务商名和清洗过的错误文字（邮箱、长令牌、卡号形状的数字换成 ***）；请求取消、超时不算服务商出错，不记。
@@ -116,7 +142,7 @@ func factsFor(ctx context.Context, code, device string) (f afterSaleFacts, err e
 		if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return
 		}
-		log.Printf("[aftersale] 服务商 %s 查询出错：%s", p.Name(), sanitizeProviderNote(err.Error()))
+		log.Printf("[aftersale] 服务商 %s 查询出错：%s", p.Name(), sanitizeForLog(err.Error(), code))
 	}()
 	if cs, ok := provider.AsCardSupply(p); ok {
 		return cardSupplyFacts(ctx, cs, code)

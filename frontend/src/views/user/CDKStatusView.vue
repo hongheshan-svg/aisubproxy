@@ -276,10 +276,10 @@ function reset() {
 .lk-sum { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; font-size: 14px; }
 .lk-sum li { background: var(--u-tint); border-radius: 14px; padding: 8px 12px; }
 .lk-table-wrap { overflow-x: auto; border: 1px solid var(--u-line); border-radius: 14px; }
-.lk-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.lk-table { width: 100%; min-width: 720px; border-collapse: collapse; font-size: 14px; }
 .lk-table th { text-align: left; padding: 10px 12px; color: var(--u-muted); font-weight: 600; background: var(--u-tint); }
 .lk-table td { padding: 10px 12px; border-top: 1px solid var(--u-line); vertical-align: middle; }
-.lk-break { overflow-wrap: anywhere; }
+.lk-break { white-space: nowrap; }
 .lk-nowrap { white-space: nowrap; }
 .lk-status { font-weight: 600; white-space: nowrap; }
 .lk-status--ok { color: var(--u-primary); }

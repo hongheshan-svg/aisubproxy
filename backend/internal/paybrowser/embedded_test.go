@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -2145,6 +2146,8 @@ func fixScrollShiftSpacer(t *testing.T, ctx context.Context, b *paybrowser.Brows
 
 // 每次滚动都让上方变高、从不变矮（仿造页 scrollshift=grow）：main 已滚到底时，每滚一次，按钮就被往下推出可视区一次。
 // 落点检查停稳后复查可视区、只补滚一轮，补完按钮仍在可视区外：Submit 不点、报「没有点击」，仿造页收不到提交。
+// 仿造页数着变高次数（每次滚动开始一次变高）：Submit 期间首次滚动一次、补滚一次，不超过 2 次，看住「最多补一轮」；
+// 报的是「点击落点不在页面上」（走到了补完仍在可视区外）时必须正好 2 次，证明复查那一轮滚过。
 func TestEmbeddedSubmitRefusesWhenShiftKeepsPushingOut(t *testing.T) {
 	needChrome(t)
 	t.Cleanup(paybrowser.ShortenFillWaits(2 * time.Second))
@@ -2159,11 +2162,28 @@ func TestEmbeddedSubmitRefusesWhenShiftKeepsPushingOut(t *testing.T) {
 		t.Fatalf("滚回顶上: %v", err)
 	}
 	time.Sleep(500 * time.Millisecond)
+	// 变高次数清零，只数 Submit 期间的。清零前核对上一次变高已经做完（占位块高度是 100px 的整数倍）、main 停在顶上
+	const reset = `{
+		const m = document.querySelector('main'), h = parseFloat(m.firstElementChild.style.height)
+		if (m.scrollTop !== 0 || h % 100 !== 0) throw new Error('占位块高度 ' + h + 'px，main.scrollTop ' + m.scrollTop)
+		window.__shiftGrows = 0
+	}`
+	if err := paybrowser.EvalMain(ctx, b, reset); err != nil {
+		t.Fatalf("变高次数清零前，上一次变高还没做完: %v", err)
+	}
 	err := b.Submit(ctx)
 	if err == nil || !strings.Contains(err.Error(), "没有点击") {
 		t.Fatalf("Submit = %v，期望含「没有点击」", err)
 	}
-	t.Logf("Submit：%v", err)
+	time.Sleep(500 * time.Millisecond) // 让最后一次变高做完
+	grows := shiftGrows(t, ctx, b)
+	t.Logf("Submit：%v；Submit 期间占位块变高 %d 次", err, grows)
+	if grows > 2 {
+		t.Fatalf("Submit 期间占位块变高 %d 次，期望不超过 2 次（首次滚动一次，最多补滚一次）", grows)
+	}
+	if strings.Contains(err.Error(), "点击落点不在页面上") && grows != 2 {
+		t.Fatalf("报「点击落点不在页面上」时 Submit 期间占位块变高 %d 次，期望正好 2 次（复查那一轮应该补滚过）", grows)
+	}
 	if b.LockSubmit() {
 		t.Fatal("没有点击，LockSubmit 应返回 false")
 	}
@@ -2173,6 +2193,30 @@ func TestEmbeddedSubmitRefusesWhenShiftKeepsPushingOut(t *testing.T) {
 	if n := len(f.payments()); n != 0 {
 		t.Fatalf("仿造页收到 %d 次提交，期望 0 次", n)
 	}
+}
+
+// shiftGrows 读仿造页 scrollshift=grow 记在 window.__shiftGrows 上的变高次数：EvalMain 带不回值，
+// 先把它抄进主页面上一个临时的隐藏输入框，再用 FieldValue 读（同 #pay-clicks 的读法）。
+func shiftGrows(t *testing.T, ctx context.Context, b *paybrowser.Browser) int {
+	t.Helper()
+	const js = `{
+		const i = document.getElementById('shift-grows') || document.body.appendChild(document.createElement('input'))
+		i.type = 'hidden'
+		i.id = 'shift-grows'
+		i.value = String(window.__shiftGrows)
+	}`
+	if err := paybrowser.EvalMain(ctx, b, js); err != nil {
+		t.Fatalf("抄出变高次数: %v", err)
+	}
+	v, err := paybrowser.FieldValue(ctx, b, "#shift-grows")
+	if err != nil {
+		t.Fatalf("读变高次数: %v", err)
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		t.Fatalf("变高次数 %q 不是整数", v)
+	}
+	return n
 }
 
 // 支付按钮的中心在主页面可视区外（这里把它固定在左边缘外面一半多），滚也滚不过来：elementFromPoint 读不到元素，

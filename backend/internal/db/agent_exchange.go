@@ -13,8 +13,9 @@ import (
 const (
 	AgentExchangePending = "pending" // 已占位，正在发码
 	AgentExchangeUnknown = "unknown" // 发码结果不明，等人工定论；占位不释放
-	// AgentExchangeDisabling 新码已发出，但旧码还没确认禁用。旧码和新码此刻都能兑换，所以不能算完成：
-	// 由维护循环反复重试禁用，成功后才转 done（MO-08）。
+	// AgentExchangeDisabling 新码已发出，记录还没收尾。本站码记录（old_upstream_id 为 0）停在这里时，
+	// 维护循环每 10 分钟补上记账并转 done（没有旧码要禁用）。old_upstream_id > 0 的是已移除的 ZovoCard 留下的
+	// 历史记录，维护循环永远跳过，不会自动处理，要管理员到 ZovoCard 后台手动作废旧码。
 	AgentExchangeDisabling = "disabling"
 	AgentExchangeDone      = "done" // 新码已发出，旧码已确认禁用
 )
@@ -212,7 +213,7 @@ func ReserveAgentCDKExchange(r AgentExchangeReservation, limit int, now time.Tim
 }
 
 // FinishAgentCDKExchange 新码已发出，记下新码，进入 disabling（旧码待禁用）。
-// 结果不明的占位可能事后被证实成功，所以 unknown 也能转过来。旧码确认禁用后再调 CompleteAgentCDKExchangeDisable 转 done。
+// 结果不明的占位可能事后被证实成功，所以 unknown 也能转过来。本站码记录由维护循环调 CompleteAgentCDKExchangeDisable 补记账后转 done；历史记录（old_upstream_id > 0）不会自动转。
 func FinishAgentCDKExchange(id, newID int64, newPrefix string) error {
 	res, err := DB.Exec(`UPDATE agent_cdk_exchanges
 		SET state = 'disabling', new_upstream_id = ?, new_code_prefix = ?, updated_at = CURRENT_TIMESTAMP
@@ -220,7 +221,7 @@ func FinishAgentCDKExchange(id, newID int64, newPrefix string) error {
 	return affectedOne(res, err)
 }
 
-// CompleteAgentCDKExchangeDisable 旧码已确认禁用：disabling → done。
+// CompleteAgentCDKExchangeDisable 收尾：disabling → done。只由维护循环对本站码记录调用，历史 ZovoCard 记录不走这里。
 func CompleteAgentCDKExchangeDisable(id int64) error {
 	res, err := DB.Exec(`UPDATE agent_cdk_exchanges SET state = 'done', updated_at = CURRENT_TIMESTAMP
 		WHERE id = ? AND state = 'disabling'`, id)

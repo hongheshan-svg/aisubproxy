@@ -174,7 +174,7 @@ func createTables() error {
 		`CREATE INDEX IF NOT EXISTS idx_recharge_tasks_task_id ON recharge_tasks(task_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_recharge_tasks_status ON recharge_tasks(task_status)`,
 
-		// 旧 ZovoCard 数据，代码已不读写，留表以兼容旧库
+		// 旧版遗留表，代码已不读写，保留不删
 		`CREATE TABLE IF NOT EXISTS billing_records (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			session_hash TEXT UNIQUE NOT NULL,
@@ -1029,6 +1029,7 @@ func HashCDKCode(code string) string {
 // ---- 自动选卡权重配置 ----
 
 // migrateDefaultCardSelectionRules 首次启动时写入默认选卡优先级。
+// 新装库里它仍会往 card_selection_rules 写默认规则，这是旧迁移原样保留（迁移不改写）；业务代码已不读这张表。
 func migrateDefaultCardSelectionRules() error {
 	if DB == nil {
 		return nil

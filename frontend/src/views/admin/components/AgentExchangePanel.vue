@@ -5,7 +5,7 @@
         <div>
           <h2 class="text-base font-semibold text-ink">代理换码核对</h2>
           <p class="text-sm text-muted mt-0.5">
-            「结果不明」的换码要先核对有没有真的发出新码（到「CDK 卡密」里按旧码查），再在这里定论；「旧码待禁用」是新码已发、旧码还没禁掉。
+            「结果不明」的换码要先核对有没有真的发出新码（本站码到「CDK 卡密」里按旧码查；旧码带 #ID 的是已移除的 ZovoCard 留下的记录，要到 ZovoCard 后台查），再在这里定论；「旧码待禁用」是新码已发、记录还没收尾。
           </p>
         </div>
         <div class="flex items-center gap-2">
@@ -30,7 +30,7 @@
             <el-tag size="small" :type="row.state === 'unknown' ? 'danger' : row.state === 'disabling' ? 'warning' : row.state === 'done' ? 'success' : 'info'">
               {{ swapStateLabel(row.state) }}
             </el-tag>
-            <div v-if="row.state === 'disabling'" class="text-xs text-warn mt-1" style="white-space: normal">{{ DISABLING_HINT }}</div>
+            <div v-if="row.state === 'disabling'" class="text-xs text-warn mt-1" style="white-space: normal">{{ disablingHint(row) }}</div>
           </template>
         </el-table-column>
         <el-table-column label="旧码 → 新码" min-width="200">
@@ -63,7 +63,7 @@
           <el-radio-button value="issued">已发新码（记下新码）</el-radio-button>
         </el-radio-group>
         <label v-if="form.result === 'issued'" class="block text-sm space-y-1">
-          <span class="text-muted">新码的 ID（本站卡密 ID，必填，大于 0）</span>
+          <span class="text-muted">{{ newCodeIdLabel(cur) }}</span>
           <el-input-number v-model="form.newId" :min="0" :controls="false" class="!w-full" />
         </label>
         <label class="block text-sm space-y-1">
@@ -84,7 +84,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { dialog } from '../../../lib/dialog'
 import { errText } from '../../../lib/cardpool'
-import { adminApi, canResolveSwap, DISABLING_HINT, oldCodeText, SWAP_STATE_LABEL, swapStateLabel } from '../../../lib/provider'
+import { adminApi, canResolveSwap, disablingHint, issuedConfirmText, newCodeIdLabel, oldCodeText, SWAP_STATE_LABEL, swapStateLabel } from '../../../lib/provider'
 
 const rows = ref<any[]>([])
 const loading = ref(false)
@@ -132,7 +132,7 @@ async function submitResolve() {
   if (form.result === 'issued' && !(form.newId > 0)) { formError.value = '已发新码时必须填新码 ID（大于 0）'; return }
   const text = form.result === 'released'
     ? `确认没有发出新码？\n将释放占位，用户可以重新换码。如果其实已经发了码，会多发一张。`
-    : `确认已经发出新码 #${form.newId}？\n将记下新码，旧码 ${oldCodeText(row)} 的收尾由系统继续处理。`
+    : issuedConfirmText(row, form.newId)
   if (!(await dialog.confirm(`记录 #${row.id}（套餐 ${row.plan}）\n${text}\n备注：${note}`, { title: '确认定论', okText: '确认定论', danger: true }))) return
   saving.value = true
   const r = await adminApi('/agent-exchanges/' + row.id + '/resolve', 'POST', {

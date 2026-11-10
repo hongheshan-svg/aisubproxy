@@ -83,3 +83,22 @@ func TestIssueXGrokClaudeRefused(t *testing.T) {
 		t.Fatalf("不应发出任何码或上游请求: %d %s", localCDKCount(t), up.log())
 	}
 }
+
+// 既没码也没令牌的请求（空对象、空串）：预览、兑换都回 404「无法识别的卡密」。行为保护，CHANGELOG 对外承诺过。
+func TestEmptyBodyIsUnrecognized(t *testing.T) {
+	e := newLocalEnv(t)
+	for _, path := range []string{"/public/cdk/preview", "/public/cdk/redeem"} {
+		for _, body := range []string{`{}`, `{"code":"","token":""}`} {
+			t.Run(path+" "+body, func(t *testing.T) {
+				w := e.do("POST", path, body)
+				if w.Code != http.StatusNotFound {
+					t.Fatalf("应 404: %d %s", w.Code, w.Body.String())
+				}
+				m := localJSON(t, w)
+				if m["error"] != "无法识别的卡密" || m["error_code"] != "code_unrecognized" {
+					t.Fatalf("响应不对: %s", w.Body.String())
+				}
+			})
+		}
+	}
+}

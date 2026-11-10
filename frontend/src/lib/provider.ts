@@ -357,14 +357,40 @@ export function canResolveSwap(state: string): boolean {
   return state === 'unknown'
 }
 
+/** 历史记录：已移除的 ZovoCard 留下的换码记录（old_cdk_id > 0），维护循环永远跳过，系统不会再处理。 */
+export function isLegacyExchange(row: { old_cdk_id?: unknown } | null | undefined): boolean {
+  return Number(row?.old_cdk_id) > 0
+}
+
 /** 换码记录里旧码的显示：旧码 ID 大于 0 才显示 #ID（本站码记录的 old_cdk_id 是 0，不能显示成「#0」）。 */
 export function oldCodeText(row: { old_cdk_id?: unknown; old_code_prefix?: unknown } | null | undefined): string {
   const id = Number(row?.old_cdk_id)
-  return `${id > 0 ? `#${id} ` : ''}${row?.old_code_prefix ?? ''}…`
+  return `${isLegacyExchange(row) ? `#${id} ` : ''}${row?.old_code_prefix ?? ''}…`
 }
 
-/** disabling 记录给运营的说明。 */
-export const DISABLING_HINT = '新码已发给用户，旧码还没禁用成功。系统每 10 分钟自动重试，持续失败会告警。'
+/** disabling 记录给运营的说明（本站码记录：维护循环每 10 分钟补记账转 done）。 */
+export const DISABLING_HINT = '新码已发给用户，记录还没收尾。系统每 10 分钟自动补上记账，不用处理。'
+
+/** disabling 的历史记录给运营的说明：系统不会再处理，要人工去 ZovoCard 后台作废旧码。 */
+export const LEGACY_DISABLING_HINT = '这是已移除的 ZovoCard 留下的记录，系统不会再处理。旧码在 ZovoCard 那边可能仍能兑换，请到 ZovoCard 后台手动作废旧码。'
+
+export function disablingHint(row: { old_cdk_id?: unknown } | null | undefined): string {
+  return isLegacyExchange(row) ? LEGACY_DISABLING_HINT : DISABLING_HINT
+}
+
+/** 定论表单里「新码 ID」输入框的标签。 */
+export function newCodeIdLabel(row: { old_cdk_id?: unknown } | null | undefined): string {
+  return isLegacyExchange(row)
+    ? '新码的 ID（ZovoCard 那边的卡密 ID，必填，大于 0）'
+    : '新码的 ID（本站卡密 ID，必填，大于 0）'
+}
+
+/** 定论「已发新码」时确认框里的说明。 */
+export function issuedConfirmText(row: { old_cdk_id?: unknown; old_code_prefix?: unknown } | null | undefined, newId: number): string {
+  return isLegacyExchange(row)
+    ? `确认已经发出新码 #${newId}？\n将记下新码。这是已移除的 ZovoCard 留下的记录，系统不会去作废旧码 ${oldCodeText(row)}，请到 ZovoCard 后台手动作废。`
+    : `确认已经发出新码 #${newId}？\n将记下新码，旧码 ${oldCodeText(row)} 的收尾由系统继续处理。`
+}
 
 /**
  * 代理换码失败后是否要锁住提交。发码结果不明（502 + outcome=unknown）、网络异常（可能已发出）、

@@ -208,6 +208,28 @@
 
 ---
 
+## ZovoCard 删除后（2026-11-10）
+
+### 会影响使用的
+
+- 【涉及资金】T3-c：批量查结果（`lookup_results.go`）删掉了转发卡台前的门控。现在没有上游，没有风险；以后再接外部发码上游时，要恢复 money N-1 的保护。来源：ZovoCard 整删终审 T3-c。状态：未修。建议：接上游的 PR 里先把门控和测试加回来。
+- 结果不明的告警对本站码只给「记录 N，旧码 ID 0」，管理员要自己到面板里找；`ops_maintenance.go` 里相关日志措辞仍是旧说法。来源：ZovoCard 整删终审 T2-c。状态：未修。建议：告警里改写旧码前缀。
+- 历史 ZovoCard 的 `disabling` 记录会一直出现在面板默认的「待处理」筛选里，没有手动关闭的办法（规格 §11.3 接受）。来源：ZovoCard 整删终审 I-1。状态：未修。
+- 后台已经没有入口清掉库里 ZovoCard 的 `card_api_key`、`webhook_secret`（密文）；只要它们还在，就一直要求强 `JWT_SECRET`。来源：ZovoCard 整删终审。状态：未修。
+- 凭卡密查账单（`gpt_billing.go`）只读 `cdk_session_bindings`，而代码已经不再写这张表：现在只对历史 ZovoCard 码有结果。这个入口要不要保留是产品决定。来源：ZovoCard 整删终审。状态：未修。
+
+### 测试与代码整理
+
+- T3-a / M-6：`routeBody` 遇到「MW- 码配认不出的令牌」或反过来时回 404，没有测试（方向是拒绝，安全）。来源：ZovoCard 整删终审 T3-a、M-6。状态：未修。
+- 老库升级测试 `legacy_zovocard_db_test.go` 用现行建表语句建库，没有旧会话行（明文会话、`provider='zovocard'`）和 `recharge_tasks.session_json`，也没走 `server.New`。来源：ZovoCard 整删终审 M-5。状态：未修。建议：补两行种子数据。
+- 代理换码并发测试没有区分 409 是 busy 还是 conflict。来源：ZovoCard 整删终审 T2-a。状态：未修。
+- `TestAgentExchangeClientDisconnectDoesNotCancelIssue` 没有本站码版本。来源：ZovoCard 整删终审 T2-e。状态：未修。
+- 发码「其他错误回 500」没有测试。来源：ZovoCard 整删终审 T3-f。状态：未修。
+- `purgeLegacyCaches` 没有测试。来源：ZovoCard 整删终审 T6-c。状态：未修。
+- 函数名 `CardPlatformIssueCDKs` 和测试里自己注册的 `/admin/cardplatform/cdks` 路径没改名。来源：ZovoCard 整删终审 T7-a。状态：未修。
+
+---
+
 ## 要上线前核对的
 
 这些要用真实环境或真实数据确认，代码里看不出结果。

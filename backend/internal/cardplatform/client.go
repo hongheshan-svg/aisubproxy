@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/tuzi/cdk-recharge-system/internal/db"
+	"github.com/tuzi/cdk-recharge-system/internal/provider"
 )
 
 const defaultBase = "https://zovocard.com"
@@ -58,8 +59,6 @@ type Client struct {
 const (
 	defaultHTTPTimeout = 45 * time.Second
 	issueHTTPTimeout   = 180 * time.Second
-	// MaxIssueCount 与卡台 GPTDirectCDKBatchMax 对齐。
-	MaxIssueCount = 200
 )
 
 func New(cfg Config) *Client {
@@ -303,7 +302,7 @@ func (c *Client) GetPlans(ctx context.Context, products ...string) (*PlansRespon
 		out.Plans = map[string]PlanInfo{}
 		registry := []PlanRegistryItem{}
 		for _, entry := range out.Registry {
-			if info, ok := all["x_"+entry.Key]; ok && IsXPremiumPlan(entry.Key) {
+			if info, ok := all["x_"+entry.Key]; ok && provider.IsXPremiumPlan(entry.Key) {
 				info.Key = entry.Key
 				out.Plans[entry.Key] = info
 				registry = append(registry, entry)
@@ -328,7 +327,7 @@ func (c *Client) GetPlans(ctx context.Context, products ...string) (*PlansRespon
 		out.Plans = map[string]PlanInfo{}
 		registry := []PlanRegistryItem{}
 		for _, entry := range out.Registry {
-			if info, ok := all["grok_"+entry.Key]; ok && IsGrokPlan("grok_"+entry.Key) {
+			if info, ok := all["grok_"+entry.Key]; ok && provider.IsGrokPlan("grok_"+entry.Key) {
 				info.Key = entry.Key
 				out.Plans[entry.Key] = info
 				registry = append(registry, entry)
@@ -532,8 +531,8 @@ func (c *Client) IssueCDKs(ctx context.Context, plan string, count int, idem str
 	if count < 1 {
 		count = 1
 	}
-	if count > MaxIssueCount {
-		return nil, fmt.Errorf("count max %d", MaxIssueCount)
+	if count > provider.MaxIssueCount {
+		return nil, fmt.Errorf("count max %d", provider.MaxIssueCount)
 	}
 	body := IssueCDKRequest{Plan: plan, Count: count, FundingConfirmed: true}
 	if len(pref) > 0 {

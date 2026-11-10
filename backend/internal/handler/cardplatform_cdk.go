@@ -16,6 +16,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
+	"github.com/tuzi/cdk-recharge-system/internal/credential"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/provider"
 	"github.com/tuzi/cdk-recharge-system/internal/safego"
@@ -99,24 +100,6 @@ func CardPlatformBalance(c *gin.Context) {
 	c.JSON(http.StatusOK, bal)
 }
 
-// issueProduct 发码产品线：显式传入优先（只认 gpt / x / grok / claude），否则按档位键推断。
-func issueProduct(explicit, plan string) string {
-	switch p := strings.ToLower(strings.TrimSpace(explicit)); p {
-	case "gpt", "x", "grok", "claude":
-		return p
-	}
-	if cardplatform.IsXPremiumPlan(plan) {
-		return "x"
-	}
-	if cardplatform.IsGrokPlan(plan) {
-		return "grok"
-	}
-	if cardplatform.IsClaudePlan(plan) {
-		return "claude"
-	}
-	return "gpt"
-}
-
 // zovoCardIssueCDKs 向卡台发码。入口和服务商判断在 CardPlatformIssueCDKs。
 func zovoCardIssueCDKs(c *gin.Context, req cdkIssueRequest) {
 	plan := strings.TrimSpace(req.Plan)
@@ -166,8 +149,8 @@ func zovoCardIssueCDKs(c *gin.Context, req cdkIssueRequest) {
 	if req.Count < 1 {
 		req.Count = 1
 	}
-	if req.Count > cardplatform.MaxIssueCount {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("count max %d", cardplatform.MaxIssueCount)})
+	if req.Count > provider.MaxIssueCount {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("count max %d", provider.MaxIssueCount)})
 		return
 	}
 
@@ -1023,13 +1006,6 @@ func int64Any(v any) int64 {
 
 // ---- 公开兑换 BFF（浏览器只打本站，本站转发卡台）----
 
-func deviceFrom(c *gin.Context) string {
-	if d := strings.TrimSpace(c.GetHeader("X-Redemption-Device")); d != "" {
-		return d
-	}
-	return c.GetHeader("User-Agent")
-}
-
 func proxyPublicJSON(c *gin.Context, status int, raw json.RawMessage) {
 	if len(raw) == 0 {
 		c.Status(status)
@@ -1082,7 +1058,7 @@ func zovoCardPreflight(c *gin.Context, body map[string]any) {
 		}
 	}
 	sess := extractCredentialSession(body["credential"])
-	bindable := sess != "" && !cardplatform.IsXPremiumCredential(sess) && !cardplatform.IsGrokCredential(sess) && (code != "" || tok != "")
+	bindable := sess != "" && !credential.IsXPremiumCredential(sess) && !credential.IsGrokCredential(sess) && (code != "" || tok != "")
 	if !bindable {
 		if st >= 200 && st < 300 {
 			log.Printf("[cdk-preflight] no session to bind (mode may be mailbox) tok=%s", shortTok(tok))
@@ -1423,21 +1399,6 @@ func PublicCDKPlans(c *gin.Context) {
 		// 档位展示顺序/文案/性质：前端据此渲染，不再维护自己的档位清单
 		"registry": sellable,
 	})
-}
-
-func str(v any) string {
-	if v == nil {
-		return ""
-	}
-	if s, ok := v.(string); ok {
-		return strings.TrimSpace(s)
-	}
-	return strings.TrimSpace(toString(v))
-}
-
-func toString(v any) string {
-	b, _ := json.Marshal(v)
-	return strings.Trim(string(b), `"`)
 }
 
 func extractJSONString(raw json.RawMessage, keys ...string) string {

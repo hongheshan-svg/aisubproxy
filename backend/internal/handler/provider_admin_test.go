@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
 	"github.com/tuzi/cdk-recharge-system/internal/cardpool"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/payengine"
@@ -331,7 +330,7 @@ func TestLocalIssueValidation(t *testing.T) {
 		{`{"provider":"marswallex","region":"PH","funding_confirmed":true}`, "plan"},
 		{`{"provider":"marswallex","plan":"plus","funding_confirmed":true}`, "地区"},
 		{`{"provider":"marswallex","plan":"plus","region":"PH"}`, "funding_confirmed"},
-		{fmt.Sprintf(`{"provider":"marswallex","plan":"plus","region":"PH","funding_confirmed":true,"count":%d}`, cardplatform.MaxIssueCount+1), "count"},
+		{fmt.Sprintf(`{"provider":"marswallex","plan":"plus","region":"PH","funding_confirmed":true,"count":%d}`, provider.MaxIssueCount+1), "count"},
 		{`{"provider":"marswallex","plan":"plus","region":"PH","funding_confirmed":true,"note":"` + strings.Repeat("字", localCDKNoteMax+1) + `"}`, "备注"},
 		{`not json`, "invalid"},
 	} {

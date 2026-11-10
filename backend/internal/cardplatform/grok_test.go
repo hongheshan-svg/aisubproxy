@@ -32,17 +32,6 @@ func TestGrokCatalogueIsProductScopedAndUSOnly(t *testing.T) {
 }
 
 func TestGrokPlansAndCredentials(t *testing.T) {
-	for _, p := range []string{"plus_monthly", "super_yearly", "ultra_monthly", "grok_premium_monthly", "grok_premium_yearly",
-		"monthly", "yearly", "lite_monthly", "heavy_monthly", "grok_heavy_yearly"} { // 后五个是改名前的旧键
-		if !IsGrokPlan(p) {
-			t.Fatal(p)
-		}
-	}
-	for _, p := range []string{"plus", "pro_20x", "premium_monthly", "premium_plus_monthly", "pro_monthly", "pro_plus_monthly"} {
-		if IsGrokPlan(p) {
-			t.Fatal("cross product plan", p)
-		}
-	}
 	if GrokIssuePlan("premium_monthly") != "grok_premium_monthly" || GrokIssuePlan("grok_super_yearly") != "grok_super_yearly" {
 		t.Fatal("issue plan prefix")
 	}
@@ -52,8 +41,5 @@ func TestGrokPlansAndCredentials(t *testing.T) {
 		if got := GrokIssuePlan(in); got != want {
 			t.Fatalf("GrokIssuePlan(%q)=%q want %q", in, got, want)
 		}
-	}
-	if !IsGrokCredential("sso=abc.def") || !IsGrokCredential("sso-rw=x; sso=y") || IsGrokCredential(`{"sessionToken":"x"}`) || IsGrokCredential("abc") {
-		t.Fatal("grok credential detection")
 	}
 }

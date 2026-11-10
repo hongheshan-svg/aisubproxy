@@ -2,12 +2,6 @@ package cardplatform
 
 import "testing"
 
-func TestMaxIssueCountMatchesBatchLimit(t *testing.T) {
-	if MaxIssueCount != 200 {
-		t.Fatalf("MaxIssueCount=%d want 200", MaxIssueCount)
-	}
-}
-
 func TestCDKListItemFullCodeText(t *testing.T) {
 	if (CDKListItem{CodePrefix: "ZC-AAAAAAAAAAAA"}).FullCodeText() != "" {
 		t.Fatal("prefix-only must not look like a full code")

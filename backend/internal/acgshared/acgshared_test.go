@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
+	"github.com/tuzi/cdk-recharge-system/internal/provider"
 )
 
 func TestSign_Vectors(t *testing.T) {
@@ -135,7 +135,7 @@ func TestValidRequestNo(t *testing.T) {
 }
 
 func TestParseQuantity(t *testing.T) {
-	if MaxQuantity != cardplatform.MaxIssueCount {
+	if MaxQuantity != provider.MaxIssueCount {
 		t.Fatal("MaxQuantity 与 MaxIssueCount 不一致")
 	}
 	for s, want := range map[string]bool{"1": true, "200": true, "0": false, "201": false, "1.5": false, "abc": false, "": false, "+1": false, "-1": false} {

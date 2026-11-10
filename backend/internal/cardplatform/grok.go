@@ -1,24 +1,6 @@
 package cardplatform
 
-import (
-	"regexp"
-	"strings"
-)
-
-// Grok 档位：卡台注册表里是裸键（premium_monthly / plus_yearly …），ACC 定价表里带 grok_ 前缀。
-//
-// 2026-10-19 卡台改名对齐 xAI 现行四档 Plus / Premium / Super / Ultra：
-// lite→plus($8)、monthly/yearly→premium($30)、plus→super($100)、heavy→ultra($200)。
-// ★裸 premium_monthly 同时是 X Premium 的键★：没有产品信息时 X 优先（issueProduct 先判 X），
-// Grok 发码一律带 grok_ 前缀（GrokIssuePlan）。旧键 lite/heavy/monthly/yearly 仍认，按新键处理。
-// 带 grok_ 前缀时认全部四档；裸键不认 premium_*（归 X）。
-// ★2026-10-24 Grok 专属半价档★：grok_<tier>_monthly_half(严格半价档,发码给顾客用)。
-// 只在带 grok_ 前缀时认 _half 后缀;裸键不认(半价一律带前缀发码)。
-var grokPlanRe = regexp.MustCompile(`^(?:grok_(?:(?:plus|premium|super|ultra|lite|heavy)_)?(?:monthly|yearly)(?:_half)?|(?:(?:plus|super|ultra|lite|heavy)_)?(?:monthly|yearly))$`)
-
-func IsGrokPlan(plan string) bool {
-	return grokPlanRe.MatchString(strings.ToLower(strings.TrimSpace(plan)))
-}
+import "strings"
 
 // grokLegacyPlans 改名前的旧裸键 → 新裸键。★不含 plus_*★：它现在就是新键（$8 档）。
 var grokLegacyPlans = map[string]string{
@@ -41,16 +23,4 @@ func GrokBarePlan(plan string) string {
 // 带前缀则直接定位到 Grok。卡台落库时会去掉前缀。
 func GrokIssuePlan(plan string) string {
 	return "grok_" + GrokBarePlan(plan)
-}
-
-// IsGrokCredential Grok 登录态（grok.com 的 sso cookie，含 sso= / sso-rw=）。
-// 它是可复用的登录凭据，不是 ChatGPT 账单会话，不能绑到卡密供账单页查询。
-func IsGrokCredential(raw string) bool {
-	s := strings.TrimSpace(raw)
-	if s == "" || strings.HasPrefix(s, "{") {
-		return false
-	}
-	return strings.HasPrefix(s, "sso=") || strings.HasPrefix(s, "sso-rw=") ||
-		strings.Contains(s, "; sso=") || strings.Contains(s, ";sso=") ||
-		strings.Contains(s, "; sso-rw=") || strings.Contains(s, ";sso-rw=")
 }

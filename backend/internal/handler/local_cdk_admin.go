@@ -11,13 +11,30 @@ import (
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
-	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/payengine"
 	"github.com/tuzi/cdk-recharge-system/internal/provider"
 )
 
 const localCDKNoteMax = 200
+
+// issueProduct 发码产品线：显式传入优先（只认 gpt / x / grok / claude），否则按档位键推断。
+func issueProduct(explicit, plan string) string {
+	switch p := strings.ToLower(strings.TrimSpace(explicit)); p {
+	case "gpt", "x", "grok", "claude":
+		return p
+	}
+	if provider.IsXPremiumPlan(plan) {
+		return "x"
+	}
+	if provider.IsGrokPlan(plan) {
+		return "grok"
+	}
+	if provider.IsClaudePlan(plan) {
+		return "claude"
+	}
+	return "gpt"
+}
 
 // AdminGetDefaultProvider GET /api/v1/admin/providers/default
 func AdminGetDefaultProvider(c *gin.Context) {
@@ -212,8 +229,8 @@ func localCDKIssue(c *gin.Context, cs provider.CardSupply, req cdkIssueRequest) 
 	if req.Count < 1 {
 		req.Count = 1
 	}
-	if req.Count > cardplatform.MaxIssueCount {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("count max %d", cardplatform.MaxIssueCount)})
+	if req.Count > provider.MaxIssueCount {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("count max %d", provider.MaxIssueCount)})
 		return
 	}
 	note := strings.TrimSpace(req.Note)

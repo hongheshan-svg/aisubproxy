@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
+	"github.com/tuzi/cdk-recharge-system/internal/credential"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/provider"
 )
@@ -90,7 +90,7 @@ func holdAccountExclusive(email string) (func(), bool) {
 func upstreamAccountEmail(body map[string]any) string {
 	if cred, ok := body["credential"].(map[string]any); ok {
 		if sess := str(cred["session"]); sess != "" {
-			if cardplatform.IsXPremiumCredential(sess) || cardplatform.IsGrokCredential(sess) {
+			if credential.IsXPremiumCredential(sess) || credential.IsGrokCredential(sess) {
 				return ""
 			}
 			if em := db.ExtractSessionEmail(sess); em != "" {

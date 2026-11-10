@@ -29,31 +29,6 @@ func TestXPremiumCatalogueIsProductScoped(t *testing.T) {
 		t.Fatal("wrong X region")
 	}
 }
-func TestXCredentialsAreNotInvoiceSessions(t *testing.T) {
-	if !IsXPremiumCredential(`{"auth_token":"fixture_auth_token_000"}`) {
-		t.Fatal("X auth_token JSON credential rejected")
-	}
-	if !IsXPremiumCredential("6eac90ba41206ea277d1dd308d4b28c3f441094f") {
-		t.Fatal("bare X auth_token rejected") // 2026-10-24 简化:裸 auth_token 也接受
-	}
-	if IsXPremiumCredential(`{"sessionToken":"fixture"}`) {
-		t.Fatal("GPT credential misclassified")
-	}
-	for _, plan := range []string{"plus_monthly", "premium_yearly", "super_monthly", "ultra_yearly", "x_premium_monthly"} {
-		if !IsXPremiumPlan(plan) {
-			t.Fatal(plan)
-		}
-	}
-	for _, plan := range []string{"basic_monthly", "premium_plus_yearly"} {
-		if IsXPremiumPlan(plan) {
-			t.Fatal("retired X tier still accepted: " + plan)
-		}
-	}
-	if IsXPremiumPlan("plus") || IsXPremiumPlan("grok_plus_monthly") {
-		t.Fatal("cross product plan")
-	}
-}
-
 func TestXPaymentCountries(t *testing.T) {
 	for _, cc := range []string{"US", "JP", "PH", "NG", "TR", "EG"} {
 		if c, err := XPaymentCountry(cc); err != nil || c != cc {

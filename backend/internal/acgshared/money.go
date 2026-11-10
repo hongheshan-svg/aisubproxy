@@ -19,7 +19,7 @@ func (m Money) MarshalJSON() ([]byte, error) {
 	return []byte(fmt.Sprintf("%s%d.%02d", sign, v/100, v%100)), nil
 }
 
-// MaxQuantity 与 cardplatform.MaxIssueCount 相同。
+// MaxQuantity 与 provider.MaxIssueCount 相同。
 const MaxQuantity = 200
 
 // ValidRequestNo 判断对方订单号是否是 1..64 位字母数字。

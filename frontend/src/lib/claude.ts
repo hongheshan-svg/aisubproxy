@@ -1,10 +1,10 @@
 // Claude 卡密：档位识别 + Organization ID 凭证。
 //
-// 卡台预览回裸档位（pro / max_5x / max_20x），新版卡台另回 product=claude。本站统一补成 claude_ 前缀再判，
+// 预览接口回裸档位（pro / max_5x / max_20x），有时另回 product=claude。本站统一补成 claude_ 前缀再判，
 // 免得裸 pro 落进 GPT 的「Pro 20x」。没有 product 时只认 Claude 独有的 max_5x / max_20x：裸 pro 旧 GPT 码也用过。
 //
 // 兑换时填目标组织的 Organization ID（UUID），两次一致，并由持码人确认目标账号目前是免费账号。
-// 卡台公开兑换接口没有写 Claude 的凭证字段，和 Grok / X 一样放进 credential.session（用户已确认，2026-11-03）。
+// 公开兑换接口没有写 Claude 的凭证字段，和 Grok / X 一样放进 credential.session（用户已确认，2026-11-03）。
 // 预检给了 preflight_token 就带票兑换；没给（与 Grok 一样）就兑换时直接带凭证。
 
 const CLAUDE_PLAN = /^claude_(?:pro|max_5x|max_20x)$/

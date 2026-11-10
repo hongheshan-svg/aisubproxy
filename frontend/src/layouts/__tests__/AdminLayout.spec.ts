@@ -36,10 +36,6 @@ const routes = [
       { path: 'cdkeys', component: Stub, meta: { title: 'CDK 卡密', group: '卡密与付款', icon: 'Tickets' } },
       { path: 'marswallex-pay', component: Stub, meta: { title: '自动付款', group: '卡密与付款', icon: 'Money' } },
       { path: 'providers', component: Stub, meta: { title: '卡服务商', group: '卡密与付款', icon: 'Coin' } },
-      { path: 'integration', component: Stub, meta: { title: '接入配置', fullTitle: 'ZovoCard 接入配置', group: 'ZovoCard', icon: 'Connection' } },
-      { path: 'card-selection', component: Stub, meta: { title: '选卡规则', fullTitle: 'ZovoCard 选卡规则', group: 'ZovoCard', icon: 'Operation' } },
-      { path: 'orders', component: Stub, meta: { title: '兑换订单', fullTitle: 'ZovoCard 兑换订单', group: 'ZovoCard', icon: 'Document' } },
-      { path: 'webhooks', component: Stub, meta: { title: 'Webhook', fullTitle: 'ZovoCard Webhook', group: 'ZovoCard', icon: 'Bell' } },
       { path: 'marswallex', component: Stub, meta: { title: '接入配置', fullTitle: 'MarsWallex 接入配置', group: 'MarsWallex', icon: 'Platform' } },
       { path: 'marswallex-wallet', component: Stub, meta: { title: '钱包', fullTitle: 'MarsWallex 钱包', group: 'MarsWallex', icon: 'Wallet' } },
       { path: 'cardpool', component: Stub, meta: { title: '卡池', fullTitle: 'MarsWallex 卡池', group: 'MarsWallex', icon: 'CreditCard' } },
@@ -67,11 +63,11 @@ async function render(path: string) {
 }
 
 describe('AdminLayout 左侧菜单', () => {
-  it('按 route.meta 渲染 15 个菜单项、4 个分组标题，且不再有顶部胶囊导航', async () => {
+  it('按 route.meta 渲染 11 个菜单项、3 个分组标题，且不再有顶部胶囊导航', async () => {
     const html = await render('/ops/cardpool')
-    expect((html.match(/class="[^"]*\bsn-item\b/g) || []).length).toBe(15)
-    expect((html.match(/class="[^"]*\bsn-group\b/g) || []).length).toBe(4)
-    for (const g of ['卡密与付款', 'ZovoCard', 'MarsWallex', '系统']) expect(html).toContain(g)
+    expect((html.match(/class="[^"]*\bsn-item\b/g) || []).length).toBe(11)
+    expect((html.match(/class="[^"]*\bsn-group\b/g) || []).length).toBe(3)
+    for (const g of ['卡密与付款', 'MarsWallex', '系统']) expect(html).toContain(g)
     expect(html).not.toContain('nav-pills')
     expect(html).not.toContain('topnav')
   })
@@ -85,7 +81,7 @@ describe('AdminLayout 左侧菜单', () => {
 
   it('同名菜单项用完整页名区分：读屏标签和手机面包屑用 fullTitle', async () => {
     const html = await render('/ops/marswallex-selection')
-    expect(html).toContain('aria-label="ZovoCard 选卡规则"')
+    expect(html).not.toContain('ZovoCard')
     expect(html).toMatch(/class="[^"]*\bsn-item\b[^"]*\bactive\b[^"]*"[^>]*aria-label="MarsWallex 选卡规则"/)
     expect(html).toMatch(/class="[^"]*\bcrumb-full\b[^"]*"[^>]*>MarsWallex 选卡规则</)
     // 通用页面没有 fullTitle，不多出一份
@@ -125,10 +121,10 @@ describe('菜单数据与折叠状态', () => {
 
   it('分组保持路由定义顺序', () => {
     const gs = groupNavItems(buildNavItems(routes as any))
-    expect(gs.map((g) => g.name)).toEqual(['', '卡密与付款', 'ZovoCard', 'MarsWallex', '系统'])
+    expect(gs.map((g) => g.name)).toEqual(['', '卡密与付款', 'MarsWallex', '系统'])
     expect(gs[0].items[0].path).toBe('/ops')
-    expect(gs[3].items.map((i) => i.title)).toEqual(['接入配置', '钱包', '卡池', '选卡规则'])
-    expect(gs[3].items.map((i) => i.fullTitle)).toEqual(['MarsWallex 接入配置', 'MarsWallex 钱包', 'MarsWallex 卡池', 'MarsWallex 选卡规则'])
+    expect(gs[2].items.map((i) => i.title)).toEqual(['接入配置', '钱包', '卡池', '选卡规则'])
+    expect(gs[2].items.map((i) => i.fullTitle)).toEqual(['MarsWallex 接入配置', 'MarsWallex 钱包', 'MarsWallex 卡池', 'MarsWallex 选卡规则'])
     // 没设 fullTitle 时等于 title
     expect(gs[1].items[0].fullTitle).toBe('CDK 卡密')
   })

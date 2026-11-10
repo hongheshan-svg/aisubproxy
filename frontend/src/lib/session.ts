@@ -89,15 +89,14 @@ const AUTH_FAILURE_TEXTS = [
 /**
  * 是否把 401/403 当成本站登录失效（会清本地登录态、跳登录页）。
  * 只认鉴权中间件的错误码或固定文案；其余 401/403 是业务结果（改密时旧密码错、在线更新未开启等），
- * 原样交给页面显示（审计 B-5）。卡台上游 Key 无效、网络探测失败也可能是 401/403，绝不能踢出会话。
+ * 原样交给页面显示（审计 B-5）。上游服务商 Key 无效、网络探测失败也可能是 401/403，绝不能踢出会话。
  */
 export function isLocalSessionAuthFailure(url: string, status: number, body: any): boolean {
   if (status !== 401 && status !== 403) return false
-  // 有本站鉴权错误码就是会话失效，不看 URL（后端已把卡台上游的 401/403 映射成 502）
+  // 有本站鉴权错误码就是会话失效，不看 URL（后端已把上游服务商的 401/403 映射成 502）
   const code = String(body?.error_code || '').toLowerCase()
   if (AUTH_FAILURE_CODES.includes(code)) return true
-  // 没有错误码的旧响应：这两类接口的 401/403 可能来自卡台上游或网络探测，不当成本站会话失效
-  if (/\/api\/v1\/admin\/cardplatform\//i.test(url)) return false
+  // 没有错误码的旧响应：网络探测接口的 401/403 可能来自上游或网络探测，不当成本站会话失效
   if (/\/api\/v1\/admin\/network\//i.test(url)) return false
   const err = String(body?.error || '').trim().toLowerCase()
   return AUTH_FAILURE_TEXTS.includes(err)

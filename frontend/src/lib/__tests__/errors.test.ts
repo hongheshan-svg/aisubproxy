@@ -2,15 +2,6 @@ import { describe, expect, it } from 'vitest'
 import { auditActionLabel, auditDetailLabel, mapApiError } from '../errors'
 
 describe('mapApiError', () => {
-  it('卡台未配置 Key：翻译成人话，带去配置链接，保留原文', () => {
-    const m = mapApiError('card_api_key not configured（请先配置）')
-    expect(m.mapped).toBe(true)
-    expect(m.config).toBe(true)
-    expect(m.text).toContain('卡台 API Key')
-    expect(m.link?.to).toBe('/ops/integration')
-    expect(m.raw).toBe('card_api_key not configured（请先配置）')
-  })
-
   it('MarsWallex 未配置', () => {
     const m = mapApiError('marswallex: not_sent/config message=未配置 developerId')
     expect(m.config).toBe(true)

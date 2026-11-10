@@ -43,7 +43,7 @@ export interface SkinMeta {
   /** 主色，用于同步 Element Plus */
   primary: string
   primaryOn?: string
-  /** 亮色模式下另用一套主色（同一皮肤明暗两套配色时，如卡台新版 曜夜/流金） */
+  /** 亮色模式下另用一套主色（同一皮肤明暗两套配色时，如 曜夜雾金 的 曜夜/流金） */
   primaryLight?: string
   primaryOnLight?: string
   /** 该皮肤用到的 Google 字体（css2 family 参数），切换皮肤时按需加载 */
@@ -56,13 +56,13 @@ const SERIF_SC = 'Noto+Serif+SC:wght@500;600;700'
 
 export const SKINS: SkinMeta[] = [
   {
-    // 与卡台新版 UI 同一套设计语言：夜间=曜夜（深黑 + 雾金），日间=流金（象牙 + 暗金）
+    // 夜间=曜夜（深黑 + 雾金），日间=流金（象牙 + 暗金）
     id: 'zovo',
-    label: '卡台新版',
-    labelEn: 'ZovoCard',
+    label: '曜夜雾金',
+    labelEn: 'Night Gold',
     swatch: '#cbb079',
     swatch2: '#0c0c11',
-    blurb: '曜夜雾金 · 玻璃面板 · 与卡台新版一致',
+    blurb: '曜夜雾金 · 玻璃面板',
     heading: 'display',
     density: 'comfy',
     nav: 'pill',
@@ -226,7 +226,7 @@ function readMode(): ThemeMode {
   return 'auto'
 }
 
-// 默认跟随系统（后台 theme_mode 没设过也是 auto）；卡台新版皮肤不变
+// 默认跟随系统（后台 theme_mode 没设过也是 auto）；曜夜雾金皮肤不变
 export const themeMode = ref<ThemeMode>(readMode())
 export const siteSkin = ref<SkinId>(readSkin())
 

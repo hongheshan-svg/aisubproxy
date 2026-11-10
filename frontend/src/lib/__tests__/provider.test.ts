@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   selectionPage, canDisableLocal, canEnableLocal, canResolveSwap, centsToUsd, classifyIssueFailure, localCdkStatusText, localCdkTagType,
-  needsFirstRealPayment, planNote, swapFailure, usdToCents,
+  needsFirstRealPayment, oldCodeText, planNote, swapFailure, usdToCents,
 } from '../provider'
 
 describe('usdToCents', () => {
@@ -80,14 +80,24 @@ describe('swapFailure', () => {
   it('明确失败不锁', () => {
     expect(swapFailure(400, { error: '次数用完' })).toEqual({ locked: false, message: '次数用完' })
     expect(swapFailure(429, { error: '今日已达上限' }).locked).toBe(false)
-    expect(swapFailure(502, { error: '卡台不可用' }).locked).toBe(false)
+    expect(swapFailure(502, { error: '上游不可用' }).locked).toBe(false)
   })
 })
 
 describe('selectionPage', () => {
-  it('两家内置服务商各有选卡规则页，其他服务商没有', () => {
-    expect(selectionPage('zovocard')).toBe('/ops/card-selection')
+  it('MarsWallex 有选卡规则页，其他服务商没有', () => {
     expect(selectionPage('marswallex')).toBe('/ops/marswallex-selection')
     expect(selectionPage('testup')).toBeUndefined()
+  })
+})
+
+describe('oldCodeText：换码记录里的旧码显示', () => {
+  it('旧码 ID 大于 0 才显示 #ID（历史记录）', () => {
+    expect(oldCodeText({ old_cdk_id: 12, old_code_prefix: 'GPTD-ab' })).toBe('#12 GPTD-ab…')
+  })
+  it('本站码记录的旧码 ID 是 0 或缺失：只显示前缀，不出现 #0', () => {
+    expect(oldCodeText({ old_cdk_id: 0, old_code_prefix: 'MW-ab' })).toBe('MW-ab…')
+    expect(oldCodeText({ old_code_prefix: 'MW-ab' })).toBe('MW-ab…')
+    expect(oldCodeText({ old_cdk_id: 0, old_code_prefix: 'MW-ab' })).not.toContain('#')
   })
 })

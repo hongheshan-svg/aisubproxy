@@ -50,7 +50,7 @@ describe('apiErrorText', () => {
 describe('swapFailureT 与旧的 swapFailure 在中文下逐字相同', () => {
   const { t, te } = makeT(zh)
   const cases: Array<[number, any]> = [
-    [502, { outcome: 'unknown', error: '发码结果不明，已转人工核对，请勿重试', error_code: 'outcome_unknown' }],
+    [502, { outcome: 'unknown', error: '发码结果不明，已转人工核对，请勿重试' }],
     [0, {}],
     [409, { state: 'pending', error: '该卡密正在换码，请勿重复提交', error_code: 'conflict' }],
     [409, { state: 'unknown', error: '该卡密上次换码结果不明，已转人工核对，请勿重试', error_code: 'conflict' }],
@@ -59,7 +59,7 @@ describe('swapFailureT 与旧的 swapFailure 在中文下逐字相同', () => {
     [401, { error: '密码错误', error_code: 'wrong_password' }],
     [429, { error: '换码口令错误次数过多，已暂停换码，请 37 分钟后再试', error_code: 'locked', retry_after_minutes: 37 }],
     [429, { error: '代理换码已达今日上限（20 张），请联系管理员', error_code: 'daily_limit', limit: 20 }],
-    [502, { error: '卡台不可用' }],
+    [502, { error: '上游不可用' }],
     [500, { msg: '内部错误' }],
     [500, {}],
     [502, { outcome: 'unknown' }],
@@ -76,7 +76,7 @@ describe('swapFailureT 英文', () => {
   const { t, te } = makeT(en)
   const noZh = (s: string) => expect(s).not.toMatch(/[一-鿿]/)
   it('结果不明：锁住，文字全英文', () => {
-    const f = swapFailureT(502, { outcome: 'unknown', error: '发码结果不明，已转人工核对，请勿重试', error_code: 'outcome_unknown' }, t, te)
+    const f = swapFailureT(502, { outcome: 'unknown' }, t, te)
     expect(f.locked).toBe(true)
     noZh(f.message)
     expect(f.message).toMatch(/Do not retry/)
@@ -99,7 +99,6 @@ describe('swapFailureT 英文', () => {
   })
   it('锁住时的提示：报错与后缀拼起来没有「..」，「Do not retry」只出现一次', () => {
     const cases = [
-      swapFailureT(502, { outcome: 'unknown', error_code: 'outcome_unknown' }, t, te),
       swapFailureT(502, { outcome: 'unknown' }, t, te),
       swapFailureT(409, { state: 'pending', error_code: 'conflict' }, t, te),
       swapFailureT(409, { state: 'unknown', error_code: 'conflict' }, t, te),
@@ -118,7 +117,7 @@ describe('swapFailureT 英文', () => {
     noZh(f.message)
   })
   it('认不出的码照旧显示后端原文；什么都没有时显示带状态码的通用文案', () => {
-    expect(swapFailureT(502, { error: 'upstream says no', error_code: 'cardplatform_unauthorized' }, t, te).message).toBe('upstream says no')
+    expect(swapFailureT(502, { error: 'upstream says no', error_code: 'upstream_unauthorized' }, t, te).message).toBe('upstream says no')
     const f = swapFailureT(500, {}, t, te)
     expect(f.message).toContain('500')
     noZh(f.message)

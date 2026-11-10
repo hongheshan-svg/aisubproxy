@@ -49,7 +49,7 @@ describe('Claude 档位识别', () => {
     expect(planLabel('pro_20x')).toBe('Pro 20x')
   })
 
-  it('Claude 码不做「已满足」拦截：账号是不是免费由持码人确认，卡台兑换时再核对', () => {
+  it('Claude 码不做「已满足」拦截：账号是不是免费由持码人确认，兑换时再核对', () => {
     expect(planSatisfied('claude_max_20x', 'claude_pro')).toBe(false)
     expect(planSatisfied('pro_20x', 'claude_pro')).toBe(false)
   })

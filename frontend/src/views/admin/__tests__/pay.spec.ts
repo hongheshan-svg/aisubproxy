@@ -110,7 +110,7 @@ describe('发起付款的服务商选择', () => {
 
   it('参数是上游型服务商：不预选，改选 MarsWallex 并提示', async () => {
     setRegistry(registryFixture())
-    const html = await render(MarsWallexPay, {}, '/ops/marswallex-pay?provider=zovocard')
+    const html = await render(MarsWallexPay, {}, '/ops/marswallex-pay?provider=acme')
     expect(selected(html)).toBe('marswallex')
     expect(html).toContain('data-testid="pay-provider-notice"')
     expect(html).toContain('不是供卡型服务商')

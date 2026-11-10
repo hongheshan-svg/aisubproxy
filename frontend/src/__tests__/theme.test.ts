@@ -53,3 +53,16 @@ describe('theme：Google 字体开关', () => {
     expect(googleLinks(appended)).toHaveLength(1)
   })
 })
+
+describe('theme：默认皮肤显示名', () => {
+  it('编号 zovo 不变，显示名改为 曜夜雾金 / Night Gold，说明里不再提卡台', async () => {
+    installFakes({ getItem: () => null, setItem() {}, removeItem() {} })
+    const t = await import('../theme')
+    const s = t.SKINS.find((x) => x.id === 'zovo')
+    expect(s).toBeTruthy()
+    expect(s?.label).toBe('曜夜雾金')
+    expect(s?.labelEn).toBe('Night Gold')
+    expect(s?.blurb).not.toContain('卡台')
+    expect(t.SKINS.some((x) => x.label.includes('卡台') || x.labelEn.includes('ZovoCard'))).toBe(false)
+  })
+})

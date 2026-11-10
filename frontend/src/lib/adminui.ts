@@ -54,15 +54,6 @@ export interface EnvBadge { name: string; kind: EnvKind; label: string; url: str
 
 const trimUrl = (u: string) => (u || '').trim().replace(/\/+$/, '').toLowerCase()
 
-/** 卡台：没有 API Key 视为未配置（中性色，不能让人以为已接通生产）；有 Key 时 zovocard.com = 生产，sandbox.zovocard.com = 沙盒，其余按自定义，空地址按默认生产。 */
-export function zovoEnv(base: string, keyConfigured: boolean): EnvBadge {
-  const b = trimUrl(base)
-  if (!keyConfigured) return { name: '卡台', kind: 'unconfigured', label: '未配置', url: base || '' }
-  if (!b || b === 'https://zovocard.com') return { name: '卡台', kind: 'prod', label: '生产', url: base || 'https://zovocard.com' }
-  if (b === 'https://sandbox.zovocard.com') return { name: '卡台', kind: 'test', label: '沙盒', url: base }
-  return { name: '卡台', kind: 'custom', label: '自定义', url: base }
-}
-
 /** MarsWallex：没有任何凭证视为未配置；有凭证时按后端给的预设（prod/test）比对地址，空地址 = 生产预设。 */
 export function marsEnv(baseUrl: string, presets: { id: string; url: string }[] | undefined, credentialsConfigured: boolean): EnvBadge {
   const b = trimUrl(baseUrl)

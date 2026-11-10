@@ -23,12 +23,9 @@ interface Rule {
   link?: { to: string; label: string }
 }
 
-const CARD_CFG = { to: '/ops/integration', label: '去配置卡台' }
 const MW_CFG = { to: '/ops/marswallex', label: '去配置 MarsWallex' }
 
 const RULES: Rule[] = [
-  { test: /card_api_key not configured/i, text: '尚未配置卡台 API Key', config: true, link: CARD_CFG },
-  { test: /card_api_base not configured/i, text: '尚未配置卡台地址', config: true, link: CARD_CFG },
   { test: /marswallex:.*(not_sent\/config|未配置)/i, text: '尚未配置 MarsWallex 凭证（Developer ID / API Token / 私钥）', config: true, link: MW_CFG },
   { test: /master.?key/i, text: '服务器未配置主密钥（APP_MASTER_KEY），无法使用密钥类功能' },
   { test: /ip.*(whitelist|白名单)|whitelist/i, text: '出口 IP 不在白名单内，请把本机出口 IP 加到服务商后台的白名单' },

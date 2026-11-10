@@ -140,4 +140,8 @@ describe('账单页接上了这些函数', () => {
       expect(src).not.toContain(k)
     }
   })
+  it('订阅摘要的到期一行只读后端会给的字段（后端白名单里没有 active_until）', () => {
+    expect(src).toContain('summary.expires_at || summary.renews_at')
+    expect(src).not.toContain('active_until')
+  })
 })

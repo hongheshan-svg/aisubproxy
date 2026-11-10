@@ -87,11 +87,17 @@ func SessionBillingCheck(c *gin.Context) {
 	})
 }
 
-// pickKeys 只取白名单里的字段；原来没有的字段不补。
+// pickKeys 只取白名单里的字段，原来没有的字段不补。值只放行字符串、布尔、数字和空值：
+// 上游把字段改成嵌套对象或列表时，里面可能带金额，整项丢掉。
 func pickKeys(m map[string]interface{}, keys []string) map[string]interface{} {
 	out := make(map[string]interface{}, len(keys))
 	for _, k := range keys {
-		if v, ok := m[k]; ok {
+		v, ok := m[k]
+		if !ok {
+			continue
+		}
+		switch v.(type) {
+		case nil, string, bool, float64, int, int64:
 			out[k] = v
 		}
 	}

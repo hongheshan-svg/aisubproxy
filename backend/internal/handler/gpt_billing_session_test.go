@@ -92,3 +92,43 @@ func TestBillingBySessionNoInvoices(t *testing.T) {
 		t.Fatalf("应给空列表、摘要不补字段: %s", w.Body.String())
 	}
 }
+
+// 上游哪天把白名单里的字段改成嵌套对象或列表：里面可能带金额，整项丢掉，只放行字符串、布尔、数字和空值。
+func TestBillingBySessionDropsNestedValues(t *testing.T) {
+	stubSessionCheck(t, &gptcheck.Result{
+		Summary: map[string]interface{}{
+			"plan_type":         "plus",
+			"expires_at":        map[string]interface{}{"at": "2026-12-10", "amount": float64(112000), "currency": "php"},
+			"subscription_plan": []interface{}{"plus", "₱1,120.00"},
+			"cancels_at":        nil,
+			"will_renew":        true,
+			"billing_period":    "monthly",
+		},
+		Invoices: []map[string]interface{}{{
+			"id": "in_1", "status": map[string]interface{}{"label": "paid", "total": float64(112000)}, "paid": true, "created": float64(1700000000),
+		}},
+	})
+	w := cdkRequest(SessionBillingCheck, "POST", "/billing", `{"token_input":"pasted-token"}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("应 200: %d %s", w.Code, w.Body.String())
+	}
+	raw := w.Body.String()
+	for _, bad := range []string{"112000", "1120", "php", "₱", "amount", "total"} {
+		if strings.Contains(raw, bad) {
+			t.Fatalf("嵌套的值不该透传 %q: %s", bad, raw)
+		}
+	}
+	var d struct {
+		Summary  map[string]any   `json:"summary"`
+		Invoices []map[string]any `json:"invoices"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &d); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := sortedKeys(d.Summary), []string{"billing_period", "cancels_at", "plan_type", "will_renew"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("摘要应只留简单值 %v: %v", want, got)
+	}
+	if got, want := sortedKeys(d.Invoices[0]), []string{"created", "id", "paid"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("账单应只留简单值 %v: %v", want, got)
+	}
+}

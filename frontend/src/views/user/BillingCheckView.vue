@@ -65,7 +65,7 @@
           <div class="bill-item"><dt>{{ t('billingCheck.activeSub') }}</dt><dd>{{ summary.has_active_subscription ? t('billingCheck.yes') : t('billingCheck.no') }}</dd></div>
           <div class="bill-item"><dt>{{ t('billingCheck.autoRenew') }}</dt><dd>{{ summary.will_renew == null ? '—' : (summary.will_renew ? t('billingCheck.renewOn') : t('billingCheck.renewOff')) }}</dd></div>
           <div class="bill-item"><dt>{{ t('billingCheck.billing') }}</dt><dd class="u-mono">{{ summary.billing_period || '—' }}</dd></div>
-          <div class="bill-item"><dt>{{ t('billingCheck.expires') }}</dt><dd class="u-mono">{{ summary.active_until || summary.expires_at || summary.renews_at || '—' }}</dd></div>
+          <div class="bill-item"><dt>{{ t('billingCheck.expires') }}</dt><dd class="u-mono">{{ summary.expires_at || summary.renews_at || '—' }}</dd></div>
         </dl>
       </section>
 

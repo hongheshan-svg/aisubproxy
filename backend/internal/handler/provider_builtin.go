@@ -22,9 +22,6 @@ func (zovoCardAdapter) Result(c *gin.Context, token string)           { zovoCard
 func (zovoCardAdapter) ResultByCode(c *gin.Context, code string)      { zovoCardResultByCode(c, code) }
 func (zovoCardAdapter) Issue(c *gin.Context, req cdkIssueRequest)     { zovoCardIssueCDKs(c, req) }
 
-// Exchange 代理换码：在卡台上查单、发新码、禁用旧码。
-func (zovoCardAdapter) Exchange(c *gin.Context, code, ip string) { zovoCardExchange(c, code, ip) }
-
 // GraceRecovery 宽限期恢复：转发卡台。
 func (zovoCardAdapter) GraceRecovery(c *gin.Context, body graceRecoveryRequest) {
 	zovoCardGraceRecovery(c, body)

@@ -100,11 +100,6 @@ type upstreamAdapter interface {
 	Check(ctx context.Context) providerStatus
 }
 
-// upstreamExchanger 是可选能力：代理换码。code 是用户输入的完整码，调用前已通过限流和密码校验。
-type upstreamExchanger interface {
-	Exchange(c *gin.Context, code, ip string)
-}
-
 // upstreamGraceRecoverer 是可选能力：宽限期恢复。
 type upstreamGraceRecoverer interface {
 	GraceRecovery(c *gin.Context, body graceRecoveryRequest)

@@ -877,7 +877,7 @@ func TestAgentExchangeLocalCDK(t *testing.T) {
 		if st, m := exchange(e, code); st != http.StatusConflict {
 			t.Fatalf("%d %v", st, m)
 		}
-		// 记录：OldID 是 0，防止人工定论时去禁用无关的卡台码；新码 ID 是本地的
+		// 记录：OldID 是 0（维护循环只给 old_upstream_id 为 0 的本站码记录补记账）；新码 ID 是本地的
 		var oldUp, newUp int64
 		var state string
 		if err := db.DB.QueryRow(`SELECT COALESCE(old_upstream_id, 0), COALESCE(new_upstream_id, 0), state FROM agent_cdk_exchanges`).Scan(&oldUp, &newUp, &state); err != nil {

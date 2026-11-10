@@ -3,10 +3,12 @@ package server
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
@@ -51,6 +53,59 @@ func TestProviderRoutesRegisteredAndRequireAdminAuth(t *testing.T) {
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusUnauthorized {
 			t.Errorf("无凭证请求 %s %s 应 401，实际 %d", rt.method, rt.path, w.Code)
+		}
+	}
+}
+
+// 代理换码记录接口挪到 /api/v1/admin/agent-exchanges：新路径要管理员登录，登录后列表和定论都能用；
+// 旧的 /api/v1/admin/cardplatform/agent-exchanges 不再存在，登录与否都是 404（不是处理函数回的 404）。
+func TestAgentExchangeAdminRoutesMoved(t *testing.T) {
+	r := oaRouter(t)
+	const ip = "198.51.100.71"
+	for _, c := range []struct{ method, path string }{
+		{"GET", "/api/v1/admin/agent-exchanges"},
+		{"POST", "/api/v1/admin/agent-exchanges/1/resolve"},
+	} {
+		if w := oaDo(r, oaReq{method: c.method, path: c.path, body: `{}`, ip: ip}); w.Code != http.StatusUnauthorized {
+			t.Errorf("无凭证 %s %s 应 401，实际 %d %s", c.method, c.path, w.Code, w.Body.String())
+		}
+	}
+
+	oaCreateAdmin(t, "swap-admin")
+	cs := oaLogin(t, r, ip, "swap-admin", oaPassword)
+	// 一条结果不明的本站码换码记录，用来走通定论
+	id, err := db.ReserveAgentCDKExchange(db.AgentExchangeReservation{
+		OldHash: db.HashCDKCode("MW-ROUTE-AAAA-BBBB-CCCC"), OldPrefix: "MW-ROUTE", Plan: "plus", OrderStatus: "not_submitted", PasswordFP: "fp",
+	}, 20, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.MarkAgentCDKExchangeUnknown(id, "占位超时未收尾，结果不明"); err != nil {
+		t.Fatal(err)
+	}
+	list := oaDo(r, oaReq{method: "GET", path: "/api/v1/admin/agent-exchanges?state=unknown", cookies: cs, ip: ip})
+	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), fmt.Sprintf(`"id":%d`, id)) {
+		t.Fatalf("登录后列表应 200 并含这条记录: %d %s", list.Code, list.Body.String())
+	}
+	res := oaDo(r, oaReq{method: "POST", path: fmt.Sprintf("/api/v1/admin/agent-exchanges/%d/resolve", id),
+		body: `{"result":"released","note":"路由测试"}`, cookies: cs, header: oaCSRF(cs), ip: ip})
+	if res.Code != http.StatusOK || !strings.Contains(res.Body.String(), `"result":"released"`) {
+		t.Fatalf("登录后定论应 200: %d %s", res.Code, res.Body.String())
+	}
+
+	// 旧路径：请求体故意不带 note，路由还在的话处理函数会回 400，不会是 404
+	for _, c := range []struct{ method, path string }{
+		{"GET", "/api/v1/admin/cardplatform/agent-exchanges"},
+		{"POST", "/api/v1/admin/cardplatform/agent-exchanges/1/resolve"},
+	} {
+		for name, q := range map[string]oaReq{
+			"已登录": {method: c.method, path: c.path, body: `{}`, cookies: cs, header: oaCSRF(cs), ip: ip},
+			"无凭证": {method: c.method, path: c.path, body: `{}`, ip: ip},
+		} {
+			w := oaDo(r, q)
+			if w.Code != http.StatusNotFound || strings.Contains(w.Body.String(), "换码记录") {
+				t.Errorf("%s %s %s 应 404（路由已删），实际 %d %s", name, c.method, c.path, w.Code, w.Body.String())
+			}
 		}
 	}
 }

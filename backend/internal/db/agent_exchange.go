@@ -227,13 +227,6 @@ func CompleteAgentCDKExchangeDisable(id int64) error {
 	return affectedOne(res, err)
 }
 
-// TouchAgentCDKExchange 记下一次禁用重试失败的原因（只改 note 和 updated_at，不改状态）。
-func TouchAgentCDKExchange(id int64, note string) error {
-	res, err := DB.Exec(`UPDATE agent_cdk_exchanges SET note = ?, updated_at = CURRENT_TIMESTAMP
-		WHERE id = ? AND state = 'disabling'`, note, id)
-	return affectedOne(res, err)
-}
-
 // ReleaseAgentCDKExchange 发码确定失败时释放占位，让代理可以重试。只释放 pending：
 // 已转人工的占位（比如请求拖太久被升级了）不能被自动释放。
 func ReleaseAgentCDKExchange(id int64) error {

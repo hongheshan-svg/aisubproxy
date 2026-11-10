@@ -437,6 +437,9 @@ func setupRoutes(r *gin.Engine) {
 			admin.GET("/cdks", handler.AdminListLocalCDKs)
 			admin.POST("/cdks/:id/disable", handler.AdminDisableLocalCDK)
 			admin.POST("/cdks/:id/enable", handler.AdminEnableLocalCDK)
+			// 代理换码记录：列表、人工定论结果不明的记录
+			admin.GET("/agent-exchanges", handler.AdminListAgentExchanges)
+			admin.POST("/agent-exchanges/:id/resolve", handler.AdminResolveAgentExchange)
 			admin.POST("/cardplatform/cdks/sync", handler.CardPlatformSyncUpstreamCDKs)
 			admin.POST("/cardplatform/cdks/store", handler.CardPlatformStoreCDKCodes)
 			admin.POST("/cardplatform/cdks/batch-disable", handler.CardPlatformBatchDisableCDKs)
@@ -446,8 +449,6 @@ func setupRoutes(r *gin.Engine) {
 			admin.PUT("/cardplatform/cdks/:id/note", handler.CardPlatformSetCDKNote)
 			admin.POST("/cardplatform/cdks/:id/disable", handler.CardPlatformDisableCDK)
 			admin.POST("/cardplatform/cdks/:id/enable", handler.CardPlatformEnableCDK)
-			admin.GET("/cardplatform/agent-exchanges", handler.AdminListAgentExchanges)
-			admin.POST("/cardplatform/agent-exchanges/:id/resolve", handler.AdminResolveAgentExchange)
 			admin.GET("/cardplatform/cdk-orders", handler.CardPlatformListCDKOrders)
 			admin.GET("/cardplatform/cdk-orders/:id", handler.CardPlatformGetCDKOrder)
 			admin.DELETE("/cardplatform/cards/:id", handler.CardPlatformDeleteCard)

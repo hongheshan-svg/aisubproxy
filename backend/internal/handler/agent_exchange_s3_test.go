@@ -115,46 +115,6 @@ func TestAgentSwapShortPasswordFlagAndWrongCount(t *testing.T) {
 	}
 }
 
-// E-3：旧码套餐为空、卡台也查不到时，不得默认按 plus 补发，也不得占位。
-func TestAgentExchangeEmptyPlanRefused(t *testing.T) {
-	dbtest.Open(t)
-	seedExchange(t)
-	if err := db.SaveCardplatformCDKCode(77, exchangeOldCode, exchangeOldCode[:14], "", 0, "PH"); err != nil {
-		t.Fatal(err)
-	}
-	captureOpsAlerts(t)
-	u := newExchangeUpstream(t)
-	w := doExchange(exchangeOldCode, "203.0.113.9")
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("应 503，实际 %d: %s", w.Code, w.Body.String())
-	}
-	if u.issued.Load() != 0 {
-		t.Fatalf("不应向卡台发码，实际 %d 次", u.issued.Load())
-	}
-	if _, _, rows := exchangeRow(t, exchangeOldCode); rows != 0 {
-		t.Fatalf("不应占位，实际 %d 行", rows)
-	}
-}
-
-// E-6：订单详情拉不到时按结果不明拒绝，不发码、不占位。
-func TestAgentExchangeDetailFailureRefused(t *testing.T) {
-	dbtest.Open(t)
-	seedExchange(t, exchangeOldCode)
-	captureOpsAlerts(t)
-	u := newExchangeUpstream(t)
-	u.detailFail.Store(true)
-	w := doExchange(exchangeOldCode, "203.0.113.9")
-	if w.Code != http.StatusServiceUnavailable {
-		t.Fatalf("应 503，实际 %d: %s", w.Code, w.Body.String())
-	}
-	if u.issued.Load() != 0 {
-		t.Fatalf("不应发码，实际 %d 次", u.issued.Load())
-	}
-	if _, _, rows := exchangeRow(t, exchangeOldCode); rows != 0 {
-		t.Fatalf("不应占位，实际 %d 行", rows)
-	}
-}
-
 // E-4：后台卡台码列表只按上游 id 取完整码，前缀相同的另一张码不能被填进来。
 func TestCDKListNoPrefixFallbackForFullCode(t *testing.T) {
 	dbtest.Open(t)

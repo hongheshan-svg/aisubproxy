@@ -35,22 +35,6 @@ func TestLocalCDKExchangeErrorCodes(t *testing.T) {
 			},
 		},
 		{
-			name: "上游适配器没接上", status: http.StatusServiceUnavailable, code: "service_unavailable", errMsg: "兑换通道暂时不可用，请稍后再试",
-			run: func(t *testing.T) (int, map[string]any) {
-				e := newSealedExchangeEnv(t)
-				adapterMu.Lock()
-				old := upstreamAdapters["zovocard"]
-				delete(upstreamAdapters, "zovocard")
-				adapterMu.Unlock()
-				t.Cleanup(func() {
-					adapterMu.Lock()
-					upstreamAdapters["zovocard"] = old
-					adapterMu.Unlock()
-				})
-				return post(e, "ZC-NO-ADAPTER-CODE-0001")
-			},
-		},
-		{
 			name: "本站没有这张码", status: http.StatusNotFound, code: "code_not_found", errMsg: "本站未找到该完整卡密（仅支持本站发过的码）",
 			run: func(t *testing.T) (int, map[string]any) {
 				e := newSealedExchangeEnv(t)

@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/safego"
 )
@@ -74,39 +73,22 @@ func runOpsMaintenance(now time.Time) {
 	pruneSharedFailures(now)
 }
 
-// retryAgentExchangeDisables 重试禁用旧码（MO-08）：新码已发出、旧码还没确认禁用的换码记录（disabling）。
-// 禁用是幂等的。每次失败留在 disabling，同一条记录每天提醒一次；成功后转 done。
-func retryAgentExchangeDisables(now time.Time) {
+// retryAgentExchangeDisables 给停在 disabling（新码已发出、记录还没转 done）的换码记录补记账（MO-08）。
+// 参数是维护轮次的时间，这一项用不到。
+func retryAgentExchangeDisables(_ time.Time) {
 	list, err := db.ListAgentExchanges(db.AgentExchangeDisabling, 200)
 	if err != nil {
 		log.Printf("[agent-exchange] 列出待禁用旧码的记录失败: %v", err)
 		return
 	}
-	if len(list) == 0 {
-		return
-	}
-	cli := cardplatform.NewFromSettings()
 	for _, e := range list {
-		// 卡台的码 ID 一定大于 0（PublicAgentCDKExchange 查不到就拒绝了），这里只会是 MarsWallex 本地码：
-		// 旧码和新码在同一个事务里换好，没有卡台的码要禁用，补上记账就行（比如人工定论 issued 之后）
+		// 本站码（old_upstream_id 为 0）：旧码和新码在同一个事务里换好，没有码要禁用，补上记账就行（比如人工定论 issued 之后）
 		if e.OldUpstreamID <= 0 {
 			if err := db.CompleteAgentCDKExchangeDisable(e.ID); err != nil && !errors.Is(err, db.ErrAgentExchangeState) {
 				log.Printf("[agent-exchange] 本地码换码记录 %d 转完成失败: %v", e.ID, err)
 			}
-			continue
 		}
-		if err := finishDisableOldCode(context.Background(), cli, e.ID, e.OldUpstreamID); err != nil {
-			reason := err.Error()
-			if len(reason) > 200 {
-				reason = reason[:200]
-			}
-			log.Printf("[agent-exchange] 重试禁用旧码 %d 失败: %v", e.OldUpstreamID, err)
-			_ = db.TouchAgentCDKExchange(e.ID, "禁用旧码失败："+reason)
-			opsAlertDaily(fmt.Sprintf("agent-swap-disable-%d", e.ID), fmt.Sprintf(
-				"代理换码记录 %d 的旧码 ID %d 仍未能禁用（新码 ID %d 已发出），旧码在卡台仍可兑换。原因：%s。请到卡台手动禁用。", e.ID, e.OldUpstreamID, e.NewUpstreamID, reason), now)
-			continue
-		}
-		db.WriteAudit("agent-swap", "agent_cdk_exchange_disable_retried", fmt.Sprintf("id=%d old=%d new=%d", e.ID, e.OldUpstreamID, e.NewUpstreamID), "")
+		// old_upstream_id 大于 0 的是已移除的 ZovoCard 留下的历史记录：不改数据、不自动收尾，留在列表里等人工处理
 	}
 }
 
@@ -117,7 +99,7 @@ func escalateAgentExchanges(now time.Time) {
 		log.Printf("[agent-exchange] 升级超时占位失败: %v", err)
 	}
 	for _, e := range stale {
-		opsAlert(fmt.Sprintf("代理换码占位超时没有收尾（进程可能在发码途中重启），已转人工：记录 %d，旧码 ID %d。请先到卡台核对是否已发码，再到后台定论。", e.ID, e.OldUpstreamID))
+		opsAlert(fmt.Sprintf("代理换码占位超时没有收尾（进程可能在发码途中重启），已转人工：记录 %d，旧码 ID %d。请到后台「代理换码记录」核对后定论。", e.ID, e.OldUpstreamID))
 	}
 	n, err := db.CountAgentExchanges(db.AgentExchangeUnknown)
 	if err != nil {

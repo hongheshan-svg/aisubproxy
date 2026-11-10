@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// 卡台的两项密钥：和 MarsWallex 令牌一样用 APP_MASTER_KEY 加密保存。
+// 旧版卡台的两项密钥：和 MarsWallex 令牌一样用 APP_MASTER_KEY 加密保存。
 const (
 	SettingCardAPIKey    = "card_api_key"
 	SettingWebhookSecret = "webhook_secret"

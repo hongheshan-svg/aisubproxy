@@ -123,8 +123,8 @@ type cdkIssueRequest struct {
 	Note           string `json:"note"`
 }
 
-// CardPlatformIssueCDKs POST /api/v1/admin/cardplatform/cdks、POST /api/v1/admin/cdks/issue
-// 按服务商发码。两条路由同一个处理。
+// CardPlatformIssueCDKs POST /api/v1/admin/cdks/issue
+// 按服务商发码。
 //   - 请求带了 provider：必须已注册并支持这个档位，否则 400，绝不换成别家。
 //   - 没带（老前端）：先看这个产品的配置，再看全局默认；选出来的那家不支持这个档位也是 400，绝不换成别家。
 //

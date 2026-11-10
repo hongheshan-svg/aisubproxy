@@ -16,7 +16,7 @@ import (
 //
 // 会话等同于登录态，只以 secretbox 密文保存，订单完成或绑定满 7 天清空；主密钥缺失时拒绝写入，绝不降级成明文。
 // 清空的只是 session_payload：redemption_token 要留着给兑换进度查询，账号邮箱单独加密留着给账单查询和卡健康归因，
-// 这些路径都不依赖会话本身（兑换时会话由前端直接随预检发给卡台，本站从不回读它去兑换）。
+// 这些路径都不依赖会话本身（兑换时会话由前端直接随预检发给上游，本站从不回读它去兑换）。
 const (
 	cdkSessionAAD      = "cdk_session_binding"
 	cdkSessionEmailAAD = "cdk_session_binding_email"

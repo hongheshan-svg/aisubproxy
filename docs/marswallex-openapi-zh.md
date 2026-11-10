@@ -1,6 +1,6 @@
-# MarsWallex 卡台 API 文档
+# MarsWallex 卡服务 API 文档
 
-> **本项目默认卡台 API 文档。** 内容整理自 MarsWallex 官方 API 文档 <https://marswallex-official.feibeiglobal.com/en/resources/api>，规范版本 `1.0.0`（OpenAPI 3.0.1），抓取日期 2026-10-27。官方原始规范存档在同目录 `marswallex-openapi-zh.json` / `marswallex-openapi-en.json`，以官方最新文档为准。
+> **本项目默认卡服务 API 文档。** 内容整理自 MarsWallex 官方 API 文档 <https://marswallex-official.feibeiglobal.com/en/resources/api>，规范版本 `1.0.0`（OpenAPI 3.0.1），抓取日期 2026-10-27。官方原始规范存档在同目录 `marswallex-openapi-zh.json` / `marswallex-openapi-en.json`，以官方最新文档为准。
 
 ## 速览
 

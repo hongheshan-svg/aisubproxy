@@ -1,4 +1,5 @@
-// 账单页的显示逻辑：凭卡密查到的本站开通记录逐行怎么显示，以及会话查询的账单金额格式化。
+// 账单页的显示逻辑：凭卡密查到的本站开通记录、登录信息查到的账单逐行怎么显示。
+// 两种都不显示付款金额：代理商进价和最终买家付的钱不一样，显示出来会误导。
 import { planLabelT } from './plan'
 
 /**
@@ -22,22 +23,22 @@ export interface BillingRecordRow {
 
 type TFn = (key: string, params?: Record<string, unknown>) => string
 
-/** Stripe 里没有小数的币种：金额的最小单位就是 1 元，不能除以 100。 */
-const ZERO_DECIMAL = new Set(['BIF', 'CLP', 'DJF', 'GNF', 'JPY', 'KMF', 'KRW', 'MGA', 'PYG', 'RWF', 'UGX', 'VND', 'VUV', 'XAF', 'XOF', 'XPF'])
-/** Stripe 里三位小数的币种：最小单位是千分之一。 */
-const THREE_DECIMAL = new Set(['BHD', 'JOD', 'KWD', 'OMR', 'TND'])
+export interface InvoiceRow {
+  key: string
+  status: string
+  date: string
+}
 
 /**
- * 登录信息查询拿到的 ChatGPT（Stripe）账单金额是最小单位，按币种小数位格式化，
- * 如 2000 usd → "20.00 USD"、3000 jpy → "3000 JPY"、5500 kwd → "5.500 KWD"。
+ * 登录信息查到的账单逐张显示什么：只有状态和日期。
+ * 不显示金额、币种、描述（Stripe 的描述里带单价）和账单链接（点开就是金额），后端也不再给这些字段。
  */
-export function formatInvoiceAmount(total: unknown, currency: unknown): string {
-  const n = Number(total)
-  if (total == null || total === '' || !Number.isFinite(n)) return '—'
-  const cur = String(currency || 'usd').toUpperCase()
-  if (ZERO_DECIMAL.has(cur)) return `${Math.round(n)} ${cur}`
-  if (THREE_DECIMAL.has(cur)) return `${(n / 1000).toFixed(3)} ${cur}`
-  return `${(n / 100).toFixed(2)} ${cur}`
+export function invoiceRows(invoices: Record<string, unknown>[], t: TFn, locale?: string): InvoiceRow[] {
+  return invoices.map((inv, i) => ({
+    key: String(inv.id || inv.number || `#${i}`),
+    status: inv.paid ? t('billingCheck.paid') : inv.status ? String(inv.status) : t('billingCheck.unpaid'),
+    date: formatUnixTs(inv.created, locale),
+  }))
 }
 
 /** 账单查询接口的返回在页面上显示哪一块：凭卡密查询只有开通记录，登录信息查询是订阅摘要和账单列表。 */

@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/gptcheck"
+	"github.com/tuzi/cdk-recharge-system/internal/provider"
 	"github.com/tuzi/cdk-recharge-system/internal/provider/providertest"
 )
 
@@ -159,8 +161,10 @@ func TestBillingByCDKRecordVariants(t *testing.T) {
 		if _, err := db.DB.Exec(`UPDATE local_cdks SET status = 'disabled' WHERE id = ?`, id); err != nil {
 			t.Fatal(err)
 		}
-		if status, _, raw := billingByCDK(t, code); status != http.StatusOK {
-			t.Fatalf("应 200: %d %s", status, raw)
+		status, d, raw := billingByCDK(t, code)
+		rec, _ := d["record"].(map[string]any)
+		if status != http.StatusOK || rec["email"] != maskEmailForAdmin("buyer@example.com") || rec["plan"] != "plus" || rec["redeemed_at"] == nil {
+			t.Fatalf("应 200 并给开通记录: %d %s", status, raw)
 		}
 	})
 	t.Run("点数码", func(t *testing.T) {
@@ -309,5 +313,49 @@ func TestBillingByCDKNeverAsksUpstream(t *testing.T) {
 	}
 	if strings.Contains(raw, "upstream") {
 		t.Fatalf("不该给出上游的结果: %s", raw)
+	}
+}
+
+// 查本站码出错：回 500 lookup_failed，日志不带码。客户端断开、超时不算出错，不记日志；查询 panic 时兜住，同样回 lookup_failed。
+func TestBillingByCDKLookupErrors(t *testing.T) {
+	e := newLocalEnv(t)
+	e.seedRealPayment()
+	forbidStoredSessionCheck(t)
+	code, _ := e.issueCode("plus", "PH")
+	norm := provider.NormalizeCode(code)
+	type factsFn = func(context.Context, provider.CardSupply, string) (afterSaleFacts, error)
+	fail := func(err error) factsFn {
+		return func(context.Context, provider.CardSupply, string) (afterSaleFacts, error) {
+			return afterSaleFacts{}, err
+		}
+	}
+	cases := []struct {
+		name    string
+		fn      factsFn
+		wantLog bool
+	}{
+		{"读库出错：记清洗过的日志", fail(fmt.Errorf("查询本站码 %s: disk I/O error", norm)), true},
+		{"客户端断开：不记日志", fail(fmt.Errorf("查询本站码: %w", context.Canceled)), false},
+		{"超时：不记日志", fail(fmt.Errorf("查询本站码: %w", context.DeadlineExceeded)), false},
+		{"查询 panic：兜住", func(context.Context, provider.CardSupply, string) (afterSaleFacts, error) { panic("boom " + norm) }, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			old := billingCardFacts
+			billingCardFacts = tc.fn
+			t.Cleanup(func() { billingCardFacts = old })
+			logs := captureLog(t)
+			status, d, raw := billingByCDK(t, code)
+			if status != http.StatusInternalServerError || d["error_code"] != "lookup_failed" {
+				t.Fatalf("应 500 lookup_failed: %d %s", status, raw)
+			}
+			got := logs.String()
+			if strings.Contains(got, norm) || strings.Contains(got, "boom") {
+				t.Fatalf("日志不该带码或 panic 的值: %s", got)
+			}
+			if strings.Contains(got, "[billing]") != tc.wantLog {
+				t.Fatalf("日志不对（wantLog=%v）: %q", tc.wantLog, got)
+			}
+		})
 	}
 }

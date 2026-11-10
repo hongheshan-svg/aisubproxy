@@ -618,7 +618,6 @@ export default {
     noInvoices: 'No paid invoices found.',
     paid: 'Paid',
     unpaid: 'Unpaid',
-    invoiceLink: 'Invoice link',
     cdkNote: 'This is this site\'s record from when the code was activated, not your live ChatGPT billing. To see live billing, use "By login info".',
     queryFailed: 'Lookup failed',
     networkError: 'Network error',

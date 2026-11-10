@@ -617,7 +617,6 @@ export default {
     noInvoices: '无付款账单记录。',
     paid: '已付',
     unpaid: '未付',
-    invoiceLink: '账单链接',
     cdkNote: '这是本站开通这张卡密时的记录，不是 ChatGPT 的实时账单；要看实时账单，请改用「登录信息查询」。',
     queryFailed: '查询失败',
     networkError: '网络错误',

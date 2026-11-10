@@ -64,7 +64,7 @@
           <div class="bill-item"><dt>{{ t('billingCheck.plan') }}</dt><dd>{{ planLabel }}</dd></div>
           <div class="bill-item"><dt>{{ t('billingCheck.activeSub') }}</dt><dd>{{ summary.has_active_subscription ? t('billingCheck.yes') : t('billingCheck.no') }}</dd></div>
           <div class="bill-item"><dt>{{ t('billingCheck.autoRenew') }}</dt><dd>{{ summary.will_renew == null ? '—' : (summary.will_renew ? t('billingCheck.renewOn') : t('billingCheck.renewOff')) }}</dd></div>
-          <div class="bill-item"><dt>{{ t('billingCheck.billing') }}</dt><dd class="u-mono">{{ summary.billing_currency || '—' }} {{ summary.billing_period || '' }}</dd></div>
+          <div class="bill-item"><dt>{{ t('billingCheck.billing') }}</dt><dd class="u-mono">{{ summary.billing_period || '—' }}</dd></div>
           <div class="bill-item"><dt>{{ t('billingCheck.expires') }}</dt><dd class="u-mono">{{ summary.active_until || summary.expires_at || summary.renews_at || '—' }}</dd></div>
         </dl>
       </section>
@@ -72,17 +72,9 @@
       <section v-if="invoices" class="u-card bill-stack bill-gap">
         <h2 class="bill-h">{{ t('billingCheck.invoicesTitle', { n: invoices.length }) }}</h2>
         <p v-if="!invoices.length" class="u-help bill-note">{{ t('billingCheck.noInvoices') }}</p>
-        <div v-for="inv in invoices" :key="inv.id || inv.number" class="bill-inv">
-          <div class="bill-inv-head">
-            <b class="u-mono">{{ formatInvoiceAmount(inv.total, inv.currency) }}</b>
-            <span class="u-help bill-note">{{ inv.paid ? t('billingCheck.paid') : (inv.status || t('billingCheck.unpaid')) }} · {{ formatUnixTs(inv.created, locale) }}</span>
-          </div>
-          <div v-if="inv.description" class="u-help bill-note">{{ inv.description }}</div>
-          <div class="bill-links">
-            <a v-if="inv.hosted_invoice_url" class="u-link" :href="inv.hosted_invoice_url" target="_blank" rel="noopener">{{ t('billingCheck.invoiceLink') }}</a>
-            <a v-if="inv.invoice_pdf" class="u-link" :href="inv.invoice_pdf" target="_blank" rel="noopener">PDF</a>
-          </div>
-        </div>
+        <dl v-else class="bill-list">
+          <div v-for="row in invoiceRows(invoices, t, locale)" :key="row.key" class="bill-item"><dt class="u-mono">{{ row.date }}</dt><dd>{{ row.status }}</dd></div>
+        </dl>
       </section>
 
       <UserFooter />
@@ -99,7 +91,7 @@ import UserShell from '../../components/redeem/UserShell.vue'
 import UserFooter from '../../components/redeem/UserFooter.vue'
 import SessionHelp from '../../components/SessionHelp.vue'
 import { pickBillingNote } from '../../lib/billingNote'
-import { billingRecordRows, formatInvoiceAmount, formatUnixTs, pickBillingResult, type BillingRecord } from '../../lib/billingRecord'
+import { billingRecordRows, invoiceRows, pickBillingResult, type BillingRecord } from '../../lib/billingRecord'
 import { apiErrorText } from '../../lib/apiError'
 const { t, te, locale } = useI18n({ useScope: 'global' })
 
@@ -193,7 +185,4 @@ async function query() {
 .bill-item { display: flex; justify-content: space-between; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--u-line); font-size: 15px; }
 .bill-item dt { color: var(--u-muted); }
 .bill-item dd { margin: 0; font-weight: 600; text-align: right; word-break: break-all; }
-.bill-inv { background: var(--u-tint); border-radius: 14px; padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; font-size: 15px; }
-.bill-inv-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
-.bill-links { display: flex; gap: 16px; }
 </style>

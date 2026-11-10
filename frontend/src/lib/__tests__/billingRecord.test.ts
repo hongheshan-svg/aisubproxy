@@ -1,11 +1,11 @@
-// 账单页：凭卡密查到的本站开通记录怎么显示，以及会话查询的账单金额按币种小数位格式化。
+// 账单页：凭卡密查到的本站开通记录、登录信息查到的账单怎么显示。两种都不显示付款金额（代理商进价和最终买家付的钱不一样）。
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createI18n } from 'vue-i18n'
 import zh from '../../i18n/locales/zh'
 import en from '../../i18n/locales/en'
-import { billingRecordRows, formatInvoiceAmount, formatUnixTs, pickBillingResult, type BillingRecord } from '../billingRecord'
+import { billingRecordRows, formatUnixTs, invoiceRows, pickBillingResult, type BillingRecord } from '../billingRecord'
 
 const CJK = /[一-鿿]/
 
@@ -14,24 +14,29 @@ function tOf(locale: 'zh' | 'en') {
   return (k: string, p?: Record<string, unknown>) => String(g.t(k, p ?? {}))
 }
 
-describe('formatInvoiceAmount：会话查询的账单金额是最小单位', () => {
-  it('两位小数的币种除以 100', () => {
-    expect(formatInvoiceAmount(2000, 'usd')).toBe('20.00 USD')
-    expect(formatInvoiceAmount(112000, 'php')).toBe('1120.00 PHP')
+describe('invoiceRows：登录信息查到的账单只显示状态和日期', () => {
+  const inv = {
+    id: 'in_1', number: 'ABCD-0001', status: 'paid', paid: true, created: 1700000000,
+    total: 112000, currency: 'php', amount_paid: 112000,
+    description: '1 × ChatGPT Plus (at ₱1,120.00 / month)',
+    hosted_invoice_url: 'https://invoice.stripe.com/i/x', invoice_pdf: 'https://pay.stripe.com/invoice/x/pdf',
+  }
+  it('已付：状态「已付」，日期跟界面语言', () => {
+    expect(invoiceRows([inv], tOf('zh'), 'zh')).toEqual([{ key: 'in_1', status: '已付', date: formatUnixTs(1700000000, 'zh') }])
   })
-  it('没有小数的币种不除以 100', () => {
-    expect(formatInvoiceAmount(3000, 'jpy')).toBe('3000 JPY')
-    expect(formatInvoiceAmount(15990, 'CLP')).toBe('15990 CLP')
-    expect(formatInvoiceAmount(9900, 'krw')).toBe('9900 KRW')
+  it('后端多给了金额、币种、描述、链接也不显示', () => {
+    const shown = JSON.stringify(invoiceRows([inv], tOf('zh'), 'zh'))
+    expect(shown).not.toMatch(/1120|112000|php|PHP|₱|stripe|ChatGPT Plus/)
   })
-  it('三位小数的币种除以 1000', () => {
-    expect(formatInvoiceAmount(5500, 'kwd')).toBe('5.500 KWD')
-    expect(formatInvoiceAmount(12345, 'BHD')).toBe('12.345 BHD')
+  it('没付：有状态显示状态，没有状态显示「未付」', () => {
+    const rows = invoiceRows([{ id: 'in_2', status: 'open', paid: false, created: 1700000000 }, { number: 'N-3', created: 0 }], tOf('zh'))
+    expect(rows.map((r) => r.status)).toEqual(['open', '未付'])
+    expect(rows[1]).toEqual({ key: 'N-3', status: '未付', date: '—' })
   })
-  it('没有币种按 USD，读不出数字给 —', () => {
-    expect(formatInvoiceAmount(500, '')).toBe('5.00 USD')
-    expect(formatInvoiceAmount('abc', 'usd')).toBe('—')
-    expect(formatInvoiceAmount(undefined, 'usd')).toBe('—')
+  it('没有 id 和编号时按顺序给 key，不重复', () => {
+    const rows = invoiceRows([{ paid: true }, { paid: true }], tOf('en'), 'en')
+    expect(new Set(rows.map((r) => r.key)).size).toBe(2)
+    expect(rows[0].status).toBe('Paid')
   })
 })
 
@@ -129,9 +134,10 @@ describe('账单页接上了这些函数', () => {
     expect(src).toContain('billingRecordRows(record, t, locale)')
     expect(src).toContain("t('billingCheck.recordTitle')")
   })
-  it('会话查询的账单金额用 formatInvoiceAmount，不再一律除以 100', () => {
-    expect(src).toContain('formatInvoiceAmount(inv.total, inv.currency)')
-    expect(src).not.toContain('/ 100')
-    expect(src).toContain('formatUnixTs(inv.created, locale)')
+  it('登录信息查询的账单按 invoiceRows 显示，不碰金额、币种、描述和账单链接', () => {
+    expect(src).toContain('invoiceRows(invoices, t, locale)')
+    for (const k of ['total', 'currency', 'amount', 'description', 'hosted_invoice_url', 'invoice_pdf', 'invoiceLink']) {
+      expect(src).not.toContain(k)
+    }
   })
 })

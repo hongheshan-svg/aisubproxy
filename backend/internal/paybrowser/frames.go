@@ -406,6 +406,7 @@ const (
 //   - 只沿算可滚的方向 scrollBy：只因纵向可滚被选中的容器，不横着滚它。
 //
 // 返回滚了没有。可视区宽高取 innerWidth/innerHeight 与 documentElement 的 clientWidth/clientHeight（不含滚动条）中较小的。
+// landPoint 滚动停稳后复查可视区也调它：点在可视区内时它只读、不滚，「要不要滚」和「在不在可视区」用的是同一个判定。
 const scrollIntoMainViewJS = `function (x, y, edge) {
 	const de = document.documentElement
 	const w = Math.min(innerWidth, de.clientWidth || innerWidth)
@@ -473,6 +474,11 @@ func (b *Browser) scrollAnchor(ctx context.Context, frames []frameRef, e *elem) 
 //     读不到元素，照旧不通过。
 //   - 没滚动过：隔 landSettle 读两次位置，相差超过 landTolerance 说明还在移动，不通过。
 //   - 滚动过（CDP 滚入让位置变了，或脚本滚动真滚了）：settleAfterScroll 等位置停稳，到 landScrollMax 还在变就不通过。
+//     停稳之后再复查一轮：用同一个锚点调 scrollIntoMainViewJS，中心点在可视区内、离边缘不少于 landEdge 时它不滚，照旧返回；
+//     不在就滚，真滚了再走一次 settleAfterScroll，返回第二次停稳的位置。只补这一轮（最多多等一个 landScrollMax），
+//     补完仍在可视区外照样返回，由调用方的 elementFromPoint 判不通过。
+//     为什么要复查：滚动会触发页面的滚动监听，监听里可能改布局（收起吸顶栏、懒加载）。改的是按钮上方、让内容变高，
+//     而滚动容器已经滚到底时，按钮被往下推，停稳时已在可视区外，点支付就在注资之后放弃（2026-11-10 用仿造页 scrollshift=1 复现）。
 //
 // 两次读位置只能看出主线程上的移动：transform 动画由合成线程驱动，读两次可能读到同一个值。点支付前的最后检查（payClickJS）
 // 另看正在跑的动画。frames 的第一个必须是主页面。只滚动、读位置，不发任何鼠标、键盘事件。
@@ -502,6 +508,16 @@ func (b *Browser) landPoint(ctx context.Context, frames []frameRef, e *elem) (x,
 		return 0, 0, err
 	}
 	if scrolled || moved {
+		if x, y, err = settleAfterScroll(ctx, center); err != nil {
+			return 0, 0, err
+		}
+		// 停稳后复查一轮：中心点在可视区内（离边缘不少于 landEdge）时 scrollIntoMainViewJS 不滚、返回 false
+		if err := callOn(ctx, anchor, scrollIntoMainViewJS, &moved, x, y, landEdge); err != nil {
+			return 0, 0, err
+		}
+		if !moved {
+			return x, y, nil
+		}
 		return settleAfterScroll(ctx, center)
 	}
 	if err := sleep(ctx, landSettle); err != nil {

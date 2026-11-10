@@ -46,6 +46,8 @@
     fold=hidden     同 fold=main，但 main 是 overflow-y: hidden（用户滚不动、脚本能滚）
     scrollshift=1   配 fold=main：main 每次滚动（上一次的变化做完之后）都让最上面的占位块在约 300ms 里逐帧变高或变矮 100px
                     （1200px 与 1100px 之间来回），下面的卡片 iframe、支付按钮跟着挪。仿滚动时收起吸顶栏、懒加载改布局
+    scrollshift=grow 同 scrollshift=1，但每次都让占位块在约 300ms 里逐帧变高 100px、从不变矮（同样上一次做完才接下一次）：
+                    main 已滚到底时，每滚一次，支付按钮就被往下推出可视区一次
     cover=1         卡片 iframe 回 number-full 消息（卡号填满）后，一个透明的 position:fixed 层（#cover，pointer-events: auto）
                     盖住支付按钮，主页面滚动时跟着按钮挪；它收到可信点击（误点）时 #cover-clicks（hidden）加一
     busy=1          卡片 iframe 回 address-changed 消息（地址里任一字段变了）后，支付按钮 disabled、aria-busy="true"
@@ -114,12 +116,14 @@
         (fold === 'hidden' ? 'hidden' : 'auto') + '; }'
       document.head.appendChild(foldStyle)
       mainCol.style.scrollPaddingTop = '3000px'
-      if (q.get('scrollshift') === '1') {
+      var shift = q.get('scrollshift')
+      if (shift === '1' || shift === 'grow') {
         var shifting = false
         mainCol.addEventListener('scroll', function () {
           if (shifting) return
           shifting = true
-          var from = parseFloat(spacer.style.height), to = from === 1200 ? 1100 : 1200, start = performance.now()
+          var from = parseFloat(spacer.style.height), start = performance.now()
+          var to = shift === 'grow' ? from + 100 : from === 1200 ? 1100 : 1200
           requestAnimationFrame(function step(now) {
             var k = Math.min(1, (now - start) / 300)
             spacer.style.height = (from + (to - from) * k) + 'px'

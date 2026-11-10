@@ -1,66 +1,30 @@
 package handler
 
 import (
-	"encoding/json"
-	"fmt"
-	"io"
-	"log"
 	"net/http"
-	"net/url"
-	"os"
 	"strings"
-	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/gptcheck"
+	"github.com/tuzi/cdk-recharge-system/internal/payengine"
+	"github.com/tuzi/cdk-recharge-system/internal/provider"
 )
 
-func accounthubBaseURL() string {
-	if u := strings.TrimSpace(os.Getenv("ACCOUNTHUB_BASE_URL")); u != "" {
-		return strings.TrimRight(u, "/")
-	}
-	return "http://localhost:8788"
-}
+// 凭卡密查账单的对外文字。
+const (
+	billingCDKNote             = "这是本站开通这张卡密时的记录，不是 ChatGPT 的实时账单；要看实时账单，请改用登录信息查询。"
+	billingCDKNotFoundText     = "未找到这张卡密"
+	billingCDKNotRedeemedText  = "这张卡密还没开通成功"
+	billingCDKReplacedText     = "这张卡密已换发新码，请用新码查询"
+	billingCDKLookupFailedText = "查询失败，请稍后再试"
+)
 
 // billingSessionCheck 用用户当场粘贴的会话查上游。只能用于粘贴模式，绝不能传存储的会话。
 var billingSessionCheck = gptcheck.Check
 
-type acchubInvoiceResp struct {
-	InvoiceURL string                   `json:"invoice_url"`
-	Invoices   []map[string]interface{} `json:"invoices"`
-	Source     string                   `json:"source"`
-	Error      string                   `json:"error"`
-}
-
-// queryAccounthubInvoices 通过邮箱调 accounthub 获取账单。
-func queryAccounthubInvoices(email string) (*acchubInvoiceResp, error) {
-	base := accounthubBaseURL()
-	u := fmt.Sprintf("%s/gpt/invoices-by-email?email=%s", base, url.QueryEscape(email))
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Get(u)
-	if err != nil {
-		return nil, fmt.Errorf("accounthub 请求失败: %v", err)
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode != 200 {
-		var errResp struct {
-			Error string `json:"error"`
-		}
-		json.Unmarshal(body, &errResp)
-		return nil, fmt.Errorf("accounthub %d: %s", resp.StatusCode, errResp.Error)
-	}
-	var out acchubInvoiceResp
-	if err := json.Unmarshal(body, &out); err != nil {
-		return nil, fmt.Errorf("accounthub 响应解析失败")
-	}
-	return &out, nil
-}
-
 // SessionBillingCheck POST /api/v1/public/billing/check
 // 支持：
-//  1. cdk_code — 用兑换时记下的账号邮箱经 accounthub 查账单。★知道卡密不等于本人，绝不拿存储的会话去调上游★
+//  1. cdk_code — 给出本站开通这张码时的记录（见 billingCheckByCDK）。★知道卡密不等于本人，绝不拿存储的会话去调上游★
 //  2. token_input / session — 用户当场粘贴 session / accessToken，用这一份查上游
 func SessionBillingCheck(c *gin.Context) {
 	var req struct {
@@ -106,55 +70,61 @@ func SessionBillingCheck(c *gin.Context) {
 	})
 }
 
-// billingCheckByCDK 凭卡密查账单：只用绑定时记下的邮箱问 accounthub。查不到邮箱或 accounthub 不可用就如实报错，
-// 让用户粘贴 session，不回退到用存储的会话调上游。
-func billingCheckByCDK(c *gin.Context, cdk string) {
-	email, err := db.GetAccountEmailByCDK(cdk)
-	if err != nil {
-		log.Printf("[billing] 读取卡密绑定的邮箱失败: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "查询绑定失败", "error_code": "lookup_failed"})
-		return
-	}
-	if email == "" {
-		c.JSON(http.StatusNotFound, gin.H{
-			"error":      "未找到该卡密绑定的账号。请确认兑换时使用了 session 凭证，或改用直接粘贴 session 查询。",
-			"error_code": "binding_not_found",
-		})
-		return
-	}
-	inv, err := queryAccounthubInvoices(email)
-	if err != nil {
-		log.Printf("[billing] accounthub 查询失败: %v", err)
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "账单服务暂时不可用，请稍后再试，或改用直接粘贴 session 查询。", "error_code": "billing_unavailable"})
-		return
-	}
-	// 知道卡密不等于本人（审计 F-1）：邮箱打码，账单只给金额、状态、时间这类摘要，不给账单链接和 PDF。
-	// 托管账单页不用登录就能打开，上面有账单抬头和邮箱；要链接请用户当场粘贴 session 查询。
-	c.JSON(http.StatusOK, gin.H{
-		"summary":     map[string]interface{}{"email": maskEmailForAdmin(email)},
-		"invoices":    billingInvoiceDigest(inv.Invoices),
-		"auth_source": "accounthub",
-		"note":        "凭卡密查询只显示账单金额和时间，不提供账单链接；需要账单链接请改用 Session 查询",
-	})
+// billingCDKRecord 是凭卡密查账单对外给出的开通记录，字段只有这些（审计 F-1：知道卡密不等于本人）。
+// 不给注资成本、卡、订单号、会话和完整邮箱。时间是 Unix 秒。
+type billingCDKRecord struct {
+	Email       string `json:"email"`                  // 打码后的账号邮箱
+	Plan        string `json:"plan"`                   // 套餐，如 plus、credit250
+	PlanKind    string `json:"plan_kind"`              // subscription | credit
+	RedeemedAt  *int64 `json:"redeemed_at,omitempty"`  // 开通成功的时间
+	AccessUntil *int64 `json:"access_until,omitempty"` // 关续费核实时 ChatGPT 给的权益到期时间
+	RenewalOff  bool   `json:"renewal_off"`            // 只有核实关掉续费才为 true
+	Amount      string `json:"amount,omitempty"`       // 开通时的应付金额，已按币种小数位格式化，如 "1120.00"
+	Currency    string `json:"currency,omitempty"`     // 付款币种，如 PHP
 }
 
-// billingInvoiceDigestKeys 是凭卡密查账单时每张账单可以给出的字段：金额、币种、状态和时间。
-// 其余字段（hosted_invoice_url、invoice_pdf、customer_*、description、lines 等）一律不给。
-var billingInvoiceDigestKeys = []string{"id", "number", "status", "paid", "total", "amount_paid", "amount_due", "currency", "created", "period_start", "period_end"}
-
-// billingInvoiceDigest 把 accounthub 的账单列表按白名单裁成摘要，裁完什么都不剩的（例如只有链接）不要；永不返回 nil。
-func billingInvoiceDigest(list []map[string]interface{}) []map[string]interface{} {
-	out := make([]map[string]interface{}, 0, len(list))
-	for _, inv := range list {
-		d := make(map[string]interface{}, len(billingInvoiceDigestKeys))
-		for _, k := range billingInvoiceDigestKeys {
-			if v, ok := inv[k]; ok {
-				d[k] = v
-			}
-		}
-		if len(d) > 0 {
-			out = append(out, d)
-		}
+// billingCheckByCDK 凭卡密查账单：给出本站开通这张码时的记录，不是 ChatGPT 的实时账单。
+// 状态沿用售后查询的推导（factsFor）。只读本站库，不调任何上游，不用存储的会话；要实时账单，请用户粘贴登录信息查。
+func billingCheckByCDK(c *gin.Context, cdk string) {
+	f, err := factsFor(c.Request.Context(), provider.NormalizeCode(cdk), "")
+	if err != nil { // factsFor 已经记过清洗后的日志
+		c.JSON(http.StatusInternalServerError, gin.H{"error": billingCDKLookupFailedText, "error_code": "lookup_failed"})
+		return
 	}
-	return out
+	if !f.Found || f.Status == "unsupported" {
+		c.JSON(http.StatusNotFound, gin.H{"error": billingCDKNotFoundText, "error_code": "cdk_not_found"})
+		return
+	}
+	switch f.Status {
+	case "used":
+	case "replaced":
+		c.JSON(http.StatusNotFound, gin.H{"error": billingCDKReplacedText, "error_code": "cdk_replaced"})
+		return
+	default:
+		c.JSON(http.StatusNotFound, gin.H{"error": billingCDKNotRedeemedText, "error_code": "cdk_not_redeemed", "status": f.Status})
+		return
+	}
+
+	rec := billingCDKRecord{
+		Email:      maskEmailForAdmin(f.AccountEmail),
+		Plan:       f.Plan,
+		PlanKind:   f.PlanKind,
+		RenewalOff: f.Renewal == "off",
+	}
+	if f.UsedAt != nil {
+		v := f.UsedAt.Unix()
+		rec.RedeemedAt = &v
+	}
+	if f.ExpiresAt != nil {
+		v := f.ExpiresAt.Unix()
+		rec.AccessUntil = &v
+	}
+	if cur := strings.ToUpper(strings.TrimSpace(f.Currency)); f.AmountMinor > 0 && cur != "" {
+		rec.Amount, rec.Currency = payengine.FormatMinor(f.AmountMinor, cur), cur
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"auth_source": "cdk",
+		"record":      rec,
+		"note":        billingCDKNote,
+	})
 }

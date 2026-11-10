@@ -770,20 +770,20 @@ func (s *Service) openPage(ctx context.Context, j *job) error {
 	j.o.AmountMinor, j.o.AmountText = minor, text
 	j.note("amount_minor", minor)
 	if !j.o.DryRun && minor > j.o.CapMinor {
-		return abort("amount_over_cap", "应付金额 %s 超过上限 %s %s", text, formatMinor(j.o.CapMinor, j.o.Currency), j.o.Currency)
+		return abort("amount_over_cap", "应付金额 %s 超过上限 %s %s", text, FormatMinor(j.o.CapMinor, j.o.Currency), j.o.Currency)
 	}
 	// 下限：偏低多半是选错了档位或带了优惠。必须在任何注资动作之前判
 	if j.o.DryRun {
 		if j.floorMinor <= 0 {
 			s.event(ctx, j, "info", "未配置最低金额，跳过下限检查", "")
 		} else if minor < j.floorMinor {
-			s.event(ctx, j, "warn", fmt.Sprintf("支付页金额 %s 低于最低金额 %s %s（可能选错了档位或带了优惠）；真实付款会在此放弃", text, formatMinor(j.floorMinor, j.o.Currency), j.o.Currency), "")
+			s.event(ctx, j, "warn", fmt.Sprintf("支付页金额 %s 低于最低金额 %s %s（可能选错了档位或带了优惠）；真实付款会在此放弃", text, FormatMinor(j.floorMinor, j.o.Currency), j.o.Currency), "")
 		}
 	} else if j.floorMinor <= 0 {
 		// 真实单不允许没有最低金额：ResolvePlan 已兜底，这里防以后重构漏赋值时下限被悄悄跳过
 		return abort("plan_unavailable", "套餐 %s 在地区 %s 未配置最低金额，已放弃，未注资", j.o.PlanKey, j.o.Region)
 	} else if minor < j.floorMinor {
-		return abort("amount_below_floor", "支付页金额 %s 低于该套餐在该地区的最低金额 %s %s（可能选错了档位或带了优惠），已放弃，未注资", text, formatMinor(j.floorMinor, j.o.Currency), j.o.Currency)
+		return abort("amount_below_floor", "支付页金额 %s 低于该套餐在该地区的最低金额 %s %s（可能选错了档位或带了优惠），已放弃，未注资", text, FormatMinor(j.floorMinor, j.o.Currency), j.o.Currency)
 	}
 	return nil
 }
@@ -798,8 +798,8 @@ func sessionCookies(sess chatgpt.Session) []paybrowser.Cookie {
 	return out
 }
 
-// formatMinor 按币种小数位把最小单位金额格式化为数字文本，如 120000 PHP → "1200.00"。
-func formatMinor(v int64, currency string) string {
+// FormatMinor 按币种小数位把最小单位金额格式化为数字文本，如 120000 PHP → "1200.00"。
+func FormatMinor(v int64, currency string) string {
 	exp := paybrowser.CurrencyExponent(currency)
 	if exp == 0 {
 		return strconv.FormatInt(v, 10)

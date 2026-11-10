@@ -216,7 +216,6 @@
 - 结果不明的告警对本站码只给「记录 N，旧码 ID 0」，管理员要自己到面板里找；`ops_maintenance.go` 里相关日志措辞仍是旧说法。来源：ZovoCard 整删终审 T2-c。状态：未修。建议：告警里改写旧码前缀。
 - 历史 ZovoCard 的 `disabling` 记录会一直出现在面板默认的「待处理」筛选里，没有手动关闭的办法（规格 §11.3 接受）。来源：ZovoCard 整删终审 I-1。状态：未修。
 - 后台已经没有入口清掉库里 ZovoCard 的 `card_api_key`、`webhook_secret`（密文）；只要它们还在，就一直要求强 `JWT_SECRET`。来源：ZovoCard 整删终审。状态：未修。
-- 凭卡密查账单（`gpt_billing.go`）只读 `cdk_session_bindings`，而代码已经不再写这张表：现在只对历史 ZovoCard 码有结果。这个入口要不要保留是产品决定。来源：ZovoCard 整删终审。状态：未修。
 
 ### 测试与代码整理
 

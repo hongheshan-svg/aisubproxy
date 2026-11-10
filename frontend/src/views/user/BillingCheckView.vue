@@ -44,6 +44,17 @@
         </button>
       </div>
 
+      <section v-if="record" class="u-card bill-stack bill-gap">
+        <div class="bill-row-head">
+          <h2 class="bill-h">{{ t('billingCheck.recordTitle') }}</h2>
+          <span class="u-help bill-src">{{ t('billingCheck.sourceCdk') }}</span>
+        </div>
+        <p v-if="billingNote" class="u-help bill-note">{{ billingNote }}</p>
+        <dl class="bill-list">
+          <div v-for="row in billingRecordRows(record, t, locale)" :key="row.key" class="bill-item"><dt>{{ row.label }}</dt><dd :class="{ 'u-mono': row.key !== 'plan' }">{{ row.value }}</dd></div>
+        </dl>
+      </section>
+
       <section v-if="summary" class="u-card bill-stack bill-gap">
         <div class="bill-row-head">
           <h2 class="bill-h">{{ t('billingCheck.summaryTitle') }}</h2>
@@ -60,12 +71,11 @@
 
       <section v-if="invoices" class="u-card bill-stack bill-gap">
         <h2 class="bill-h">{{ t('billingCheck.invoicesTitle', { n: invoices.length }) }}</h2>
-        <p v-if="billingNote" class="u-help bill-note">{{ billingNote }}</p>
         <p v-if="!invoices.length" class="u-help bill-note">{{ t('billingCheck.noInvoices') }}</p>
         <div v-for="inv in invoices" :key="inv.id || inv.number" class="bill-inv">
           <div class="bill-inv-head">
-            <b class="u-mono">{{ formatAmount(inv.total, inv.currency) }}</b>
-            <span class="u-help bill-note">{{ inv.paid ? t('billingCheck.paid') : (inv.status || t('billingCheck.unpaid')) }} · {{ formatTs(inv.created) }}</span>
+            <b class="u-mono">{{ formatInvoiceAmount(inv.total, inv.currency) }}</b>
+            <span class="u-help bill-note">{{ inv.paid ? t('billingCheck.paid') : (inv.status || t('billingCheck.unpaid')) }} · {{ formatUnixTs(inv.created, locale) }}</span>
           </div>
           <div v-if="inv.description" class="u-help bill-note">{{ inv.description }}</div>
           <div class="bill-links">
@@ -89,8 +99,9 @@ import UserShell from '../../components/redeem/UserShell.vue'
 import UserFooter from '../../components/redeem/UserFooter.vue'
 import SessionHelp from '../../components/SessionHelp.vue'
 import { pickBillingNote } from '../../lib/billingNote'
+import { billingRecordRows, formatInvoiceAmount, formatUnixTs, type BillingRecord } from '../../lib/billingRecord'
 import { apiErrorText } from '../../lib/apiError'
-const { t, te } = useI18n({ useScope: 'global' })
+const { t, te, locale } = useI18n({ useScope: 'global' })
 
 
 const route = useRoute()
@@ -101,6 +112,7 @@ const tokenInput = ref('')
 const loading = ref(false)
 const error = ref('')
 const summary = ref<any>(null)
+const record = ref<BillingRecord | null>(null)
 const invoices = ref<any[] | null>(null)
 const authSource = ref('')
 
@@ -115,22 +127,6 @@ const planLabel = computed(() => {
   return raw.replace('chatgpt', 'ChatGPT ').replace(/_/g, ' ')
 })
 
-function formatAmount(total: any, currency: any) {
-  const n = Number(total)
-  if (!Number.isFinite(n)) return '—'
-  const cur = (currency || 'usd').toString().toUpperCase()
-  return `${(n / 100).toFixed(2)} ${cur}`
-}
-function formatTs(v: any) {
-  const n = Number(v)
-  if (!Number.isFinite(n) || n <= 0) return '—'
-  try {
-    return new Date(n * 1000).toLocaleString()
-  } catch {
-    return String(v)
-  }
-}
-
 onMounted(() => {
   const qcdk = String(route.query.cdk || '').trim()
   if (qcdk) {
@@ -143,6 +139,7 @@ onMounted(() => {
 async function query() {
   error.value = ''
   summary.value = null
+  record.value = null
   invoices.value = null
   authSource.value = ''
   billingNote.value = ''
@@ -162,11 +159,16 @@ async function query() {
       error.value = apiErrorText(t, te, 'billingCheck.errors', d, 'billingCheck.queryFailed')
       return
     }
+    authSource.value = d.auth_source || ''
+    // 凭卡密查询：后端给本站开通记录（record），不是 ChatGPT 的账单
+    if (d.record && typeof d.record === 'object') {
+      record.value = d.record
+      // 后端的说明文字只有一种（本站记录不是实时账单），按当前语言显示对应文案；有说明才显示
+      billingNote.value = pickBillingNote(d) ? t('billingCheck.cdkNote') : ''
+      return
+    }
     summary.value = d.summary || {}
     invoices.value = d.invoices || []
-    authSource.value = d.auth_source || ''
-    // 后端的说明文字只有一种（凭卡密查询不给账单链接），按当前语言显示对应文案；有说明才显示
-    billingNote.value = pickBillingNote(d) ? t('billingCheck.cdkNote') : ''
   } catch {
     error.value = t('billingCheck.networkError')
   } finally {

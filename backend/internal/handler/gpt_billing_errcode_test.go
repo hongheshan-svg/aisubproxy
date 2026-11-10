@@ -6,12 +6,11 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/db/dbtest"
 	"github.com/tuzi/cdk-recharge-system/internal/gptcheck"
 )
 
-// 账单查询的每一处报错都带 error_code，同时 error 文字和状态码与原来一致（旧页面靠 error 文字显示）。
+// 账单查询的每一处报错都带 error_code 和 error 文字（旧页面靠 error 文字显示）。
 func TestBillingCheckErrorCodes(t *testing.T) {
 	type tc struct {
 		name   string
@@ -40,30 +39,9 @@ func TestBillingCheckErrorCodes(t *testing.T) {
 			status: http.StatusBadRequest, code: "session_invalid", errMsg: "登录信息已过期",
 		},
 		{
-			name: "读取绑定失败", body: `{"cdk_code":"TU-LOOKUP-FAIL-CODE-1"}`,
-			setup: func(t *testing.T) {
-				if _, err := db.DB.Exec(`DROP TABLE cdk_session_bindings`); err != nil {
-					t.Fatal(err)
-				}
-			},
-			status: http.StatusInternalServerError, code: "lookup_failed", errMsg: "查询绑定失败",
-		},
-		{
-			name: "卡密没有绑定账号", body: `{"cdk_code":"TU-NOT-BOUND-CODE-1"}`,
-			status: http.StatusNotFound,
-			code:   "binding_not_found",
-			errMsg: "未找到该卡密绑定的账号。请确认兑换时使用了 session 凭证，或改用直接粘贴 session 查询。",
-		},
-		{
-			name: "账单服务不可用", body: `{"cdk_code":"` + cdkSessCode + `"}`,
-			setup: func(t *testing.T) {
-				stubAccounthub(t, 500)
-				if err := bindCDKSession("testup", cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
-					t.Fatal(err)
-				}
-			},
-			status: http.StatusServiceUnavailable, code: "billing_unavailable",
-			errMsg: "账单服务暂时不可用，请稍后再试，或改用直接粘贴 session 查询。",
+			// 凭卡密查询的其余报错（没开通成功、已换码、读库出错）见 gpt_billing_cdk_test.go
+			name: "认不出的卡密", body: `{"cdk_code":"TU-NOT-BOUND-CODE-1"}`,
+			status: http.StatusNotFound, code: "cdk_not_found", errMsg: "未找到这张卡密",
 		},
 	}
 	for _, c := range cases {

@@ -843,10 +843,9 @@ func TestLocalCDKRoutingIsCaseInsensitive(t *testing.T) {
 	if r.Code != http.StatusBadRequest {
 		t.Fatalf("宽限期: %d %s", r.Code, r.Body.String())
 	}
-	// 账单查询凭 MW 码：查不到绑定，不发往任何上游
-	billing := gin.New()
-	billing.POST("/billing", SessionBillingCheck)
-	if w := cdkRequest(SessionBillingCheck, "POST", "/billing", localBody(t, map[string]any{"cdk_code": code})); w.Code != http.StatusNotFound {
+	// 账单查询凭 MW 码（大小写不同也认）：这张码还没开通成功，回 404，不发往任何上游
+	if w := cdkRequest(SessionBillingCheck, "POST", "/billing", localBody(t, map[string]any{"cdk_code": strings.ToLower(code)})); w.Code != http.StatusNotFound ||
+		!strings.Contains(w.Body.String(), `"cdk_not_redeemed"`) {
 		t.Fatalf("账单: %d %s", w.Code, w.Body.String())
 	}
 	if e.up.callCount() != 0 {

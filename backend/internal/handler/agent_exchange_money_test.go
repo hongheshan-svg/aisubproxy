@@ -21,6 +21,7 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/db/dbtest"
+	"github.com/tuzi/cdk-recharge-system/internal/provider"
 )
 
 const (
@@ -660,5 +661,340 @@ func TestAdminResolveAgentExchangeIssuedDisablesOldCode(t *testing.T) {
 	}
 	if w := doExchange(exchangeOldCode, "203.0.113.9"); w.Code != http.StatusConflict {
 		t.Fatalf("定论为已发后不能再换: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// ---- 本站码（MW-，走 localCDKExchange）的资金测试：并发只发一张、失败释放可重试、结果不明保留占位、单日上限、两种定论 ----
+
+// adminExchangesPath 是测试路由里换码记录接口的前缀。
+const adminExchangesPath = "/agent-exchanges"
+
+// localSwap 以 ip 为来源走公开的代理换码接口（和正式路由一样挂着 PublicGuard）。
+func localSwap(e *localEnv, code, ip string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest("POST", "/public/cdk/exchange", strings.NewReader(`{"password":"`+sealedSwapPassword+`","code":"`+code+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.RemoteAddr = ip + ":1234"
+	w := httptest.NewRecorder()
+	e.router.ServeHTTP(w, req)
+	return w
+}
+
+// localExchangedFrom 是从这张旧码换出来的新码张数。
+func localExchangedFrom(t *testing.T, oldID int64) int {
+	t.Helper()
+	var n int
+	if err := db.DB.QueryRow(`SELECT COUNT(*) FROM local_cdks WHERE exchanged_from = ?`, oldID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+func localCDKCount(t *testing.T) int {
+	t.Helper()
+	var n int
+	if err := db.DB.QueryRow(`SELECT COUNT(*) FROM local_cdks`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// localCDKStatus 是这张码的派生状态（unused、disabled ……）。
+func localCDKStatus(t *testing.T, id int64) string {
+	t.Helper()
+	row, err := db.GetLocalCDK(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := db.LocalCDKViewOf(context.Background(), row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v.Status
+}
+
+// localStaleUnknown 模拟进程在占位之后、ExchangeLocalCDK 之前退出：按 localCDKExchange 的写法占位，之后不收尾；
+// 等超过 agentExchangeStaleAfter，维护循环把它升级成结果不明。返回换码记录 id。
+func localStaleUnknown(t *testing.T, code string, id int64) int64 {
+	t.Helper()
+	row, err := db.GetLocalCDK(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	exID, err := db.ReserveAgentCDKExchange(db.AgentExchangeReservation{
+		OldHash: db.HashCDKCode(provider.NormalizeCode(code)), OldID: 0, OldPrefix: row.CodePrefix, Plan: row.PlanKey,
+		OrderStatus: "not_submitted", IP: "203.0.113.9", PasswordFP: agentSwapPasswordFP(),
+	}, agentSwapDailyLimit(), now.Add(-agentExchangeStaleAfter-time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	escalateAgentExchanges(now)
+	if e, err := db.GetAgentExchange(exID); err != nil || e.State != db.AgentExchangeUnknown {
+		t.Fatalf("超时占位应升级成结果不明: %+v %v", e, err)
+	}
+	return exID
+}
+
+// localSwapConcurrent 同一张本站码 20 个请求同时换：只有 1 个 200，其余 409；local_cdks 只多出 1 张新码，换码记录 1 行且已完成。
+func localSwapConcurrent(t *testing.T, e *localEnv) {
+	t.Helper()
+	code, id := exchangeableCode(t, e)
+	before := localCDKCount(t)
+	const n = 20
+	start := make(chan struct{})
+	others := make(chan string, n)
+	var wg sync.WaitGroup
+	var ok, conflict atomic.Int32
+	var newID atomic.Int64
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			w := localSwap(e, code, fmt.Sprintf("203.0.113.%d", i+1))
+			switch w.Code {
+			case http.StatusOK:
+				ok.Add(1)
+				var m struct {
+					NewCDKID int64 `json:"new_cdk_id"`
+				}
+				if err := json.Unmarshal(w.Body.Bytes(), &m); err == nil {
+					newID.Store(m.NewCDKID)
+				}
+			case http.StatusConflict:
+				conflict.Add(1)
+			default:
+				others <- fmt.Sprintf("%d %s", w.Code, w.Body.String())
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(others)
+	for s := range others {
+		t.Errorf("只应有 200 或 409: %s", s)
+	}
+	if ok.Load() != 1 || conflict.Load() != n-1 {
+		t.Fatalf("应 1 个 200、%d 个 409: ok=%d conflict=%d", n-1, ok.Load(), conflict.Load())
+	}
+	if got := localCDKCount(t) - before; got != 1 {
+		t.Fatalf("local_cdks 应只多 1 张新码，实际多 %d 张", got)
+	}
+	if got := localExchangedFrom(t, id); got != 1 {
+		t.Fatalf("从旧码换出的新码应是 1 张: %d", got)
+	}
+	st, gotNew, rows := exchangeRow(t, code)
+	if rows != 1 || st != db.AgentExchangeDone || gotNew <= 0 || gotNew != newID.Load() {
+		t.Fatalf("换码记录不符: rows=%d st=%s new=%d resp=%d", rows, st, gotNew, newID.Load())
+	}
+	if e.zovo.count() != 0 {
+		t.Fatalf("本站码换码不应碰卡台: %v", e.zovo.paths)
+	}
+}
+
+// 内存库（单连接）：并发只发一张。
+func TestLocalAgentExchangeConcurrentIssuesOnce(t *testing.T) {
+	localSwapConcurrent(t, newSealedExchangeEnv(t))
+}
+
+// 真实文件库、多连接（DSN 和生产一样带 _txlock=immediate）：并发只发一张。
+func TestLocalAgentExchangeConcurrentOnRealFileDB(t *testing.T) {
+	e := newAgentEnvFileDB(t)
+	e.seedRealPayment()
+	if err := setAgentSwapPassword(sealedSwapPassword); err != nil {
+		t.Fatal(err)
+	}
+	resetLocalRate()
+	localSwapConcurrent(t, e.localEnv)
+}
+
+// ExchangeLocalCDK 在事务里发现不符合换码条件（处理器校验通过之后、事务之前，这张码有了一张在途单）：
+// 事务回滚、不发新码，占位释放，不转人工；条件恢复后同一张码能再换一次，也只发一张。
+func TestLocalAgentExchangeFailureReleasesAndRetries(t *testing.T) {
+	e := newSealedExchangeEnv(t)
+	code, id := exchangeableCode(t, e)
+	// 占位那一刻插进一张在途单：前面的校验都已经过了，ExchangeLocalCDK 的条件更新命不中
+	if _, err := db.DB.Exec(fmt.Sprintf(`CREATE TRIGGER swap_race AFTER INSERT ON agent_cdk_exchanges BEGIN
+		INSERT INTO pay_orders (order_no, provider, source, source_ref, dry_run, plan_key, region, account_email, state, failure, created_at, updated_at)
+		VALUES ('PO-SWAP-RACE', 'marswallex', 'cdk', '%s', 0, 'plus', 'PH', 'race@example.com', 'funding', '', 0, 0); END`,
+		db.LocalCDKSourceRef(id))); err != nil {
+		t.Fatal(err)
+	}
+	alertsBefore := e.alertTexts()
+	w := localSwap(e, code, "203.0.113.9")
+	m := localJSON(t, w)
+	if w.Code != http.StatusBadRequest || m["error_code"] != "not_eligible_unpaid" || m["error"] != "不符合换码条件（需充值失败且未发起支付）" {
+		t.Fatalf("应报告不符合换码条件: %d %v", w.Code, m)
+	}
+	if _, ok := m["outcome"]; ok {
+		t.Fatalf("确定失败不是结果不明: %v", m)
+	}
+	if st, _, rows := exchangeRow(t, code); rows != 0 {
+		t.Fatalf("应释放占位: rows=%d st=%s", rows, st)
+	}
+	if got := localExchangedFrom(t, id); got != 0 {
+		t.Fatalf("事务回滚，不应有新码: %d", got)
+	}
+	if got := e.alertTexts(); got != alertsBefore {
+		t.Fatalf("确定失败不转人工、不告警: %s", got)
+	}
+
+	// 条件恢复：去掉触发器，那张单结束为干净失败（没点过支付）
+	if _, err := db.DB.Exec(`DROP TRIGGER swap_race`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.DB.Exec(`UPDATE pay_orders SET state = 'failed', failure = 'not_submitted', submitted_at = NULL, finished_at = 1 WHERE order_no = 'PO-SWAP-RACE'`); err != nil {
+		t.Fatal(err)
+	}
+	w = localSwap(e, code, "203.0.113.9")
+	if w.Code != http.StatusOK {
+		t.Fatalf("重试应成功: %d %s", w.Code, w.Body.String())
+	}
+	if st, _, rows := exchangeRow(t, code); rows != 1 || st != db.AgentExchangeDone {
+		t.Fatalf("重试后记录应完成: rows=%d st=%s", rows, st)
+	}
+	if got := localExchangedFrom(t, id); got != 1 {
+		t.Fatalf("重试只发一张: %d", got)
+	}
+}
+
+// 占位之后进程退出、没收尾：维护循环把超时的占位转成结果不明并告警；之后同一张码再换回 409（state=unknown），
+// 不发新码，旧码不动。
+func TestLocalAgentExchangeUnknownKeepsReservation(t *testing.T) {
+	e := newSealedExchangeEnv(t)
+	code, id := exchangeableCode(t, e)
+	exID := localStaleUnknown(t, code, id)
+	alerts := e.alertTexts()
+	if !strings.Contains(alerts, "已转人工") || !strings.Contains(alerts, fmt.Sprintf("记录 %d", exID)) {
+		t.Fatalf("升级成结果不明应告警: %s", alerts)
+	}
+	if strings.Contains(alerts, code) {
+		t.Fatalf("告警不应含完整卡密: %s", alerts)
+	}
+
+	w := localSwap(e, code, "203.0.113.9")
+	m := localJSON(t, w)
+	if w.Code != http.StatusConflict || m["error_code"] != "conflict" || m["state"] != db.AgentExchangeUnknown ||
+		m["error"] != "该卡密上次换码结果不明，已转人工核对，请勿重试" {
+		t.Fatalf("结果不明的码再换应 409 且 state=unknown: %d %v", w.Code, m)
+	}
+	if got := localExchangedFrom(t, id); got != 0 {
+		t.Fatalf("不应发新码: %d", got)
+	}
+	if st := localCDKStatus(t, id); st != db.LocalCDKUnused {
+		t.Fatalf("旧码不应被动过: %s", st)
+	}
+	if st, _, rows := exchangeRow(t, code); rows != 1 || st != db.AgentExchangeUnknown {
+		t.Fatalf("占位应保留: rows=%d st=%s", rows, st)
+	}
+}
+
+// 单日上限设为 2：前 2 张照常换，第 3、4 张回 429（daily_limit、limit=2），不占位、不发新码，同一天只告警一次。
+func TestLocalAgentExchangeDailyLimit(t *testing.T) {
+	e := newSealedExchangeEnv(t)
+	if err := db.SetSetting(agentSwapDailyLimitKey, "2"); err != nil {
+		t.Fatal(err)
+	}
+	codes := make([]string, 4)
+	ids := make([]int64, 4)
+	// 先把 4 张码都发出来再写失败单：连续 3 张填表失败会让付款熔断，之后就发不了码
+	for i := range codes {
+		codes[i], ids[i] = e.issueCode("plus", "PH")
+	}
+	for _, id := range ids {
+		e.insertFundedFailure(id, "a@example.com")
+	}
+	before := strings.Count(e.alertTexts(), "上限")
+	for i := 0; i < 2; i++ {
+		if w := localSwap(e, codes[i], "203.0.113.9"); w.Code != http.StatusOK {
+			t.Fatalf("额度内应成功: %d %s", w.Code, w.Body.String())
+		}
+	}
+	for i := 2; i < 4; i++ {
+		w := localSwap(e, codes[i], "203.0.113.9")
+		m := localJSON(t, w)
+		if w.Code != http.StatusTooManyRequests || m["error_code"] != "daily_limit" || m["limit"] != float64(2) ||
+			m["error"] != "代理换码已达今日上限（2 张），请联系管理员" {
+			t.Fatalf("第 %d 张应超限: %d %v", i+1, w.Code, m)
+		}
+		if _, _, rows := exchangeRow(t, codes[i]); rows != 0 {
+			t.Fatal("超限不应占位")
+		}
+		if got := localExchangedFrom(t, ids[i]); got != 0 {
+			t.Fatalf("超限不应发新码: %d", got)
+		}
+	}
+	for i := 0; i < 2; i++ {
+		if got := localExchangedFrom(t, ids[i]); got != 1 {
+			t.Fatalf("额度内的第 %d 张应发 1 张新码: %d", i+1, got)
+		}
+	}
+	if got := strings.Count(e.alertTexts(), "上限") - before; got != 1 {
+		t.Fatalf("同一天只告警一次: %d %s", got, e.alertTexts())
+	}
+}
+
+// 结果不明的本站码记录：人工核对确认没发码，定论 released，占位释放，同一张码能重新换（只发一张）。
+// 输入不全、记录不存在、重复定论都要拒绝；列表不泄露旧码哈希和完整码；定论写审计。
+func TestAdminResolveLocalExchangeReleased(t *testing.T) {
+	e := newSealedExchangeEnv(t)
+	code, id := exchangeableCode(t, e)
+	exID := localStaleUnknown(t, code, id)
+	r := adminExchangeRouter()
+
+	list := adminExchangeDo(r, "GET", adminExchangesPath+"?state=unknown", "")
+	var got struct {
+		List []db.AgentExchange `json:"list"`
+	}
+	if err := json.Unmarshal(list.Body.Bytes(), &got); err != nil || list.Code != http.StatusOK || len(got.List) != 1 {
+		t.Fatalf("列表: %d %s %v", list.Code, list.Body.String(), err)
+	}
+	if body := list.Body.String(); strings.Contains(body, db.HashCDKCode(provider.NormalizeCode(code))) || strings.Contains(body, code) {
+		t.Fatalf("列表不应含旧码哈希或完整码: %s", body)
+	}
+	if item := got.List[0]; item.ID != exID || item.State != db.AgentExchangeUnknown || item.OldUpstreamID != 0 || item.Note == "" {
+		t.Fatalf("行内容: %+v", item)
+	}
+	path := fmt.Sprintf("%s/%d/resolve", adminExchangesPath, exID)
+	for _, bad := range []string{
+		`{"result":"released"}`,          // 没有备注
+		`{"result":"nope","note":"x"}`,   // 非法结果
+		`{"result":"issued","note":"x"}`, // 已发却没写新码
+		`{"result":"issued","note":"x","new_cdk_id":-1}`,
+	} {
+		if w := adminExchangeDo(r, "POST", path, bad); w.Code != http.StatusBadRequest {
+			t.Fatalf("%s 应 400: %d %s", bad, w.Code, w.Body.String())
+		}
+	}
+	if w := adminExchangeDo(r, "POST", adminExchangesPath+"/9999/resolve", `{"result":"released","note":"x"}`); w.Code != http.StatusNotFound {
+		t.Fatalf("不存在应 404: %d", w.Code)
+	}
+	if st, _, _ := exchangeRow(t, code); st != db.AgentExchangeUnknown {
+		t.Fatalf("被拒的定论不应改记录: %s", st)
+	}
+
+	w := adminExchangeDo(r, "POST", path, `{"result":"released","note":"本站码表里没有换出的新码"}`)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"result":"released"`) {
+		t.Fatalf("释放应 200: %d %s", w.Code, w.Body.String())
+	}
+	if w := adminExchangeDo(r, "POST", path, `{"result":"released","note":"再来一次"}`); w.Code != http.StatusNotFound {
+		t.Fatalf("释放后行已删除: %d %s", w.Code, w.Body.String())
+	}
+	var detail string
+	if err := db.DB.QueryRow(`SELECT detail FROM admin_audit_logs WHERE action = 'agent_exchange_resolve'`).Scan(&detail); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(detail, "released") || !strings.Contains(detail, "本站码表里没有换出的新码") {
+		t.Fatalf("审计: %s", detail)
+	}
+
+	if w := localSwap(e, code, "203.0.113.9"); w.Code != http.StatusOK {
+		t.Fatalf("释放后重试应成功: %d %s", w.Code, w.Body.String())
+	}
+	if st, _, rows := exchangeRow(t, code); rows != 1 || st != db.AgentExchangeDone {
+		t.Fatalf("重试后记录应完成: rows=%d st=%s", rows, st)
+	}
+	if got := localExchangedFrom(t, id); got != 1 {
+		t.Fatalf("只发一张: %d", got)
 	}
 }

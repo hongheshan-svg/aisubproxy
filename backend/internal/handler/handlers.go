@@ -12,7 +12,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/tuzi/cdk-recharge-system/internal/auth"
-	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 )
 
@@ -292,77 +291,4 @@ func ListAuditLogs(c *gin.Context) {
 		nextBeforeID = logs[len(logs)-1].ID
 	}
 	c.JSON(http.StatusOK, gin.H{"logs": logs, "has_more": hasMore, "next_before_id": nextBeforeID})
-}
-
-// ===== Billing Tool APIs =====
-
-// ===== System Stats =====
-
-// GetSystemStats 管理后台总览：CDK / 兑换订单以卡台 Open API 为准（不再读本地过渡表）。
-func GetSystemStats(c *gin.Context) {
-	out := gin.H{
-		"source":           "cardplatform",
-		"configured":       false,
-		"total_cdks":       0,
-		"unused_cdks":      0,
-		"active_cdks":      0, // 兼容旧字段 = unused
-		"active_cdkeys":    0, // 兼容前端曾用的字段名
-		"total_cdkeys":     0, // 兼容
-		"reserved_cdks":    0,
-		"consumed_cdks":    0,
-		"frozen_cdks":      0,
-		"disabled_cdks":    0,
-		"total_cdk_orders": 0,
-		"webhook_events":   0,
-		"counts_partial":   false,
-		"error":            "",
-	}
-
-	var webhookCount int
-	if db.DB != nil {
-		_ = db.DB.QueryRow(`SELECT COUNT(*) FROM webhook_events`).Scan(&webhookCount)
-	}
-	out["webhook_events"] = webhookCount
-
-	cfg := cardplatform.LoadConfig()
-	if cfg.APIKey == "" {
-		out["error"] = "未配置卡台 API Key"
-		// 仍返回 200，前端展示提示
-		c.JSON(http.StatusOK, out)
-		return
-	}
-	out["configured"] = true
-
-	cli := cardplatform.NewFromSettings()
-	ctx := c.Request.Context()
-
-	sum, err := cli.SummarizeCDKs(ctx, 50)
-	if err != nil {
-		out["error"] = err.Error()
-		c.JSON(http.StatusOK, out)
-		return
-	}
-	by := sum.ByStatus
-	unused := by["unused"]
-	out["total_cdks"] = sum.Total
-	out["total_cdkeys"] = sum.Total
-	out["unused_cdks"] = unused
-	out["active_cdks"] = unused
-	out["active_cdkeys"] = unused
-	out["reserved_cdks"] = by["reserved"]
-	out["consumed_cdks"] = by["consumed"]
-	out["frozen_cdks"] = by["frozen"]
-	out["disabled_cdks"] = by["disabled"]
-	out["by_status"] = by
-	out["counts_partial"] = sum.Partial
-	out["scanned"] = sum.Scanned
-
-	if ordersTotal, err := cli.ListCDKOrdersTotal(ctx); err == nil {
-		out["total_cdk_orders"] = ordersTotal
-	}
-
-	// 兼容旧前端「任务数」字段：用卡台兑换订单数
-	out["total_tasks"] = out["total_cdk_orders"]
-
-	c.JSON(http.StatusOK, out)
 }

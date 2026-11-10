@@ -211,3 +211,35 @@ func TestEngineLogsDoNotLeakCodes(t *testing.T) {
 		t.Fatalf("崩溃日志泄露: %s", s)
 	}
 }
+
+// ZovoCard 的接口、Webhook 和统计接口已整体删除：登录与否都是 404（路由不存在，不是处理函数回的 404），
+// 同时卡服务商列表接口照旧可用。
+func TestZovoCardRoutesGone(t *testing.T) {
+	r := oaRouter(t)
+	const ip = "198.51.100.72"
+	oaCreateAdmin(t, "zovo-gone-admin")
+	cs := oaLogin(t, r, ip, "zovo-gone-admin", oaPassword)
+
+	for _, c := range []struct{ method, path string }{
+		{"POST", "/api/v1/webhooks/cardplatform"},
+		{"GET", "/api/v1/admin/cardplatform/ping"},
+		{"GET", "/api/v1/admin/cardplatform/cdks/stored"},
+		{"GET", "/api/v1/stats/system"},
+		{"GET", "/api/v1/public/cdk/plans"},
+		{"GET", "/api/v1/admin/card-health"},
+		{"GET", "/api/v1/admin/card-selection/site-policy"},
+	} {
+		for name, q := range map[string]oaReq{
+			"已登录": {method: c.method, path: c.path, body: `{}`, cookies: cs, header: oaCSRF(cs), ip: ip},
+			"无凭证": {method: c.method, path: c.path, body: `{}`, ip: ip},
+		} {
+			if w := oaDo(r, q); w.Code != http.StatusNotFound {
+				t.Errorf("%s %s %s 应 404（路由已删），实际 %d %s", name, c.method, c.path, w.Code, w.Body.String())
+			}
+		}
+	}
+
+	if w := oaDo(r, oaReq{method: "GET", path: "/api/v1/admin/providers", cookies: cs, ip: ip}); w.Code != http.StatusOK {
+		t.Errorf("GET /api/v1/admin/providers 应照旧 200，实际 %d %s", w.Code, w.Body.String())
+	}
+}

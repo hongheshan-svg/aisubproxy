@@ -19,7 +19,6 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/handler"
 	"github.com/tuzi/cdk-recharge-system/internal/notify"
 	"github.com/tuzi/cdk-recharge-system/internal/payengine"
-	"github.com/tuzi/cdk-recharge-system/internal/plansync"
 	"github.com/tuzi/cdk-recharge-system/internal/provider"
 	"github.com/tuzi/cdk-recharge-system/internal/safego"
 )
@@ -86,9 +85,6 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 
 	// Setup routes
 	setupRoutes(engine)
-
-	// 启动卡台产品状态后台同步（每3分钟）
-	plansync.Start(ctx)
 
 	// 启动 MarsWallex 卡池（对账、回收、补卡、Webhook 事件处理）
 	pool.Start(ctx)
@@ -275,10 +271,9 @@ func setupRoutes(r *gin.Engine) {
 		public.GET("/site", handler.PublicSiteConfig)
 		public.GET("/site/logo", handler.PublicSiteLogo)
 
-		// 卡台 CDK 公开兑换 BFF + 实时服务费展示
+		// CDK 公开兑换
 		pubCDK := public.Group("/cdk")
 		{
-			pubCDK.GET("/plans", handler.PublicCDKPlans)
 			pubCDK.POST("/preview", handler.PublicCDKPreview)
 			pubCDK.POST("/preflight", handler.PublicCDKPreflight)
 			pubCDK.POST("/recover-subscription", handler.PublicCDKGraceRecovery)
@@ -301,8 +296,6 @@ func setupRoutes(r *gin.Engine) {
 			lookup.GET("/task", handler.LookupCDKStatus)
 		}
 
-		// 卡台 Webhook（须在卡台开发者页配置 https://你的域名/api/v1/webhooks/cardplatform）
-		api.POST("/webhooks/cardplatform", handler.CardPlatformWebhook)
 		// MarsWallex Webhook（须在 MarsWallex 后台配置 https://你的域名/api/v1/webhooks/marswallex）
 		api.POST("/webhooks/marswallex", handler.MarsWallexWebhook)
 
@@ -310,13 +303,6 @@ func setupRoutes(r *gin.Engine) {
 		public.POST("/billing/check", handler.SessionBillingCheck)
 		// 旧路径：和 /public 下的一样先限流、再读请求体（同一个额度）
 		api.POST("/billing/check", handler.PublicGuard(), handler.SessionBillingCheck)
-
-		// Stats routes
-		stats := api.Group("/stats")
-		stats.Use(JWTAuthMiddleware(), AdminAuthMiddleware())
-		{
-			stats.GET("/system", handler.GetSystemStats)
-		}
 
 		// 代理商接口（独立的登录和会话，不走管理员中间件）
 		handler.RegisterAgentRoutes(api)
@@ -414,13 +400,6 @@ func setupRoutes(r *gin.Engine) {
 			admin.POST("/pay/breaker/resume", handler.AdminPayBreakerResume)
 			handler.RegisterPayProbeRoutes(admin)
 
-			// 卡台 Open API：实时价格 / 余额 / 发码 / 列码 / CDK 订单
-			admin.GET("/cardplatform/ping", handler.CardPlatformPing)
-			admin.GET("/cardplatform/plans", handler.CardPlatformPlans)
-			admin.GET("/cardplatform/balance", handler.CardPlatformBalance)
-			admin.GET("/cardplatform/cdks", handler.CardPlatformListCDKs)
-			admin.GET("/cardplatform/cdks/stored", handler.CardPlatformListStoredCDKs)
-			admin.POST("/cardplatform/cdks", handler.CardPlatformIssueCDKs)
 			// 卡服务商：列表与配置、默认发码服务商（旧接口）、就绪检查、本地码
 			admin.GET("/providers", handler.AdminListProviders)
 			admin.PUT("/providers/config", handler.AdminPutProviderConfig)
@@ -440,29 +419,11 @@ func setupRoutes(r *gin.Engine) {
 			// 代理换码记录：列表、人工定论结果不明的记录
 			admin.GET("/agent-exchanges", handler.AdminListAgentExchanges)
 			admin.POST("/agent-exchanges/:id/resolve", handler.AdminResolveAgentExchange)
-			admin.POST("/cardplatform/cdks/sync", handler.CardPlatformSyncUpstreamCDKs)
-			admin.POST("/cardplatform/cdks/store", handler.CardPlatformStoreCDKCodes)
-			admin.POST("/cardplatform/cdks/batch-disable", handler.CardPlatformBatchDisableCDKs)
-			admin.POST("/cardplatform/cdks/batch-enable", handler.CardPlatformBatchEnableCDKs)
-			admin.POST("/cardplatform/cdks/batch-note", handler.CardPlatformBatchSetCDKNote)
-			admin.POST("/cardplatform/cdks/batch-clear-note", handler.CardPlatformBatchClearCDKNote)
-			admin.PUT("/cardplatform/cdks/:id/note", handler.CardPlatformSetCDKNote)
-			admin.POST("/cardplatform/cdks/:id/disable", handler.CardPlatformDisableCDK)
-			admin.POST("/cardplatform/cdks/:id/enable", handler.CardPlatformEnableCDK)
-			admin.GET("/cardplatform/cdk-orders", handler.CardPlatformListCDKOrders)
-			admin.GET("/cardplatform/cdk-orders/:id", handler.CardPlatformGetCDKOrder)
-			admin.DELETE("/cardplatform/cards/:id", handler.CardPlatformDeleteCard)
-
-			// Webhook 事件列表 + 配置提示
-			admin.GET("/webhooks/events", handler.AdminListWebhooks)
-
-			// 本机出口 IP（卡台 API 白名单）
-			admin.GET("/network/egress", handler.NetworkEgress)
 
 			// Audit logs
 			admin.GET("/audit-logs", handler.ListAuditLogs)
 
-			// 站点设置（品牌/皮肤/卡台密钥保险箱）
+			// 站点设置（品牌/皮肤/主题）
 			admin.GET("/settings", handler.AdminGetSettings)
 			admin.PUT("/settings", handler.AdminPutSettings)
 			admin.POST("/settings/logo", handler.AdminUploadSiteLogo)
@@ -475,20 +436,6 @@ func setupRoutes(r *gin.Engine) {
 			admin.PUT("/notify/telegram", handler.AdminPutTelegram)
 			admin.POST("/notify/telegram/test", handler.AdminTestTelegram)
 
-			// 自动选卡权重配置
-			admin.GET("/card-selection/rules", handler.AdminGetCardSelectionRules)
-			admin.PUT("/card-selection/rules", handler.AdminPutCardSelectionRules)
-			admin.GET("/card-selection/plan-status", handler.AdminGetPlanStatus)
-			admin.POST("/card-selection/sync", handler.AdminSyncPlanStatus)
-			admin.GET("/card-selection/site-policy", handler.AdminGetSiteRedeemPolicy)
-			admin.PUT("/card-selection/site-policy", handler.AdminPutSiteRedeemPolicy)
-
-			// 卡健康：同卡失败 × 邮箱归因 → 坏卡冻结
-			admin.GET("/card-health", handler.AdminListCardHealth)
-			admin.GET("/card-health/policy", handler.AdminGetCardHealthPolicy)
-			admin.PUT("/card-health/policy", handler.AdminPutCardHealthPolicy)
-			admin.POST("/card-health/unblock", handler.AdminUnblockCard)
-			admin.POST("/card-health/observe", handler.AdminReobserveCardOrder)
 		}
 	}
 

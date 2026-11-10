@@ -2,9 +2,6 @@ package handler
 
 import (
 	"bytes"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -174,60 +171,6 @@ func TestBillingCheckPastedSessionStillWorks(t *testing.T) {
 	w := cdkRequest(SessionBillingCheck, "POST", "/billing", `{"token_input":"pasted-token"}`)
 	if w.Code != 200 || calls.Load() != 1 {
 		t.Fatalf("粘贴查询应走上游: %d %s calls=%d", w.Code, w.Body.String(), calls.Load())
-	}
-}
-
-func TestWebhookCompletedClearsSession(t *testing.T) {
-	dbtest.Open(t)
-	dbtest.SetMasterKey(t)
-	t.Cleanup(webhookObservers.Wait) // 先于关库执行
-	if err := db.SetSetting("webhook_secret", "whsec"); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.SaveCardplatformCDKCode(77, cdkSessCode, cdkSessCode[:14], "plus", 0, "PH"); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.BindCDKSession("testup", cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
-		t.Fatal(err)
-	}
-	send := func(body string) {
-		t.Helper()
-		mac := hmac.New(sha256.New, []byte("whsec"))
-		mac.Write([]byte(body))
-		gin.SetMode(gin.TestMode)
-		r := gin.New()
-		r.POST("/w", CardPlatformWebhook)
-		req := httptest.NewRequest("POST", "/w", strings.NewReader(body))
-		req.Header.Set("X-Signature", hex.EncodeToString(mac.Sum(nil)))
-		w := httptest.NewRecorder()
-		r.ServeHTTP(w, req)
-		if w.Code != 200 {
-			t.Fatalf("webhook 应 200: %d", w.Code)
-		}
-	}
-	send(`{"event":"gpt_direct.failed","cdk_id":77,"order_id":4,"status":"failed_precharge"}`)
-	if s := storedCDKSession(t, cdkSessCode); s == "" {
-		t.Fatal("失败事件不应清空：用户可能还要重试")
-	}
-	send(`{"event":"gpt_direct.completed","cdk_id":77,"order_id":5}`)
-	if s := storedCDKSession(t, cdkSessCode); s != "" {
-		t.Fatalf("完成事件应清空: %q", s)
-	}
-}
-
-// 卡健康按邮箱去重：清空会话后如果退回脱敏邮箱，同一账号会被算成两个邮箱，把好卡误判成坏卡。
-func TestCardHealthEmailSurvivesClear(t *testing.T) {
-	dbtest.Open(t)
-	dbtest.SetMasterKey(t)
-	if err := db.BindCDKSession("testup", cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.ClearCDKSessionByCode(cdkSessCode); err != nil {
-		t.Fatal(err)
-	}
-	email, src := resolveEmailForOrder(cdkSessCode, "bu***@example.com")
-	if email != cdkSessEmail || src != "session" {
-		t.Fatalf("应取到完整邮箱: %q %q", email, src)
 	}
 }
 

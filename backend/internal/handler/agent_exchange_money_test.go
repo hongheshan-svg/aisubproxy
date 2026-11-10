@@ -19,21 +19,17 @@ import (
 )
 
 const (
-	exchangeOldCode  = "ZC-EXCHANGE-OLD-CODE-0001"
+	exchangeOldCode  = "MW-EXCHANGE-OLD-CODE-0001"
 	exchangePassword = "swap-secret-1"
 )
 
-func seedExchange(t *testing.T, codes ...string) {
+// seedExchange 只设好换码口令并清空限流计数；旧码是否存在与口令校验无关，由各用例自己按需准备。
+func seedExchange(t *testing.T) {
 	t.Helper()
 	if err := setAgentSwapPassword(exchangePassword); err != nil {
 		t.Fatal(err)
 	}
 	resetLocalRate()
-	for i, code := range codes {
-		if err := db.SaveCardplatformCDKCode(int64(77+i), code, code[:14], "plus", 0, "PH"); err != nil {
-			t.Fatal(err)
-		}
-	}
 }
 
 // exchangeRouter 只建一次：gin.SetMode 写全局变量，并发调用会触发竞态。

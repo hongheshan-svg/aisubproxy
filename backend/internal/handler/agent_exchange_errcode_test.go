@@ -50,7 +50,7 @@ func TestAgentExchangeErrorCodes(t *testing.T) {
 	}
 	seed := func(t *testing.T) {
 		dbtest.Open(t)
-		seedExchange(t, exchangeOldCode)
+		seedExchange(t)
 		captureOpsAlerts(t)
 	}
 	cases := []tc{

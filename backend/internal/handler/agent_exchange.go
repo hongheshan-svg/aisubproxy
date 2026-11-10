@@ -3,7 +3,6 @@ package handler
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -301,43 +300,4 @@ func AdminResolveAgentExchange(c *gin.Context) {
 	detail := fmt.Sprintf("id=%d result=%s new_cdk=%d note=%s", id, req.Result, req.NewCDKID, note)
 	auditAdmin(c, "agent_exchange_resolve", detail)
 	c.JSON(http.StatusOK, out)
-}
-
-func extractOrderMap(raw json.RawMessage) map[string]any {
-	var envelope map[string]any
-	if json.Unmarshal(raw, &envelope) != nil {
-		return nil
-	}
-	if d, ok := envelope["data"].(map[string]any); ok {
-		if o, ok := d["order"].(map[string]any); ok {
-			return o
-		}
-		// data itself is order
-		if _, ok := d["status"]; ok {
-			return d
-		}
-	}
-	if o, ok := envelope["order"].(map[string]any); ok {
-		return o
-	}
-	return nil
-}
-
-func anyToInt64(v any) int64 {
-	switch t := v.(type) {
-	case float64:
-		return int64(t)
-	case int64:
-		return t
-	case int:
-		return int64(t)
-	case json.Number:
-		n, _ := t.Int64()
-		return n
-	case string:
-		n, _ := strconv.ParseInt(t, 10, 64)
-		return n
-	default:
-		return 0
-	}
 }

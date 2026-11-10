@@ -30,7 +30,7 @@ const (
 	KindCredit       = db.PayKindCredit       // Codex 点数
 )
 
-// CreditPlanKeys 是 Codex 点数各档的键，与 ZovoCard 同名，数量取自键名。
+// CreditPlanKeys 是 Codex 点数各档的键，数量取自键名。
 var CreditPlanKeys = []string{"credit250", "credit500", "credit1000", "credit2500", "credit5000", "credit25000"}
 
 // PlanKeys 是套餐表里的全部键：订阅开通在前、点数各档在后（顺序即展示顺序）。

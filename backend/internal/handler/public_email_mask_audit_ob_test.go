@@ -48,7 +48,7 @@ func TestObBillingCheckByCDKMasksEmailAndHidesInvoiceLinks(t *testing.T) {
 	dbtest.SetMasterKey(t)
 	stubBillingCheck(t)
 	obStubAccounthub(t)
-	if err := db.BindCDKSession("zovocard", cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
+	if err := bindCDKSession("testup", cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
 		t.Fatal(err)
 	}
 	w := cdkRequest(SessionBillingCheck, "POST", "/billing", `{"cdk_code":"`+cdkSessCode+`"}`)
@@ -72,24 +72,30 @@ func TestObBillingCheckByCDKMasksEmailAndHidesInvoiceLinks(t *testing.T) {
 	}
 }
 
+// 本站码（MW-）按码查结果：邮箱打码、不带账单链接，也不去取账单；会话和令牌不出现在响应里。
 func TestObResultByCodeMasksEmailAndHasNoInvoiceURL(t *testing.T) {
-	dbtest.Open(t)
-	dbtest.SetMasterKey(t)
-	u := newCDKUpstream(t)
+	e := newLocalEnv(t)
+	e.seedRealPayment()
 	hub := obStubAccounthub(t)
-	u.mu.Lock()
-	u.resultEmail = cdkSessEmail
-	u.mu.Unlock()
-	if err := db.BindCDKSession("zovocard", cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
-		t.Fatal(err)
+	code, id := e.issueCode("plus", "PH")
+	token, pf := e.preflight(code, localSession(cdkSessEmail))
+	if w := e.redeem(token, pf); w.Code != http.StatusOK {
+		t.Fatalf("兑换: %d %s", w.Code, w.Body.String())
 	}
-	for _, st := range []string{"running", "completed"} {
-		u.setResult(st)
-		w := cdkRequest(PublicCDKResultByCode, "GET", "/r?code="+cdkSessCode, "")
+	for _, st := range []string{"queued", "succeeded"} {
+		if _, err := db.DB.Exec(`UPDATE pay_orders SET state = ? WHERE source = 'cdk' AND source_ref = ?`, st, db.LocalCDKSourceRef(id)); err != nil {
+			t.Fatal(err)
+		}
+		w := e.do("GET", "/public/cdk/result-by-code?code="+code, "")
 		if w.Code != http.StatusOK {
 			t.Fatalf("%s 应 200: %d %s", st, w.Code, w.Body.String())
 		}
 		obAssertNoLeak(t, "按码查结果（"+st+"）", w.Body.String())
+		for _, secret := range []string{payAccessToken, paySessionToken} {
+			if strings.Contains(w.Body.String(), secret) {
+				t.Fatalf("%s 响应不应带会话内容: %s", st, w.Body.String())
+			}
+		}
 		if !strings.Contains(w.Body.String(), obMaskedSessEmail) {
 			t.Fatalf("%s 应给打码邮箱: %s", st, w.Body.String())
 		}
@@ -102,26 +108,28 @@ func TestObResultByCodeMasksEmailAndHasNoInvoiceURL(t *testing.T) {
 	}
 }
 
+// 本站码按令牌查结果：邮箱打码，其余字段不变。
 func TestObResultByTokenMasksEmail(t *testing.T) {
-	dbtest.Open(t)
-	dbtest.SetMasterKey(t)
-	u := newCDKUpstream(t)
-	u.mu.Lock()
-	u.resultEmail = cdkSessEmail
-	u.mu.Unlock()
-	if err := db.BindCDKSession("zovocard", cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
-		t.Fatal(err)
+	e := newLocalEnv(t)
+	e.seedRealPayment()
+	code, _ := e.issueCode("plus", "PH")
+	token, pf := e.preflight(code, localSession(cdkSessEmail))
+	if w := e.redeem(token, pf); w.Code != http.StatusOK {
+		t.Fatalf("兑换: %d %s", w.Code, w.Body.String())
 	}
-	w := cdkRequest(PublicCDKResult, "GET", "/r?token=rt-1", "")
+	w := e.result(token)
 	if w.Code != http.StatusOK {
 		t.Fatalf("应 200: %d %s", w.Code, w.Body.String())
 	}
 	obAssertNoLeak(t, "按令牌查结果", w.Body.String())
-	var d map[string]any
+	var d struct {
+		Status string         `json:"status"`
+		Order  map[string]any `json:"order"`
+	}
 	if err := json.Unmarshal(w.Body.Bytes(), &d); err != nil {
 		t.Fatal(err)
 	}
-	if d["account_email"] != obMaskedSessEmail || d["status"] != "running" {
+	if d.Order["account_email"] != obMaskedSessEmail || d.Status != "queued" {
 		t.Fatalf("应打码且其余字段不变: %s", w.Body.String())
 	}
 }

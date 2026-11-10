@@ -99,8 +99,8 @@ func TestAgentExchangeAdminRoutesRequireAdminAuth(t *testing.T) {
 	r := gin.New()
 	setupRoutes(r)
 	for _, c := range []struct{ method, path string }{
-		{"GET", "/api/v1/admin/cardplatform/agent-exchanges"},
-		{"POST", "/api/v1/admin/cardplatform/agent-exchanges/1/resolve"},
+		{"GET", "/api/v1/admin/agent-exchanges"},
+		{"POST", "/api/v1/admin/agent-exchanges/1/resolve"},
 	} {
 		req := httptest.NewRequest(c.method, c.path, nil)
 		w := httptest.NewRecorder()

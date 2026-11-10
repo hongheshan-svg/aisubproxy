@@ -146,7 +146,7 @@ import { dialog } from '../lib/dialog'
 import { adjustHasAnyPending, clearAdjustRetries } from '../lib/agentAdmin'
 import { siteBrand } from '../theme'
 import ThemeToggle from '../components/ThemeToggle.vue'
-import { PAGE_TABS, tabCrumb, zovoEnv, marsEnv, type EnvBadge } from '../lib/adminui'
+import { PAGE_TABS, tabCrumb, marsEnv, type EnvBadge } from '../lib/adminui'
 import {
   buildNavItems, groupNavItems, pageTitle, readNavPref, writeNavPref, isCollapsed, MOBILE_MAX, OPS, type NavPref,
 } from '../lib/adminNav'
@@ -176,12 +176,7 @@ const crumbTab = computed(() => tabCrumb(PAGE_TABS, route.path, route.query.tab)
 const envBadges = ref<EnvBadge[]>([])
 async function loadEnv() {
   const unknown = (name: string): EnvBadge => ({ name, kind: 'unknown', label: '未知', url: '' })
-  let zovo = unknown('卡台')
   let mars = unknown('MarsWallex')
-  try {
-    const r = await authFetch('/api/v1/admin/settings')
-    if (r.ok) { const d = await r.json(); zovo = zovoEnv(String(d.card_api_base || ''), !!d.card_api_key_configured) }
-  } catch { /* 保持未知 */ }
   try {
     const r = await authFetch('/api/v1/admin/marswallex/config')
     if (r.ok) {
@@ -190,7 +185,7 @@ async function loadEnv() {
       mars = marsEnv(String(d.base_url || ''), d.base_url_presets, hasCreds)
     }
   } catch { /* 保持未知 */ }
-  envBadges.value = [zovo, mars]
+  envBadges.value = [mars]
 }
 onMounted(loadEnv)
 

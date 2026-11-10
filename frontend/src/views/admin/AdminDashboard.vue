@@ -1,19 +1,6 @@
 <template>
   <div class="pb-2 space-y-5">
-    <AdminPageHeader class="!mb-0" title="总览" description="CDK 白标门户运营概况：卡台发码、公开兑换、Webhook、Session 账单查询。" />
-
-    <ApiErrorNotice :message="statsError" />
-    <div v-if="stats.counts_partial" class="alert alert-warning text-sm">
-      CDK 数量较多，状态分布为扫描样本汇总；总数仍以卡台 total 为准。
-    </div>
-
-    <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-      <router-link v-for="card in statCards" :key="card.label" :to="card.to" class="stat-card">
-        <div class="text-sm text-muted">{{ card.label }}</div>
-        <div class="mt-2 text-3xl font-bold text-ink mono">{{ card.value }}</div>
-        <div class="mt-1 text-sm text-subtle">{{ card.hint }}</div>
-      </router-link>
-    </div>
+    <AdminPageHeader class="!mb-0" title="总览" description="CDK 白标门户运营概况：本站发码、公开兑换、Webhook、Session 账单查询。" />
 
     <section class="space-y-2" aria-label="待办汇总">
       <div class="flex items-center justify-between">
@@ -66,7 +53,6 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import AdminPageHeader from '../../components/AdminPageHeader.vue'
-import ApiErrorNotice from '../../components/ApiErrorNotice.vue'
 import { authFetch } from '../../lib/api'
 import { payApi } from '../../lib/pay'
 import { mapApiError } from '../../lib/errors'
@@ -78,27 +64,7 @@ import {
 } from '../../lib/adminui'
 
 const router = useRouter()
-const stats = ref<any>({})
-const statsError = ref('')
-const statsLoading = ref(false)
 const versionInfo = ref<any>({})
-
-function numOrDash(v: unknown) {
-  if (v === null || v === undefined || v === '') return '—'
-  const n = Number(v)
-  return Number.isFinite(n) ? n : '—'
-}
-
-const statCards = computed(() => {
-  const s = stats.value || {}
-  const v = (x: unknown) => (statsLoading.value ? '…' : numOrDash(x))
-  return [
-    { label: 'CDK 总数', value: v(s.total_cdks ?? s.total_cdkeys), hint: '来自卡台', to: '/ops/cdkeys' },
-    { label: '可用 CDK', value: v(s.unused_cdks ?? s.active_cdks ?? s.active_cdkeys), hint: '未使用', to: '/ops/cdkeys' },
-    { label: '已兑换', value: v(s.consumed_cdks), hint: '已消耗', to: '/ops/cdkeys' },
-    { label: '兑换订单', value: v(s.total_cdk_orders ?? s.total_tasks), hint: '卡台 CDK 订单', to: '/ops/orders' },
-  ]
-})
 
 // ---------- 待办汇总：每一项单独查询，失败显示「获取失败」，绝不当成 0 ----------
 const loadingT: TodoState<any> = { state: 'loading' }
@@ -169,24 +135,6 @@ const quickGroups = computed(() => {
 
 onMounted(async () => {
   loadTodos()
-  statsLoading.value = true
-  statsError.value = ''
-  try {
-    const r = await authFetch('/api/v1/stats/system')
-    const d = await r.json().catch(() => ({}))
-    if (!r.ok) {
-      statsError.value = d.error || '加载统计失败'
-    } else {
-      stats.value = d
-      if (d.error) {
-        statsError.value = d.configured === false ? 'card_api_key not configured' : String(d.error)
-      }
-    }
-  } catch (e: any) {
-    statsError.value = e?.message || '网络错误'
-  } finally {
-    statsLoading.value = false
-  }
   try {
     const r = await authFetch('/api/v1/admin/system/version')
     if (r.ok) versionInfo.value = await r.json().catch(() => ({}))

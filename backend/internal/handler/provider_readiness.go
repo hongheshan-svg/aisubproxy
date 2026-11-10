@@ -7,7 +7,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
 	"github.com/tuzi/cdk-recharge-system/internal/cardpool"
 	"github.com/tuzi/cdk-recharge-system/internal/payengine"
 	"github.com/tuzi/cdk-recharge-system/internal/provider"
@@ -224,24 +223,4 @@ func checkCombo(ctx context.Context, engine *payengine.Service, pool *cardpool.S
 	}
 	c.OK = len(c.Problems) == 0
 	return c
-}
-
-// checkZovoCard 是 ZovoCard 的就绪检查：Key 非空且余额接口能通。
-func checkZovoCard(ctx context.Context) (provider.Readiness, *cardplatform.BalanceResponse) {
-	r := provider.NewReadiness(provider.ZovoCard)
-	if cardplatform.LoadConfig().APIKey == "" {
-		r.Fail("api_key", "卡台 API Key", "未配置卡台 API Key")
-		return r, nil
-	}
-	r.Pass("api_key", "卡台 API Key", "卡台 API Key 已配置")
-	ctx, cancel := context.WithTimeout(ctx, walletSyncLimit)
-	defer cancel()
-	bal, err := cardplatform.NewFromSettings().GetBalance(ctx)
-	if err != nil {
-		log.Printf("[provider] 查询卡台余额失败: %v", err)
-		r.Fail("balance", "卡台余额", "卡台余额查询失败")
-		return r, nil
-	}
-	r.Pass("balance", "卡台余额", "卡台余额可查询")
-	return r, bal
 }

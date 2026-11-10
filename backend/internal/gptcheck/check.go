@@ -1,5 +1,5 @@
 // Package gptcheck 用 ChatGPT accessToken/session 查订阅与账单链接。
-// 逻辑对齐 cardplatform/browser-extension 小助手（/gpt/check → invoices）。
+// 逻辑对齐浏览器扩展小助手（/gpt/check → invoices）。
 package gptcheck
 
 import (

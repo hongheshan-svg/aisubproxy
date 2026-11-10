@@ -197,8 +197,7 @@ describe('isLocalSessionAuthFailure（B-5）：只有鉴权中间件的失败才
     expect(isLocalSessionAuthFailure('/api/v1/auth/admin/change-password', 401, { error: '旧密码不正确' })).toBe(false)
     expect(isLocalSessionAuthFailure(admin, 403, null)).toBe(false)
   })
-  it('卡台上游、网络探测的 401/403 不算失效', () => {
-    expect(isLocalSessionAuthFailure('/api/v1/admin/cardplatform/cdks', 401, { error: 'Invalid or expired token' })).toBe(false)
+  it('网络探测的 401/403 不算失效', () => {
     expect(isLocalSessionAuthFailure('/api/v1/admin/network/probe', 403, {})).toBe(false)
     // 审计 N-3：带本站鉴权错误码的，即使是这些接口也算失效（见 session.s6.test.ts）
   })
@@ -238,7 +237,7 @@ describe('safeAdminRedirect（B-6）：登录后只跳回后台内的路径', ()
     expect(safeAdminRedirect('/ops')).toBe('/ops')
     expect(safeAdminRedirect('/ops/cdkeys?tab=local')).toBe('/ops/cdkeys?tab=local')
     expect(safeAdminRedirect('/ops?x=1')).toBe('/ops?x=1')
-    expect(safeAdminRedirect('/ops/orders?q=https://a.example')).toBe('/ops/orders?q=https://a.example')
+    expect(safeAdminRedirect('/ops/audit?q=https://a.example')).toBe('/ops/audit?q=https://a.example')
   })
   it('外站、协议相对、反斜杠、其他前缀、非字符串一律回 /ops', () => {
     for (const bad of [

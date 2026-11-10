@@ -1,6 +1,7 @@
 package provider
 
 import (
+	"errors"
 	"regexp"
 	"strings"
 	"testing"
@@ -15,17 +16,17 @@ func TestDefaultProviderLoadSave(t *testing.T) {
 	if n, err := LoadDefault(); err != nil || n != MarsWallex {
 		t.Fatalf("初始值应是 marswallex: %v %v", n, err)
 	}
-	if err := SaveDefault(ZovoCard); err != nil {
+	if err := SaveDefault(MarsWallex); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := LoadDefault(); err != nil || n != ZovoCard {
+	if n, err := LoadDefault(); err != nil || n != MarsWallex {
 		t.Fatal(n, err)
 	}
-	// 库里的非法值按兜底上游，不能变成别的
+	// 库里的非法值读出来是空，不能变成任何一家
 	if err := db.SetSetting(SettingDefault, "bogus"); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := LoadDefault(); err != nil || n != ZovoCard {
+	if n, err := LoadDefault(); err != nil || n != "" {
 		t.Fatal(n, err)
 	}
 	if err := SaveDefault(Name("bogus")); err == nil {
@@ -34,12 +35,12 @@ func TestDefaultProviderLoadSave(t *testing.T) {
 }
 
 func TestParse(t *testing.T) {
-	for in, want := range map[string]Name{"zovocard": ZovoCard, " MarsWallex ": MarsWallex} {
+	for in, want := range map[string]Name{"marswallex": MarsWallex, " MarsWallex ": MarsWallex} {
 		if n, err := Parse(in); err != nil || n != want {
 			t.Errorf("%q: %v %v", in, n, err)
 		}
 	}
-	for _, in := range []string{"", "mars", "zovo"} {
+	for _, in := range []string{"", "mars", "gone"} {
 		if _, err := Parse(in); err == nil {
 			t.Errorf("%q 应被拒绝", in)
 		}
@@ -62,11 +63,7 @@ func TestSupports(t *testing.T) {
 		{MarsWallex, "grok", "plus", false}, // 键同名也不行
 		{MarsWallex, "claude", "pro", false},
 		{MarsWallex, "", "plus", false},
-		{ZovoCard, "gpt", "credit250", true},
-		{ZovoCard, "x", "premium_monthly", true},
-		{ZovoCard, "grok", "plus_monthly", true},
-		{ZovoCard, "claude", "pro", true},
-		{ZovoCard, "bogus", "plus", false},
+		{Name("gone"), "x", "premium_monthly", false},
 		{Name("bogus"), "gpt", "plus", false},
 	}
 	for _, tc := range cases {
@@ -85,20 +82,20 @@ func TestCapabilitiesFromSupports(t *testing.T) {
 			t.Fatalf("support、notes 要总是对象: %+v", r)
 		}
 	}
-	if r := byKey["gpt/plus"]; !r.Support[MarsWallex] || !r.Support[ZovoCard] {
+	if r := byKey["gpt/plus"]; !r.Support[MarsWallex] {
 		t.Fatalf("%+v", r)
 	}
-	if r := byKey["gpt/pro_20x"]; r.Notes[MarsWallex] != "仅限无订阅账号" || r.Notes[ZovoCard] != "" {
+	if r := byKey["gpt/pro_20x"]; r.Notes[MarsWallex] != "仅限无订阅账号" {
 		t.Fatalf("pro_20x 要标注: %+v", r)
 	}
 	for _, k := range []string{"x/*", "grok/*", "claude/*"} {
-		if r := byKey[k]; r.Support[MarsWallex] || !r.Support[ZovoCard] {
+		if r := byKey[k]; r.Support[MarsWallex] {
 			t.Fatalf("%s: %+v", k, r)
 		}
 	}
 	// Codex 点数：MarsWallex 能力取自引擎，合成一行并标注限制
-	if r := byKey["gpt/credit*"]; !r.Support[MarsWallex] || !r.Support[ZovoCard] ||
-		r.Notes[MarsWallex] != "仅限已订阅 Plus 或 Pro 的账号，按账号计费币种付款" || r.Notes[ZovoCard] != "" {
+	if r := byKey["gpt/credit*"]; !r.Support[MarsWallex] ||
+		r.Notes[MarsWallex] != "仅限已订阅 Plus 或 Pro 的账号，按账号计费币种付款" {
 		t.Fatalf("credit*: %+v", r)
 	}
 	for k := range byKey {
@@ -133,8 +130,8 @@ func TestBuiltinRouting(t *testing.T) {
 		}
 	}
 	for _, code := range []string{"ZC-AAAA", "SXC-AAAA", "", "MWX-AAA", "M-W-AAA", "XMW-AAA"} {
-		if p, err := ForCode(code); err != nil || p.Name() != ZovoCard {
-			t.Errorf("%q 应归 ZovoCard: %v %v", code, p, err)
+		if p, err := ForCode(code); !errors.Is(err, ErrUnrecognized) || p != nil {
+			t.Errorf("%q 应认不出: %v %v", code, p, err)
 		}
 	}
 	for _, tok := range []string{"mwt_abc", "MWT_ABC", "  mwt_abc "} {
@@ -143,8 +140,8 @@ func TestBuiltinRouting(t *testing.T) {
 		}
 	}
 	for _, tok := range []string{"tok-1", "", "mw_abc"} {
-		if p, err := ForToken(tok); err != nil || p.Name() != ZovoCard {
-			t.Errorf("%q 应归 ZovoCard", tok)
+		if p, err := ForToken(tok); !errors.Is(err, ErrUnrecognized) || p != nil {
+			t.Errorf("%q 应认不出: %v %v", tok, p, err)
 		}
 	}
 }
@@ -210,12 +207,11 @@ func TestKindText(t *testing.T) {
 	if KindUpstream.Text() != "上游发码" || KindCardSupply.Text() != "供卡·本站付款" {
 		t.Fatal(KindUpstream.Text(), KindCardSupply.Text())
 	}
-	zc, _ := Get(ZovoCard)
 	mw, _ := Get(MarsWallex)
-	if CodeList(zc) != "cardplatform" || CodeList(mw) != "local" {
-		t.Fatal(CodeList(zc), CodeList(mw))
+	if CodeList(mw) != "local" {
+		t.Fatal(CodeList(mw))
 	}
-	if got := Names(); len(got) != 2 || got[0] != ZovoCard || got[1] != MarsWallex {
-		t.Fatalf("内置两家，按注册顺序: %v", got)
+	if got := Names(); len(got) != 1 || got[0] != MarsWallex {
+		t.Fatalf("内置只有 MarsWallex: %v", got)
 	}
 }

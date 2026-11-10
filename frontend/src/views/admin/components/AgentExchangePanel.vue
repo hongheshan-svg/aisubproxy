@@ -5,7 +5,7 @@
         <div>
           <h2 class="text-base font-semibold text-ink">代理换码核对</h2>
           <p class="text-sm text-muted mt-0.5">
-            「结果不明」的换码要先到卡台核对有没有真的发出新码，再在这里定论；「旧码待禁用」是新码已发、旧码还没禁掉。
+            「结果不明」的换码要先核对有没有真的发出新码（本站码到「CDK 卡密」里按旧码查；旧码带 #ID 的是已移除的 ZovoCard 留下的记录，要到 ZovoCard 后台查），再在这里定论；「旧码待禁用」是新码已发、记录还没收尾。
           </p>
         </div>
         <div class="flex items-center gap-2">
@@ -30,12 +30,12 @@
             <el-tag size="small" :type="row.state === 'unknown' ? 'danger' : row.state === 'disabling' ? 'warning' : row.state === 'done' ? 'success' : 'info'">
               {{ swapStateLabel(row.state) }}
             </el-tag>
-            <div v-if="row.state === 'disabling'" class="text-xs text-warn mt-1" style="white-space: normal">{{ DISABLING_HINT }}</div>
+            <div v-if="row.state === 'disabling'" class="text-xs text-warn mt-1" style="white-space: normal">{{ disablingHint(row) }}</div>
           </template>
         </el-table-column>
         <el-table-column label="旧码 → 新码" min-width="200">
           <template #default="{ row }">
-            <span class="mono">#{{ row.old_cdk_id }} {{ row.old_code_prefix }}…</span> →
+            <span class="mono">{{ oldCodeText(row) }}</span> →
             <span class="mono">{{ row.new_cdk_id ? `#${row.new_cdk_id} ${row.new_code_prefix}…` : '（未记录）' }}</span>
           </template>
         </el-table-column>
@@ -55,19 +55,19 @@
     <el-dialog v-model="resolveOpen" :title="`核对换码记录 #${cur?.id}`" width="min(520px, 96vw)" append-to-body :close-on-click-modal="false">
       <div v-if="cur" class="space-y-3">
         <div class="alert alert-warning text-sm">
-          先到卡台核对：这次换码有没有真的发出新码。核对不清楚不要定论，定论后不能撤回。
+          先核对：这次换码有没有真的发出新码。核对不清楚不要定论，定论后不能撤回。
         </div>
-        <div class="text-sm">旧码 <span class="mono">#{{ cur.old_cdk_id }} {{ cur.old_code_prefix }}…</span>，套餐 {{ cur.plan }}</div>
+        <div class="text-sm">旧码 <span class="mono">{{ oldCodeText(cur) }}</span>，套餐 {{ cur.plan }}</div>
         <el-radio-group v-model="form.result">
-          <el-radio-button value="released">卡台没发码（释放，用户可重试）</el-radio-button>
-          <el-radio-button value="issued">卡台已发码（禁用旧码）</el-radio-button>
+          <el-radio-button value="released">没发新码（释放，用户可重试）</el-radio-button>
+          <el-radio-button value="issued">已发新码（记下新码）</el-radio-button>
         </el-radio-group>
         <label v-if="form.result === 'issued'" class="block text-sm space-y-1">
-          <span class="text-muted">卡台上新码的 ID（必填，大于 0）</span>
+          <span class="text-muted">{{ newCodeIdLabel(cur) }}</span>
           <el-input-number v-model="form.newId" :min="0" :controls="false" class="!w-full" />
         </label>
         <label class="block text-sm space-y-1">
-          <span class="text-muted">备注（必填）：你在卡台看到了什么</span>
+          <span class="text-muted">备注（必填）：你核对到了什么</span>
           <el-input v-model="form.note" type="textarea" :rows="3" maxlength="200" show-word-limit />
         </label>
         <p v-if="formError" class="text-sm text-err">{{ formError }}</p>
@@ -84,7 +84,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { dialog } from '../../../lib/dialog'
 import { errText } from '../../../lib/cardpool'
-import { adminApi, canResolveSwap, DISABLING_HINT, SWAP_STATE_LABEL, swapStateLabel } from '../../../lib/provider'
+import { adminApi, canResolveSwap, disablingHint, issuedConfirmText, newCodeIdLabel, oldCodeText, SWAP_STATE_LABEL, swapStateLabel } from '../../../lib/provider'
 
 const rows = ref<any[]>([])
 const loading = ref(false)
@@ -101,7 +101,7 @@ async function load() {
   loading.value = true
   loadError.value = ''
   const states = stateFilter.value === 'todo' ? ['unknown', 'disabling'] : [stateFilter.value]
-  const results = await Promise.all(states.map((s) => adminApi<{ list: any[] }>('/cardplatform/agent-exchanges' + (s ? `?state=${s}` : ''))))
+  const results = await Promise.all(states.map((s) => adminApi<{ list: any[] }>('/agent-exchanges' + (s ? `?state=${s}` : ''))))
   loading.value = false
   const failed = results.find((r) => !r.ok)
   if (failed) { loadError.value = errText(failed, '读取失败'); return }
@@ -129,13 +129,13 @@ async function submitResolve() {
   formError.value = ''
   const note = form.note.trim()
   if (!note) { formError.value = '备注必填'; return }
-  if (form.result === 'issued' && !(form.newId > 0)) { formError.value = '卡台已发码时必须填新码 ID（大于 0）'; return }
+  if (form.result === 'issued' && !(form.newId > 0)) { formError.value = '已发新码时必须填新码 ID（大于 0）'; return }
   const text = form.result === 'released'
-    ? `确认卡台没有发出新码？\n将释放占位，用户可以重新换码。如果卡台其实已经发了码，会多发一张。`
-    : `确认卡台已经发出新码 #${form.newId}？\n将记下新码并禁用旧码 #${row.old_cdk_id}（${row.old_code_prefix}…）。`
+    ? `确认没有发出新码？\n将释放占位，用户可以重新换码。如果其实已经发了码，会多发一张。`
+    : issuedConfirmText(row, form.newId)
   if (!(await dialog.confirm(`记录 #${row.id}（套餐 ${row.plan}）\n${text}\n备注：${note}`, { title: '确认定论', okText: '确认定论', danger: true }))) return
   saving.value = true
-  const r = await adminApi('/cardplatform/agent-exchanges/' + row.id + '/resolve', 'POST', {
+  const r = await adminApi('/agent-exchanges/' + row.id + '/resolve', 'POST', {
     result: form.result, new_cdk_id: form.result === 'issued' ? form.newId : 0, note,
   })
   saving.value = false
@@ -145,11 +145,7 @@ async function submitResolve() {
     return
   }
   resolveOpen.value = false
-  if (form.result === 'issued' && r.data.old_disabled === false) {
-    dialog.toast('已记录新码，但旧码没有禁用成功：记录停在「旧码待禁用」，系统会每 10 分钟重试，持续失败请到卡台手动禁用旧码', 'warn', 9000)
-  } else {
-    dialog.toast('已定论')
-  }
+  dialog.toast('已定论')
   load()
 }
 

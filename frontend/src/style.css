@@ -220,7 +220,7 @@ body {
   min-height: 100vh;
   color: var(--ink);
   background: transparent;
-  /* 不用 background-attachment: fixed：滚动时每帧重绘整个视口（卡台曾因此卡顿）。
+  /* 不用 background-attachment: fixed：滚动时每帧重绘整个视口（曾因此卡顿）。
      需要固定氛围层的皮肤用 body::before（独立合成层，滚动不重绘）。 */
   transition: color 0.25s ease;
 }
@@ -406,7 +406,7 @@ textarea.input { resize: vertical; }
   }
 }
 
-/* ══════ Element Plus 表格/组件精修（优雅化 + 暗色补全，参考卡台）══════ */
+/* ══════ Element Plus 表格/组件精修（优雅化 + 暗色补全）══════ */
 .el-table {
   --el-table-border-color: var(--brd);
   --el-table-header-bg-color: var(--surface-2);
@@ -747,7 +747,7 @@ html.dark[data-skin="paper"] {
 }
 
 
-/* ══════ zovo：卡台新版（与 cardplatform aixluv 主题同一套设计语言）══════
+/* ══════ zovo：曜夜雾金══════
    日间 = 流金 gold（象牙底 + 暗金，主按钮墨色）；夜间 = 曜夜 night（深黑 + 雾金，主按钮金色渐变）。
    面板是半透明「玻璃」，叠在固定的柔光氛围层上；浮层用不透明的 --surface-solid。
    不用 backdrop-filter：大面积模糊每帧都要重算，低端机滚动会掉帧。 */
@@ -858,7 +858,7 @@ html[data-skin="zovo"] .page-title,
 html[data-skin="zovo"] .brand-title { letter-spacing: -0.01em; font-weight: 600; }
 html[data-skin="zovo"] .stat-value { font-family: var(--font-mono); letter-spacing: -0.02em; }
 
-/* 主按钮：日间墨色、夜间金色渐变 + 柔光（同卡台 theme-btn-primary） */
+/* 主按钮：日间墨色、夜间金色渐变 + 柔光 */
 html[data-skin="zovo"] .btn-primary {
   background: var(--accent-grad);
   color: var(--bg);

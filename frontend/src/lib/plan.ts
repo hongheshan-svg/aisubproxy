@@ -8,8 +8,8 @@ import { claudePlanLabel, isClaudePlan } from './claude'
 // 而它们直接决定「兑换按钮给不给点」。抽出来之后可以对着纯函数写用例，
 // 把「续费档不能被判成已满足」这类回归钉死。
 //
-// ★判据必须与卡台后端同源★
-// 卡台后端 gptProduct.PlanSatisfied 对绑卡档（flow=card_attach，即 Pro 20x 续费）
+// ★判据必须与后端同源★
+// 后端的 PlanSatisfied 判断对绑卡档（flow=card_attach，即 Pro 20x 续费）
 // 显式返回 false。代理侧若自己按档位名猜，会把 pro_20x_renew 猜成 Pro 20x 档，
 // 而它服务的账号**本来就是 Pro 20x** → 判「已满足」→ 兑换按钮置灰 → 每张码都兑不出去。
 
@@ -19,7 +19,7 @@ export const FLOW_CARD_ATTACH = 'card_attach'
 /**
  * 这一单是不是绑卡档。
  *
- * 优先用后端下发的 planFlow（卡台预览响应里的 plan_flow，取自卡台档位注册表）；
+ * 优先用后端下发的 planFlow（预览响应里的 plan_flow，取自后端档位注册表）；
  * 后端没给时才按键名兜底认那个已知的绑卡档。
  */
 export function isCardAttachPlan(plan: string, planFlow?: string): boolean {
@@ -79,7 +79,7 @@ export function planLabelT(value: string, t: TFn): string {
 export function planSatisfied(currentPlan: string, requestedPlan: string, planFlow?: string): boolean {
   const current = String(currentPlan || '').trim().toLowerCase()
   const req = String(requestedPlan || '').trim().toLowerCase()
-  // Claude：本站读不到组织当前套餐，由持码人确认目标账号是免费账号，卡台兑换时再核对
+  // Claude：本站读不到组织当前套餐，由持码人确认目标账号是免费账号，兑换时再核对
   if (isClaudePlan(req)) return false
   if (isXPremiumPlan(req)) return current.startsWith('x_') && current !== 'x_free'
   // Grok 四档（Plus / Premium / Super / Ultra）与月/年付是并列商品，不存在「更高档已满足」，只认完全相同。

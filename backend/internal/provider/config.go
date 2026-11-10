@@ -70,7 +70,8 @@ func (c Config) Effective() map[string]Name {
 
 // LoadConfig 读服务商配置。读库出错返回错误，调用方不能当成任何一家继续发码。
 // 两个设置项都没保存过时返回出厂配置（factoryConfig）。
-// 库里存的服务商名已经没有注册时：全局默认按兜底上游处理，产品配置按跟随全局默认处理，两种都写进 Warnings。
+// 库里存的服务商名已经没有注册时：全局默认留空（发码被拒，不会换成任何一家），产品配置按跟随全局默认处理，都写进 Warnings。
+// 全局默认为空而产品配置有值时（手工改库或只写了一项），同样留空并给警告。
 func LoadConfig() (Config, error) {
 	rawDef, err := db.GetSetting(SettingDefault)
 	if err != nil {
@@ -84,18 +85,14 @@ func LoadConfig() (Config, error) {
 		return factoryConfig(), nil
 	}
 	cfg := Config{ByProduct: map[string]Name{}, Warnings: []string{}}
-	fb := fallback()
-	fbName := Name("")
-	if fb != nil {
-		fbName = fb.Name()
-	}
-	cfg.Default = fbName
-	if s := strings.TrimSpace(rawDef); s != "" {
-		if p, ok := Get(Name(s)); ok {
+	if v := strings.TrimSpace(rawDef); v != "" {
+		if p, ok := Get(Name(v)); ok {
 			cfg.Default = p.Name()
 		} else {
-			cfg.Warnings = append(cfg.Warnings, fmt.Sprintf("全局默认服务商 %q 已不存在，按 %s 处理，请重新选择", s, DisplayName(fbName)))
+			cfg.Warnings = append(cfg.Warnings, fmt.Sprintf("全局默认服务商 %q 已不存在，请到「卡服务商」页重新选择", v))
 		}
+	} else {
+		cfg.Warnings = append(cfg.Warnings, "没有设置全局默认服务商，请到「卡服务商」页选择")
 	}
 	if strings.TrimSpace(rawBy) == "" {
 		return cfg, nil
@@ -133,28 +130,12 @@ func LoadConfig() (Config, error) {
 	return cfg, nil
 }
 
-// factoryConfig 是从没保存过服务商配置时的出厂配置：全局默认 MarsWallex；它不做的产品线（X、Grok、Claude）单独选兜底上游。
-// 这几条写在 ByProduct 里，「卡服务商」页上看得见；保存过一次之后完全按保存的来。
-// 全局默认不做某条产品线时发码照样拒绝（不自动换家），所以出厂配置要把这几条显式配上。
-// MarsWallex 没注册时退回「全部用兜底上游」。
+// factoryConfig 是从没保存过服务商配置时的出厂配置：全局默认 MarsWallex，按产品线的配置为空。
+// MarsWallex 不做的产品线（X、Grok、Claude）发码照样拒绝（不自动换家）。MarsWallex 没注册时 Default 为空。
 func factoryConfig() Config {
 	cfg := Config{ByProduct: map[string]Name{}, Warnings: []string{}}
-	fb := fallback()
-	mw, ok := Get(MarsWallex)
-	if !ok {
-		if fb != nil {
-			cfg.Default = fb.Name()
-		}
-		return cfg
-	}
-	cfg.Default = mw.Name()
-	if fb == nil {
-		return cfg
-	}
-	for _, p := range products {
-		if !providesProduct(mw, p.Key) && providesProduct(fb, p.Key) {
-			cfg.ByProduct[p.Key] = fb.Name()
-		}
+	if mw, ok := Get(MarsWallex); ok {
+		cfg.Default = mw.Name()
 	}
 	return cfg
 }

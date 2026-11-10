@@ -17,7 +17,6 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/tuzi/cdk-recharge-system/internal/agent"
-	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/provider"
 	"github.com/tuzi/cdk-recharge-system/internal/secretbox"
@@ -339,7 +338,7 @@ func agentOrderBind(c *gin.Context) (agentOrderRequest, bool) {
 		var te *json.UnmarshalTypeError
 		switch {
 		case errors.As(err, &te) && te.Field == "quantity": // 例如 1.5、"1"、超出整数范围
-			agentOrderInvalid(c, fmt.Sprintf("数量需为 1–%d 的整数", cardplatform.MaxIssueCount))
+			agentOrderInvalid(c, fmt.Sprintf("数量需为 1–%d 的整数", provider.MaxIssueCount))
 		case errors.As(err, &te) && te.Field == "expected_unit_price_cents":
 			agentOrderInvalid(c, agentMsgBadPrice)
 		default:
@@ -352,8 +351,8 @@ func agentOrderBind(c *gin.Context) (agentOrderRequest, bool) {
 	switch {
 	case req.ProductCode == "":
 		agentOrderInvalid(c, "请选择商品")
-	case req.Quantity < 1 || req.Quantity > cardplatform.MaxIssueCount:
-		agentOrderInvalid(c, fmt.Sprintf("数量需为 1–%d 的整数", cardplatform.MaxIssueCount))
+	case req.Quantity < 1 || req.Quantity > provider.MaxIssueCount:
+		agentOrderInvalid(c, fmt.Sprintf("数量需为 1–%d 的整数", provider.MaxIssueCount))
 	case utf8.RuneCountInString(req.Note) > localCDKNoteMax:
 		agentOrderInvalid(c, fmt.Sprintf("备注不能超过 %d 个字", localCDKNoteMax))
 	case !agent.ValidRequestNo(req.RequestNo):

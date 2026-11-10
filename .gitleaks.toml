@@ -28,7 +28,7 @@ regexes = [
   '''^TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t$''',
   # deploy/app.env.example：APP_MASTER_KEY= 留空，规则跨行把下一行配置当成了值（只在扫描整个目录时出现）
   '''^JWT_EXPIRATION_HOURS=\d+$''',
-  # 系统审计修复的测试（*_audit_*_test.go）：假管理员口令和假卡台 API Key，只在临时库和测试环境变量里用
+  # 系统审计修复的测试（*_audit_*_test.go）：假管理员口令和假 API Key，只在临时库和测试环境变量里用
   '''^Str0ngPassw0rd-OA$''',
   '''^Str0ngPassw0rd-OAH$''',
   '''^S7-Strong-Passw0rd-xyz$''',

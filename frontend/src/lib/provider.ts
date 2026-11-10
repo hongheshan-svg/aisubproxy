@@ -9,8 +9,8 @@ export type ProviderId = string
 // ---------- 服务商注册表（GET /admin/providers） ----------
 
 export type ProviderKind = 'upstream' | 'card_supply' | string
-/** cardplatform = 卡台码列表；local = 本地码列表；空 = 没有列表 */
-export type CodeListKind = 'cardplatform' | 'local' | ''
+/** local = 本地码列表；空 = 没有列表 */
+export type CodeListKind = 'local' | ''
 
 export interface ProviderInfo {
   name: string
@@ -81,7 +81,7 @@ export function productLabel(reg: Registry | null | undefined, key: string): str
 
 export function providerCodeList(reg: Registry | null | undefined, name: string): CodeListKind {
   const c = findProvider(reg, name)?.code_list
-  return c === 'cardplatform' || c === 'local' ? c : ''
+  return c === 'local' ? c : ''
 }
 
 /** 某产品下，全局默认或产品单独配置给出的服务商（接口的 effective 优先，缺失时自己算）。 */
@@ -218,13 +218,10 @@ export const CHECK_HINTS: Record<string, CheckHint> = {
   first_real_payment: { title: '首笔真实付款', link: { to: '/ops/marswallex-pay', label: '去自动付款做真实付款' } },
   wallet_sync: { title: '主钱包余额同步', link: { to: '/ops/marswallex-wallet', label: '去 MarsWallex 钱包' } },
   plan: { title: '已启用的套餐', link: { to: '/ops/marswallex-pay', label: '去付款配置启用套餐' } },
-  api_key: { title: '卡台 API Key', link: { to: '/ops/integration', label: '去配置卡台' } },
-  balance: { title: '卡台余额', link: { to: '/ops/integration', label: '去卡台页' } },
 }
 
 /** 各服务商的选卡规则页（卡头、用卡顺序）。没有的服务商不显示入口。 */
 export const SELECTION_PAGE: Record<string, string> = {
-  zovocard: '/ops/card-selection',
   marswallex: '/ops/marswallex-selection',
 }
 
@@ -360,8 +357,40 @@ export function canResolveSwap(state: string): boolean {
   return state === 'unknown'
 }
 
-/** disabling 记录给运营的说明。 */
-export const DISABLING_HINT = '新码已发给用户，旧码还没禁用成功。系统每 10 分钟自动重试，持续失败会告警，请到卡台手动禁用旧码。'
+/** 历史记录：已移除的 ZovoCard 留下的换码记录（old_cdk_id > 0），维护循环永远跳过，系统不会再处理。 */
+export function isLegacyExchange(row: { old_cdk_id?: unknown } | null | undefined): boolean {
+  return Number(row?.old_cdk_id) > 0
+}
+
+/** 换码记录里旧码的显示：旧码 ID 大于 0 才显示 #ID（本站码记录的 old_cdk_id 是 0，不能显示成「#0」）。 */
+export function oldCodeText(row: { old_cdk_id?: unknown; old_code_prefix?: unknown } | null | undefined): string {
+  const id = Number(row?.old_cdk_id)
+  return `${isLegacyExchange(row) ? `#${id} ` : ''}${row?.old_code_prefix ?? ''}…`
+}
+
+/** disabling 记录给运营的说明（本站码记录：维护循环每 10 分钟补记账转 done）。 */
+export const DISABLING_HINT = '新码已发给用户，记录还没收尾。系统每 10 分钟自动补上记账，不用处理。'
+
+/** disabling 的历史记录给运营的说明：系统不会再处理，要人工去 ZovoCard 后台作废旧码。 */
+export const LEGACY_DISABLING_HINT = '这是已移除的 ZovoCard 留下的记录，系统不会再处理。旧码在 ZovoCard 那边可能仍能兑换，请到 ZovoCard 后台手动作废旧码。'
+
+export function disablingHint(row: { old_cdk_id?: unknown } | null | undefined): string {
+  return isLegacyExchange(row) ? LEGACY_DISABLING_HINT : DISABLING_HINT
+}
+
+/** 定论表单里「新码 ID」输入框的标签。 */
+export function newCodeIdLabel(row: { old_cdk_id?: unknown } | null | undefined): string {
+  return isLegacyExchange(row)
+    ? '新码的 ID（ZovoCard 那边的卡密 ID，必填，大于 0）'
+    : '新码的 ID（本站卡密 ID，必填，大于 0）'
+}
+
+/** 定论「已发新码」时确认框里的说明。 */
+export function issuedConfirmText(row: { old_cdk_id?: unknown; old_code_prefix?: unknown } | null | undefined, newId: number): string {
+  return isLegacyExchange(row)
+    ? `确认已经发出新码 #${newId}？\n将记下新码。这是已移除的 ZovoCard 留下的记录，系统不会去作废旧码 ${oldCodeText(row)}，请到 ZovoCard 后台手动作废。`
+    : `确认已经发出新码 #${newId}？\n将记下新码，旧码 ${oldCodeText(row)} 的收尾由系统继续处理。`
+}
 
 /**
  * 代理换码失败后是否要锁住提交。发码结果不明（502 + outcome=unknown）、网络异常（可能已发出）、

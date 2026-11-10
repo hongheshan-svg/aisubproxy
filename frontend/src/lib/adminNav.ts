@@ -1,5 +1,5 @@
 // 后台侧栏菜单的纯逻辑：菜单由 /ops 子路由的 meta（title / group / icon）生成，折叠状态可持久化。
-// 服务商分组里的菜单项用短名（如「选卡规则」），meta.fullTitle 是带服务商名的完整页名（如「ZovoCard 选卡规则」），
+// 服务商分组里的菜单项用短名（如「选卡规则」），meta.fullTitle 是带服务商名的完整页名（如「MarsWallex 选卡规则」），
 // 用于浏览器标签页标题、读屏标签、折叠时的提示和手机上的面包屑（这些地方看不到分组名）。
 import type { RouteRecordRaw } from 'vue-router'
 

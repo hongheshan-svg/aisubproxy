@@ -7,21 +7,10 @@ import (
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
-	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
-	"github.com/tuzi/cdk-recharge-system/internal/secretbox"
 )
 
-// 密钥类键：只接受写入，读出脱敏
-var secretSettingKeys = map[string]bool{
-	"card_api_base":  false,
-	"card_api_key":   true,
-	"webhook_secret": true, // 卡台开发者页 whsec_…
-	// Telegram 告警在 telegram_settings.go 单独处理（令牌加密保存）
-	// agent_swap handled specially (hash)
-}
-
-// 站点未设置时的默认外观：卡台新版（zovo）+ 夜间，与前端 theme.ts / index.html 一致。
+// 站点未设置时的默认外观：zovo 皮肤 + 跟随系统，与前端 theme.ts / index.html 一致。
 // 已在后台选过皮肤的站点保持原样（存了 skin 设置项就不走默认）。
 const (
 	defaultSiteSkin  = "zovo"
@@ -53,23 +42,6 @@ func AdminGetSettings(c *gin.Context) {
 		"primary_color": settingOr("primary_color", defaultPrimaryColor),
 		"logo_version":  currentLogoVersion(),
 	}
-	// 非密钥可读
-	for k, isSecret := range secretSettingKeys {
-		if isSecret {
-			raw, _ := db.GetSetting(k)
-			out[k+"_configured"] = strings.TrimSpace(raw) != ""
-			v, err := db.GetCardSecret(k)
-			if err != nil {
-				out[k+"_hint"] = ""
-				out[k+"_error"] = "已保存的值解不开：APP_MASTER_KEY 没配置或已更换，请重新填写"
-			} else {
-				out[k+"_hint"] = maskSecret(v)
-			}
-		} else {
-			v, _ := db.GetSetting(k)
-			out[k] = v
-		}
-	}
 	out["agent_swap_password_configured"] = agentSwapPasswordConfigured()
 	out["agent_swap_password_weak"] = agentSwapPasswordWeak()
 	out["agent_swap_daily_limit"] = agentSwapDailyLimit()
@@ -77,14 +49,11 @@ func AdminGetSettings(c *gin.Context) {
 }
 
 type adminSettingsBody struct {
-	BrandName     *string `json:"brand_name"`
-	BrandSub      *string `json:"brand_sub"`
-	Skin          *string `json:"skin"`
-	ThemeMode     *string `json:"theme_mode"`
-	PrimaryColor  *string `json:"primary_color"`
-	CardAPIBase   *string `json:"card_api_base"`
-	CardAPIKey    *string `json:"card_api_key"`
-	WebhookSecret *string `json:"webhook_secret"`
+	BrandName    *string `json:"brand_name"`
+	BrandSub     *string `json:"brand_sub"`
+	Skin         *string `json:"skin"`
+	ThemeMode    *string `json:"theme_mode"`
+	PrimaryColor *string `json:"primary_color"`
 	// 代理失败换码密码（明文一次写入，存 bcrypt；空=不改）
 	AgentSwapPassword *string `json:"agent_swap_password"`
 	// 同一换码密码每个北京日最多换多少张（默认 20，必须大于 0；不传不改）
@@ -152,56 +121,7 @@ func AdminPutSettings(c *gin.Context) {
 		writes = append(writes, struct{ key, val string }{it.key, v})
 	}
 
-	// 密钥类：空字符串表示「不修改」；超长拒绝而不是截断一个半截的密钥
-	secrets := map[string]string{}
-	for _, it := range []textItem{
-		{"card_api_key", body.CardAPIKey, 200, "卡台 API Key"},
-		{"webhook_secret", body.WebhookSecret, 200, "Webhook 密钥"},
-	} {
-		if it.p == nil {
-			continue
-		}
-		v := strings.TrimSpace(*it.p)
-		if v == "" {
-			continue
-		}
-		if utf8.RuneCountInString(v) > it.max {
-			bad(it.label + "最多 " + strconv.Itoa(it.max) + " 个字符")
-			return
-		}
-		secrets[it.key] = v
-	}
-	if len(secrets) > 0 {
-		if _, err := secretbox.LoadKey(); err != nil {
-			bad("保存卡台密钥需要先配置 APP_MASTER_KEY（base64 编码的 32 字节）：" + err.Error())
-			return
-		}
-	}
-
-	// 卡台地址：只接受 https（本机回环除外）；改了地址必须同时重填 API Key，免得旧 Key 发到新主机
-	cardBase, setBase := "", false
-	if body.CardAPIBase != nil {
-		cardBase = strings.TrimSpace(*body.CardAPIBase)
-		if utf8.RuneCountInString(cardBase) > 200 {
-			bad("卡台地址最多 200 个字符")
-			return
-		}
-		if cardBase != "" {
-			if err := cardplatform.ValidateBase(cardBase); err != nil {
-				bad(err.Error())
-				return
-			}
-		}
-		if cardplatform.NormalizeBase(cardBase) != cardplatform.LoadConfig().SiteBase {
-			if _, ok := secrets["card_api_key"]; !ok {
-				bad("修改卡台地址时必须同时重新填写 API Key")
-				return
-			}
-		}
-		setBase = true
-	}
-
-	if err := writeSiteSettings(body, writes, setBase, cardBase, secrets); err != nil {
+	if err := writeSiteSettings(body, writes); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存失败"})
 		return
 	}
@@ -245,7 +165,7 @@ func maskSecret(v string) string {
 }
 
 // writeSiteSettings 把已校验的设置项写库，任何一次写失败都返回错误（不吞）。
-func writeSiteSettings(body adminSettingsBody, texts []struct{ key, val string }, setBase bool, base string, secrets map[string]string) error {
+func writeSiteSettings(body adminSettingsBody, texts []struct{ key, val string }) error {
 	if body.Skin != nil {
 		if err := db.SetSetting("skin", strings.TrimSpace(*body.Skin)); err != nil {
 			return err
@@ -260,14 +180,6 @@ func writeSiteSettings(body adminSettingsBody, texts []struct{ key, val string }
 		if err := db.SetSetting(w.key, w.val); err != nil {
 			return err
 		}
-	}
-	// 地址和密钥放在同一个事务里写，读的一方不会看到「新地址 + 旧 Key」（审计 N-1）
-	plain := map[string]string{}
-	if setBase {
-		plain["card_api_base"] = base
-	}
-	if err := db.SetSettingsWithSecrets(plain, secrets); err != nil {
-		return err
 	}
 	return nil
 }

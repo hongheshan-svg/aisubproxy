@@ -11,13 +11,30 @@ import (
 	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
-	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/payengine"
 	"github.com/tuzi/cdk-recharge-system/internal/provider"
 )
 
 const localCDKNoteMax = 200
+
+// issueProduct 发码产品线：显式传入优先（只认 gpt / x / grok / claude），否则按档位键推断。
+func issueProduct(explicit, plan string) string {
+	switch p := strings.ToLower(strings.TrimSpace(explicit)); p {
+	case "gpt", "x", "grok", "claude":
+		return p
+	}
+	if provider.IsXPremiumPlan(plan) {
+		return "x"
+	}
+	if provider.IsGrokPlan(plan) {
+		return "grok"
+	}
+	if provider.IsClaudePlan(plan) {
+		return "claude"
+	}
+	return "gpt"
+}
 
 // AdminGetDefaultProvider GET /api/v1/admin/providers/default
 func AdminGetDefaultProvider(c *gin.Context) {
@@ -99,18 +116,15 @@ type cdkIssueRequest struct {
 	Product          string `json:"product"`
 	Count            int    `json:"count"`
 	FundingConfirmed bool   `json:"funding_confirmed"`
-	// PaymentCountry 这批码兑换时用哪个地区付款。ZovoCard 空 = 菲律宾（存量行为）。
-	// 不在本站校验取值：卡台的 payment_regions 是唯一真相源，
-	// 这里再校验一遍就等于多了一份会过期的清单。发了不支持的地区，
-	// 卡台会在发码这一步直接拒，错误原样透回给操作者。
+	// PaymentCountry 这批码兑换时用哪个地区付款。
 	// MarsWallex 必填，不设默认：地区决定金额和币种，发错了要到兑换才发现。
 	PaymentCountry string `json:"payment_country"`
 	Region         string `json:"region"` // payment_country 的别名
 	Note           string `json:"note"`
 }
 
-// CardPlatformIssueCDKs POST /api/v1/admin/cardplatform/cdks、POST /api/v1/admin/cdks/issue
-// 按服务商发码。两条路由同一个处理。
+// CardPlatformIssueCDKs POST /api/v1/admin/cdks/issue
+// 按服务商发码。
 //   - 请求带了 provider：必须已注册并支持这个档位，否则 400，绝不换成别家。
 //   - 没带（老前端）：先看这个产品的配置，再看全局默认；选出来的那家不支持这个档位也是 400，绝不换成别家。
 //
@@ -149,8 +163,12 @@ func CardPlatformIssueCDKs(c *gin.Context) {
 		case errors.As(err, &unsupported):
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "provider": unsupported.Provider.Name(), "product": product, "plan": plan})
 			return
+		case errors.Is(err, provider.ErrUnknown):
+			// 默认服务商不存在或没设置：不换成任何一家，让操作者到「卡服务商」页重新选
+			c.JSON(http.StatusBadRequest, gin.H{"error": "没有可用的默认服务商，请到「卡服务商」页重新选择"})
+			return
 		case err != nil:
-			// 读不出来时不能当成 ZovoCard 发码：发出去就是真金白银的承诺
+			// 读不出来时不能随便挑一家发码：发出去就是真金白银的承诺
 			log.Printf("[provider] 读取发码服务商配置失败: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "读取发码服务商配置失败"})
 			return
@@ -195,7 +213,7 @@ func localCDKIssueReplay(c *gin.Context, cs provider.CardSupply, b db.LocalCDKIs
 
 // localCDKIssue 发供卡型服务商的码：用这家的前缀生成，写入 local_cdks.provider。完整码只在这个响应里出现一次，不进日志和审计。
 // 能不能发这个档位已由 CardPlatformIssueCDKs 确认；就绪检查和发码硬门槛按这家服务商计算。
-// 和 ZovoCard 一样要求幂等键，防止重复点击多发码：同一个键只发一批，重试返回 409（见 localCDKIssueReplay）。
+// 要求幂等键，防止重复点击多发码：同一个键只发一批，重试返回 409（见 localCDKIssueReplay）。
 func localCDKIssue(c *gin.Context, cs provider.CardSupply, req cdkIssueRequest) {
 	plan := strings.TrimSpace(req.Plan)
 	product := issueProduct(req.Product, plan)
@@ -212,8 +230,8 @@ func localCDKIssue(c *gin.Context, cs provider.CardSupply, req cdkIssueRequest) 
 	if req.Count < 1 {
 		req.Count = 1
 	}
-	if req.Count > cardplatform.MaxIssueCount {
-		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("count max %d", cardplatform.MaxIssueCount)})
+	if req.Count > provider.MaxIssueCount {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("count max %d", provider.MaxIssueCount)})
 		return
 	}
 	note := strings.TrimSpace(req.Note)

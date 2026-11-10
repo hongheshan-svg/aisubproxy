@@ -86,7 +86,7 @@ func setCardHeadSyncState(n provider.Name, err error) {
 }
 
 // cardHeadPruneMissing 是可选能力：接口不再返回的卡头直接删除，不保留。
-// ZovoCard 用它：卡台下架的卡段 BIN 只能由卡台管理员看到，本站不保留（见 db.PruneCardProductsExcept）。
+// 实现它的服务商，下架的卡段不在本站保留。
 type cardHeadPruneMissing interface {
 	PruneMissingCardHeads() bool
 }

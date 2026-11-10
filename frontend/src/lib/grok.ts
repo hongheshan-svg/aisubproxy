@@ -1,12 +1,12 @@
 // Grok 卡密：档位识别 + 登录态（grok.com 的 sso cookie）规范化。
 //
-// 卡台预览回裸档位（premium_monthly / plus_yearly …，不带 grok_ 前缀）；新版卡台另回 product。
+// 预览接口回裸档位（premium_monthly / plus_yearly …，不带 grok_ 前缀），有时另回 product。
 // ★2026-10-19 改名★（对齐 xAI 现行 Plus / Premium / Super / Ultra）后，裸 premium_monthly 同时是
 // X Premium 的键——有 product 时调用方先补成 grok_premium_monthly 再判；没有时 X 优先（见 plan.ts）。
 // 旧键 lite / heavy / monthly / yearly 仍认，显示为新名。
 //
 // ★Grok 不产预检票★：预检只查账号状态，不回 preflight_token；兑换时改为直接带登录态
-// credential（卡台按码上的产品分流，GPT / X 码仍必须带 preflight_token）。
+// credential（后端按码上的产品分流，GPT / X 码仍必须带 preflight_token）。
 
 // 带 grok_ 前缀时认全部四档；裸键不认 premium_*（归 X）。
 // ★2026-10-24 Grok 专属半价档★：grok_<tier>_monthly_half（严格半价,发码给顾客用),只在带前缀时认 _half。

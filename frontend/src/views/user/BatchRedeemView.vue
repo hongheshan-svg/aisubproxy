@@ -929,7 +929,7 @@ async function runPreflightRedeem(
     }
     const body = data?.data && typeof data.data === 'object' ? data.data : data || {}
     const preflightToken = String(body.preflight_token || data?.preflight_token || '')
-    // Grok 码：预检不产票，兑换直接带登录态；卡台给出的拦截原因（登录态失效/已有订阅）直接判失败。
+    // Grok 码：预检不产票，兑换直接带登录态；后端给出的拦截原因（登录态失效/已有订阅）直接判失败。
     const grok = credential.mode === 'session' && isGrokCredential(credential.session)
     const blocking = grok ? String(body.blocking_reason || '') : ''
     if (blocking) {

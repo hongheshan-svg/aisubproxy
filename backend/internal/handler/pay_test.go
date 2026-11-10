@@ -152,7 +152,7 @@ func TestPaySubmitProvider(t *testing.T) {
 		return payDo(AdminPaySubmit, "POST", "/orders", "/orders", string(b))
 	}
 	for _, tc := range []struct{ prov, want string }{
-		{"zovocard", "只能选已注册的供卡型服务商"},
+		{"gone", "只能选已注册的供卡型服务商"},
 		{string(providertest.TestUp), "只能选已注册的供卡型服务商"},
 		{"nope", "只能选已注册的供卡型服务商"},
 		{string(providertest.TestCard), "该服务商没有可用的卡池"},

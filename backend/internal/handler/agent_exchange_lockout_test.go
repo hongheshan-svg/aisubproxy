@@ -42,7 +42,7 @@ func TestAgentSwapPasswordRejectsWeak(t *testing.T) {
 // 30 个不同 IP 各错一次（绕开每 IP 限流）就锁住整个换码接口：之后正确口令也换不了，只告警一次。
 func TestAgentSwapGlobalLockout(t *testing.T) {
 	dbtest.Open(t)
-	seedExchange(t, exchangeOldCode)
+	seedExchange(t)
 	alerts := captureOpsAlerts(t)
 
 	for i := 0; i < swapPasswordMaxFailures; i++ {
@@ -72,7 +72,7 @@ func TestAgentSwapGlobalLockout(t *testing.T) {
 
 func TestAgentSwapLockoutExpiresAfterWindow(t *testing.T) {
 	dbtest.Open(t)
-	seedExchange(t, exchangeOldCode)
+	seedExchange(t)
 	captureOpsAlerts(t)
 	now := time.Now()
 	swapPasswordFails.now = func() time.Time { return now }
@@ -92,7 +92,7 @@ func TestAgentSwapLockoutExpiresAfterWindow(t *testing.T) {
 
 func TestAgentSwapLockoutClearedByPasswordReset(t *testing.T) {
 	dbtest.Open(t)
-	seedExchange(t, exchangeOldCode)
+	seedExchange(t)
 	captureOpsAlerts(t)
 	for i := 0; i < swapPasswordMaxFailures; i++ {
 		doExchangeWithPassword("wrong-password-x", exchangeOldCode, fmt.Sprintf("198.51.100.%d", i+1))
@@ -109,7 +109,7 @@ func TestAgentSwapLockoutClearedByPasswordReset(t *testing.T) {
 // 正确口令不清零全局计数：否则猜口令的人可以借代理的正常使用无限续命。
 func TestAgentSwapSuccessDoesNotResetFailures(t *testing.T) {
 	dbtest.Open(t)
-	seedExchange(t, exchangeOldCode)
+	seedExchange(t)
 	captureOpsAlerts(t)
 	for i := 0; i < swapPasswordMaxFailures-1; i++ {
 		doExchangeWithPassword("wrong-password-x", exchangeOldCode, fmt.Sprintf("198.51.100.%d", i+1))

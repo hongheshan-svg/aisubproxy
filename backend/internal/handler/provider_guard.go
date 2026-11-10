@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
+	"github.com/tuzi/cdk-recharge-system/internal/credential"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/provider"
 )
@@ -21,7 +21,7 @@ import (
 //     自家的在途单本来也会被引擎拒绝，这里一并拦下不改变结果。
 //
 // 查库和后面的动作之间有时间窗，所以再加一把进程内的账号锁：上游转发期间持共享锁（同一家之间互不影响，
-// ZovoCard 的现有行为不变；不同的上游之间互斥），供卡型建单期间持独占锁。绑定在转发后才写，共享锁正好盖住这段。
+// 不同的上游之间互斥），供卡型建单期间持独占锁。绑定在转发后才写，共享锁正好盖住这段。
 const crossProviderWindow = 15 * time.Minute
 
 const crossProviderBusyText = "该账号有正在处理的开通，请稍后再试"
@@ -90,7 +90,7 @@ func holdAccountExclusive(email string) (func(), bool) {
 func upstreamAccountEmail(body map[string]any) string {
 	if cred, ok := body["credential"].(map[string]any); ok {
 		if sess := str(cred["session"]); sess != "" {
-			if cardplatform.IsXPremiumCredential(sess) || cardplatform.IsGrokCredential(sess) {
+			if credential.IsXPremiumCredential(sess) || credential.IsGrokCredential(sess) {
 				return ""
 			}
 			if em := db.ExtractSessionEmail(sess); em != "" {

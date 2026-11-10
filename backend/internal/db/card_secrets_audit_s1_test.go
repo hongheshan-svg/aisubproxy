@@ -31,7 +31,7 @@ func TestS1MigrateCardSecrets(t *testing.T) {
 		if !strings.HasPrefix(raw, "v1:") || strings.Contains(raw, want) {
 			t.Fatalf("%s 应为密文: %q", k, raw)
 		}
-		got, err := db.GetCardSecret(k)
+		got, err := db.GetSecretSetting(k)
 		if err != nil || got != want {
 			t.Fatalf("%s 读回 %q err=%v", k, got, err)
 		}
@@ -70,16 +70,26 @@ func TestS1SanitizeWebhookPayload(t *testing.T) {
 
 func TestS1MigrateWebhookPayloads(t *testing.T) {
 	dbtest.Open(t)
-	if err := db.InsertWebhookEvent("card_transaction", "k1", `{"card_number":"5378727109708264","cvv":"123"}`); err != nil {
-		t.Fatal(err)
-	}
+	insertLegacyWebhook(t, "k1", `{"card_number":"5378727109708264","cvv":"123"}`)
 	for i := 0; i < 2; i++ {
 		if err := db.MigrateWebhookPayloads(); err != nil {
 			t.Fatal(err)
 		}
 	}
-	rows, _ := db.ListWebhookEvents(10)
-	if len(rows) != 1 || strings.Contains(rows[0].Payload, "5378727109708264") || strings.Contains(rows[0].Payload, "123") {
-		t.Fatalf("历史数据未清洗: %+v", rows)
+	var payloads []string
+	rows, err := db.DB.Query(`SELECT payload FROM webhook_events`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			t.Fatal(err)
+		}
+		payloads = append(payloads, p)
+	}
+	if len(payloads) != 1 || strings.Contains(payloads[0], "5378727109708264") || strings.Contains(payloads[0], "123") {
+		t.Fatalf("历史数据未清洗: %+v", payloads)
 	}
 }

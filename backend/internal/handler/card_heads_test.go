@@ -118,47 +118,10 @@ func TestMarsWallexCardHeadsNoPool(t *testing.T) {
 	}
 }
 
-func TestZovoCardCardHeadsNeedsCache(t *testing.T) {
-	dbtest.Open(t)
-	ctx := context.Background()
-	if _, err := (zovoCardAdapter{}).CardHeads(ctx); err == nil {
-		t.Fatal("产品缓存为空时应报错")
-	}
-	for _, p := range []db.CardProductCache{
-		{ProductCode: "P-HEADS", BIN: "411111", Network: "VISA", IssuingArea: "US", Description: "多卡头", BinHeads: []string{"411111", "422222"}, Enabled: true},
-		{ProductCode: "P-BIN", BIN: "533333", Network: "MASTER", IssuingArea: "HK", Enabled: true},
-		{ProductCode: "P-NONE", Network: "VISA", Enabled: true},
-	} {
-		if err := db.UpsertCardProduct(p); err != nil {
-			t.Fatal(err)
-		}
-	}
-	items, err := zovoCardAdapter{}.CardHeads(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	by := map[string]db.CardHeadProduct{}
-	for _, it := range items {
-		by[it.ProductID] = it
-	}
-	if h := by["P-HEADS"]; h.Name != "多卡头" || !reflect.DeepEqual(h.CardHeads, []string{"411111", "422222"}) || h.Network != "VISA" || h.Country != "US" || h.Currency != "" {
-		t.Fatalf("P-HEADS = %+v", h)
-	}
-	if h := by["P-BIN"]; h.Name != "P-BIN" || !reflect.DeepEqual(h.CardHeads, []string{"533333"}) || h.Country != "HK" {
-		t.Fatalf("P-BIN = %+v", h)
-	}
-	if h := by["P-NONE"]; h.CardHeads == nil || len(h.CardHeads) != 0 {
-		t.Fatalf("P-NONE = %+v", h)
-	}
-}
-
-// 两家内置服务商都能自动读取卡头；测试用的上游服务商不能。
+// MarsWallex 能自动读取卡头；没有接适配器的服务商不能。
 func TestCardHeadSourceFor(t *testing.T) {
 	if _, ok := cardHeadSourceFor(provider.MarsWallex); !ok {
 		t.Fatal("MarsWallex 应能读取卡头")
-	}
-	if _, ok := cardHeadSourceFor(provider.ZovoCard); !ok {
-		t.Fatal("ZovoCard 应能读取卡头")
 	}
 	if _, ok := cardHeadSourceFor("nope"); ok {
 		t.Fatal("未注册的服务商不能读取卡头")
@@ -402,28 +365,30 @@ func TestSyncCardHeadsSkipsInvalidProductIDs(t *testing.T) {
 	}
 }
 
-// ZovoCard 下架的卡段（产品缓存里已删除）不保留卡头：BIN 只能由卡台管理员看到。
-func TestZovoCardCardHeadsPruneDelisted(t *testing.T) {
+// fakePruningHeads 是会要求「接口不再返回的卡头直接删除」的数据源。
+type fakePruningHeads struct{ fakeHeads }
+
+func (fakePruningHeads) PruneMissingCardHeads() bool { return true }
+
+// 数据源要求不保留下架的卡段时，接口不再返回的卡头同步后被删除。
+func TestCardHeadsPruneDelistedWhenSourceAsks(t *testing.T) {
 	dbtest.Open(t)
 	ctx := context.Background()
-	for _, code := range []string{"P1", "P2"} {
-		if err := db.UpsertCardProduct(db.CardProductCache{ProductCode: code, BIN: "411111", Enabled: true}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := syncCardHeads(ctx, provider.ZovoCard, zovoCardAdapter{}); err != nil {
+	const name provider.Name = "prune_src"
+	both := fakePruningHeads{fakeHeads{items: []db.CardHeadProduct{
+		{ProductID: "P1", Name: "P1", CardHeads: []string{"411111"}}, {ProductID: "P2", Name: "P2", CardHeads: []string{"411111"}},
+	}}}
+	if err := syncCardHeads(ctx, name, both); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.UpdateCardHeadNotes(string(provider.ZovoCard), "P2", "yes", "", "", "admin", 1); err != nil {
+	if err := db.UpdateCardHeadNotes(string(name), "P2", "yes", "", "", "admin", 1); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.PruneCardProductsExcept(map[string]bool{"P1": true}); err != nil {
+	onlyP1 := fakePruningHeads{fakeHeads{items: both.items[:1]}}
+	if err := syncCardHeads(ctx, name, onlyP1); err != nil {
 		t.Fatal(err)
 	}
-	if err := syncCardHeads(ctx, provider.ZovoCard, zovoCardAdapter{}); err != nil {
-		t.Fatal(err)
-	}
-	list, _ := db.ListCardHeads(string(provider.ZovoCard))
+	list, _ := db.ListCardHeads(string(name))
 	if len(list) != 1 || list[0].ProductID != "P1" {
 		t.Fatalf("下架的 P2 应删除: %+v", list)
 	}

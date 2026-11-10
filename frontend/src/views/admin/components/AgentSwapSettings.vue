@@ -25,7 +25,7 @@
       <el-form-item label="每日换码上限（张）">
         <el-input-number v-model="swapLimit" :min="1" :max="100000" :step="1" :precision="0" data-field="agent_swap_daily_limit" />
         <p class="w-full text-xs text-subtle mt-1">
-          同一个换码密码每个北京日最多换这么多张，必须大于 0。每换一张都会向卡台买一张新码，调高前先想清楚成本。
+          同一个换码密码每个北京日最多换这么多张，必须大于 0。每换一张都会发出一张新码，调高前先想清楚。
         </p>
       </el-form-item>
       <el-form-item label="发给代理的换码链接（可复制）">
@@ -91,7 +91,7 @@ async function save() {
         dialog.toast('每日换码上限必须是大于 0 的整数', 'warn')
         return
       }
-      const ok = await dialog.confirm(`把代理每日换码上限从 ${swapLimitLoaded ?? '默认'} 张改为 ${n} 张？每换一张都会向卡台买一张新码。`, { title: '确认修改换码上限', okText: '确认修改', danger: true })
+      const ok = await dialog.confirm(`把代理每日换码上限从 ${swapLimitLoaded ?? '默认'} 张改为 ${n} 张？每换一张都会发出一张新码。`, { title: '确认修改换码上限', okText: '确认修改', danger: true })
       if (!ok) return
       body.agent_swap_daily_limit = n
     }

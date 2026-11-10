@@ -16,7 +16,7 @@ import (
 //
 // 会话等同于登录态，只以 secretbox 密文保存，订单完成或绑定满 7 天清空；主密钥缺失时拒绝写入，绝不降级成明文。
 // 清空的只是 session_payload：redemption_token 要留着给兑换进度查询，账号邮箱单独加密留着给账单查询和卡健康归因，
-// 这些路径都不依赖会话本身（兑换时会话由前端直接随预检发给卡台，本站从不回读它去兑换）。
+// 这些路径都不依赖会话本身（兑换时会话由前端直接随预检发给上游，本站从不回读它去兑换）。
 const (
 	cdkSessionAAD      = "cdk_session_binding"
 	cdkSessionEmailAAD = "cdk_session_binding_email"
@@ -64,18 +64,6 @@ func sealSessionEmail(key []byte, sess string) (string, error) {
 	return secretbox.Seal(key, cdkSessionEmailAAD, email)
 }
 
-// openStoredSession 把库里的值还原成会话原文。未迁移的旧明文原样返回（只在主密钥缺失、迁移被跳过时才会有）。
-func openStoredSession(stored string) (string, error) {
-	if stored == "" || !isSealedSession(stored) {
-		return stored, nil
-	}
-	key, err := secretbox.LoadKey()
-	if err != nil {
-		return "", err
-	}
-	return secretbox.Open(key, cdkSessionAAD, stored)
-}
-
 // openStoredEmail 取账号邮箱：优先单独加密的那一列，其次未迁移的旧明文会话。
 func openStoredEmail(sealedEmail, stored string) (string, error) {
 	if sealedEmail != "" {
@@ -89,107 +77,6 @@ func openStoredEmail(sealedEmail, stored string) (string, error) {
 		return ExtractSessionEmail(stored), nil
 	}
 	return "", nil
-}
-
-// BindCDKSession 预检/兑换时写入 session（可按码或 redemption_token 关联）。provider 是写绑定的上游服务商，必填。
-// 只写密文；主密钥缺失或不合法时返回错误且不写任何东西。调用方记日志后照常继续：兑换本身不依赖这份副本。
-// 已有的行不改 provider：一张码终身只属于一家。账号邮箱取会话 JSON 里写的 user.email。
-func BindCDKSession(provider, cdkCode, redemptionToken, sessionPayload string) error {
-	return BindCDKSessionAs(provider, cdkCode, redemptionToken, sessionPayload, ExtractSessionEmail(sessionPayload))
-}
-
-// BindCDKSessionAs 同 BindCDKSession，但账号邮箱由调用方给出（例如上游预检核验过的邮箱）。
-// 这个邮箱是跨服务商互斥和凭卡密查账单的依据，不能取会话 JSON 里用户自己填的那一份（审计 F-2）。为空时不记邮箱。
-func BindCDKSessionAs(provider, cdkCode, redemptionToken, sessionPayload, accountEmail string) error {
-	if DB == nil {
-		return fmt.Errorf("db not ready")
-	}
-	provider = strings.TrimSpace(provider)
-	if provider == "" {
-		return fmt.Errorf("绑定会话缺少服务商")
-	}
-	code := normalizeCDKCode(cdkCode)
-	tok := strings.TrimSpace(redemptionToken)
-	sess := strings.TrimSpace(sessionPayload)
-	if sess == "" || (code == "" && tok == "") {
-		return nil
-	}
-	key, err := secretbox.LoadKey()
-	if err != nil {
-		return fmt.Errorf("拒绝保存会话: %w", err)
-	}
-	sealed, err := secretbox.Seal(key, cdkSessionAAD, sess)
-	if err != nil {
-		return fmt.Errorf("加密会话失败: %w", err)
-	}
-	email := ""
-	if em := strings.TrimSpace(accountEmail); em != "" {
-		if email, err = secretbox.Seal(key, cdkSessionEmailAAD, em); err != nil {
-			return fmt.Errorf("加密邮箱失败: %w", err)
-		}
-	}
-	now := time.Now().Unix()
-	// 优先已知码
-	if code != "" {
-		_, err := DB.Exec(`
-			INSERT INTO cdk_session_bindings (cdk_code, session_payload, redemption_token, account_email_sealed, session_bound_at, provider, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-			ON CONFLICT(cdk_code) DO UPDATE SET
-				session_payload = excluded.session_payload,
-				account_email_sealed = excluded.account_email_sealed,
-				session_bound_at = excluded.session_bound_at,
-				redemption_token = COALESCE(NULLIF(excluded.redemption_token,''), cdk_session_bindings.redemption_token),
-				updated_at = CURRENT_TIMESTAMP
-		`, code, sealed, tok, email, now, provider)
-		if err != nil {
-			return err
-		}
-		return recordRedemptionToken(code, tok)
-	}
-	// 仅有 token：更新已绑定行
-	res, err := DB.Exec(`
-		UPDATE cdk_session_bindings
-		SET session_payload = ?, account_email_sealed = ?, session_bound_at = ?, updated_at = CURRENT_TIMESTAMP
-		WHERE redemption_token = ?
-	`, sealed, email, now, tok)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n > 0 {
-		return nil
-	}
-	// 尚无行：用 token 伪作 key 前缀保存（账单页仍建议用完整码）
-	_, err = DB.Exec(`
-		INSERT INTO cdk_session_bindings (cdk_code, session_payload, redemption_token, account_email_sealed, session_bound_at, provider, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-	`, "RT:"+tok, sealed, tok, email, now, provider)
-	if err != nil {
-		return err
-	}
-	return recordRedemptionToken("RT:"+tok, tok)
-}
-
-// GetSessionByCDK 凭卡密取绑定 session 的原文；没有绑定或已清空时返回空串。解不开（主密钥缺失或已更换）时返回错误。
-func GetSessionByCDK(cdkCode string) (string, error) {
-	if DB == nil {
-		return "", fmt.Errorf("db not ready")
-	}
-	code := normalizeCDKCode(cdkCode)
-	if code == "" {
-		return "", nil
-	}
-	var stored string
-	err := DB.QueryRow(`
-		SELECT session_payload FROM cdk_session_bindings
-		WHERE cdk_code = ? AND TRIM(session_payload) != ''
-	`, code).Scan(&stored)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-	return openStoredSession(stored)
 }
 
 // GetAccountEmailByCDK 凭卡密取绑定时记下的账号邮箱（完整、未脱敏）。会话清空后仍可取到。
@@ -210,49 +97,6 @@ func GetAccountEmailByCDK(cdkCode string) (string, error) {
 		return "", err
 	}
 	return openStoredEmail(sealedEmail, stored)
-}
-
-// CDKBinding 本地码 ↔ token ↔ session 绑定（公开兑换进度/账单依赖）。
-type CDKBinding struct {
-	CDKCode         string
-	RedemptionToken string
-	SessionPayload  string // 会话原文；已清空或解不开时为空。不要写进日志、响应或审计
-	HasSession      bool   // 库里是否还留着会话（不管当前能不能解开）
-	AccountEmail    string // 绑定时记下的账号邮箱；会话清空后仍在，解不开时为空
-	UpdatedAt       string
-}
-
-// GetBindingByCDK 按卡密取绑定（session 可为空：仅 preview 过）。
-// 主密钥缺失或解密失败不算错误，只是会话和邮箱为空：兑换进度查询只靠 token，不能因此失败。
-func GetBindingByCDK(cdkCode string) (*CDKBinding, error) {
-	if DB == nil {
-		return nil, fmt.Errorf("db not ready")
-	}
-	code := normalizeCDKCode(cdkCode)
-	if code == "" {
-		return nil, nil
-	}
-	var b CDKBinding
-	var stored, sealedEmail string
-	err := DB.QueryRow(`
-		SELECT cdk_code, COALESCE(redemption_token,''), COALESCE(session_payload,''), account_email_sealed, COALESCE(updated_at,'')
-		FROM cdk_session_bindings
-		WHERE cdk_code = ?
-	`, code).Scan(&b.CDKCode, &b.RedemptionToken, &stored, &sealedEmail, &b.UpdatedAt)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	b.HasSession = strings.TrimSpace(stored) != ""
-	if s, err := openStoredSession(stored); err == nil {
-		b.SessionPayload = s
-	}
-	if em, err := openStoredEmail(sealedEmail, stored); err == nil {
-		b.AccountEmail = em
-	}
-	return &b, nil
 }
 
 // clearCDKSessionRowIf 把该行的会话清空，但只在库里的值仍等于 expected 时生效：读取之后用户提交了新会话的话，新会话不能被清掉。
@@ -279,53 +123,6 @@ func clearCDKSessionRowIf(code, expected string) (bool, error) {
 	}
 	n, err := res.RowsAffected()
 	return n == 1, err
-}
-
-// ClearCDKSessionByCode 订单完成时清空会话。没有这一行或已清空都不算错。
-func ClearCDKSessionByCode(cdkCode string) error {
-	if DB == nil {
-		return fmt.Errorf("db not ready")
-	}
-	code := normalizeCDKCode(cdkCode)
-	if code == "" {
-		return nil
-	}
-	var stored string
-	err := DB.QueryRow(`SELECT session_payload FROM cdk_session_bindings WHERE cdk_code = ?`, code).Scan(&stored)
-	if errors.Is(err, sql.ErrNoRows) || (err == nil && stored == "") {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	_, err = clearCDKSessionRowIf(code, stored)
-	return err
-}
-
-// ClearCDKSessionByToken 同 ClearCDKSessionByCode，按 redemption_token 定位（只有 token 的 RT: 占位行也能清）。
-func ClearCDKSessionByToken(redemptionToken string) error {
-	if DB == nil {
-		return fmt.Errorf("db not ready")
-	}
-	tok := strings.TrimSpace(redemptionToken)
-	if tok == "" {
-		return nil
-	}
-	rows, err := DB.Query(`SELECT cdk_code, session_payload FROM cdk_session_bindings WHERE redemption_token = ? AND session_payload != ''`, tok)
-	if err != nil {
-		return err
-	}
-	list, err := scanCDKSessionRows(rows)
-	if err != nil {
-		return err
-	}
-	var errs []error
-	for _, r := range list {
-		if _, err := clearCDKSessionRowIf(r.code, r.stored); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
 }
 
 type cdkSessionRow struct{ code, stored string }

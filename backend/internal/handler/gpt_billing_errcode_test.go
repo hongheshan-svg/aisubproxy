@@ -40,7 +40,7 @@ func TestBillingCheckErrorCodes(t *testing.T) {
 			status: http.StatusBadRequest, code: "session_invalid", errMsg: "登录信息已过期",
 		},
 		{
-			name: "读取绑定失败", body: `{"cdk_code":"ZC-LOOKUP-FAIL-CODE-1"}`,
+			name: "读取绑定失败", body: `{"cdk_code":"TU-LOOKUP-FAIL-CODE-1"}`,
 			setup: func(t *testing.T) {
 				if _, err := db.DB.Exec(`DROP TABLE cdk_session_bindings`); err != nil {
 					t.Fatal(err)
@@ -49,7 +49,7 @@ func TestBillingCheckErrorCodes(t *testing.T) {
 			status: http.StatusInternalServerError, code: "lookup_failed", errMsg: "查询绑定失败",
 		},
 		{
-			name: "卡密没有绑定账号", body: `{"cdk_code":"ZC-NOT-BOUND-CODE-1"}`,
+			name: "卡密没有绑定账号", body: `{"cdk_code":"TU-NOT-BOUND-CODE-1"}`,
 			status: http.StatusNotFound,
 			code:   "binding_not_found",
 			errMsg: "未找到该卡密绑定的账号。请确认兑换时使用了 session 凭证，或改用直接粘贴 session 查询。",
@@ -58,7 +58,7 @@ func TestBillingCheckErrorCodes(t *testing.T) {
 			name: "账单服务不可用", body: `{"cdk_code":"` + cdkSessCode + `"}`,
 			setup: func(t *testing.T) {
 				stubAccounthub(t, 500)
-				if err := db.BindCDKSession("zovocard", cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
+				if err := bindCDKSession("testup", cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
 					t.Fatal(err)
 				}
 			},

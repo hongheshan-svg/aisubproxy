@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  availableCards, FAIL_TEXT, sumTodos, mainUsdBalance, marsEnv, pickTab, tabCrumb, todoNeedsAttention, todoText, zovoEnv, PAGE_TABS,
+  availableCards, FAIL_TEXT, sumTodos, mainUsdBalance, marsEnv, pickTab, tabCrumb, todoNeedsAttention, todoText, PAGE_TABS,
 } from '../adminui'
 
 describe('待办展示：失败不能显示成 0', () => {
@@ -37,19 +37,6 @@ describe('卡池概览汇总', () => {
 })
 
 describe('环境徽章', () => {
-  it('卡台生产、沙盒、自定义', () => {
-    expect(zovoEnv('https://zovocard.com/', true).label).toBe('生产')
-    expect(zovoEnv('', true).label).toBe('生产')
-    expect(zovoEnv('https://sandbox.zovocard.com', true).label).toBe('沙盒')
-    expect(zovoEnv('https://x.example', true).kind).toBe('custom')
-  })
-  it('卡台没有 Key 时显示未配置，哪怕地址是生产', () => {
-    const b = zovoEnv('', false)
-    expect(b.kind).toBe('unconfigured')
-    expect(b.label).toBe('未配置')
-    expect(zovoEnv('https://zovocard.com', false).kind).toBe('unconfigured')
-    expect(zovoEnv('https://sandbox.zovocard.com', false).label).toBe('未配置')
-  })
   it('MarsWallex 按预设比对', () => {
     const presets = [{ id: 'prod', url: 'https://p.example/api' }, { id: 'test', url: 'https://t.example/api' }]
     expect(marsEnv('', presets, true).label).toBe('生产')

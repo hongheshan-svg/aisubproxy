@@ -35,7 +35,7 @@ describe('发起付款带上服务商', () => {
     expect(pickPayProvider(list, undefined)).toBe('marswallex')
     expect(pickPayProvider(list, '')).toBe('marswallex')
     // 上游型、不存在的名字都不能被预选
-    expect(pickPayProvider(list, 'zovocard')).toBe('marswallex')
+    expect(pickPayProvider(list, 'acme')).toBe('marswallex')
     expect(pickPayProvider(list, 'nope')).toBe('marswallex')
     expect(pickPayProvider([{ name: 'testcard', kind: 'card_supply' }], undefined)).toBe('testcard')
     expect(pickPayProvider([], 'testcard')).toBe('')

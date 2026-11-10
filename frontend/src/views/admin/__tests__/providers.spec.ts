@@ -52,13 +52,13 @@ beforeEach(() => {
 describe('卡服务商页', () => {
   it('按接口渲染三家：显示名、类型标签、检查项、extras、warnings、combos，且不按名字写死', async () => {
     const html = await render(CardProviders)
-    for (const n of ['zovocard', 'marswallex', 'testcard']) expect(html).toContain(`data-provider="${n}"`)
+    for (const n of ['acme', 'marswallex', 'testcard']) expect(html).toContain(`data-provider="${n}"`)
     expect((html.match(/data-testid="kind-tag"/g) || []).length).toBe(3)
     expect(html).toContain('上游发码')
     expect(html).toContain('供卡·本站付款')
     expect(html).toContain('TestCard')
     // extras 来自接口
-    expect(html).toContain('卡台余额 123.45 USD')
+    expect(html).toContain('Acme 余额 123.45 USD')
     expect(html).toContain('测试额度 9 张')
     // 假服务商的自定义检查项也渲染（未知 key 退回 key 本身）
     expect(html).toContain('zz_custom_check')
@@ -76,7 +76,7 @@ describe('卡服务商页', () => {
     const row = (k: string) => html.split(`data-product="${k}"`)[1].split('</tr>')[0]
     // gpt：三家都可选，已选 marswallex；生效 MarsWallex，不支持 Codex 点数
     const gpt = row('gpt')
-    expect(gpt).toContain('跟随全局默认（ZovoCard）')
+    expect(gpt).toContain('跟随全局默认（Acme）')
     expect(gpt).toMatch(/<option value="marswallex"[^>]*selected/)
     expect(gpt).toContain('value="testcard"')
     expect(gpt).toContain('不支持：')
@@ -85,7 +85,7 @@ describe('卡服务商页', () => {
     const x = row('x')
     expect(x).toContain('value="testcard"')
     expect(x).not.toContain('value="marswallex"')
-    // grok：只有 zovocard
+    // grok：只有 acme
     expect(row('grok')).not.toContain('value="testcard"')
   })
 
@@ -102,20 +102,20 @@ describe('发码服务商选择条', () => {
     const html = await render(IssueProviderBar, {
       reg: reg(), products: registry.value!.products, provider: 'marswallex', product: 'x', notice: '',
     })
-    expect(html).toContain('ZovoCard')
+    expect(html).toContain('Acme')
     expect(html).toContain('MarsWallex')
     expect(html).toContain('TestCard')
-    expect(html).toContain('X Premium当前默认：ZovoCard')
+    expect(html).toContain('X Premium当前默认：Acme')
     expect(html).toMatch(/is-disabled[^>]*>[\s\S]*?MarsWallex/)
     expect(html).not.toContain('provider-notice')
   })
   it('预选改选后显示提示文案', async () => {
     const html = await render(IssueProviderBar, {
-      reg: reg(), products: registry.value!.products, provider: 'zovocard', product: 'gpt',
-      notice: 'ChatGPT 配置为用 MarsWallex，它暂不支持 Codex 点数，已改用 ZovoCard',
+      reg: reg(), products: registry.value!.products, provider: 'acme', product: 'gpt',
+      notice: 'ChatGPT 配置为用 MarsWallex，它暂不支持 Codex 点数，已改用 Acme',
     })
     expect(html).toContain('data-testid="provider-notice"')
-    expect(html).toContain('已改用 ZovoCard')
+    expect(html).toContain('已改用 Acme')
     expect(html).toContain('ChatGPT当前默认：MarsWallex')
   })
 })

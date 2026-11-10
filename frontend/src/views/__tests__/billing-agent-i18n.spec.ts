@@ -115,8 +115,7 @@ for (const [name, file, ns] of [
 // 后端错误码表（写死在这里；改了后端的码，这里要同步）
 const SWAP_CODES = [
   'rate_limited', 'disabled', 'invalid_request', 'locked', 'wrong_password', 'code_required', 'provider_unsupported',
-  'code_not_found', 'no_failed_record', 'charge_unconfirmed', 'already_succeeded', 'not_eligible', 'plan_unknown',
-  'region_unknown', 'conflict', 'daily_limit', 'unavailable', 'outcome_unknown',
+  'code_not_found', 'no_failed_record', 'conflict', 'daily_limit', 'unavailable',
   // 本站码（MarsWallex）路径和分派层新增的码
   'code_unrecognized', 'service_unavailable', 'busy', 'not_eligible_unpaid',
   // 两个接口共用的限流中间件（public_guard.go）

@@ -67,7 +67,7 @@ func AdminListProviders(c *gin.Context) {
 	c.JSON(http.StatusOK, providersOverview(cfg))
 }
 
-// AdminPutProviderConfig PUT /api/v1/admin/providers/config  body: {"default": "zovocard", "by_product": {"gpt": "marswallex", "x": ""}}
+// AdminPutProviderConfig PUT /api/v1/admin/providers/config  body: {"default": "marswallex", "by_product": {"gpt": "marswallex", "x": ""}}
 // default 必填。by_product 给了就整份替换，值为空串表示跟随全局默认；没给就保留现有的按产品配置。
 // 只影响之后新发的码。被选用但还没就绪的服务商照样保存，在 not_ready 里列出来给界面警告（发码接口会拦）。
 func AdminPutProviderConfig(c *gin.Context) {
@@ -126,7 +126,7 @@ func AdminPutProviderConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, resp)
 }
 
-// byProductText 是审计里的按产品配置，按产品排序，如 gpt=marswallex,x=zovocard；空的写 -。
+// byProductText 是审计里的按产品配置，按产品排序，如 gpt=marswallex,x=testup；空的写 -。
 func byProductText(by map[string]provider.Name) string {
 	if len(by) == 0 {
 		return "-"

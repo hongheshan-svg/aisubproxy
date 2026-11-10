@@ -10,13 +10,19 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/db/dbtest"
 )
 
+// insertLegacyWebhook 直接写一行旧 webhook_events（升级前的库里就有这些行），不经过任何业务函数。
+func insertLegacyWebhook(t *testing.T, idemKey, payload string) {
+	t.Helper()
+	if _, err := db.DB.Exec(`INSERT INTO webhook_events (event_type, idem_key, payload) VALUES ('card_transaction', ?, ?)`, idemKey, payload); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func s6SeedWebhooks(t *testing.T, n int) {
 	t.Helper()
 	for i := 1; i <= n; i++ {
 		p := fmt.Sprintf(`{"event":"card_transaction","n":%d,"card_number":"53787271097%05d","cvv":"123"}`, i, i)
-		if err := db.InsertWebhookEvent("card_transaction", fmt.Sprintf("k%d", i), p); err != nil {
-			t.Fatal(err)
-		}
+		insertLegacyWebhook(t, fmt.Sprintf("k%d", i), p)
 	}
 }
 

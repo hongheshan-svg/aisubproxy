@@ -22,7 +22,7 @@ func mustPanic(t *testing.T, what string, p provider.Provider) {
 	provider.Register(p)
 }
 
-// 注册校验：重名、前缀重叠、两家兜底、名称不合法、类型和接口不符，都要让启动失败。
+// 注册校验：重名、前缀重叠、名称不合法、类型和接口不符，都要让启动失败。
 func TestRegisterRejectsBadProviders(t *testing.T) {
 	providertest.RegisterBoth(t)
 	card := providertest.NewTestCard()
@@ -31,7 +31,7 @@ func TestRegisterRejectsBadProviders(t *testing.T) {
 	dup := card
 	mustPanic(t, "重名", dup)
 	dupUp := up
-	dupUp.N = provider.ZovoCard
+	dupUp.N = provider.MarsWallex
 	mustPanic(t, "和内置重名", dupUp)
 
 	for _, tc := range []struct{ what, code, tok string }{
@@ -51,9 +51,6 @@ func TestRegisterRejectsBadProviders(t *testing.T) {
 		mustPanic(t, tc.what, c)
 	}
 
-	fb := providertest.Up{N: "second_fallback", Display: "Second", Prods: []string{"gpt"}, IsFallback: true}
-	mustPanic(t, "两家兜底", fb)
-
 	for _, bad := range []provider.Name{"Bad", "bad-name", "", "坏"} {
 		mustPanic(t, "名称 "+string(bad), providertest.Up{N: bad, Display: "X", Prods: []string{"gpt"}})
 	}
@@ -64,7 +61,7 @@ func TestRegisterRejectsBadProviders(t *testing.T) {
 	// 合法的第三家能注册，且失败的注册没有留下半截
 	provider.Register(providertest.Card{N: "third_card", Display: "Third", Code: "TH-", Token: "tht_", Prods: []string{"gpt"}, Plans: []string{"plus"}})
 	names := provider.Names()
-	want := []provider.Name{provider.ZovoCard, provider.MarsWallex, providertest.TestCard, providertest.TestUp, "third_card"}
+	want := []provider.Name{provider.MarsWallex, providertest.TestCard, providertest.TestUp, "third_card"}
 	if len(names) != len(want) {
 		t.Fatalf("%v", names)
 	}
@@ -81,12 +78,12 @@ func TestRegisterRestored(t *testing.T) {
 	if _, ok := provider.Get(providertest.TestCard); ok {
 		t.Fatal("应已恢复")
 	}
-	if len(provider.Names()) != 2 {
+	if len(provider.Names()) != 1 {
 		t.Fatal(provider.Names())
 	}
 }
 
-// 码与令牌归属：供卡型前缀优先，再看非兜底上游认领，最后兜底 ZovoCard。
+// 码与令牌归属：供卡型前缀优先，再看上游认领，谁都不认领的一律认不出，绝不退回到任何一家。
 func TestForCodeAndToken(t *testing.T) {
 	providertest.RegisterBoth(t)
 	for code, want := range map[string]provider.Name{
@@ -95,26 +92,30 @@ func TestForCodeAndToken(t *testing.T) {
 		"MW-AAAAA":       provider.MarsWallex,
 		"TU-12345":       providertest.TestUp,
 		" tu-12345 ":     providertest.TestUp,
-		"ZC-AAAA":        provider.ZovoCard,
-		"TCX-AAAA":       provider.ZovoCard,
-		"":               provider.ZovoCard,
 	} {
 		p, err := provider.ForCode(code)
 		if err != nil || p.Name() != want {
 			t.Errorf("%q 应归 %s: %v %v", code, want, p, err)
 		}
 	}
+	for _, code := range []string{"ZC-AAAA", "TCX-AAAA", ""} {
+		if p, err := provider.ForCode(code); !errors.Is(err, provider.ErrUnrecognized) || p != nil {
+			t.Errorf("%q 应认不出: %v %v", code, p, err)
+		}
+	}
 	for tok, want := range map[string]provider.Name{
-		"tct_abc":  providertest.TestCard,
-		"TCT_ABC":  providertest.TestCard,
-		"mwt_abc":  provider.MarsWallex,
-		"tut_abc":  providertest.TestUp,
-		"zc-tok-1": provider.ZovoCard,
+		"tct_abc": providertest.TestCard,
+		"TCT_ABC": providertest.TestCard,
+		"mwt_abc": provider.MarsWallex,
+		"tut_abc": providertest.TestUp,
 	} {
 		p, err := provider.ForToken(tok)
 		if err != nil || p.Name() != want {
 			t.Errorf("%q 应归 %s: %v %v", tok, want, p, err)
 		}
+	}
+	if p, err := provider.ForToken("zc-tok-1"); !errors.Is(err, provider.ErrUnrecognized) || p != nil {
+		t.Errorf("zc-tok-1 应认不出: %v %v", p, err)
 	}
 	if cs, ok := provider.CardSupplyForCode("TU-1"); ok {
 		t.Fatalf("上游码不是供卡型: %v", cs)
@@ -124,10 +125,9 @@ func TestForCodeAndToken(t *testing.T) {
 	}
 }
 
-// 没有兜底上游时，认不出的码返回错误，绝不随便交给某一家。
-func TestForCodeWithoutFallback(t *testing.T) {
+// 注册表被清空重建后，认不出的码仍返回错误，认领得到的照常归属。
+func TestForCodeAfterReset(t *testing.T) {
 	t.Cleanup(provider.TestOnlySnapshot())
-	// 只留供卡型和非兜底上游：先清空再注册
 	provider.TestOnlyReset()
 	provider.Register(providertest.NewTestCard())
 	provider.Register(providertest.NewTestUp())
@@ -152,18 +152,15 @@ func TestConfigResolution(t *testing.T) {
 		}
 	}
 
-	// 什么都没保存过：出厂配置是 GPT 用 MarsWallex，它不做的 X、Grok、Claude 单独选兜底的 ZovoCard
+	// 什么都没保存过：出厂配置全局默认 MarsWallex，按产品线为空；它不做的 X、Grok、Claude 发码被拒，不换别家
 	cfg, err := provider.LoadConfig()
-	if err != nil || cfg.Default != provider.MarsWallex || len(cfg.Warnings) != 0 {
+	if err != nil || cfg.Default != provider.MarsWallex || len(cfg.Warnings) != 0 || len(cfg.ByProduct) != 0 {
 		t.Fatalf("%+v %v", cfg, err)
-	}
-	if by := cfg.ByProduct; len(by) != 3 || by["x"] != provider.ZovoCard || by["grok"] != provider.ZovoCard || by["claude"] != provider.ZovoCard {
-		t.Fatalf("%v", by)
 	}
 	if p, err := provider.ResolveIssue("gpt", "plus"); err != nil || p.Name() != provider.MarsWallex {
 		t.Fatal(p, err)
 	}
-	if p, err := provider.ResolveIssue("grok", "premium_monthly"); err != nil || p.Name() != provider.ZovoCard {
+	if p, err := provider.ResolveIssue("grok", "premium_monthly"); !errors.Is(err, provider.ErrUnsupported) || p != nil {
 		t.Fatal(p, err)
 	}
 
@@ -178,7 +175,7 @@ func TestConfigResolution(t *testing.T) {
 	}
 
 	// 产品配置优先，没配的产品用全局默认
-	set(provider.SettingDefault, "zovocard")
+	set(provider.SettingDefault, "marswallex")
 	set(provider.SettingByProduct, `{"gpt":"testcard","x":"testup","grok":""}`)
 	if p, err := provider.ResolveIssue("GPT", "plus"); err != nil || p.Name() != providertest.TestCard {
 		t.Fatal(p, err)
@@ -186,12 +183,12 @@ func TestConfigResolution(t *testing.T) {
 	if p, err := provider.ResolveIssue("x", "premium_monthly"); err != nil || p.Name() != providertest.TestUp {
 		t.Fatal(p, err)
 	}
-	if p, err := provider.ResolveIssue("grok", "premium_monthly"); err != nil || p.Name() != provider.ZovoCard {
+	if p, err := provider.ResolveIssue("grok", "premium_monthly"); !errors.Is(err, provider.ErrUnsupported) || p != nil {
 		t.Fatal(p, err)
 	}
 	cfg, _ = provider.LoadConfig()
 	eff := cfg.Effective()
-	if eff["gpt"] != providertest.TestCard || eff["x"] != providertest.TestUp || eff["grok"] != provider.ZovoCard || eff["claude"] != provider.ZovoCard {
+	if eff["gpt"] != providertest.TestCard || eff["x"] != providertest.TestUp || eff["grok"] != provider.MarsWallex || eff["claude"] != provider.MarsWallex {
 		t.Fatalf("%v", eff)
 	}
 
@@ -209,11 +206,11 @@ func TestConfigResolution(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// 库里存的服务商名已经没有注册：全局默认按兜底，产品配置按跟随全局默认，都给 warning
+	// 库里存的服务商名已经没有注册：全局默认留空，产品配置按跟随全局默认，都给 warning
 	set(provider.SettingDefault, "gone_provider")
-	set(provider.SettingByProduct, `{"gpt":"gone_too","x":"marswallex","tiktok":"zovocard"}`)
+	set(provider.SettingByProduct, `{"gpt":"gone_too","x":"marswallex","tiktok":"gone"}`)
 	cfg, err = provider.LoadConfig()
-	if err != nil || cfg.Default != provider.ZovoCard || len(cfg.ByProduct) != 0 {
+	if err != nil || cfg.Default != "" || len(cfg.ByProduct) != 0 {
 		t.Fatalf("%+v %v", cfg, err)
 	}
 	joined := strings.Join(cfg.Warnings, "\n")
@@ -222,8 +219,8 @@ func TestConfigResolution(t *testing.T) {
 			t.Fatalf("warning 缺 %s: %v", want, cfg.Warnings)
 		}
 	}
-	if p, err := provider.ResolveIssue("gpt", "plus"); err != nil || p.Name() != provider.ZovoCard {
-		t.Fatal(p, err)
+	if p, err := provider.ResolveIssue("gpt", "plus"); !errors.Is(err, provider.ErrUnknown) || p != nil {
+		t.Fatalf("默认不存在时不能选出任何一家: %v %v", p, err)
 	}
 	// 解析不了的 JSON 按全部跟随默认，并提示
 	set(provider.SettingByProduct, `{not json`)
@@ -256,29 +253,29 @@ func TestValidateAndSaveConfig(t *testing.T) {
 	}{
 		{"", nil, "全局默认"},
 		{"gone", nil, "未注册"},
-		{"zovocard", map[string]string{"tiktok": "zovocard"}, "未知产品"},
-		{"zovocard", map[string]string{"gpt": "gone"}, "未注册"},
-		{"zovocard", map[string]string{"x": "marswallex"}, "MarsWallex 不做 X Premium"},
-		{"zovocard", map[string]string{"grok": "testup"}, "TestUp 不做 Grok"},
+		{"marswallex", map[string]string{"tiktok": "marswallex"}, "未知产品"},
+		{"marswallex", map[string]string{"gpt": "gone"}, "未注册"},
+		{"marswallex", map[string]string{"x": "marswallex"}, "MarsWallex 不做 X Premium"},
+		{"marswallex", map[string]string{"grok": "testup"}, "TestUp 不做 Grok"},
 	} {
 		_, _, err := provider.ValidateConfig(tc.def, tc.by)
 		if !errors.Is(err, provider.ErrInvalidConfig) || !strings.Contains(err.Error(), tc.want) {
 			t.Fatalf("%v: %v", tc, err)
 		}
 	}
-	def, by, err := provider.ValidateConfig(" ZovoCard ", map[string]string{"GPT": "TestCard", "x": "", "claude": "zovocard"})
-	if err != nil || def != provider.ZovoCard || len(by) != 2 || by["gpt"] != providertest.TestCard || by["claude"] != provider.ZovoCard {
+	def, by, err := provider.ValidateConfig(" MarsWallex ", map[string]string{"GPT": "TestCard", "x": ""})
+	if err != nil || def != provider.MarsWallex || len(by) != 1 || by["gpt"] != providertest.TestCard {
 		t.Fatalf("%v %v %v", def, by, err)
 	}
 	if err := provider.SaveConfig(def, by); err != nil {
 		t.Fatal(err)
 	}
 	raw, _ := db.GetSetting(provider.SettingByProduct)
-	if raw != `{"claude":"zovocard","gpt":"testcard"}` {
+	if raw != `{"gpt":"testcard"}` {
 		t.Fatal(raw)
 	}
 	cfg, err := provider.LoadConfig()
-	if err != nil || cfg.For("gpt") != providertest.TestCard || cfg.For("x") != provider.ZovoCard {
+	if err != nil || cfg.For("gpt") != providertest.TestCard || cfg.For("x") != provider.MarsWallex {
 		t.Fatalf("%+v %v", cfg, err)
 	}
 }
@@ -295,10 +292,9 @@ func TestSelected(t *testing.T) {
 			t.Fatalf("%s: %v %v，期望 %v", n, got, err, want)
 		}
 	}
-	check(provider.MarsWallex, true) // 没设置过：出厂配置 GPT 用 MarsWallex
-	check(provider.ZovoCard, true)   // X、Grok、Claude 用 ZovoCard
+	check(provider.MarsWallex, true) // 没设置过：出厂配置全局默认 MarsWallex
 	check(providertest.TestCard, false)
-	if err := provider.SaveConfig(provider.ZovoCard, map[string]provider.Name{"gpt": providertest.TestCard}); err != nil {
+	if err := provider.SaveConfig(providertest.TestUp, map[string]provider.Name{"gpt": providertest.TestCard}); err != nil {
 		t.Fatal(err)
 	}
 	check(providertest.TestCard, true)
@@ -319,7 +315,7 @@ func TestSelected(t *testing.T) {
 func TestCapabilitiesIncludeRegistered(t *testing.T) {
 	providertest.RegisterBoth(t)
 	for _, r := range provider.Capabilities() {
-		if len(r.Support) != 4 {
+		if len(r.Support) != 3 {
 			t.Fatalf("%+v", r)
 		}
 		switch r.Product + "/" + r.Plan {
@@ -345,5 +341,64 @@ func TestCapabilitiesIncludeRegistered(t *testing.T) {
 	tu, _ := provider.Get(providertest.TestUp)
 	if provider.CodeList(tc) != "local" || provider.CodeList(tu) != "" {
 		t.Fatal(provider.CodeList(tc), provider.CodeList(tu))
+	}
+}
+
+// 出厂配置只配 MarsWallex：全局默认 MarsWallex，不再有按产品线的兜底条目。
+func TestFactoryConfigOnlyMarsWallex(t *testing.T) {
+	dbtest.Open(t)
+	cfg, err := provider.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Default != provider.MarsWallex || len(cfg.ByProduct) != 0 || len(cfg.Warnings) != 0 {
+		t.Fatalf("%+v", cfg)
+	}
+}
+
+// 库里存的全局默认已经没有注册：Default 为空，警告里带名字，不再有「按 xx 处理」。
+func TestLoadConfigDefaultGone(t *testing.T) {
+	dbtest.Open(t)
+	if err := db.SetSetting(provider.SettingDefault, "zovocard"); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := provider.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `全局默认服务商 "zovocard" 已不存在，请到「卡服务商」页重新选择`
+	if cfg.Default != "" || len(cfg.Warnings) != 1 || cfg.Warnings[0] != want {
+		t.Fatalf("%+v", cfg)
+	}
+}
+
+// 默认为空、按产品线有值（手工改库或只写了一项）：以前静默取兜底，现在给警告。
+func TestLoadConfigDefaultEmptyWithByProduct(t *testing.T) {
+	dbtest.Open(t)
+	if err := db.SetSetting(provider.SettingByProduct, `{"gpt":"marswallex"}`); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := provider.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "没有设置全局默认服务商，请到「卡服务商」页选择"
+	if cfg.Default != "" || len(cfg.Warnings) != 1 || cfg.Warnings[0] != want || cfg.ByProduct["gpt"] != provider.MarsWallex {
+		t.Fatalf("%+v", cfg)
+	}
+}
+
+// 没有兜底：ZC- 开头的码和 zc- 开头的令牌谁都不认领，返回 ErrUnrecognized。
+func TestForCodeUnclaimedIsUnrecognized(t *testing.T) {
+	for _, code := range []string{"ZC-AAAA-BBBB", "", "TCX-AAAA"} {
+		if p, err := provider.ForCode(code); !errors.Is(err, provider.ErrUnrecognized) || p != nil {
+			t.Fatalf("%q: %v %v", code, p, err)
+		}
+	}
+	if p, err := provider.ForToken("zc-tok-1"); !errors.Is(err, provider.ErrUnrecognized) || p != nil {
+		t.Fatalf("%v %v", p, err)
+	}
+	if p, err := provider.ForCode("MW-AAAA"); err != nil || p.Name() != provider.MarsWallex {
+		t.Fatal(p, err)
 	}
 }

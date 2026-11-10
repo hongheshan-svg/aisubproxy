@@ -21,7 +21,7 @@ import (
 //
 // 每家注册了的服务商都必须有对应的适配器，启动时由 CheckProviderAdapters 检查。
 
-// providerExtra 是就绪检查附带展示的一项数据，如卡台余额。
+// providerExtra 是就绪检查附带展示的一项数据，如对方账户余额。
 type providerExtra struct {
 	Label string `json:"label"`
 	Value string `json:"value"`
@@ -100,11 +100,6 @@ type upstreamAdapter interface {
 	Check(ctx context.Context) providerStatus
 }
 
-// upstreamExchanger 是可选能力：代理换码。code 是用户输入的完整码，调用前已通过限流和密码校验。
-type upstreamExchanger interface {
-	Exchange(c *gin.Context, code, ip string)
-}
-
 // upstreamGraceRecoverer 是可选能力：宽限期恢复。
 type upstreamGraceRecoverer interface {
 	GraceRecovery(c *gin.Context, body graceRecoveryRequest)
@@ -119,7 +114,7 @@ type upstreamLookuper interface {
 var (
 	adapterMu          sync.RWMutex
 	cardSupplyAdapters = map[provider.Name]cardSupplyAdapter{provider.MarsWallex: marsWallexAdapter{}}
-	upstreamAdapters   = map[provider.Name]upstreamAdapter{provider.ZovoCard: zovoCardAdapter{}}
+	upstreamAdapters   = map[provider.Name]upstreamAdapter{}
 )
 
 func cardSupplyAdapterFor(n provider.Name) (cardSupplyAdapter, bool) {
@@ -283,7 +278,7 @@ func localReply(c *gin.Context, status int, h gin.H) {
 	c.JSON(status, h)
 }
 
-// routeCode 按码分派。没有兜底上游又没人认领时写好 404。
+// routeCode 按码分派。没人认领时写好 404。
 func routeCode(c *gin.Context, code string) (provider.Provider, bool) {
 	p, err := provider.ForCode(code)
 	if err != nil {
@@ -306,7 +301,7 @@ func routeToken(c *gin.Context, token string) (provider.Provider, bool) {
 // routeBody 是预检、兑换的分派：令牌和码各自判定。
 //   - 有一个归供卡型就走供卡型，这样供卡型的码和令牌绝不会发往上游；两个都归供卡型时必须是同一家。
 //   - 都归上游时必须是同一家：一家的码绝不会跟着另一家的令牌发往那一家。
-//   - 都没给时交给兜底上游，由它按现有方式报错。
+//   - 码和令牌都没给时，按「无法识别的卡密」回 404。
 func routeBody(c *gin.Context, body map[string]any) (provider.Provider, bool) {
 	tok, code := str(body["redemption_token"]), str(body["code"])
 	if tok == "" && code == "" {

@@ -2,7 +2,6 @@ package handler
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
 	"github.com/tuzi/cdk-recharge-system/internal/provider"
 	"net/http"
 	"strings"
@@ -46,14 +45,4 @@ func PublicCDKGraceRecovery(c *gin.Context) {
 		return
 	}
 	gr.GraceRecovery(c, body)
-}
-
-// zovoCardGraceRecovery 是 ZovoCard 的宽限期恢复：转发卡台。
-func zovoCardGraceRecovery(c *gin.Context, body graceRecoveryRequest) {
-	status, raw, err := cardplatform.NewFromSettings().RecoverSubscription(c.Request.Context(), body, deviceFrom(c))
-	if err != nil {
-		c.JSON(502, gin.H{"error": "暂时无法确认处理结果，请重新检测账号，不要重复取消"})
-		return
-	}
-	proxyPublicJSON(c, status, raw)
 }

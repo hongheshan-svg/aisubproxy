@@ -219,7 +219,7 @@ if [[ -n "$DOMAIN" ]]; then
 else
   echo "  访问: http://$(curl -s ifconfig.me 2>/dev/null || echo '<本机IP>'):80"
 fi
-echo "  首次打开进入安装向导，设置管理员账号和卡台 API Key"
+echo "  首次打开进入安装向导，设置管理员账号"
 echo "  请备份 ${ENV_FILE}（其中 APP_MASTER_KEY 丢失后，已保存的 MarsWallex 密钥无法解密）"
 echo
 echo "  常用命令:"

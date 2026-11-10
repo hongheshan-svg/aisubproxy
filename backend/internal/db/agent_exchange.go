@@ -13,8 +13,9 @@ import (
 const (
 	AgentExchangePending = "pending" // 已占位，正在发码
 	AgentExchangeUnknown = "unknown" // 发码结果不明，等人工定论；占位不释放
-	// AgentExchangeDisabling 新码已发出，但旧码还没确认禁用。旧码和新码此刻都能兑换，所以不能算完成：
-	// 由维护循环反复重试禁用，成功后才转 done（MO-08）。
+	// AgentExchangeDisabling 新码已发出，记录还没收尾。本站码记录（old_upstream_id 为 0）停在这里时，
+	// 维护循环每 10 分钟补上记账并转 done（没有旧码要禁用）。old_upstream_id > 0 的是已移除的 ZovoCard 留下的
+	// 历史记录，维护循环永远跳过，不会自动处理，要管理员到 ZovoCard 后台手动作废旧码。
 	AgentExchangeDisabling = "disabling"
 	AgentExchangeDone      = "done" // 新码已发出，旧码已确认禁用
 )
@@ -168,7 +169,7 @@ type AgentExchangeReservation struct {
 	PasswordFP  string
 }
 
-// ReserveAgentCDKExchange 在调卡台之前原子占位：一条语句里判断当日额度并插入。
+// ReserveAgentCDKExchange 在调上游之前原子占位：一条语句里判断当日额度并插入。
 // SQLite 的写语句开始执行就持有写锁，并发请求绕不过额度，也绕不过 old_code_hash 唯一约束。
 //
 // 额度按北京日统计同一密码的占位数；升级前的旧行没有指纹（”），也算进去，宁可多算不可漏算。limit 必须大于 0。
@@ -212,7 +213,7 @@ func ReserveAgentCDKExchange(r AgentExchangeReservation, limit int, now time.Tim
 }
 
 // FinishAgentCDKExchange 新码已发出，记下新码，进入 disabling（旧码待禁用）。
-// 结果不明的占位可能事后被证实成功，所以 unknown 也能转过来。旧码确认禁用后再调 CompleteAgentCDKExchangeDisable 转 done。
+// 结果不明的占位可能事后被证实成功，所以 unknown 也能转过来。本站码记录由维护循环调 CompleteAgentCDKExchangeDisable 补记账后转 done；历史记录（old_upstream_id > 0）不会自动转。
 func FinishAgentCDKExchange(id, newID int64, newPrefix string) error {
 	res, err := DB.Exec(`UPDATE agent_cdk_exchanges
 		SET state = 'disabling', new_upstream_id = ?, new_code_prefix = ?, updated_at = CURRENT_TIMESTAMP
@@ -220,17 +221,10 @@ func FinishAgentCDKExchange(id, newID int64, newPrefix string) error {
 	return affectedOne(res, err)
 }
 
-// CompleteAgentCDKExchangeDisable 旧码已确认禁用：disabling → done。
+// CompleteAgentCDKExchangeDisable 收尾：disabling → done。只由维护循环对本站码记录调用，历史 ZovoCard 记录不走这里。
 func CompleteAgentCDKExchangeDisable(id int64) error {
 	res, err := DB.Exec(`UPDATE agent_cdk_exchanges SET state = 'done', updated_at = CURRENT_TIMESTAMP
 		WHERE id = ? AND state = 'disabling'`, id)
-	return affectedOne(res, err)
-}
-
-// TouchAgentCDKExchange 记下一次禁用重试失败的原因（只改 note 和 updated_at，不改状态）。
-func TouchAgentCDKExchange(id int64, note string) error {
-	res, err := DB.Exec(`UPDATE agent_cdk_exchanges SET note = ?, updated_at = CURRENT_TIMESTAMP
-		WHERE id = ? AND state = 'disabling'`, note, id)
 	return affectedOne(res, err)
 }
 
@@ -299,12 +293,6 @@ func GetAgentExchange(id int64) (AgentExchange, error) {
 	return e, err
 }
 
-// GetAgentExchangeByOldHash 按旧码哈希取换码记录。old_code_hash 有唯一索引（uq_agent_ex_old_hash），同一张旧码最多一条。
-// 没有记录时返回 sql.ErrNoRows。
-func GetAgentExchangeByOldHash(codeHash string) (AgentExchange, error) {
-	return scanAgentExchange(DB.QueryRow(`SELECT `+agentExchangeColumns+` FROM agent_cdk_exchanges WHERE old_code_hash = ?`, codeHash))
-}
-
 // ListAgentExchanges 按状态列出换码记录，最新的在前；state 为空时列出全部。
 func ListAgentExchanges(state string, limit int) ([]AgentExchange, error) {
 	if limit <= 0 || limit > 500 {
@@ -342,7 +330,7 @@ func CountAgentExchanges(state string) (int, error) {
 }
 
 // EscalateStaleAgentExchanges 把卡在 pending 超过 olderThan 的占位升级成 unknown（进程在发码途中崩溃、或收尾写库失败），
-// 返回被升级的记录。绝不自动释放：卡台可能已经发了码。
+// 返回被升级的记录。绝不自动释放：上游可能已经发了码。
 func EscalateStaleAgentExchanges(now time.Time, olderThan time.Duration) ([]AgentExchange, error) {
 	cut := now.Add(-olderThan).UTC().Format(agentExchangeTimeLayout)
 	rows, err := DB.Query(`SELECT `+agentExchangeColumns+` FROM agent_cdk_exchanges WHERE state = 'pending' AND created_at < ?`, cut)
@@ -380,14 +368,14 @@ func EscalateStaleAgentExchanges(now time.Time, olderThan time.Duration) ([]Agen
 	return out, nil
 }
 
-// ResolveAgentExchangeReleased 人工确认卡台没发码：删除占位，允许重试。只能处理 unknown，审计由调用方写。
+// ResolveAgentExchangeReleased 人工确认上游没发码：删除占位，允许重试。只能处理 unknown，审计由调用方写。
 func ResolveAgentExchangeReleased(id int64) error {
 	return resolveAgentExchange(id, func() (sql.Result, error) {
 		return DB.Exec(`DELETE FROM agent_cdk_exchanges WHERE id = ? AND state = 'unknown'`, id)
 	})
 }
 
-// ResolveAgentExchangeIssued 人工确认卡台已发码：记下新码，占位变成 disabling（旧码待禁用，禁用成功后才是 done）。
+// ResolveAgentExchangeIssued 人工确认上游已发码：记下新码，占位变成 disabling（只补记账，不去上游禁用旧码）。
 // 只能处理 unknown，审计由调用方写。
 func ResolveAgentExchangeIssued(id, newID int64, note string) error {
 	return resolveAgentExchange(id, func() (sql.Result, error) {

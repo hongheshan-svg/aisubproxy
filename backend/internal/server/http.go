@@ -37,14 +37,14 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	if err := db.Init(&cfg.Database); err != nil {
 		return nil, err
 	}
-	// 拒绝启动的检查（ADMIN_PASSWORD、明文卡台密钥要有主密钥、JWT_SECRET、服务商适配器）：只读，
+	// 拒绝启动的检查（ADMIN_PASSWORD、明文旧版卡台密钥要有主密钥、JWT_SECRET、服务商适配器）：只读，
 	// 在改数据之前做；命令行 --check 跑的是同一个函数（在线更新换版本前的预检）
 	if err := startupChecks(cfg.Server.Mode, false); err != nil {
 		return nil, err
 	}
-	// 卡台 API Key、webhook 密钥：旧版明文加密迁移；webhook 原文里的卡号、CVV、有效期清洗。失败就不启动，不静默留着明文
+	// 旧版卡台 API Key（card_api_key）、webhook 密钥：旧版明文加密迁移；webhook 原文里的卡号、CVV、有效期清洗。失败就不启动，不静默留着明文
 	if err := db.MigrateCardSecrets(); err != nil {
-		return nil, fmt.Errorf("卡台密钥迁移: %w", err)
+		return nil, fmt.Errorf("旧版密钥迁移: %w", err)
 	}
 	if err := db.MigrateWebhookPayloads(); err != nil {
 		return nil, fmt.Errorf("webhook 原文清洗: %w", err)
@@ -150,7 +150,7 @@ func payPools(mw payengine.Pool) (map[string]payengine.Pool, error) {
 	return pools, nil
 }
 
-// upstreamKeysConfigured 判断库里是否已配置 MarsWallex 或卡台 API Key（动钱上游）。
+// upstreamKeysConfigured 判断库里是否已配置 MarsWallex 或旧版卡台 API Key（card_api_key，动钱上游）。
 // 只看是否非空，不解密、不记录内容。
 func upstreamKeysConfigured() (bool, error) {
 	for _, key := range []string{db.SettingMarsWallexDeveloperID, db.SettingMarsWallexAPIToken, "card_api_key"} {
@@ -193,7 +193,7 @@ func enforceJWTSecret(mode string, hasUpstream bool) error {
 		return fmt.Errorf("不安全的 JWT_SECRET：release 模式必须设置至少 16 位的随机 JWT_SECRET 环境变量")
 	}
 	if hasUpstream && weak {
-		return fmt.Errorf("不安全的 JWT_SECRET：已配置 MarsWallex 或卡台 API Key，必须设置至少 16 位的随机 JWT_SECRET 环境变量")
+		return fmt.Errorf("不安全的 JWT_SECRET：已配置 MarsWallex 或旧版卡台 API Key（card_api_key），必须设置至少 16 位的随机 JWT_SECRET 环境变量")
 	}
 	if weak {
 		log.Printf("⚠️  当前 JWT_SECRET 不安全（默认/过短）。仅可用于本地开发，部署前请设置强随机 JWT_SECRET（release 模式将拒绝启动）。")

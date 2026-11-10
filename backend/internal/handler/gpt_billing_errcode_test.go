@@ -58,7 +58,7 @@ func TestBillingCheckErrorCodes(t *testing.T) {
 			name: "账单服务不可用", body: `{"cdk_code":"` + cdkSessCode + `"}`,
 			setup: func(t *testing.T) {
 				stubAccounthub(t, 500)
-				if err := db.BindCDKSession("testup", cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
+				if err := bindCDKSession("testup", cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
 					t.Fatal(err)
 				}
 			},

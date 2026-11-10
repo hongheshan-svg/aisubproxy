@@ -48,7 +48,7 @@ func TestObBillingCheckByCDKMasksEmailAndHidesInvoiceLinks(t *testing.T) {
 	dbtest.SetMasterKey(t)
 	stubBillingCheck(t)
 	obStubAccounthub(t)
-	if err := db.BindCDKSession("testup", cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
+	if err := bindCDKSession("testup", cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
 		t.Fatal(err)
 	}
 	w := cdkRequest(SessionBillingCheck, "POST", "/billing", `{"cdk_code":"`+cdkSessCode+`"}`)

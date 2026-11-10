@@ -98,7 +98,7 @@ func o3Check(mode string) error {
 	return Check(&config.Config{Server: config.ServerConfig{Mode: mode}})
 }
 
-// 已保存旧版明文的卡台 API Key、APP_MASTER_KEY 没配：启动会拒绝，--check 也必须拒绝，且不动库。
+// 已保存旧版明文的旧版卡台 API Key（card_api_key）、APP_MASTER_KEY 没配：启动会拒绝，--check 也必须拒绝，且不动库。
 func TestO3CheckRejectsPlainCardSecretWithoutMasterKey(t *testing.T) {
 	o3Env(t)
 	path := o3NewDBFile(t, func(c *sql.DB) {
@@ -109,7 +109,7 @@ func TestO3CheckRejectsPlainCardSecretWithoutMasterKey(t *testing.T) {
 	before := o3FileSum(t, path)
 	err := o3Check("release")
 	if err == nil || !strings.Contains(err.Error(), "APP_MASTER_KEY") || !strings.Contains(err.Error(), "card_api_key") {
-		t.Fatalf("明文卡台密钥 + 没有主密钥应拒绝，并说明原因: %v", err)
+		t.Fatalf("明文旧版卡台密钥 + 没有主密钥应拒绝，并说明原因: %v", err)
 	}
 	if strings.Contains(err.Error(), o3PlainCardK) {
 		t.Fatalf("错误信息不能带密钥内容: %v", err)
@@ -160,7 +160,7 @@ func TestO3CheckRejectsExampleJWTSecret(t *testing.T) {
 		o3Exec(t, c, `INSERT INTO site_settings (key, value) VALUES ('card_api_key', 'v1:sealed-already')`)
 	})
 	if err := o3Check("debug"); err == nil || !strings.Contains(err.Error(), "JWT_SECRET") {
-		t.Fatalf("已配置卡台 API Key 时示例 JWT_SECRET 应拒绝: %v", err)
+		t.Fatalf("已配置旧版卡台 API Key（card_api_key）时示例 JWT_SECRET 应拒绝: %v", err)
 	}
 }
 

@@ -168,7 +168,7 @@ type AgentExchangeReservation struct {
 	PasswordFP  string
 }
 
-// ReserveAgentCDKExchange 在调卡台之前原子占位：一条语句里判断当日额度并插入。
+// ReserveAgentCDKExchange 在调上游之前原子占位：一条语句里判断当日额度并插入。
 // SQLite 的写语句开始执行就持有写锁，并发请求绕不过额度，也绕不过 old_code_hash 唯一约束。
 //
 // 额度按北京日统计同一密码的占位数；升级前的旧行没有指纹（”），也算进去，宁可多算不可漏算。limit 必须大于 0。
@@ -292,12 +292,6 @@ func GetAgentExchange(id int64) (AgentExchange, error) {
 	return e, err
 }
 
-// GetAgentExchangeByOldHash 按旧码哈希取换码记录。old_code_hash 有唯一索引（uq_agent_ex_old_hash），同一张旧码最多一条。
-// 没有记录时返回 sql.ErrNoRows。
-func GetAgentExchangeByOldHash(codeHash string) (AgentExchange, error) {
-	return scanAgentExchange(DB.QueryRow(`SELECT `+agentExchangeColumns+` FROM agent_cdk_exchanges WHERE old_code_hash = ?`, codeHash))
-}
-
 // ListAgentExchanges 按状态列出换码记录，最新的在前；state 为空时列出全部。
 func ListAgentExchanges(state string, limit int) ([]AgentExchange, error) {
 	if limit <= 0 || limit > 500 {
@@ -335,7 +329,7 @@ func CountAgentExchanges(state string) (int, error) {
 }
 
 // EscalateStaleAgentExchanges 把卡在 pending 超过 olderThan 的占位升级成 unknown（进程在发码途中崩溃、或收尾写库失败），
-// 返回被升级的记录。绝不自动释放：卡台可能已经发了码。
+// 返回被升级的记录。绝不自动释放：上游可能已经发了码。
 func EscalateStaleAgentExchanges(now time.Time, olderThan time.Duration) ([]AgentExchange, error) {
 	cut := now.Add(-olderThan).UTC().Format(agentExchangeTimeLayout)
 	rows, err := DB.Query(`SELECT `+agentExchangeColumns+` FROM agent_cdk_exchanges WHERE state = 'pending' AND created_at < ?`, cut)
@@ -373,14 +367,14 @@ func EscalateStaleAgentExchanges(now time.Time, olderThan time.Duration) ([]Agen
 	return out, nil
 }
 
-// ResolveAgentExchangeReleased 人工确认卡台没发码：删除占位，允许重试。只能处理 unknown，审计由调用方写。
+// ResolveAgentExchangeReleased 人工确认上游没发码：删除占位，允许重试。只能处理 unknown，审计由调用方写。
 func ResolveAgentExchangeReleased(id int64) error {
 	return resolveAgentExchange(id, func() (sql.Result, error) {
 		return DB.Exec(`DELETE FROM agent_cdk_exchanges WHERE id = ? AND state = 'unknown'`, id)
 	})
 }
 
-// ResolveAgentExchangeIssued 人工确认卡台已发码：记下新码，占位变成 disabling（旧码待禁用，禁用成功后才是 done）。
+// ResolveAgentExchangeIssued 人工确认上游已发码：记下新码，占位变成 disabling（只补记账，不去上游禁用旧码）。
 // 只能处理 unknown，审计由调用方写。
 func ResolveAgentExchangeIssued(id, newID int64, note string) error {
 	return resolveAgentExchange(id, func() (sql.Result, error) {

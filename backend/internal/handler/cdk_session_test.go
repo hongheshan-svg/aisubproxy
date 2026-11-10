@@ -94,7 +94,7 @@ func TestBillingCheckByCDKNeverCallsUpstreamWithStoredSession(t *testing.T) {
 
 	t.Run("accounthub 不可用", func(t *testing.T) {
 		stubAccounthub(t, 500)
-		if err := db.BindCDKSession("testup", cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
+		if err := bindCDKSession("testup", cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
 			t.Fatal(err)
 		}
 		w := cdkRequest(SessionBillingCheck, "POST", "/billing", `{"cdk_code":"`+cdkSessCode+`"}`)
@@ -103,7 +103,7 @@ func TestBillingCheckByCDKNeverCallsUpstreamWithStoredSession(t *testing.T) {
 		}
 	})
 	t.Run("会话里没有邮箱", func(t *testing.T) {
-		if err := db.BindCDKSession("testup", "TU-RAW-TOKEN-CODE-1", "rt-2", "eyJhbGciOi.raw.accesstoken"); err != nil {
+		if err := bindCDKSession("testup", "TU-RAW-TOKEN-CODE-1", "rt-2", "eyJhbGciOi.raw.accesstoken"); err != nil {
 			t.Fatal(err)
 		}
 		w := cdkRequest(SessionBillingCheck, "POST", "/billing", `{"code":"TU-RAW-TOKEN-CODE-1"}`)
@@ -128,12 +128,12 @@ func TestBillingCheckByCDKUsesEmailAndSurvivesClear(t *testing.T) {
 	dbtest.SetMasterKey(t)
 	calls := stubBillingCheck(t)
 	stubAccounthub(t, 200)
-	if err := db.BindCDKSession("testup", cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
+	if err := bindCDKSession("testup", cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
 		t.Fatal(err)
 	}
 	for _, clear := range []bool{false, true} {
 		if clear {
-			if err := db.ClearCDKSessionByCode(cdkSessCode); err != nil {
+			if err := clearCDKSessionByCode(cdkSessCode); err != nil {
 				t.Fatal(err)
 			}
 		}

@@ -76,7 +76,7 @@ func (u *fakeUpstream) Preflight(c *gin.Context, body map[string]any) {
 	if cred, ok := body["credential"].(map[string]any); ok {
 		sess = str(cred["session"])
 	}
-	if err := db.BindCDKSession(string(u.nm()), str(body["code"]), str(body["redemption_token"]), sess); err != nil {
+	if err := bindCDKSession(string(u.nm()), str(body["code"]), str(body["redemption_token"]), sess); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

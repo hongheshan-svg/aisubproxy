@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
-
-	"github.com/tuzi/cdk-recharge-system/internal/secretbox"
 )
 
 // 卡台的两项密钥：和 MarsWallex 令牌一样用 APP_MASTER_KEY 加密保存。
@@ -21,23 +19,6 @@ var cardSecretKeys = []string{SettingCardAPIKey, SettingWebhookSecret}
 // 启动迁移（MigrateCardSecrets）和启动检查（CheckCardSecretsMigratable，--check 也用）共用这一条规则。
 func legacyPlainCardSecret(raw string) bool {
 	return strings.TrimSpace(raw) != "" && !strings.HasPrefix(raw, sealedPrefix)
-}
-
-// GetCardSecret 读卡台密钥（card_api_key / webhook_secret）。
-// 以 v1: 开头的按密文解密；其余视为升级前遗留的明文原样返回（启动迁移会把它们加密，迁移失败启动就会报错）。
-// 未设置返回 "", nil；解不开返回错误。
-func GetCardSecret(key string) (string, error) {
-	raw, err := GetSetting(key)
-	if err != nil {
-		return "", err
-	}
-	if strings.TrimSpace(raw) == "" {
-		return "", nil
-	}
-	if !strings.HasPrefix(raw, sealedPrefix) {
-		return raw, nil
-	}
-	return GetSecretSetting(key)
 }
 
 // MigrateCardSecrets 把旧版明文保存的卡台密钥加密回写。可重复运行：已是密文的不动。
@@ -69,13 +50,6 @@ var webhookDropKeys = map[string]bool{
 }
 
 var webhookPANKeys = map[string]bool{"card_number": true, "cardnumber": true, "pan": true}
-
-// SensitiveCardFieldDrop 判断字段名是不是要整项去掉的卡敏感字段（CVV、有效期），不区分大小写。
-// webhook 入库脱敏和后台订单透传剔除共用这一份规则。
-func SensitiveCardFieldDrop(key string) bool { return webhookDropKeys[strings.ToLower(key)] }
-
-// SensitiveCardFieldPAN 判断字段名是不是卡号字段（card_number / cardnumber / pan），不区分大小写。
-func SensitiveCardFieldPAN(key string) bool { return webhookPANKeys[strings.ToLower(key)] }
 
 var panDigitsRe = regexp.MustCompile(`\d{13,19}`)
 
@@ -222,30 +196,4 @@ func MigrateWebhookPayloadsBatched(batchSize int, afterBatch func(done int) erro
 			return nil
 		}
 	}
-}
-
-// SetSettingsWithSecrets 把普通设置项和需要加密的密钥项放在同一个事务里写：先全部加密，再一次提交。
-// 任何一步失败都不会留下只写了一部分的结果。
-func SetSettingsWithSecrets(plain, secrets map[string]string) error {
-	kv := make(map[string]string, len(plain)+len(secrets))
-	for k, v := range plain {
-		kv[k] = v
-	}
-	if len(secrets) > 0 {
-		mk, err := secretbox.LoadKey()
-		if err != nil {
-			return err
-		}
-		for k, v := range secrets {
-			sealed, err := secretbox.Seal(mk, k, v)
-			if err != nil {
-				return err
-			}
-			kv[k] = sealed
-		}
-	}
-	if len(kv) == 0 {
-		return nil
-	}
-	return SetSettings(kv)
 }

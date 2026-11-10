@@ -985,7 +985,7 @@ func TestCrossProviderInflightBlocked(t *testing.T) {
 			if w.Code != http.StatusConflict {
 				t.Fatalf("%s 兑换: %d %s", state, w.Code, w.Body.String())
 			}
-			if err := db.BindCDKSession("testup", "TU-AAAA-0001", "tut_abc", sess); err != nil {
+			if err := bindCDKSession("testup", "TU-AAAA-0001", "tut_abc", sess); err != nil {
 				t.Fatal(err)
 			}
 			w = e.do("POST", "/public/cdk/redeem", `{"redemption_token":"tut_abc","preflight_token":"pf-1"}`)

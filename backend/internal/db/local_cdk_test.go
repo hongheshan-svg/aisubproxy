@@ -482,7 +482,8 @@ func TestRecentCDKBindingForEmail(t *testing.T) {
 	dbtest.Open(t)
 	dbtest.SetMasterKey(t)
 	sess := `{"user":{"email":"Mixed.Case@Example.com"},"sessionToken":"tok-1"}`
-	if err := db.BindCDKSession("zovocard", "ZC-AAA", "tok-a", sess); err != nil {
+	sealedBinding(t, "ZC-AAA", "tok-a", sess)
+	if _, err := db.DB.Exec(`UPDATE cdk_session_bindings SET provider = 'zovocard' WHERE cdk_code = 'ZC-AAA'`); err != nil {
 		t.Fatal(err)
 	}
 	since := time.Now().Add(-15 * time.Minute)
@@ -506,15 +507,14 @@ func TestRecentCDKBindingForEmail(t *testing.T) {
 	}
 
 	// 会话清空后邮箱还在，互斥仍然有效
-	if err := db.ClearCDKSessionByCode("ZC-AAA"); err != nil {
-		t.Fatal(err)
+	stored := storedSession(t, "ZC-AAA")
+	if cleared, err := db.ClearCDKSessionRowIf("ZC-AAA", stored); err != nil || !cleared {
+		t.Fatal("清空会话失败", cleared, err)
 	}
 	check("mixed.case@example.com", since, true)
 
 	// 只有令牌的占位行也能按令牌取邮箱
-	if err := db.BindCDKSession("zovocard", "", "tok-b", `{"user":{"email":"b@example.com"},"sessionToken":"x"}`); err != nil {
-		t.Fatal(err)
-	}
+	sealedBinding(t, "RT:tok-b", "tok-b", `{"user":{"email":"b@example.com"},"sessionToken":"x"}`)
 	if got, err := db.GetAccountEmailByRedemptionToken("tok-b"); err != nil || got != "b@example.com" {
 		t.Fatal(got, err)
 	}

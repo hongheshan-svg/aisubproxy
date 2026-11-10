@@ -167,7 +167,7 @@ func TestO3PreflightSkipsCheckForVersionsWithoutIt(t *testing.T) {
 // 端到端（原生部署）：新版本 --check 不通过，更新中止，状态里有原因，已安装的文件不动、不重启。
 func TestO3SeamlessUpdateAbortsWhenCheckFails(t *testing.T) {
 	priv := useTestReleaseKey(t)
-	bundle := buildBundle(t, "1.6.0", o3CheckScript("1.6.0", `echo "启动检查未通过: 卡台密钥迁移: 库里有旧版明文的 card_api_key 要加密迁移，需要配置合法的 APP_MASTER_KEY" >&2; exit 1`))
+	bundle := buildBundle(t, "1.6.0", o3CheckScript("1.6.0", `echo "启动检查未通过: 旧版密钥迁移: 库里有旧版明文的 card_api_key 要加密迁移，需要配置合法的 APP_MASTER_KEY" >&2; exit 1`))
 	startFakeGitHub(t, fakeRelease{version: "1.6.0", bundle: bundle, sig: signB64(priv, bundle)})
 	root, bin, reexec := setupInstall(t)
 	t.Setenv("DB_PATH", filepath.Join(t.TempDir(), "cdk_recharge.db"))

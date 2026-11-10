@@ -7,7 +7,6 @@ import (
 	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -120,6 +119,7 @@ func Init(cfg *config.DatabaseConfig) error {
 
 func createTables() error {
 	queries := []string{
+		// 旧 ZovoCard 数据，代码已不读写，留表以兼容旧库
 		`CREATE TABLE IF NOT EXISTS cd_keys (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			code TEXT UNIQUE NOT NULL,
@@ -134,6 +134,7 @@ func createTables() error {
 		`CREATE INDEX IF NOT EXISTS idx_cd_keys_status ON cd_keys(status)`,
 
 		// 卡台 GPT 直充 CDK：发码时落库完整码，列表仅回前缀时用本表补全（admin 本站复制）
+		// 旧 ZovoCard 数据，代码已不读写，留表以兼容旧库
 		`CREATE TABLE IF NOT EXISTS cardplatform_cdk_codes (
 			upstream_id INTEGER,
 			code TEXT NOT NULL UNIQUE,
@@ -148,12 +149,14 @@ func createTables() error {
 		`CREATE INDEX IF NOT EXISTS idx_cp_cdk_prefix ON cardplatform_cdk_codes(code_prefix)`,
 
 		// CDK 备注（本站维护，按卡台上游 id；不依赖完整码是否已落库）
+		// 旧 ZovoCard 数据，代码已不读写，留表以兼容旧库
 		`CREATE TABLE IF NOT EXISTS cardplatform_cdk_notes (
 			upstream_id INTEGER PRIMARY KEY,
 			note TEXT NOT NULL DEFAULT '',
 			updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 		)`,
 
+		// 旧 ZovoCard 数据，代码已不读写，留表以兼容旧库
 		`CREATE TABLE IF NOT EXISTS recharge_tasks (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			task_id TEXT UNIQUE NOT NULL,
@@ -171,6 +174,7 @@ func createTables() error {
 		`CREATE INDEX IF NOT EXISTS idx_recharge_tasks_task_id ON recharge_tasks(task_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_recharge_tasks_status ON recharge_tasks(task_status)`,
 
+		// 旧 ZovoCard 数据，代码已不读写，留表以兼容旧库
 		`CREATE TABLE IF NOT EXISTS billing_records (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			session_hash TEXT UNIQUE NOT NULL,
@@ -216,6 +220,7 @@ func createTables() error {
 		)`,
 
 		// 卡台 Webhook 事件（幂等入库；配合轮询双通道）
+		// 旧 ZovoCard 数据，代码已不读写，留表以兼容旧库
 		`CREATE TABLE IF NOT EXISTS webhook_events (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			event_type TEXT,
@@ -234,6 +239,7 @@ func createTables() error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_cdk_bind_token ON cdk_session_bindings(redemption_token)`,
 		// 只增不改的令牌表：同一张码重复预览会拿到多个令牌，旧令牌也要认（审计 N-2）。
+		// 旧 ZovoCard 数据，代码已不读写，留表以兼容旧库
 		`CREATE TABLE IF NOT EXISTS cdk_redemption_tokens (
 			token TEXT PRIMARY KEY,
 			cdk_code TEXT NOT NULL,
@@ -257,6 +263,7 @@ func createTables() error {
 		`CREATE INDEX IF NOT EXISTS idx_agent_ex_old_hash ON agent_cdk_exchanges(old_code_hash)`,
 
 		// 自动选卡权重规则（管理员可配置优先级）
+		// 旧 ZovoCard 数据，代码已不读写，留表以兼容旧库
 		`CREATE TABLE IF NOT EXISTS card_selection_rules (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			sort_order INTEGER NOT NULL DEFAULT 0,
@@ -269,6 +276,7 @@ func createTables() error {
 		)`,
 
 		// 卡台产品状态缓存（每3分钟后台同步，plan_key 用于逻辑套餐）
+		// 旧 ZovoCard 数据，代码已不读写，留表以兼容旧库
 		`CREATE TABLE IF NOT EXISTS plan_status_cache (
 			plan_key TEXT PRIMARY KEY,
 			label TEXT DEFAULT '',
@@ -278,6 +286,7 @@ func createTables() error {
 		)`,
 
 		// 卡健康：充值失败事件（按卡 + 邮箱归因）
+		// 旧 ZovoCard 数据，代码已不读写，留表以兼容旧库
 		`CREATE TABLE IF NOT EXISTS card_fail_events (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			card_id INTEGER NOT NULL,
@@ -296,6 +305,7 @@ func createTables() error {
 		`CREATE INDEX IF NOT EXISTS idx_card_fail_email ON card_fail_events(account_email_norm)`,
 
 		// 卡健康：本站认定的坏卡（多邮箱失败）
+		// 旧 ZovoCard 数据，代码已不读写，留表以兼容旧库
 		`CREATE TABLE IF NOT EXISTS card_blocklist (
 			card_id INTEGER PRIMARY KEY,
 			card_last_four TEXT DEFAULT '',
@@ -311,6 +321,7 @@ func createTables() error {
 		`CREATE INDEX IF NOT EXISTS idx_card_block_active ON card_blocklist(blocked_at) WHERE unblocked_at IS NULL`,
 
 		// 卡台实体产品缓存（/openapi/v1/products 同步，product_code 唯一）
+		// 旧 ZovoCard 数据，代码已不读写，留表以兼容旧库
 		`CREATE TABLE IF NOT EXISTS card_product_cache (
 			product_code TEXT PRIMARY KEY,
 			issuer TEXT DEFAULT '',
@@ -927,87 +938,8 @@ func RandomPassword(n int) string {
 	return randomPassword(n)
 }
 
-// WebhookEvent 入库行
-type WebhookEvent struct {
-	ID        int64
-	EventType string
-	IdemKey   string
-	Payload   string
-	CreatedAt string
-}
-
-func InsertWebhookEvent(eventType, idemKey, payload string) error {
-	if DB == nil {
-		return fmt.Errorf("db not ready")
-	}
-	_, err := DB.Exec(
-		`INSERT INTO webhook_events (event_type, idem_key, payload) VALUES (?, ?, ?)`,
-		eventType, idemKey, payload,
-	)
-	return err
-}
-
-func ListWebhookEvents(limit int) ([]WebhookEvent, error) {
-	if limit <= 0 || limit > 200 {
-		limit = 50
-	}
-	rows, err := DB.Query(`
-		SELECT id, COALESCE(event_type,''), idem_key, payload, COALESCE(created_at,'')
-		FROM webhook_events ORDER BY id DESC LIMIT ?
-	`, limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []WebhookEvent
-	for rows.Next() {
-		var e WebhookEvent
-		if err := rows.Scan(&e.ID, &e.EventType, &e.IdemKey, &e.Payload, &e.CreatedAt); err != nil {
-			return nil, err
-		}
-		out = append(out, e)
-	}
-	return out, rows.Err()
-}
-
 func normalizeCDKCode(code string) string {
 	return strings.ToUpper(strings.TrimSpace(code))
-}
-
-// BindCDKRedemptionToken preview 成功后：码 ↔ redemption_token。provider 是上游服务商，必填；已有的行不改 provider。
-func BindCDKRedemptionToken(provider, cdkCode, redemptionToken string) error {
-	if DB == nil {
-		return fmt.Errorf("db not ready")
-	}
-	provider = strings.TrimSpace(provider)
-	if provider == "" {
-		return fmt.Errorf("绑定令牌缺少服务商")
-	}
-	code := normalizeCDKCode(cdkCode)
-	tok := strings.TrimSpace(redemptionToken)
-	if code == "" || tok == "" {
-		return nil
-	}
-	_, err := DB.Exec(`
-		INSERT INTO cdk_session_bindings (cdk_code, session_payload, redemption_token, provider, updated_at)
-		VALUES (?, '', ?, ?, CURRENT_TIMESTAMP)
-		ON CONFLICT(cdk_code) DO UPDATE SET
-			redemption_token = excluded.redemption_token,
-			updated_at = CURRENT_TIMESTAMP
-	`, code, tok, provider)
-	if err != nil {
-		return err
-	}
-	return recordRedemptionToken(code, tok)
-}
-
-// recordRedemptionToken 把令牌记进只增不改的令牌表；已存在就忽略。令牌不设保留期限（每条只有几十字节）。
-func recordRedemptionToken(code, tok string) error {
-	if code == "" || tok == "" {
-		return nil
-	}
-	_, err := DB.Exec(`INSERT OR IGNORE INTO cdk_redemption_tokens (token, cdk_code) VALUES (?, ?)`, tok, code)
-	return err
 }
 
 // backfillRedemptionTokens 把绑定表里已有的令牌补进令牌表，可重复执行。
@@ -1019,59 +951,6 @@ func backfillRedemptionTokens() error {
 		return fmt.Errorf("补齐兑换令牌表失败: %w", err)
 	}
 	return nil
-}
-
-// FindCodeByRedemptionToken 预检绑 session 时反查完整卡密
-func FindCodeByRedemptionToken(redemptionToken string) (string, error) {
-	if DB == nil {
-		return "", fmt.Errorf("db not ready")
-	}
-	tok := strings.TrimSpace(redemptionToken)
-	if tok == "" {
-		return "", nil
-	}
-	var code string
-	err := DB.QueryRow(`
-		SELECT cdk_code FROM cdk_session_bindings
-		WHERE redemption_token = ?
-		LIMIT 1
-	`, tok).Scan(&code)
-	if err == sql.ErrNoRows {
-		return "", nil
-	}
-	return code, err
-}
-
-// KnownRedemptionTokens 返回 tokens 里本站预览时记过的那些（cdk_redemption_tokens，只增不改；同码多次预览的旧令牌也在内）。
-// 批量查结果用：只有本站兑换预览时写过绑定的上游令牌才转发上游（审计 money N-1）。
-func KnownRedemptionTokens(tokens []string) (map[string]bool, error) {
-	out := make(map[string]bool, len(tokens))
-	args := make([]any, 0, len(tokens))
-	for _, t := range tokens {
-		if t = strings.TrimSpace(t); t != "" {
-			args = append(args, t)
-		}
-	}
-	if len(args) == 0 {
-		return out, nil
-	}
-	if DB == nil {
-		return nil, fmt.Errorf("db not ready")
-	}
-	rows, err := DB.Query(`SELECT token FROM cdk_redemption_tokens
-		WHERE token IN (?`+strings.Repeat(",?", len(args)-1)+`)`, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var tok string
-		if err := rows.Scan(&tok); err != nil {
-			return nil, err
-		}
-		out[tok] = true
-	}
-	return out, rows.Err()
 }
 
 func migrateCDKPlanTypes() error {
@@ -1139,377 +1018,6 @@ func legacyUUIDCode(planType string, id int64) string {
 	return fmt.Sprintf("%s-%s-%s-%s-%s", hexID[0:8], hexID[8:12], hexID[12:16], hexID[16:20], hexID[20:32])
 }
 
-// SaveCardplatformCDKCode 把完整码写入本站 SQLite（发码 / 从卡台同步 / 回填）。
-func SaveCardplatformCDKCode(upstreamID int64, code, prefix, plan string, feeMinor int64, country ...string) error {
-	return SaveCardplatformCDKCodeWithStatus(upstreamID, code, prefix, plan, feeMinor, "unused", country...)
-}
-
-// SaveCardplatformCDKCodeWithStatus 同上，并写入/更新 status。
-func SaveCardplatformCDKCodeWithStatus(upstreamID int64, code, prefix, plan string, feeMinor int64, status string, country ...string) error {
-	if DB == nil {
-		return fmt.Errorf("db not init")
-	}
-	code = strings.TrimSpace(code)
-	if code == "" {
-		return fmt.Errorf("empty code")
-	}
-	prefix = strings.TrimSpace(prefix)
-	if prefix == "" && len(code) >= 14 {
-		prefix = code[:14]
-	}
-	plan = strings.TrimSpace(plan)
-	status = strings.TrimSpace(strings.ToLower(status))
-	if status == "" {
-		status = "unused"
-	}
-	// nil means an old cache/import did not include region metadata. Empty string
-	// means an authoritative response or issue request chose the default region.
-	var region any
-	if len(country) > 0 {
-		region = strings.ToUpper(strings.TrimSpace(country[0]))
-	}
-	_, err := DB.Exec(`
-		INSERT INTO cardplatform_cdk_codes (upstream_id, code, code_prefix, plan, fee_amount_minor, status, payment_country, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-		ON CONFLICT(code) DO UPDATE SET
-			upstream_id = excluded.upstream_id,
-			code_prefix = excluded.code_prefix,
-			plan = CASE WHEN excluded.plan != '' THEN excluded.plan ELSE cardplatform_cdk_codes.plan END,
-			fee_amount_minor = CASE WHEN excluded.fee_amount_minor > 0 THEN excluded.fee_amount_minor ELSE cardplatform_cdk_codes.fee_amount_minor END,
-			status = CASE WHEN excluded.status != '' THEN excluded.status ELSE cardplatform_cdk_codes.status END,
-			payment_country = COALESCE(excluded.payment_country, cardplatform_cdk_codes.payment_country)
-	`, upstreamID, code, prefix, plan, feeMinor, status, region)
-	if err != nil {
-		return fmt.Errorf("save cardplatform cdk: %w", err)
-	}
-	return nil
-}
-
-// UpdateCardplatformCDKStatus 按上游 id 更新本站缓存的状态（禁用/解禁后刷新列表）。
-func UpdateCardplatformCDKStatus(upstreamID int64, status string) error {
-	if DB == nil || upstreamID <= 0 {
-		return nil
-	}
-	status = strings.TrimSpace(strings.ToLower(status))
-	if status == "" {
-		return nil
-	}
-	_, err := DB.Exec(`UPDATE cardplatform_cdk_codes SET status = ? WHERE upstream_id = ?`, status, upstreamID)
-	return err
-}
-
-// GetCardplatformCDKStatus 读本站缓存状态；无记录返回空串。
-func GetCardplatformCDKStatus(upstreamID int64) string {
-	if DB == nil || upstreamID <= 0 {
-		return ""
-	}
-	var st string
-	err := DB.QueryRow(`SELECT COALESCE(status,'') FROM cardplatform_cdk_codes WHERE upstream_id = ? LIMIT 1`, upstreamID).Scan(&st)
-	if err != nil {
-		return ""
-	}
-	return strings.ToLower(strings.TrimSpace(st))
-}
-
-// CountCardplatformCDKCodes 本站已存完整码数量（运维/健康检查）。
-func CountCardplatformCDKCodes() int {
-	if DB == nil {
-		return 0
-	}
-	var n int
-	_ = DB.QueryRow(`SELECT COUNT(*) FROM cardplatform_cdk_codes`).Scan(&n)
-	return n
-}
-
-// StoredCDKCode 本站已存的完整码行。
-type StoredCDKCode struct {
-	UpstreamID     int64   `json:"id"`
-	Code           string  `json:"code"`
-	CodePrefix     string  `json:"code_prefix"`
-	Plan           string  `json:"plan"`
-	FeeAmountMinor int64   `json:"fee_amount_minor"`
-	Status         string  `json:"status"`
-	PaymentCountry *string `json:"payment_country"` // nil=not yet synced, empty=default PH
-	CreatedAt      string  `json:"created_at"`
-}
-
-// ListCardplatformStoredCDKCodes 列出本站 SQLite 中的完整码（可按 plan / q / status 过滤）。
-// limit<=0 时默认 5000，硬顶 10000。
-func ListCardplatformStoredCDKCodes(plan, q string, limit int) ([]StoredCDKCode, error) {
-	return ListCardplatformStoredCDKCodesFilter(plan, q, "", limit)
-}
-
-func cardplatformStoredWhere(plan, q, status string) (where string, args []any) {
-	plan = strings.TrimSpace(plan)
-	q = strings.TrimSpace(q)
-	status = strings.TrimSpace(strings.ToLower(status))
-	where = ` WHERE 1=1`
-	if plan != "" {
-		where += ` AND plan = ?`
-		args = append(args, plan)
-	}
-	if status != "" {
-		where += ` AND status = ?`
-		args = append(args, status)
-	}
-	if q != "" {
-		where += ` AND (
-			code LIKE ? COLLATE NOCASE
-			OR code_prefix LIKE ? COLLATE NOCASE
-			OR CAST(upstream_id AS TEXT) = ?
-			OR upstream_id IN (
-				SELECT upstream_id FROM cardplatform_cdk_notes
-				WHERE IFNULL(note, '') LIKE ? COLLATE NOCASE
-			)
-		)`
-		like := "%" + q + "%"
-		args = append(args, like, like, q, like)
-	}
-	return where, args
-}
-
-// CountCardplatformStoredCDKCodesFilter 符合过滤条件的本站完整码总数。
-func CountCardplatformStoredCDKCodesFilter(plan, q, status string) (int, error) {
-	if DB == nil {
-		return 0, fmt.Errorf("db not init")
-	}
-	where, args := cardplatformStoredWhere(plan, q, status)
-	var n int
-	err := DB.QueryRow(`SELECT COUNT(*) FROM cardplatform_cdk_codes`+where, args...).Scan(&n)
-	return n, err
-}
-
-// ListCardplatformStoredCDKCodesFilter 可按 status 过滤（旧接口：仅 LIMIT，无 OFFSET）。
-func ListCardplatformStoredCDKCodesFilter(plan, q, status string, limit int) ([]StoredCDKCode, error) {
-	list, _, err := ListCardplatformStoredCDKCodesPage(plan, q, status, 1, limit)
-	return list, err
-}
-
-// ListCardplatformStoredCDKCodesPage 分页列出本站完整码。
-// page 从 1 起；pageSize<=0 时默认 20；单页硬顶 500（列表），导出请用更大 limit 的旧路径或 pageSize 上限 10000。
-// 返回 list + 过滤后 total。
-func ListCardplatformStoredCDKCodesPage(plan, q, status string, page, pageSize int) ([]StoredCDKCode, int, error) {
-	if DB == nil {
-		return nil, 0, fmt.Errorf("db not init")
-	}
-	if page < 1 {
-		page = 1
-	}
-	if pageSize <= 0 {
-		pageSize = 20
-	}
-	if pageSize > 10000 {
-		pageSize = 10000
-	}
-	total, err := CountCardplatformStoredCDKCodesFilter(plan, q, status)
-	if err != nil {
-		return nil, 0, err
-	}
-	where, args := cardplatformStoredWhere(plan, q, status)
-	offset := (page - 1) * pageSize
-	sql := `
-		SELECT COALESCE(upstream_id,0), code, COALESCE(code_prefix,''), COALESCE(plan,''),
-		       COALESCE(fee_amount_minor,0), COALESCE(status,''), COALESCE(created_at,''), payment_country
-		FROM cardplatform_cdk_codes` + where + `
-		ORDER BY created_at DESC, rowid DESC
-		LIMIT ? OFFSET ?`
-	args = append(args, pageSize, offset)
-	rows, err := DB.Query(sql, args...)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer rows.Close()
-	var out []StoredCDKCode
-	for rows.Next() {
-		var it StoredCDKCode
-		if err := rows.Scan(&it.UpstreamID, &it.Code, &it.CodePrefix, &it.Plan, &it.FeeAmountMinor, &it.Status, &it.CreatedAt, &it.PaymentCountry); err != nil {
-			return nil, 0, err
-		}
-		it.Code = strings.TrimSpace(it.Code)
-		if it.Code == "" {
-			continue
-		}
-		if it.Status == "" {
-			it.Status = "unused"
-		}
-		out = append(out, it)
-	}
-	return out, total, rows.Err()
-}
-
-// LookupCardplatformCDKCode 按上游 id 或 prefix 取完整码。
-func LookupCardplatformCDKCode(upstreamID int64, prefix string) (string, bool) {
-	if DB == nil {
-		return "", false
-	}
-	prefix = strings.TrimSpace(prefix)
-	var code string
-	if upstreamID > 0 {
-		err := DB.QueryRow(`SELECT code FROM cardplatform_cdk_codes WHERE upstream_id = ? ORDER BY created_at DESC LIMIT 1`, upstreamID).Scan(&code)
-		if err == nil && strings.TrimSpace(code) != "" {
-			return strings.TrimSpace(code), true
-		}
-	}
-	if prefix != "" {
-		err := DB.QueryRow(`SELECT code FROM cardplatform_cdk_codes WHERE code_prefix = ? OR code LIKE ? ORDER BY created_at DESC LIMIT 1`,
-			prefix, prefix+"%").Scan(&code)
-		if err == nil && strings.TrimSpace(code) != "" {
-			return strings.TrimSpace(code), true
-		}
-	}
-	return "", false
-}
-
-// CardplatformCDKCodeByUpstreamID 严格按上游 id 取完整码，不退回前缀匹配（前缀可能撞上别的客户的码）。
-// 没有记录或码为空时返回 sql.ErrNoRows。
-func CardplatformCDKCodeByUpstreamID(upstreamID int64) (string, error) {
-	if DB == nil {
-		return "", fmt.Errorf("db not init")
-	}
-	var code string
-	if err := DB.QueryRow(`SELECT code FROM cardplatform_cdk_codes WHERE upstream_id = ? ORDER BY created_at DESC LIMIT 1`, upstreamID).Scan(&code); err != nil {
-		return "", err
-	}
-	code = strings.TrimSpace(code)
-	if code == "" {
-		return "", sql.ErrNoRows
-	}
-	return code, nil
-}
-
-// ---- CDK 备注（本站）----
-
-const maxCDKNoteLen = 200
-
-// SetCardplatformCDKNote 写入/更新备注；note 空串表示清空。
-func SetCardplatformCDKNote(upstreamID int64, note string) error {
-	if DB == nil {
-		return fmt.Errorf("db not init")
-	}
-	if upstreamID <= 0 {
-		return fmt.Errorf("invalid upstream id")
-	}
-	note = strings.TrimSpace(note)
-	if len([]rune(note)) > maxCDKNoteLen {
-		return fmt.Errorf("备注最多 %d 字", maxCDKNoteLen)
-	}
-	if note == "" {
-		_, err := DB.Exec(`DELETE FROM cardplatform_cdk_notes WHERE upstream_id = ?`, upstreamID)
-		return err
-	}
-	_, err := DB.Exec(`
-		INSERT INTO cardplatform_cdk_notes (upstream_id, note, updated_at)
-		VALUES (?, ?, CURRENT_TIMESTAMP)
-		ON CONFLICT(upstream_id) DO UPDATE SET
-			note = excluded.note,
-			updated_at = CURRENT_TIMESTAMP
-	`, upstreamID, note)
-	return err
-}
-
-// ClearCardplatformCDKNotes 批量清空备注。
-func ClearCardplatformCDKNotes(ids []int64) (int, error) {
-	if DB == nil {
-		return 0, fmt.Errorf("db not init")
-	}
-	n := 0
-	for _, id := range ids {
-		if id <= 0 {
-			continue
-		}
-		res, err := DB.Exec(`DELETE FROM cardplatform_cdk_notes WHERE upstream_id = ?`, id)
-		if err != nil {
-			return n, err
-		}
-		if aff, _ := res.RowsAffected(); aff > 0 {
-			n++
-		}
-	}
-	return n, nil
-}
-
-// BatchSetCardplatformCDKNotes 批量写入同一备注；note 空则清空。
-func BatchSetCardplatformCDKNotes(ids []int64, note string) (ok int, failed []int64, err error) {
-	if DB == nil {
-		return 0, nil, fmt.Errorf("db not init")
-	}
-	note = strings.TrimSpace(note)
-	if len([]rune(note)) > maxCDKNoteLen {
-		return 0, nil, fmt.Errorf("备注最多 %d 字", maxCDKNoteLen)
-	}
-	for _, id := range ids {
-		if id <= 0 {
-			failed = append(failed, id)
-			continue
-		}
-		if e := SetCardplatformCDKNote(id, note); e != nil {
-			failed = append(failed, id)
-			continue
-		}
-		ok++
-	}
-	return ok, failed, nil
-}
-
-// GetCardplatformCDKNote 单条备注。
-func GetCardplatformCDKNote(upstreamID int64) string {
-	if DB == nil || upstreamID <= 0 {
-		return ""
-	}
-	var note string
-	_ = DB.QueryRow(`SELECT COALESCE(note,'') FROM cardplatform_cdk_notes WHERE upstream_id = ?`, upstreamID).Scan(&note)
-	return strings.TrimSpace(note)
-}
-
-// MapCardplatformCDKNotes 批量取备注 map[upstream_id]note。
-func MapCardplatformCDKNotes(ids []int64) map[int64]string {
-	out := map[int64]string{}
-	if DB == nil || len(ids) == 0 {
-		return out
-	}
-	// de-dup
-	seen := map[int64]struct{}{}
-	uniq := make([]int64, 0, len(ids))
-	for _, id := range ids {
-		if id <= 0 {
-			continue
-		}
-		if _, ok := seen[id]; ok {
-			continue
-		}
-		seen[id] = struct{}{}
-		uniq = append(uniq, id)
-	}
-	if len(uniq) == 0 {
-		return out
-	}
-	// SQLite IN clause
-	ph := make([]string, len(uniq))
-	args := make([]any, len(uniq))
-	for i, id := range uniq {
-		ph[i] = "?"
-		args[i] = id
-	}
-	q := `SELECT upstream_id, COALESCE(note,'') FROM cardplatform_cdk_notes WHERE upstream_id IN (` + strings.Join(ph, ",") + `)`
-	rows, err := DB.Query(q, args...)
-	if err != nil {
-		return out
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var id int64
-		var note string
-		if err := rows.Scan(&id, &note); err != nil {
-			continue
-		}
-		note = strings.TrimSpace(note)
-		if note != "" {
-			out[id] = note
-		}
-	}
-	return out
-}
-
 // ---- 代理失败换码 ----
 
 func HashCDKCode(code string) string {
@@ -1518,305 +1026,7 @@ func HashCDKCode(code string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// LookupStoredCDKByCode 按完整码查本站缓存。
-func LookupStoredCDKByCode(code string) (upstreamID int64, plan, prefix, status string, ok bool) {
-	if DB == nil {
-		return 0, "", "", "", false
-	}
-	code = strings.TrimSpace(code)
-	if code == "" {
-		return 0, "", "", "", false
-	}
-	err := DB.QueryRow(`
-		SELECT COALESCE(upstream_id,0), COALESCE(plan,''), COALESCE(code_prefix,''), COALESCE(status,'')
-		FROM cardplatform_cdk_codes WHERE upper(trim(code)) = upper(trim(?))
-		ORDER BY created_at DESC LIMIT 1
-	`, code).Scan(&upstreamID, &plan, &prefix, &status)
-	if err != nil {
-		return 0, "", "", "", false
-	}
-	return upstreamID, plan, prefix, status, true
-}
-
 // ---- 自动选卡权重配置 ----
-
-// CardSelectionRule 一条选卡规则（按 sort_order 排列优先级）。
-type CardSelectionRule struct {
-	ID          int64  `json:"id"`
-	SortOrder   int    `json:"sort_order"`
-	PlanKey     string `json:"plan_key"`
-	DisplayName string `json:"display_name"`
-	BinPrefix   string `json:"bin_prefix"`
-	Channel     string `json:"channel"`
-	Enabled     bool   `json:"enabled"`
-	CreatedAt   string `json:"created_at"`
-}
-
-// PlanStatusCache 卡台产品状态缓存条目。
-type PlanStatusCache struct {
-	PlanKey            string  `json:"plan_key"`
-	Label              string  `json:"label"`
-	Online             bool    `json:"online"`
-	ServiceFeeUsdMinor int64   `json:"service_fee_usd_minor"`
-	ServiceFeeUSD      float64 `json:"service_fee_usd"`
-	SyncedAt           string  `json:"synced_at"`
-}
-
-// GetCardSelectionRules 按 sort_order 返回所有选卡规则。
-func GetCardSelectionRules() ([]CardSelectionRule, error) {
-	if DB == nil {
-		return nil, fmt.Errorf("db not ready")
-	}
-	rows, err := DB.Query(`
-		SELECT id, sort_order, plan_key, display_name,
-		       COALESCE(bin_prefix,''), COALESCE(channel,''),
-		       enabled, COALESCE(created_at,'')
-		FROM card_selection_rules ORDER BY sort_order ASC, id ASC
-	`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []CardSelectionRule
-	for rows.Next() {
-		var r CardSelectionRule
-		var enabled int
-		if err := rows.Scan(&r.ID, &r.SortOrder, &r.PlanKey, &r.DisplayName,
-			&r.BinPrefix, &r.Channel, &enabled, &r.CreatedAt); err != nil {
-			return nil, err
-		}
-		r.Enabled = enabled == 1
-		out = append(out, r)
-	}
-	return out, rows.Err()
-}
-
-// SetCardSelectionRules 在事务内整体替换选卡规则列表。
-func SetCardSelectionRules(rules []CardSelectionRule) error {
-	if DB == nil {
-		return fmt.Errorf("db not ready")
-	}
-	tx, err := DB.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	if _, err := tx.Exec(`DELETE FROM card_selection_rules`); err != nil {
-		return err
-	}
-	for i, r := range rules {
-		sortOrder := r.SortOrder
-		if sortOrder == 0 {
-			sortOrder = i + 1
-		}
-		enabled := 0
-		if r.Enabled {
-			enabled = 1
-		}
-		if _, err := tx.Exec(`
-			INSERT INTO card_selection_rules (sort_order, plan_key, display_name, bin_prefix, channel, enabled)
-			VALUES (?, ?, ?, ?, ?, ?)
-		`, sortOrder, strings.TrimSpace(r.PlanKey), strings.TrimSpace(r.DisplayName),
-			strings.TrimSpace(r.BinPrefix), strings.TrimSpace(r.Channel), enabled); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
-}
-
-// GetPlanStatusCache 返回所有产品状态缓存（slice，供列表展示）。
-func GetPlanStatusCache() ([]PlanStatusCache, error) {
-	if DB == nil {
-		return nil, fmt.Errorf("db not ready")
-	}
-	rows, err := DB.Query(`
-		SELECT plan_key, COALESCE(label,''), online,
-		       COALESCE(service_fee_usd_minor,0), COALESCE(synced_at,'')
-		FROM plan_status_cache ORDER BY plan_key
-	`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []PlanStatusCache
-	for rows.Next() {
-		var p PlanStatusCache
-		var online int
-		if err := rows.Scan(&p.PlanKey, &p.Label, &online,
-			&p.ServiceFeeUsdMinor, &p.SyncedAt); err != nil {
-			return nil, err
-		}
-		p.Online = online == 1
-		p.ServiceFeeUSD = float64(p.ServiceFeeUsdMinor) / 100.0
-		out = append(out, p)
-	}
-	return out, rows.Err()
-}
-
-// GetPlanStatusCacheMap 返回 plan_key → PlanStatusCache 的 map，方便 O(1) 查找。
-func GetPlanStatusCacheMap() (map[string]PlanStatusCache, error) {
-	list, err := GetPlanStatusCache()
-	if err != nil {
-		return nil, err
-	}
-	m := make(map[string]PlanStatusCache, len(list))
-	for _, p := range list {
-		m[p.PlanKey] = p
-	}
-	return m, nil
-}
-
-// UpsertPlanStatus 插入或更新一条产品状态缓存。
-func UpsertPlanStatus(planKey, label string, online bool, feeMinor int64) error {
-	if DB == nil {
-		return fmt.Errorf("db not ready")
-	}
-	onlineInt := 0
-	if online {
-		onlineInt = 1
-	}
-	_, err := DB.Exec(`
-		INSERT INTO plan_status_cache (plan_key, label, online, service_fee_usd_minor, synced_at)
-		VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
-		ON CONFLICT(plan_key) DO UPDATE SET
-			label = excluded.label,
-			online = excluded.online,
-			service_fee_usd_minor = excluded.service_fee_usd_minor,
-			synced_at = excluded.synced_at
-	`, strings.TrimSpace(planKey), label, onlineInt, feeMinor)
-	return err
-}
-
-// CardProductCache 卡台实体产品缓存条目。
-type CardProductCache struct {
-	ProductCode string   `json:"product_code"`
-	Issuer      string   `json:"issuer"`
-	BIN         string   `json:"bin"`
-	Network     string   `json:"network"`
-	IssuingArea string   `json:"issuing_area"`
-	Scene       string   `json:"scene"`
-	CardGroup   string   `json:"card_group"`
-	Description string   `json:"description"`
-	BinHeads    []string `json:"bin_heads"` // 反序列化自 JSON 存储
-	Enabled     bool     `json:"enabled"`
-	SuspendedAt string   `json:"suspended_at"`
-	SyncedAt    string   `json:"synced_at"`
-}
-
-// UpsertCardProduct 插入或更新一条产品缓存。
-func UpsertCardProduct(p CardProductCache) error {
-	if DB == nil {
-		return fmt.Errorf("db not ready")
-	}
-	onlineInt := 0
-	if p.Enabled {
-		onlineInt = 1
-	}
-	binHeadsJSON, _ := json.Marshal(p.BinHeads)
-	_, err := DB.Exec(`
-		INSERT INTO card_product_cache
-			(product_code, issuer, bin, network, issuing_area, scene, card_group,
-			 description, bin_heads, enabled, suspended_at, synced_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-		ON CONFLICT(product_code) DO UPDATE SET
-			issuer = excluded.issuer,
-			bin = excluded.bin,
-			network = excluded.network,
-			issuing_area = excluded.issuing_area,
-			scene = excluded.scene,
-			card_group = excluded.card_group,
-			description = excluded.description,
-			bin_heads = excluded.bin_heads,
-			enabled = excluded.enabled,
-			suspended_at = excluded.suspended_at,
-			synced_at = excluded.synced_at
-	`, p.ProductCode, p.Issuer, p.BIN, p.Network, p.IssuingArea, p.Scene, p.CardGroup,
-		p.Description, string(binHeadsJSON), onlineInt, p.SuspendedAt)
-	return err
-}
-
-// PruneCardProductsExcept 删除不在 present 集合中的缓存产品（含早先已标下线的）。
-//
-// 卡台对外接口（/gpt-direct/card-products、/products）只返回已上架的卡段；不再出现
-// = 已下架或对本站不可见。已下架的卡段/BIN 只能由卡台管理员看到，CDK 不再保留
-// 它的 BIN、描述等信息（原来标「已下线」继续展示，等于把下架卡 BIN 泄露给 CDK 后台）。
-// 选卡规则里仍引用它时，规则照常显示为离线（找不到产品即离线）。
-//
-// present 为空时不动：防止一次异常的空响应把整个缓存清掉。
-func PruneCardProductsExcept(present map[string]bool) (int, error) {
-	if DB == nil {
-		return 0, fmt.Errorf("db not ready")
-	}
-	if len(present) == 0 {
-		return 0, nil
-	}
-	rows, err := DB.Query(`SELECT product_code FROM card_product_cache`)
-	if err != nil {
-		return 0, err
-	}
-	defer rows.Close()
-	var stale []string
-	for rows.Next() {
-		var code string
-		if err := rows.Scan(&code); err != nil {
-			return 0, err
-		}
-		if !present[strings.TrimSpace(code)] {
-			stale = append(stale, code)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return 0, err
-	}
-	n := 0
-	for _, code := range stale {
-		res, err := DB.Exec(`DELETE FROM card_product_cache WHERE product_code = ?`, code)
-		if err != nil {
-			return n, err
-		}
-		if aff, _ := res.RowsAffected(); aff > 0 {
-			n++
-		}
-	}
-	return n, nil
-}
-
-// GetCardProducts 返回所有产品缓存（在线优先，再按 product_code）。
-func GetCardProducts() ([]CardProductCache, error) {
-	if DB == nil {
-		return nil, fmt.Errorf("db not ready")
-	}
-	rows, err := DB.Query(`
-		SELECT product_code, COALESCE(issuer,''), COALESCE(bin,''), COALESCE(network,''),
-		       COALESCE(issuing_area,''), COALESCE(scene,''), COALESCE(card_group,''),
-		       COALESCE(description,''), COALESCE(bin_heads,'[]'), enabled,
-		       COALESCE(suspended_at,''), COALESCE(synced_at,'')
-		FROM card_product_cache
-		ORDER BY enabled DESC, network, product_code
-	`)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var out []CardProductCache
-	for rows.Next() {
-		var p CardProductCache
-		var enabled int
-		var binHeadsJSON string
-		if err := rows.Scan(&p.ProductCode, &p.Issuer, &p.BIN, &p.Network,
-			&p.IssuingArea, &p.Scene, &p.CardGroup, &p.Description,
-			&binHeadsJSON, &enabled, &p.SuspendedAt, &p.SyncedAt); err != nil {
-			return nil, err
-		}
-		p.Enabled = enabled == 1
-		_ = json.Unmarshal([]byte(binHeadsJSON), &p.BinHeads)
-		if p.BinHeads == nil {
-			p.BinHeads = []string{}
-		}
-		out = append(out, p)
-	}
-	return out, rows.Err()
-}
 
 // migrateDefaultCardSelectionRules 首次启动时写入默认选卡优先级。
 func migrateDefaultCardSelectionRules() error {

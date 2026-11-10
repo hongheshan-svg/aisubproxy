@@ -32,10 +32,10 @@ func startupChecks(mode string, tolerateMissingSchema bool) error {
 	if _, err := step("默认管理员口令检查", db.CheckDefaultAdmin); err != nil {
 		return err
 	}
-	// 卡台 API Key、webhook 密钥：库里还有旧版明文时必须能加密迁移，否则不启动，不静默留着明文
-	if _, err := step("卡台密钥迁移检查", func() error {
+	// 旧版卡台 API Key（card_api_key）、webhook 密钥：库里还有旧版明文时必须能加密迁移，否则不启动，不静默留着明文
+	if _, err := step("旧版密钥迁移检查", func() error {
 		if err := db.CheckCardSecretsMigratable(); err != nil {
-			return fmt.Errorf("卡台密钥迁移: %w", err)
+			return fmt.Errorf("旧版密钥迁移: %w", err)
 		}
 		return nil
 	}); err != nil {

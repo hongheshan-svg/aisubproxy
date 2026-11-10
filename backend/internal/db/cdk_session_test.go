@@ -2,7 +2,6 @@ package db_test
 
 import (
 	"database/sql"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -12,7 +11,6 @@ import (
 
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/db/dbtest"
-	"github.com/tuzi/cdk-recharge-system/internal/secretbox"
 )
 
 const (
@@ -30,15 +28,6 @@ func storedSession(t *testing.T, code string) string {
 	return s
 }
 
-func countBindings(t *testing.T) int {
-	t.Helper()
-	var n int
-	if err := db.DB.QueryRow(`SELECT COUNT(*) FROM cdk_session_bindings`).Scan(&n); err != nil {
-		t.Fatal(err)
-	}
-	return n
-}
-
 // insertLegacyBinding 直接写一行旧版明文（模拟升级前的库）。
 func insertLegacyBinding(t *testing.T, code, sess, tok string) {
 	t.Helper()
@@ -48,99 +37,34 @@ func insertLegacyBinding(t *testing.T, code, sess, tok string) {
 	}
 }
 
+// sealedBinding 造一行已加密的绑定：先写升级前的明文旧行，再跑正式的加密迁移（当前主密钥）。
+func sealedBinding(t *testing.T, code, tok, sess string) {
+	t.Helper()
+	insertLegacyBinding(t, code, sess, tok)
+	if err := db.MigrateCDKSessions(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// sessionOf 读出并解密某张码绑定的会话原文；行不存在时报错。
+func sessionOf(t *testing.T, code string) (string, error) {
+	t.Helper()
+	return db.OpenStoredSession(storedSession(t, code))
+}
+
+func tokenOf(t *testing.T, code string) string {
+	t.Helper()
+	var tok string
+	if err := db.DB.QueryRow(`SELECT COALESCE(redemption_token, '') FROM cdk_session_bindings WHERE cdk_code = ?`, code).Scan(&tok); err != nil {
+		t.Fatal(err)
+	}
+	return tok
+}
+
 func setBoundAt(t *testing.T, code string, at time.Time) {
 	t.Helper()
 	if _, err := db.DB.Exec(`UPDATE cdk_session_bindings SET session_bound_at = ? WHERE cdk_code = ?`, at.Unix(), code); err != nil {
 		t.Fatal(err)
-	}
-}
-
-// 审计 MO-01 的验证测试反过来：库里不再是明文，但凭卡密仍能解出原文。
-func TestCDKSessionNotStoredInPlaintext(t *testing.T) {
-	dbtest.Open(t)
-	dbtest.SetMasterKey(t)
-	if err := db.BindCDKSession("zovocard", testCDK, "rt-1", testSessPlain); err != nil {
-		t.Fatal(err)
-	}
-	stored := storedSession(t, testCDK)
-	if stored == testSessPlain || strings.Contains(stored, "AUDIT-SESSION-TOKEN-PLAINTEXT") || strings.Contains(stored, "buyer@example.com") {
-		t.Fatalf("库里不应有明文: %q", stored)
-	}
-	if !strings.HasPrefix(stored, "v1:") {
-		t.Fatalf("应是 secretbox 密文: %q", stored)
-	}
-	got, err := db.GetSessionByCDK("zc-audit-session-code-0001") // 大小写不敏感
-	if err != nil || got != testSessPlain {
-		t.Fatalf("凭卡密应能解出原文: %q %v", got, err)
-	}
-	// 邮箱也不能以明文落库
-	var email string
-	if err := db.DB.QueryRow(`SELECT account_email_sealed FROM cdk_session_bindings WHERE cdk_code = ?`, testCDK).Scan(&email); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(email, "buyer@example.com") || !strings.HasPrefix(email, "v1:") {
-		t.Fatalf("邮箱应加密保存: %q", email)
-	}
-}
-
-func TestBindCDKSessionRefusesWithoutMasterKey(t *testing.T) {
-	for _, key := range []string{"", "not-base64!"} {
-		dbtest.Open(t)
-		t.Setenv("APP_MASTER_KEY", key)
-		err := db.BindCDKSession("zovocard", testCDK, "rt-1", testSessPlain)
-		if err == nil {
-			t.Fatalf("密钥 %q 时应拒绝写入", key)
-		}
-		if key == "" && !errors.Is(err, secretbox.ErrNoMasterKey) {
-			t.Fatalf("应能识别为缺密钥: %v", err)
-		}
-		if n := countBindings(t); n != 0 {
-			t.Fatalf("拒绝写入时表中不应有行: %d", n)
-		}
-	}
-}
-
-// 只有 token 的路径（RT: 占位行与更新已绑定行）同样加密。
-func TestBindCDKSessionByTokenIsSealed(t *testing.T) {
-	dbtest.Open(t)
-	dbtest.SetMasterKey(t)
-	if err := db.BindCDKSession("zovocard", "", "tok-only", testSessPlain); err != nil {
-		t.Fatal(err)
-	}
-	if s := storedSession(t, "RT:tok-only"); strings.Contains(s, "AUDIT-SESSION") {
-		t.Fatalf("RT: 占位行不应是明文: %q", s)
-	}
-	if err := db.BindCDKRedemptionToken("zovocard", testCDK, "tok-2"); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.BindCDKSession("zovocard", "", "tok-2", testSessPlain); err != nil {
-		t.Fatal(err)
-	}
-	if s := storedSession(t, testCDK); strings.Contains(s, "AUDIT-SESSION") || s == "" {
-		t.Fatalf("按 token 更新的行不应是明文: %q", s)
-	}
-	if got, err := db.GetSessionByCDK(testCDK); err != nil || got != testSessPlain {
-		t.Fatalf("应能解出: %q %v", got, err)
-	}
-}
-
-// 密钥缺失时读取不能把兑换进度查询带崩：token 照常可读，会话为空。
-func TestGetBindingSurvivesMissingKey(t *testing.T) {
-	dbtest.Open(t)
-	dbtest.SetMasterKey(t)
-	if err := db.BindCDKSession("zovocard", testCDK, "rt-1", testSessPlain); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("APP_MASTER_KEY", "")
-	b, err := db.GetBindingByCDK(testCDK)
-	if err != nil || b == nil {
-		t.Fatalf("密钥缺失不应让绑定读取失败: %+v %v", b, err)
-	}
-	if b.RedemptionToken != "rt-1" || b.SessionPayload != "" || !b.HasSession {
-		t.Fatalf("token 应可读、会话应为空、仍标记有会话: %+v", b)
-	}
-	if _, err := db.GetSessionByCDK(testCDK); err == nil {
-		t.Fatal("GetSessionByCDK 解不开时应返回错误")
 	}
 }
 
@@ -157,10 +81,17 @@ func TestMigrateEncryptsLegacyPlaintext(t *testing.T) {
 	if strings.Contains(s1, "AUDIT-SESSION") || !strings.HasPrefix(s1, "v1:") {
 		t.Fatalf("应已加密: %q", s1)
 	}
-	if got, err := db.GetSessionByCDK(testCDK); err != nil || got != testSessPlain {
+	if got, err := sessionOf(t, testCDK); err != nil || got != testSessPlain {
 		t.Fatalf("迁移后应能解出原文: %q %v", got, err)
 	}
-	if got, err := db.GetSessionByCDK("ZC-TOKEN-ONLY-RAW"); err != nil || got != "eyJraw.access.token" {
+	var sealedEmail string
+	if err := db.DB.QueryRow(`SELECT account_email_sealed FROM cdk_session_bindings WHERE cdk_code = ?`, testCDK).Scan(&sealedEmail); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(sealedEmail, "buyer@example.com") || !strings.HasPrefix(sealedEmail, "v1:") {
+		t.Fatalf("邮箱应加密保存: %q", sealedEmail)
+	}
+	if got, err := sessionOf(t, "ZC-TOKEN-ONLY-RAW"); err != nil || got != "eyJraw.access.token" {
 		t.Fatalf("非 JSON 会话也要能解出: %q %v", got, err)
 	}
 	if s := storedSession(t, "ZC-PREVIEW-ONLY"); s != "" {
@@ -170,8 +101,8 @@ func TestMigrateEncryptsLegacyPlaintext(t *testing.T) {
 		t.Fatalf("迁移应提取邮箱: %q %v", em, err)
 	}
 	for code, tok := range map[string]string{testCDK: "rt-1", "ZC-TOKEN-ONLY-RAW": "rt-2", "ZC-PREVIEW-ONLY": "rt-3"} {
-		if b, err := db.GetBindingByCDK(code); err != nil || b == nil || b.RedemptionToken != tok {
-			t.Fatalf("%s 的 token 不应变化: %+v %v", code, b, err)
+		if got := tokenOf(t, code); got != tok {
+			t.Fatalf("%s 的 token 不应变化: %q", code, got)
 		}
 	}
 	// 幂等：再跑一次，密文原样不动
@@ -181,7 +112,7 @@ func TestMigrateEncryptsLegacyPlaintext(t *testing.T) {
 	if s := storedSession(t, testCDK); s != s1 {
 		t.Fatalf("重跑不应再次加密: %q -> %q", s1, s)
 	}
-	if got, err := db.GetSessionByCDK(testCDK); err != nil || got != testSessPlain {
+	if got, err := sessionOf(t, testCDK); err != nil || got != testSessPlain {
 		t.Fatalf("重跑后仍应能解出原文: %q %v", got, err)
 	}
 }
@@ -226,7 +157,7 @@ func TestMigrateResumesAfterInterruption(t *testing.T) {
 		if want, ok := sealedFirst[c]; ok && storedSession(t, c) != want {
 			t.Fatalf("%s 已加密的行不应被改动", c)
 		}
-		if got, err := db.GetSessionByCDK(c); err != nil || got != sess {
+		if got, err := sessionOf(t, c); err != nil || got != sess {
 			t.Fatalf("%s 应能解出原文: %q %v", c, got, err)
 		}
 	}
@@ -261,9 +192,7 @@ func TestMigrateSkipsWithoutKeyAndKeepsData(t *testing.T) {
 func TestMigrateLeavesForeignCiphertextAlone(t *testing.T) {
 	dbtest.Open(t)
 	t.Setenv("APP_MASTER_KEY", otherKey)
-	if err := db.BindCDKSession("zovocard", testCDK, "rt-1", testSessPlain); err != nil {
-		t.Fatal(err)
-	}
+	sealedBinding(t, testCDK, "rt-1", testSessPlain) // 用 otherKey 加密
 	before := storedSession(t, testCDK)
 	dbtest.SetMasterKey(t)
 	if err := db.MigrateCDKSessions(); err != nil {
@@ -273,7 +202,7 @@ func TestMigrateLeavesForeignCiphertextAlone(t *testing.T) {
 		t.Fatalf("别的密钥加密的行不应被改动: %q", s)
 	}
 	t.Setenv("APP_MASTER_KEY", otherKey)
-	if got, err := db.GetSessionByCDK(testCDK); err != nil || got != testSessPlain {
+	if got, err := sessionOf(t, testCDK); err != nil || got != testSessPlain {
 		t.Fatalf("配回原密钥应能解出: %q %v", got, err)
 	}
 }
@@ -361,12 +290,8 @@ func TestSweepClearsExpiredButKeepsTokenAndEmail(t *testing.T) {
 	dbtest.Open(t)
 	dbtest.SetMasterKey(t)
 	now := time.Now()
-	if err := db.BindCDKSession("zovocard", "ZC-OLD-ONE", "rt-old", testSessPlain); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.BindCDKSession("zovocard", "ZC-NEW-ONE", "rt-new", testSessPlain); err != nil {
-		t.Fatal(err)
-	}
+	sealedBinding(t, "ZC-OLD-ONE", "rt-old", testSessPlain)
+	sealedBinding(t, "ZC-NEW-ONE", "rt-new", testSessPlain)
 	setBoundAt(t, "ZC-OLD-ONE", now.Add(-db.CDKSessionTTL-time.Minute))
 	setBoundAt(t, "ZC-NEW-ONE", now.Add(-db.CDKSessionTTL+time.Hour))
 
@@ -383,17 +308,16 @@ func TestSweepClearsExpiredButKeepsTokenAndEmail(t *testing.T) {
 	if s := storedSession(t, "ZC-NEW-ONE"); s == "" {
 		t.Fatal("未过期会话不应清空")
 	}
-	b, err := db.GetBindingByCDK("ZC-OLD-ONE")
-	if err != nil || b == nil || b.RedemptionToken != "rt-old" || b.HasSession || b.SessionPayload != "" {
-		t.Fatalf("清空后 token 要在、会话要空: %+v %v", b, err)
+	if got := tokenOf(t, "ZC-OLD-ONE"); got != "rt-old" {
+		t.Fatalf("清空后 token 要在: %q", got)
 	}
-	if b.AccountEmail != "buyer@example.com" {
-		t.Fatalf("清空后邮箱要在: %+v", b)
+	if em, err := db.GetAccountEmailByCDK("ZC-OLD-ONE"); err != nil || em != "buyer@example.com" {
+		t.Fatalf("清空后邮箱要在: %q %v", em, err)
 	}
-	if code, err := db.FindCodeByRedemptionToken("rt-old"); err != nil || code != "ZC-OLD-ONE" {
-		t.Fatalf("token 反查不能断: %q %v", code, err)
+	if em, err := db.GetAccountEmailByRedemptionToken("rt-old"); err != nil || em != "buyer@example.com" {
+		t.Fatalf("token 反查不能断: %q %v", em, err)
 	}
-	if s, err := db.GetSessionByCDK("ZC-OLD-ONE"); err != nil || s != "" {
+	if s, err := sessionOf(t, "ZC-OLD-ONE"); err != nil || s != "" {
 		t.Fatalf("清空后取会话应为空且不报错: %q %v", s, err)
 	}
 	// 幂等
@@ -406,16 +330,14 @@ func TestSweepClearsExpiredButKeepsTokenAndEmail(t *testing.T) {
 func TestSweepClearsConsumedCodes(t *testing.T) {
 	dbtest.Open(t)
 	dbtest.SetMasterKey(t)
-	if err := db.SaveCardplatformCDKCodeWithStatus(1, "zc-Done-Code-0001", "zc-Done", "plus", 0, "consumed"); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.SaveCardplatformCDKCodeWithStatus(2, "ZC-RUNNING-CODE-1", "ZC-RUN", "plus", 0, "unused"); err != nil {
-		t.Fatal(err)
-	}
-	for _, c := range []string{"zc-Done-Code-0001", "ZC-RUNNING-CODE-1"} {
-		if err := db.BindCDKSession("zovocard", c, "rt-"+c, testSessPlain); err != nil {
+	// 旧库里的卡台码表：码是混合大小写，绑定表里是规范化后的大写
+	for _, row := range [][]any{{1, "zc-Done-Code-0001", "zc-Done", "consumed"}, {2, "ZC-RUNNING-CODE-1", "ZC-RUN", "unused"}} {
+		if _, err := db.DB.Exec(`INSERT INTO cardplatform_cdk_codes (upstream_id, code, code_prefix, plan, fee_amount_minor, status) VALUES (?, ?, ?, 'plus', 0, ?)`, row...); err != nil {
 			t.Fatal(err)
 		}
+	}
+	for _, c := range []string{"ZC-DONE-CODE-0001", "ZC-RUNNING-CODE-1"} {
+		sealedBinding(t, c, "rt-"+c, testSessPlain)
 	}
 	res, err := db.SweepCDKSessions(time.Now())
 	if err != nil || res.Cleared != 1 {
@@ -426,33 +348,6 @@ func TestSweepClearsConsumedCodes(t *testing.T) {
 	}
 	if s := storedSession(t, "ZC-RUNNING-CODE-1"); s == "" {
 		t.Fatal("兑换中的不应清空")
-	}
-}
-
-// 公开的 preview 接口会写 token 并更新 updated_at：反复预览不能让会话一直不过期。
-func TestPreviewDoesNotExtendSessionTTL(t *testing.T) {
-	dbtest.Open(t)
-	dbtest.SetMasterKey(t)
-	now := time.Now()
-	if err := db.BindCDKSession("zovocard", testCDK, "rt-1", testSessPlain); err != nil {
-		t.Fatal(err)
-	}
-	setBoundAt(t, testCDK, now.Add(-db.CDKSessionTTL-time.Minute))
-	if err := db.BindCDKRedemptionToken("zovocard", testCDK, "rt-2"); err != nil {
-		t.Fatal(err)
-	}
-	if res, err := db.SweepCDKSessions(now); err != nil || res.Cleared != 1 {
-		t.Fatalf("预览后仍应按首次绑定时间过期: %+v %v", res, err)
-	}
-	if b, err := db.GetBindingByCDK(testCDK); err != nil || b.RedemptionToken != "rt-2" {
-		t.Fatalf("新 token 应保留: %+v %v", b, err)
-	}
-	// 用户重新提交会话才算重新计时
-	if err := db.BindCDKSession("zovocard", testCDK, "", testSessPlain); err != nil {
-		t.Fatal(err)
-	}
-	if res, err := db.SweepCDKSessions(now); err != nil || res.Cleared != 0 {
-		t.Fatalf("新提交的会话不应被清: %+v %v", res, err)
 	}
 }
 
@@ -478,11 +373,15 @@ func TestSweepSkipsWithoutKey(t *testing.T) {
 func TestClearDoesNotOverwriteNewerSession(t *testing.T) {
 	dbtest.Open(t)
 	dbtest.SetMasterKey(t)
-	if err := db.BindCDKSession("zovocard", testCDK, "rt-1", testSessPlain); err != nil {
-		t.Fatal(err)
-	}
+	sealedBinding(t, testCDK, "rt-1", testSessPlain)
 	stale := storedSession(t, testCDK)
-	if err := db.BindCDKSession("zovocard", testCDK, "", `{"sessionToken":"newer","user":{"email":"new@example.com"}}`); err != nil {
+	// 用户又提交了新会话：借另一行加密好的新会话（同一把密钥）覆盖本行的会话和邮箱
+	const newerSess = `{"sessionToken":"newer","user":{"email":"new@example.com"}}`
+	sealedBinding(t, "ZC-NEWER-SRC", "", newerSess)
+	if _, err := db.DB.Exec(`UPDATE cdk_session_bindings
+		SET session_payload = (SELECT session_payload FROM cdk_session_bindings WHERE cdk_code = 'ZC-NEWER-SRC'),
+		    account_email_sealed = (SELECT account_email_sealed FROM cdk_session_bindings WHERE cdk_code = 'ZC-NEWER-SRC')
+		WHERE cdk_code = ?`, testCDK); err != nil {
 		t.Fatal(err)
 	}
 	cleared, err := db.ClearCDKSessionRowIf(testCDK, stale)
@@ -492,43 +391,10 @@ func TestClearDoesNotOverwriteNewerSession(t *testing.T) {
 	if cleared {
 		t.Fatal("旧值已过时，不应清除")
 	}
-	if got, err := db.GetSessionByCDK(testCDK); err != nil || !strings.Contains(got, "newer") {
+	if got, err := sessionOf(t, testCDK); err != nil || !strings.Contains(got, "newer") {
 		t.Fatalf("新会话应还在: %q %v", got, err)
 	}
 	if em, err := db.GetAccountEmailByCDK(testCDK); err != nil || em != "new@example.com" {
 		t.Fatalf("邮箱应是新会话的: %q %v", em, err)
-	}
-}
-
-func TestClearByCodeAndToken(t *testing.T) {
-	dbtest.Open(t)
-	dbtest.SetMasterKey(t)
-	if err := db.BindCDKSession("zovocard", testCDK, "rt-1", testSessPlain); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.BindCDKSession("zovocard", "", "rt-only", testSessPlain); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.ClearCDKSessionByCode(strings.ToLower(testCDK)); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.ClearCDKSessionByToken("rt-only"); err != nil {
-		t.Fatal(err)
-	}
-	if s := storedSession(t, testCDK); s != "" {
-		t.Fatalf("按码应清空: %q", s)
-	}
-	if s := storedSession(t, "RT:rt-only"); s != "" {
-		t.Fatalf("按 token 应清空: %q", s)
-	}
-	if em, err := db.GetAccountEmailByCDK(testCDK); err != nil || em != "buyer@example.com" {
-		t.Fatalf("邮箱应保留: %q %v", em, err)
-	}
-	// 没有这一行、已清空都不算错
-	if err := db.ClearCDKSessionByCode("ZC-NOT-THERE"); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.ClearCDKSessionByCode(testCDK); err != nil {
-		t.Fatal(err)
 	}
 }

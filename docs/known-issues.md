@@ -216,10 +216,10 @@
 - 结果不明的告警对本站码只给「记录 N，旧码 ID 0」，管理员要自己到面板里找；`ops_maintenance.go` 里相关日志措辞仍是旧说法。来源：ZovoCard 整删终审 T2-c。状态：未修。建议：告警里改写旧码前缀。
 - 历史 ZovoCard 的 `disabling` 记录会一直出现在面板默认的「待处理」筛选里，没有手动关闭的办法（规格 §11.3 接受）。来源：ZovoCard 整删终审 I-1。状态：未修。
 - 后台已经没有入口清掉库里 ZovoCard 的 `card_api_key`、`webhook_secret`（密文）；只要它们还在，就一直要求强 `JWT_SECRET`。来源：ZovoCard 整删终审。状态：未修。
-- 凭卡密查账单（`gpt_billing.go`）只读 `cdk_session_bindings`，而代码已经不再写这张表：现在只对历史 ZovoCard 码有结果。这个入口要不要保留是产品决定。来源：ZovoCard 整删终审。状态：未修。
 
 ### 测试与代码整理
 
+- `db.GetAccountEmailByCDK`（`db/cdk_session.go`）凭卡密从旧绑定表取完整、未打码的邮箱，凭卡密查账单改成本站开通记录后已没有生产调用，只剩 db 包测试在用。来源：凭卡密查账单改造审查 Minor 4。状态：未修。建议：连同测试一起删掉。
 - T3-a / M-6：`routeBody` 遇到「MW- 码配认不出的令牌」或反过来时回 404，没有测试（方向是拒绝，安全）。来源：ZovoCard 整删终审 T3-a、M-6。状态：未修。
 - 老库升级测试 `legacy_zovocard_db_test.go` 用现行建表语句建库，没有旧会话行（明文会话、`provider='zovocard'`）和 `recharge_tasks.session_json`，也没走 `server.New`。来源：ZovoCard 整删终审 M-5。状态：未修。建议：补两行种子数据。
 - 代理换码并发测试没有区分 409 是 busy 还是 conflict。来源：ZovoCard 整删终审 T2-a。状态：未修。

@@ -62,21 +62,6 @@ func stubBillingCheck(t *testing.T) *atomic.Int32 {
 	return &n
 }
 
-// stubAccounthub 起一个假 accounthub。status 非 200 时返回错误。
-func stubAccounthub(t *testing.T, status int) {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(status)
-		if status == 200 {
-			w.Write([]byte(`{"invoice_url":"https://invoice.example/1","invoices":[{"hosted_invoice_url":"https://invoice.example/1"}]}`))
-			return
-		}
-		w.Write([]byte(`{"error":"boom"}`))
-	}))
-	t.Cleanup(srv.Close)
-	t.Setenv("ACCOUNTHUB_BASE_URL", srv.URL)
-}
-
 // captureLog 把这段时间的标准日志收集起来。
 func captureLog(t *testing.T) *bytes.Buffer {
 	t.Helper()
@@ -86,48 +71,12 @@ func captureLog(t *testing.T) *bytes.Buffer {
 	return &buf
 }
 
-// 凭卡密查账单绝不回退到用存储的会话调上游。
-func TestBillingCheckByCDKNeverCallsUpstreamWithStoredSession(t *testing.T) {
+// 旧绑定表里留着会话和邮箱的码（已移除的 ZovoCard 留下的）：凭卡密查账单认不出，回 404，
+// 不读绑定表里的会话和邮箱，也绝不拿存储的会话调上游（审计 F-1）。会话清空前后都一样。
+func TestBillingCheckByCDKIgnoresLegacyBindings(t *testing.T) {
 	dbtest.Open(t)
 	dbtest.SetMasterKey(t)
 	calls := stubBillingCheck(t)
-
-	t.Run("accounthub 不可用", func(t *testing.T) {
-		stubAccounthub(t, 500)
-		if err := bindCDKSession("testup", cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
-			t.Fatal(err)
-		}
-		w := cdkRequest(SessionBillingCheck, "POST", "/billing", `{"cdk_code":"`+cdkSessCode+`"}`)
-		if w.Code != http.StatusServiceUnavailable {
-			t.Fatalf("应 503: %d %s", w.Code, w.Body.String())
-		}
-	})
-	t.Run("会话里没有邮箱", func(t *testing.T) {
-		if err := bindCDKSession("testup", "TU-RAW-TOKEN-CODE-1", "rt-2", "eyJhbGciOi.raw.accesstoken"); err != nil {
-			t.Fatal(err)
-		}
-		w := cdkRequest(SessionBillingCheck, "POST", "/billing", `{"code":"TU-RAW-TOKEN-CODE-1"}`)
-		if w.Code != http.StatusNotFound {
-			t.Fatalf("应 404: %d %s", w.Code, w.Body.String())
-		}
-	})
-	t.Run("没有绑定", func(t *testing.T) {
-		w := cdkRequest(SessionBillingCheck, "POST", "/billing", `{"cdk_code":"TU-NOT-BOUND-CODE-1"}`)
-		if w.Code != http.StatusNotFound {
-			t.Fatalf("应 404: %d %s", w.Code, w.Body.String())
-		}
-	})
-	if n := calls.Load(); n != 0 {
-		t.Fatalf("不应用存储的会话调上游: %d 次", n)
-	}
-}
-
-// 账单查询走邮箱：会话清空之后照常可用，响应里没有会话。
-func TestBillingCheckByCDKUsesEmailAndSurvivesClear(t *testing.T) {
-	dbtest.Open(t)
-	dbtest.SetMasterKey(t)
-	calls := stubBillingCheck(t)
-	stubAccounthub(t, 200)
 	if err := bindCDKSession("testup", cdkSessCode, "rt-1", cdkSessJSON()); err != nil {
 		t.Fatal(err)
 	}
@@ -137,26 +86,16 @@ func TestBillingCheckByCDKUsesEmailAndSurvivesClear(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		w := cdkRequest(SessionBillingCheck, "POST", "/billing", `{"cdk_code":"`+cdkSessCode+`"}`)
-		if w.Code != 200 {
-			t.Fatalf("clear=%v 应 200: %d %s", clear, w.Code, w.Body.String())
-		}
-		var d struct {
-			Summary    map[string]any   `json:"summary"`
-			Invoices   []map[string]any `json:"invoices"`
-			InvoiceURL string           `json:"invoice_url"`
-			AuthSource string           `json:"auth_source"`
-		}
-		if err := json.Unmarshal(w.Body.Bytes(), &d); err != nil {
-			t.Fatal(err)
-		}
-		// 审计 F-1：凭卡密查询邮箱打码、不给账单链接（假 accounthub 的账单只有链接，裁完不剩字段）
-		if d.Summary["email"] != maskEmailForAdmin(cdkSessEmail) || d.AuthSource != "accounthub" || d.InvoiceURL != "" ||
-			strings.Contains(w.Body.String(), "invoice.example") {
-			t.Fatalf("clear=%v 响应不符: %s", clear, w.Body.String())
-		}
-		if strings.Contains(w.Body.String(), cdkSessToken) {
-			t.Fatalf("响应不应含会话: %s", w.Body.String())
+		for _, body := range []string{`{"cdk_code":"` + cdkSessCode + `"}`, `{"code":"` + cdkSessCode + `"}`} {
+			w := cdkRequest(SessionBillingCheck, "POST", "/billing", body)
+			if w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), `"cdk_not_found"`) {
+				t.Fatalf("clear=%v 应 404 cdk_not_found: %d %s", clear, w.Code, w.Body.String())
+			}
+			for _, bad := range []string{cdkSessToken, cdkSessEmail, maskEmailForAdmin(cdkSessEmail)} {
+				if strings.Contains(w.Body.String(), bad) {
+					t.Fatalf("响应不应含 %q: %s", bad, w.Body.String())
+				}
+			}
 		}
 	}
 	if n := calls.Load(); n != 0 {

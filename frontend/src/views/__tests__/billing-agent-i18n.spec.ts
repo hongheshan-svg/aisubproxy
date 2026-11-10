@@ -47,15 +47,15 @@ const CJK = /[一-鿿]/
 // 模板换行改写后标签之间的空白会不同（版式上看不出来），逐字比较时忽略空白
 const noSpace = (s: string) => s.replace(/\s+/g, '')
 
-// 改版前两页中文首屏的可见文字（页头、正文、输入框占位、页脚），逐字
+// 两页中文首屏的可见文字（页头、正文、输入框占位、页脚），逐字。代理换码页与改版前相同；账单页的说明在凭卡密查改成本站开通记录时改过
 const SWAP_ZH = '卡密补发仅限充值失败且未扣款的卡密。验证通过后将作废旧码并下发一张同套餐新码。 代理密码 显示 失败的完整卡密 换发新卡密常见问题批量兑换账单查询 管理员下发的个人密码 粘贴完整 CDK'
-const BILL_ZH = '账单查询用卡密（使用兑换时绑定的 Session）或直接粘贴 Session，查询订阅状态与账单链接。卡密查询登录信息查询 输入兑换用的 CDK。系统会使用兑换时保存的登录信息去拉取账单（无需再粘贴）。 若从未用登录信息完成过兑换，请改用「登录信息查询」。 CDK 卡密 查询订阅与账单常见问题批量兑换账单查询 SXC-XXXX-XXXX-XXXX-XXXX'
+const BILL_ZH = '账单查询用卡密查看本站开通记录，或粘贴登录信息查询 ChatGPT 的订阅状态与账单。卡密查询登录信息查询 输入兑换用的卡密，查看本站开通它时的记录：开通时间、到期时间、自动续费是否已关。要看 ChatGPT 的实时账单，请改用「登录信息查询」。 CDK 卡密 查询订阅与账单常见问题批量兑换账单查询 SXC-XXXX-XXXX-XXXX-XXXX'
 
 describe('两页渲染', () => {
   it('代理换码页：中文与改版前逐字相同', async () => {
     expect(noSpace(visible(await render(AgentSwapView, 'zh')))).toBe(noSpace(SWAP_ZH))
   })
-  it('账单查询页：中文与改版前逐字相同', async () => {
+  it('账单查询页：中文首屏逐字相同', async () => {
     expect(noSpace(visible(await render(BillingCheckView, 'zh')))).toBe(noSpace(BILL_ZH))
   })
   it('英文界面：两页可见文字里没有中文', async () => {
@@ -121,7 +121,7 @@ const SWAP_CODES = [
   // 两个接口共用的限流中间件（public_guard.go）
   'body_too_large',
 ]
-const BILLING_CODES = ['invalid_request', 'input_required', 'session_invalid', 'lookup_failed', 'binding_not_found', 'billing_unavailable', 'rate_limited', 'body_too_large']
+const BILLING_CODES = ['invalid_request', 'input_required', 'session_invalid', 'lookup_failed', 'cdk_not_found', 'cdk_not_redeemed', 'cdk_replaced', 'rate_limited', 'body_too_large']
 
 describe('错误码都有中英文文案', () => {
   const i18n = (locale: 'zh' | 'en') => createI18n({ legacy: false, locale, messages: { zh, en } }).global
@@ -150,8 +150,11 @@ describe('错误码都有中英文文案', () => {
     expect(g.t('agentSwap.errors.code_unrecognized')).toBe('无法识别的卡密')
     expect(g.t('agentSwap.errors.busy')).toBe('该卡密正在处理中，请勿重复提交')
     expect(g.t('agentSwap.errors.not_eligible_unpaid')).toBe('不符合换码条件（需充值失败且未发起支付）')
-    expect(g.t('billingCheck.errors.binding_not_found')).toBe('未找到该卡密绑定的账号。请确认兑换时使用了 session 凭证，或改用直接粘贴 session 查询。')
-    expect(g.t('billingCheck.errors.billing_unavailable')).toBe('账单服务暂时不可用，请稍后再试，或改用直接粘贴 session 查询。')
+    // 凭卡密查账单：和后端 gpt_billing.go 的原文逐字相同
+    expect(g.t('billingCheck.errors.cdk_not_found')).toBe('未找到这张卡密')
+    expect(g.t('billingCheck.errors.cdk_not_redeemed')).toBe('这张卡密还没开通成功')
+    expect(g.t('billingCheck.errors.cdk_replaced')).toBe('这张卡密已换发新码，请用新码查询')
+    expect(g.t('billingCheck.errors.lookup_failed')).toBe('查询失败，请稍后再试')
   })
   it('英文文案没有中文', () => {
     const walk = (o: any, p: string): string[] => Object.entries(o).flatMap(([k, v]) => (typeof v === 'string' ? (CJK.test(v) ? [`${p}.${k}`] : []) : walk(v, `${p}.${k}`)))

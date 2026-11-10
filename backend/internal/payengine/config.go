@@ -87,7 +87,15 @@ type RegionConf struct {
 	ExpectMinor int64  `json:"expect_minor"`
 	// FloorMinor 是最低金额：支付页金额低于它就在注资前放弃，单位与币种同 CapMinor。
 	FloorMinor int64 `json:"floor_minor"`
+	// 结账页金额正好是 0 时（首月免费等优惠）是否照常开通；nil 表示没保存过，按套餐默认（只有 Plus 允许）。点数套餐一律不允许。
+	AllowZero *bool `json:"allow_zero,omitempty"`
 }
+
+// ZeroAllowed 返回该地区是否允许 0 元开通；AllowZero 为 nil 时按不允许。
+func (rc RegionConf) ZeroAllowed() bool { return rc.AllowZero != nil && *rc.AllowZero }
+
+// zeroAllowedByDefault 返回「允许 0 元开通」的默认值：只有 Plus 允许。
+func zeroAllowedByDefault(planKey string) bool { return planKey == "plus" }
 
 // PlanConf 是一个套餐及其各地区配置。Kind 与 CreditQuantity 由套餐键决定，保存时客户端传什么都以键为准。
 // 点数档没有 ChatGPT 套餐名和期望套餐类型：建结账会话用 credit_purchase_data，确认阶段不看 plan_type。
@@ -114,21 +122,30 @@ func defaultPlan(key string) PlanConf {
 }
 
 // fillDefaultRegions 填各地区的出厂值：US、PH 用内置价格区间，其他地区只有币种。全部未启用、注资为 0。
+// 「允许 0 元开通」每个地区都写明确的默认值（见 zeroAllowedByDefault）。
 func fillDefaultRegions(p *PlanConf) {
 	for _, r := range Regions {
-		if b, ok := BuiltinRegionPrice(p.Key, r); ok {
-			p.Regions[r] = b
-			continue
+		rc, ok := BuiltinRegionPrice(p.Key, r)
+		if !ok {
+			rc = RegionConf{Currency: defaultCurrency[r]}
 		}
-		p.Regions[r] = RegionConf{Currency: defaultCurrency[r]}
+		allow := zeroAllowedByDefault(p.Key)
+		rc.AllowZero = &allow
+		p.Regions[r] = rc
 	}
 }
 
-// normalizePlan 把由套餐键决定的字段改回键的取值：种类、点数；点数档不留 ChatGPT 套餐名和期望套餐类型。
+// normalizePlan 把由套餐键决定的字段改回键的取值：种类、点数；点数档不留 ChatGPT 套餐名和期望套餐类型，
+// 各地区一律不允许 0 元开通。
 func normalizePlan(p *PlanConf) {
 	p.Kind, p.CreditQuantity = PlanKind(p.Key), CreditQuantity(p.Key)
 	if p.Kind == KindCredit {
 		p.ChatGPTPlanName, p.ExpectPlanType = "", ""
+		for r, rc := range p.Regions {
+			no := false
+			rc.AllowZero = &no
+			p.Regions[r] = rc
+		}
 	}
 }
 
@@ -143,6 +160,7 @@ func DefaultPlanTable() []PlanConf {
 
 // LoadPlanTable 读取套餐表，并与默认表合并：补齐缺项、丢弃未知键。
 // 美国、菲律宾已存的预期、最低、上限为 0 时用内置价补上（规则见 fillBuiltin），补的值保存前只在内存里。
+// 已存的地区没有「允许 0 元开通」时按默认值补上，返回的每个地区 AllowZero 都不是 nil。
 func LoadPlanTable() ([]PlanConf, error) {
 	raw, err := db.GetSetting(settingPlanTable)
 	if err != nil {
@@ -164,6 +182,10 @@ func LoadPlanTable() ([]PlanConf, error) {
 			tbl[i].Label, tbl[i].ChatGPTPlanName, tbl[i].ExpectPlanType = s.Label, s.ChatGPTPlanName, s.ExpectPlanType
 			for _, r := range Regions {
 				if rc, ok := s.Regions[r]; ok {
+					if rc.AllowZero == nil {
+						allow := zeroAllowedByDefault(s.Key)
+						rc.AllowZero = &allow
+					}
 					tbl[i].Regions[r] = fillBuiltin(s.Key, r, rc)
 				}
 			}
@@ -227,10 +249,31 @@ func SavePlanTable(p []PlanConf) error {
 			}
 		}
 	}
+	// 传来的地区没有「允许 0 元开通」（如还开着旧后台页面）时沿用当前生效的值，读不出当前表再按默认值，
+	// 免得手动取消的勾被悄悄改回默认。各地区写进新 map，不改调用方传来的表。
+	cur := map[string]map[string]RegionConf{}
+	if tbl, err := LoadPlanTable(); err == nil {
+		for _, pc := range tbl {
+			cur[pc.Key] = pc.Regions
+		}
+	}
 	out := make([]PlanConf, len(p))
-	copy(out, p)
-	for i := range out {
-		normalizePlan(&out[i])
+	for i, pc := range p {
+		regions := make(map[string]RegionConf, len(pc.Regions))
+		for r, rc := range pc.Regions {
+			if rc.AllowZero == nil {
+				if c, ok := cur[pc.Key][r]; ok && c.AllowZero != nil {
+					rc.AllowZero = c.AllowZero
+				} else {
+					allow := zeroAllowedByDefault(pc.Key)
+					rc.AllowZero = &allow
+				}
+			}
+			regions[r] = rc
+		}
+		pc.Regions = regions
+		normalizePlan(&pc)
+		out[i] = pc
 	}
 	b, err := json.Marshal(out)
 	if err != nil {

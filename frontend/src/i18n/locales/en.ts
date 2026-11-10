@@ -591,7 +591,7 @@ export default {
   billingCheck: {
     modeCdk: 'By code',
     modeLogin: 'By login info',
-    cdkHint: 'Enter the code you redeemed to see this site\'s activation record: when it was activated, the amount paid, and when access ends. For your live ChatGPT billing, use "By login info" instead.',
+    cdkHint: 'Enter the code you redeemed to see this site\'s activation record: when it was activated, when access ends, and whether auto-renew is off. For your live ChatGPT billing, use "By login info" instead.',
     cdkLabel: 'CDK',
     loginLabel: 'Full login info',
     loginPlaceholder: 'Paste the full login info',
@@ -601,7 +601,6 @@ export default {
     recordTitle: 'Activation record',
     account: 'Account',
     redeemedAt: 'Activated',
-    amount: 'Amount paid',
     accessUntil: 'Access ends',
     sourceCdk: "From this site's records",
     sourceLogin: 'From the login info',

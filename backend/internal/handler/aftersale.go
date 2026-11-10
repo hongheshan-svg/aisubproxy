@@ -31,8 +31,6 @@ type afterSaleFacts struct {
 	Replacement        string // 新码的完整码，或空
 	ReplacedButUnknown bool
 	Message            string // 可选；空时由公共层按状态给默认文字
-	AmountMinor        int64  // 开通时的应付金额（最小单位），只给凭卡密查账单用，售后查询不对外给
-	Currency           string // 开通时的付款币种，同上
 }
 
 // lookupReplacement 是换码链最终那张码：完整码、它自己的状态、经过了几层。

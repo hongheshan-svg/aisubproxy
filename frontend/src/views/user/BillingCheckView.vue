@@ -99,7 +99,7 @@ import UserShell from '../../components/redeem/UserShell.vue'
 import UserFooter from '../../components/redeem/UserFooter.vue'
 import SessionHelp from '../../components/SessionHelp.vue'
 import { pickBillingNote } from '../../lib/billingNote'
-import { billingRecordRows, formatInvoiceAmount, formatUnixTs, type BillingRecord } from '../../lib/billingRecord'
+import { billingRecordRows, formatInvoiceAmount, formatUnixTs, pickBillingResult, type BillingRecord } from '../../lib/billingRecord'
 import { apiErrorText } from '../../lib/apiError'
 const { t, te, locale } = useI18n({ useScope: 'global' })
 
@@ -160,15 +160,13 @@ async function query() {
       return
     }
     authSource.value = d.auth_source || ''
-    // 凭卡密查询：后端给本站开通记录（record），不是 ChatGPT 的账单
-    if (d.record && typeof d.record === 'object') {
-      record.value = d.record
-      // 后端的说明文字只有一种（本站记录不是实时账单），按当前语言显示对应文案；有说明才显示
-      billingNote.value = pickBillingNote(d) ? t('billingCheck.cdkNote') : ''
-      return
-    }
-    summary.value = d.summary || {}
-    invoices.value = d.invoices || []
+    // 凭卡密查询：后端给本站开通记录（record），不是 ChatGPT 的账单；登录信息查询给订阅摘要和账单
+    const shown = pickBillingResult(d)
+    record.value = shown.record
+    summary.value = shown.summary
+    invoices.value = shown.invoices
+    // 后端的说明文字只有一种（本站记录不是实时账单），按当前语言显示对应文案；有说明才显示
+    billingNote.value = shown.record && pickBillingNote(d) ? t('billingCheck.cdkNote') : ''
   } catch {
     error.value = t('billingCheck.networkError')
   } finally {

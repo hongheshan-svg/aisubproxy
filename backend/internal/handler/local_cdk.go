@@ -835,7 +835,6 @@ func cardSupplyFacts(ctx context.Context, cs provider.CardSupply, code string) (
 			case "pending":
 				f.Renewal = "closing"
 			}
-			f.AmountMinor, f.Currency = l.AmountMinor, l.Currency
 		}
 	case db.LocalCDKReserved:
 		f.Status = "processing"

@@ -90,8 +90,6 @@ type LocalCDKOrder struct {
 	FinishedAt   *int64
 	RenewalState string // 关闭续费的进度，见 payengine
 	AccessUntil  *int64 // 关闭续费核实时 ChatGPT 给的权益到期时间（Unix 秒）
-	AmountMinor  int64  // 支付页上读到的应付金额（最小单位，小数位见 paybrowser.CurrencyExponent）；没读到时为 0
-	Currency     string // 付款币种，如 PHP
 }
 
 // CleanFailure 这张单能确定没有点过支付（failed + not_submitted + 没有提交时间）。只有它能重兑。
@@ -402,7 +400,7 @@ func LocalCDKSealedCode(ctx context.Context, id int64) (codeHash, sealed string,
 	return codeHash, sealed, err
 }
 
-const localCDKOrderColumns = `order_no, source_ref, state, failure, error_code, account_email, fund_cents, card_id, submitted_at, created_at, finished_at, renewal_state, access_until, amount_minor, currency`
+const localCDKOrderColumns = `order_no, source_ref, state, failure, error_code, account_email, fund_cents, card_id, submitted_at, created_at, finished_at, renewal_state, access_until`
 
 func collectLocalCDKOrders(rows *sql.Rows) ([]LocalCDKOrder, error) {
 	defer rows.Close()
@@ -410,7 +408,7 @@ func collectLocalCDKOrders(rows *sql.Rows) ([]LocalCDKOrder, error) {
 	for rows.Next() {
 		var o LocalCDKOrder
 		var sub, fin, acc sql.NullInt64
-		if err := rows.Scan(&o.OrderNo, &o.SourceRef, &o.State, &o.Failure, &o.ErrorCode, &o.AccountEmail, &o.FundCents, &o.CardID, &sub, &o.CreatedAt, &fin, &o.RenewalState, &acc, &o.AmountMinor, &o.Currency); err != nil {
+		if err := rows.Scan(&o.OrderNo, &o.SourceRef, &o.State, &o.Failure, &o.ErrorCode, &o.AccountEmail, &o.FundCents, &o.CardID, &sub, &o.CreatedAt, &fin, &o.RenewalState, &acc); err != nil {
 			return nil, err
 		}
 		if sub.Valid {

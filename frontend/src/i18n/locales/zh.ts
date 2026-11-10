@@ -590,7 +590,7 @@ export default {
   billingCheck: {
     modeCdk: '卡密查询',
     modeLogin: '登录信息查询',
-    cdkHint: '输入兑换用的卡密，查看本站开通它时的记录：开通时间、付款金额、到期时间。要看 ChatGPT 的实时账单，请改用「登录信息查询」。',
+    cdkHint: '输入兑换用的卡密，查看本站开通它时的记录：开通时间、到期时间、自动续费是否已关。要看 ChatGPT 的实时账单，请改用「登录信息查询」。',
     cdkLabel: 'CDK 卡密',
     loginLabel: '完整登录信息',
     loginPlaceholder: '粘贴完整的登录信息',
@@ -600,7 +600,6 @@ export default {
     recordTitle: '开通记录',
     account: '账号',
     redeemedAt: '开通时间',
-    amount: '付款金额',
     accessUntil: '权益到期',
     sourceCdk: '来自本站开通记录',
     sourceLogin: '来自登录信息',

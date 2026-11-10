@@ -219,6 +219,7 @@
 
 ### 测试与代码整理
 
+- `db.GetAccountEmailByCDK`（`db/cdk_session.go`）凭卡密从旧绑定表取完整、未打码的邮箱，凭卡密查账单改成本站开通记录后已没有生产调用，只剩 db 包测试在用。来源：凭卡密查账单改造审查 Minor 4。状态：未修。建议：连同测试一起删掉。
 - T3-a / M-6：`routeBody` 遇到「MW- 码配认不出的令牌」或反过来时回 404，没有测试（方向是拒绝，安全）。来源：ZovoCard 整删终审 T3-a、M-6。状态：未修。
 - 老库升级测试 `legacy_zovocard_db_test.go` 用现行建表语句建库，没有旧会话行（明文会话、`provider='zovocard'`）和 `recharge_tasks.session_json`，也没走 `server.New`。来源：ZovoCard 整删终审 M-5。状态：未修。建议：补两行种子数据。
 - 代理换码并发测试没有区分 409 是 busy 还是 conflict。来源：ZovoCard 整删终审 T2-a。状态：未修。

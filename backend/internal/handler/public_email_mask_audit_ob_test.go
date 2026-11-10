@@ -56,9 +56,10 @@ func TestObBillingCheckByCDKMasksEmail(t *testing.T) {
 	if d.Record["email"] != obMaskedSessEmail {
 		t.Fatalf("邮箱应打码: %v", d.Record["email"])
 	}
-	// 金额、币种、时间仍然给
-	if d.Record["amount"] != "1120.00" || d.Record["currency"] != "PHP" || d.Record["redeemed_at"] != float64(1700000000) {
-		t.Fatalf("开通记录应保留金额、币种、时间: %s", w.Body.String())
+	// 开通时间给；付款金额和币种不给（代理商进价和最终买家付的钱不一样）
+	if d.Record["redeemed_at"] != float64(1700000000) || d.Record["amount"] != nil || d.Record["currency"] != nil ||
+		strings.Contains(w.Body.String(), "1120") || strings.Contains(w.Body.String(), "PHP") {
+		t.Fatalf("开通记录应只给时间、不给金额和币种: %s", w.Body.String())
 	}
 	if n := calls.Load(); n != 0 {
 		t.Fatalf("不应用存储的会话调上游: %d 次", n)

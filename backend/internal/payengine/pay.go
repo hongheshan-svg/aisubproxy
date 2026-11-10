@@ -193,7 +193,7 @@ func (s *Service) recheckAmount(ctx context.Context, j *job) error {
 		return abort("amount_changed", "填表后支付页金额 %q 的币种与期望的 %s 不符", text, j.o.Currency)
 	}
 	if minor > j.o.CapMinor {
-		return abort("amount_changed", "填表后应付金额 %s 超过上限 %s %s", text, FormatMinor(j.o.CapMinor, j.o.Currency), j.o.Currency)
+		return abort("amount_changed", "填表后应付金额 %s 超过上限 %s %s", text, formatMinor(j.o.CapMinor, j.o.Currency), j.o.Currency)
 	}
 	if minor != j.o.AmountMinor {
 		return abort("amount_changed", "填表后应付金额 %s 与打开页面时的 %s 不一致", text, j.o.AmountText)

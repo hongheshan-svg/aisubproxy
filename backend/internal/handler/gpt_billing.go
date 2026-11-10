@@ -1,12 +1,12 @@
 package handler
 
 import (
+	"log"
 	"net/http"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tuzi/cdk-recharge-system/internal/gptcheck"
-	"github.com/tuzi/cdk-recharge-system/internal/payengine"
 	"github.com/tuzi/cdk-recharge-system/internal/provider"
 )
 
@@ -71,7 +71,8 @@ func SessionBillingCheck(c *gin.Context) {
 }
 
 // billingCDKRecord 是凭卡密查账单对外给出的开通记录，字段只有这些（审计 F-1：知道卡密不等于本人）。
-// 不给注资成本、卡、订单号、会话和完整邮箱。时间是 Unix 秒。
+// 不给付款金额和币种（代理商进价和最终买家付的钱不一样，显示出来会误导），也不给注资成本、卡、订单号、会话和完整邮箱。
+// 时间是 Unix 秒。
 type billingCDKRecord struct {
 	Email       string `json:"email"`                  // 打码后的账号邮箱
 	Plan        string `json:"plan"`                   // 套餐，如 plus、credit250
@@ -79,19 +80,33 @@ type billingCDKRecord struct {
 	RedeemedAt  *int64 `json:"redeemed_at,omitempty"`  // 开通成功的时间
 	AccessUntil *int64 `json:"access_until,omitempty"` // 关续费核实时 ChatGPT 给的权益到期时间
 	RenewalOff  bool   `json:"renewal_off"`            // 只有核实关掉续费才为 true
-	Amount      string `json:"amount,omitempty"`       // 开通时的应付金额，已按币种小数位格式化，如 "1120.00"
-	Currency    string `json:"currency,omitempty"`     // 付款币种，如 PHP
 }
 
 // billingCheckByCDK 凭卡密查账单：给出本站开通这张码时的记录，不是 ChatGPT 的实时账单。
-// 状态沿用售后查询的推导（factsFor）。只读本站库，不调任何上游，不用存储的会话；要实时账单，请用户粘贴登录信息查。
+// 只认本站供卡型服务商的码，状态沿用售后查询的推导（cardSupplyFacts）。只读本站库：不经 factsFor，
+// 以后接了外部上游也不会把码发出去；不用存储的会话。要实时账单，请用户粘贴登录信息查。
 func billingCheckByCDK(c *gin.Context, cdk string) {
-	f, err := factsFor(c.Request.Context(), provider.NormalizeCode(cdk), "")
-	if err != nil { // factsFor 已经记过清洗后的日志
+	norm := provider.NormalizeCode(cdk)
+	notFound := func() {
+		c.JSON(http.StatusNotFound, gin.H{"error": billingCDKNotFoundText, "error_code": "cdk_not_found"})
+	}
+	p, err := provider.ForCode(norm)
+	if err != nil {
+		notFound()
+		return
+	}
+	cs, ok := provider.AsCardSupply(p)
+	if !ok {
+		notFound()
+		return
+	}
+	f, err := cardSupplyFacts(c.Request.Context(), cs, norm)
+	if err != nil {
+		log.Printf("[billing] 查询本站码出错：%s", sanitizeForLog(err.Error(), norm))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": billingCDKLookupFailedText, "error_code": "lookup_failed"})
 		return
 	}
-	if !f.Found || f.Status == "unsupported" {
+	if !f.Found {
 		c.JSON(http.StatusNotFound, gin.H{"error": billingCDKNotFoundText, "error_code": "cdk_not_found"})
 		return
 	}
@@ -118,9 +133,6 @@ func billingCheckByCDK(c *gin.Context, cdk string) {
 	if f.ExpiresAt != nil {
 		v := f.ExpiresAt.Unix()
 		rec.AccessUntil = &v
-	}
-	if cur := strings.ToUpper(strings.TrimSpace(f.Currency)); f.AmountMinor > 0 && cur != "" {
-		rec.Amount, rec.Currency = payengine.FormatMinor(f.AmountMinor, cur), cur
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"auth_source": "cdk",

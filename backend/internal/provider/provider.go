@@ -20,7 +20,6 @@ type Name string
 
 // 内置服务商名。
 const (
-	ZovoCard   Name = "zovocard"
 	MarsWallex Name = "marswallex"
 )
 
@@ -74,8 +73,6 @@ type Upstream interface {
 	ClaimsCode(code string) bool
 	// ClaimsToken 判断这个兑换令牌是不是这家的。token 已去掉两端空白。
 	ClaimsToken(token string) bool
-	// Fallback 为 true 的上游接收谁都不认领的码和令牌。最多一家（ZovoCard，保持接入多家之前的行为）。
-	Fallback() bool
 }
 
 // CodeLister 是可选接口：后台用哪种码列表。不实现时供卡型为 local，上游型为空串（这家的码在它自己的后台管理）。
@@ -83,7 +80,7 @@ type CodeLister interface {
 	CodeList() string
 }
 
-// CodeList 返回后台用哪种码列表：cardplatform 卡台码列表、local 本地码列表、空串表示没有列表。
+// CodeList 返回后台用哪种码列表：local 本地码列表、空串表示没有列表（这家的码在它自己的后台管理）。
 func CodeList(p Provider) string {
 	if l, ok := p.(CodeLister); ok {
 		return l.CodeList()
@@ -146,7 +143,7 @@ var (
 	reg   []Provider
 )
 
-// Register 注册一家服务商。名称不合法、重名、前缀为空或重叠、多于一家兜底，都是编程错误，直接 panic 让启动失败。
+// Register 注册一家服务商。名称不合法、重名、前缀为空或重叠，都是编程错误，直接 panic 让启动失败。
 func Register(p Provider) {
 	regMu.Lock()
 	defer regMu.Unlock()
@@ -185,16 +182,8 @@ func validate(existing []Provider, p Provider) error {
 		}
 		return validatePrefixes(existing, cs)
 	case KindUpstream:
-		up, ok := p.(Upstream)
-		if !ok {
+		if _, ok := p.(Upstream); !ok {
 			return fmt.Errorf("%s 是上游型，但没有实现 Upstream", n)
-		}
-		if up.Fallback() {
-			for _, e := range existing {
-				if eu, ok := e.(Upstream); ok && e.Kind() == KindUpstream && eu.Fallback() {
-					return fmt.Errorf("兜底上游只能有一家，%s 和 %s 都是", e.Name(), n)
-				}
-			}
 		}
 		return nil
 	}
@@ -292,16 +281,6 @@ func AsUpstream(p Provider) (Upstream, bool) {
 	return up, ok
 }
 
-// fallback 返回兜底上游，没有时为 nil。
-func fallback() Provider {
-	for _, p := range List() {
-		if up, ok := AsUpstream(p); ok && up.Fallback() {
-			return p
-		}
-	}
-	return nil
-}
-
 // TestOnlySnapshot 保存当前注册表，返回恢复函数。只给测试用（注册假服务商后在 t.Cleanup 里恢复），业务代码不要调用。
 func TestOnlySnapshot() (restore func()) {
 	regMu.RLock()
@@ -325,9 +304,8 @@ func TestOnlyReset() {
 
 // ForCode 按码判定服务商：
 //  1. 码前缀命中某个供卡型服务商，归它。这只是候选，调用方必须用数据库行的 provider 确认；
-//  2. 否则交给第一个认领它的非兜底上游；
-//  3. 再否则交给兜底上游；
-//  4. 都没有返回 ErrUnrecognized。
+//  2. 否则交给第一个认领它的上游；
+//  3. 都没有返回 ErrUnrecognized，绝不退回到任何一家。
 func ForCode(code string) (Provider, error) {
 	norm := NormalizeCode(code)
 	list := List()
@@ -353,24 +331,10 @@ func ForToken(token string) (Provider, error) {
 }
 
 func forUpstream(list []Provider, claims func(Upstream) bool) (Provider, error) {
-	var fb Provider
 	for _, p := range list {
-		up, ok := AsUpstream(p)
-		if !ok {
-			continue
-		}
-		if up.Fallback() {
-			if fb == nil {
-				fb = p
-			}
-			continue
-		}
-		if claims(up) {
+		if up, ok := AsUpstream(p); ok && claims(up) {
 			return p, nil
 		}
-	}
-	if fb != nil {
-		return fb, nil
 	}
 	return nil, ErrUnrecognized
 }

@@ -57,8 +57,8 @@ func TestLocalAgentExchangeDisablingRetriedToDone(t *testing.T) {
 	if got := localExchangedFrom(t, id); got != 1 {
 		t.Fatalf("补记账不能再发码: %d", got)
 	}
-	if e.zovo.count() != 0 {
-		t.Fatalf("本站码不能去卡台禁用: %v", e.zovo.paths)
+	if e.up.callCount() != 0 {
+		t.Fatalf("本站码换码不应发出任何上游请求: %s", e.up.log())
 	}
 }
 
@@ -66,7 +66,7 @@ func TestLocalAgentExchangeDisablingRetriedToDone(t *testing.T) {
 //   - 停在 disabling 的：维护循环跳过它，状态、note、updated_at 都不变（不能被当成本站码补成 done）；
 //   - 停在 unknown 的：照常能人工定论。released 删掉占位；issued 记下新码、停在 disabling，之后维护循环同样不动它。
 //
-// 全程不发任何上游（卡台）请求，定论响应里也没有 old_cdk_id、old_disabled。
+// 全程不发任何上游请求，定论响应里也没有 old_cdk_id、old_disabled。
 func TestLegacyZovoExchangeRecordsNotAutoClosed(t *testing.T) {
 	e := newLocalEnv(t)
 	const stamp = "2026-11-01 00:00:00"
@@ -150,7 +150,7 @@ func TestLegacyZovoExchangeRecordsNotAutoClosed(t *testing.T) {
 		t.Fatalf("历史 disabling 记录不能被改动: %+v", after)
 	}
 
-	if e.zovo.count() != 0 {
-		t.Fatalf("不应发出任何上游请求: %v", e.zovo.paths)
+	if e.up.callCount() != 0 {
+		t.Fatalf("不应发出任何上游请求: %s", e.up.log())
 	}
 }

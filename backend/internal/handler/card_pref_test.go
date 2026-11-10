@@ -53,11 +53,3 @@ func TestFirstUsablePrefSkipsPolicyProductIfOffline(t *testing.T) {
 		t.Fatalf("got %s/%s/%s", iss, typ, key)
 	}
 }
-
-func TestInjectRedeemCardPolicyNilDBIsNoop(t *testing.T) {
-	body := map[string]any{"strict_card_preference": false}
-	injectRedeemCardPolicy(body)
-	if body["strict_card_preference"] != false {
-		t.Fatalf("nil db must not rewrite body: %+v", body)
-	}
-}

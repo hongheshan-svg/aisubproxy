@@ -9,19 +9,6 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 )
 
-func hasEnabledSelectionRules() bool {
-	rules, err := db.GetCardSelectionRules()
-	if err != nil {
-		return false
-	}
-	for _, r := range rules {
-		if r.Enabled && strings.TrimSpace(r.PlanKey) != "" {
-			return true
-		}
-	}
-	return false
-}
-
 func cardProductUsable(code string, products []db.CardProductCache) bool {
 	code = strings.TrimSpace(code)
 	if code == "" {
@@ -112,35 +99,6 @@ func resolveIssueCardPref(policy SiteRedeemPolicy) (issuer, segmentType, segment
 	rules, _ := db.GetCardSelectionRules()
 	products, _ := db.GetCardProducts()
 	return firstUsableCardPref(policy, rules, products)
-}
-
-func issuePrefFromSite() (cardplatform.IssueCardPref, bool) {
-	issuer, segType, segKey := resolveIssueCardPref(loadSiteRedeemPolicy())
-	if segKey == "" && issuer == "" {
-		return cardplatform.IssueCardPref{}, false
-	}
-	return cardplatform.IssueCardPref{Issuer: issuer, SegmentType: segType, SegmentKey: segKey}, true
-}
-
-// injectRedeemCardPolicy 兑换请求写入卡台：有选卡配置就 strict，避免被 537872/星链盖过。
-func injectRedeemCardPolicy(body map[string]any) {
-	if body == nil || db.DB == nil {
-		return
-	}
-	policy := loadSiteRedeemPolicy()
-	hasRules := hasEnabledSelectionRules()
-	if policy.Enabled {
-		if _, exists := body["no_auto_card_switch"]; !exists {
-			body["no_auto_card_switch"] = policy.NoAutoCardSwitch
-		}
-	}
-	if _, exists := body["strict_card_preference"]; !exists && (policy.Enabled || hasRules) {
-		if policy.Enabled {
-			body["strict_card_preference"] = policy.StrictCardPreference
-		} else {
-			body["strict_card_preference"] = true
-		}
-	}
 }
 
 // SyncOwnerDirectCardRules 把本站选卡优先级推到卡台所有者账户。

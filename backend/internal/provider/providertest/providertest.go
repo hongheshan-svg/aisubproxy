@@ -47,7 +47,6 @@ type Up struct {
 	Display           string
 	CodePfx, TokenPfx string
 	Prods             []string
-	IsFallback        bool
 }
 
 func (u Up) Name() provider.Name { return u.N }
@@ -66,7 +65,6 @@ func (u Up) ClaimsCode(code string) bool {
 func (u Up) ClaimsToken(token string) bool {
 	return u.TokenPfx != "" && strings.HasPrefix(token, u.TokenPfx)
 }
-func (u Up) Fallback() bool { return u.IsFallback }
 
 // NewTestCard 返回 testcard：TC- / tct_，只做 GPT plus。
 func NewTestCard() Card {

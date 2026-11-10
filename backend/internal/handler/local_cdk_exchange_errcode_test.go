@@ -5,8 +5,6 @@ import (
 	"testing"
 
 	"github.com/tuzi/cdk-recharge-system/internal/db"
-	"github.com/tuzi/cdk-recharge-system/internal/provider"
-	"github.com/tuzi/cdk-recharge-system/internal/provider/providertest"
 )
 
 // 代理换码的本站码（MarsWallex）路径：每一处报错也带 error_code，error 文字和状态码与原来一致。
@@ -27,10 +25,7 @@ func TestLocalCDKExchangeErrorCodes(t *testing.T) {
 			name: "无法识别的卡密", status: http.StatusNotFound, code: "code_unrecognized", errMsg: "无法识别的卡密",
 			run: func(t *testing.T) (int, map[string]any) {
 				e := newSealedExchangeEnv(t)
-				// 没有兜底上游时，认不出的码在分派那一步就被拒
-				t.Cleanup(provider.TestOnlySnapshot())
-				provider.TestOnlyReset()
-				provider.Register(providertest.NewTestCard())
+				// 谁都不认领的码在分派那一步就被拒
 				return post(e, "ZC-AAAA-BBBB-CCCC-DDDD")
 			},
 		},

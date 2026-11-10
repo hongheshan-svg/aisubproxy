@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -261,91 +260,7 @@ func (b *localFakeBrowser) counts() (made, fills, submits int) {
 	return b.made, b.fills, b.submits
 }
 
-// localZovoStub 是假 ZovoCard，记下收到的每个请求。
-type localZovoStub struct {
-	srv   *httptest.Server
-	mu    sync.Mutex
-	paths []string
-	body  []string
-	query []string
-}
-
-// zovoPreflightBody 不带 email：真实卡台回的是它核验过的账号邮箱（与会话一致），绑定会按它记（审计 F-2）。
-// 这个桩对所有会话回同一份响应，带上固定邮箱就会把每个测试账号的绑定都记成这一个。
-const (
-	zovoPreviewBody   = `{"redemption_token":"zc-tok-1","plan":"plus","upstream_only":"x"}`
-	zovoPreflightBody = `{"ok":true,"preflight_token":"pf-1"}`
-	zovoRedeemBody    = `{"status":"queued","order":{"status":"queued"}}`
-	zovoResultBody    = `{"status":"running","order":{"status":"running"}}`
-)
-
-func newLocalZovoStub(t *testing.T) *localZovoStub {
-	t.Helper()
-	z := &localZovoStub{}
-	z.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		b, _ := io.ReadAll(r.Body)
-		z.mu.Lock()
-		z.paths = append(z.paths, r.URL.Path)
-		z.body = append(z.body, string(b))
-		z.query = append(z.query, r.URL.RawQuery)
-		z.mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/api/v1/cdk/preview":
-			io.WriteString(w, zovoPreviewBody)
-		case "/api/v1/cdk/preflight":
-			io.WriteString(w, zovoPreflightBody)
-		case "/api/v1/cdk/redeem":
-			io.WriteString(w, zovoRedeemBody)
-		case "/api/v1/cdk/result":
-			io.WriteString(w, zovoResultBody)
-		case "/openapi/v1/gpt-direct/plans":
-			io.WriteString(w, `{"code":0,"data":{"version":1,"plans":{"plus":{"enabled":true,"currency":"PHP"}},"registry":[{"key":"plus","label":"Plus"}]}}`)
-		case "/openapi/v1/gpt-direct/cdks":
-			io.WriteString(w, `{"code":0,"data":{"requested":1,"issued":[{"id":7001,"code":"ZC-FAKE-ISSUED-CODE-0001","plan":"plus"}]}}`)
-		case "/openapi/v1/balance":
-			io.WriteString(w, `{"code":0,"data":{"balance":12.5,"spendable_balance":10}}`)
-		default:
-			w.WriteHeader(404)
-			io.WriteString(w, `{"code":404}`)
-		}
-	}))
-	t.Cleanup(z.srv.Close)
-	return z
-}
-
-func (z *localZovoStub) count() int {
-	z.mu.Lock()
-	defer z.mu.Unlock()
-	return len(z.paths)
-}
-
-func (z *localZovoStub) hits(path string) int {
-	z.mu.Lock()
-	defer z.mu.Unlock()
-	n := 0
-	for _, p := range z.paths {
-		if p == path {
-			n++
-		}
-	}
-	return n
-}
-
-// requestQueries 返回收到的所有请求的查询串（令牌走 GET 查询参数的接口用）。
-func (z *localZovoStub) requestQueries() string {
-	z.mu.Lock()
-	defer z.mu.Unlock()
-	return strings.Join(z.query, "\n")
-}
-
-func (z *localZovoStub) requestBodies() string {
-	z.mu.Lock()
-	defer z.mu.Unlock()
-	return strings.Join(z.body, "\n")
-}
-
-// localEnv 是真实卡池 + 真实引擎 + mwtest + 假 ChatGPT + 假浏览器。引擎默认不启动。
+// localEnv 是真实卡池 + 真实引擎 + mwtest + 假 ChatGPT + 假浏览器 + 假上游（testup）。引擎默认不启动。
 type localEnv struct {
 	t      *testing.T
 	mw     *mwtest.Server
@@ -353,7 +268,8 @@ type localEnv struct {
 	engine *payengine.Service
 	gpt    *localFakeGPT
 	br     *localFakeBrowser
-	zovo   *localZovoStub
+	// up 是注册表里的假上游（testup）：本站码、认不出的码都不应让它收到任何请求
+	up     *fakeUpstream
 	router *gin.Engine
 
 	mu     sync.Mutex
@@ -425,10 +341,8 @@ func setupLocalEnv(t *testing.T) *localEnv {
 	e := &localEnv{t: t, mw: mwtest.New(t), gpt: &localFakeGPT{}, br: &localFakeBrowser{outcome: paybrowser.OutcomeSuccess}}
 	SetOpsAlert(e.addAlert)
 
-	// ZovoCard 桩
-	e.zovo = newLocalZovoStub(t)
-	localSet(t, "card_api_base", e.zovo.srv.URL)
-	localSet(t, "card_api_key", "fixture-key")
+	// 假上游 testup：用来断言本站码不会发出任何上游请求
+	e.up = e.watchUpstream()
 
 	// MarsWallex 配置齐全，MarsWallexClient 能构造出来
 	localMWKeyOnce.Do(func() {

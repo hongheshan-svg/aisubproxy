@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -15,7 +14,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/provider"
 	"golang.org/x/crypto/bcrypt"
@@ -174,28 +172,6 @@ func agentSwapPasswordFP() string {
 	stored, _ := db.GetSetting(agentSwapPasswordKey)
 	sum := sha256.Sum256([]byte(strings.TrimSpace(stored)))
 	return hex.EncodeToString(sum[:8])
-}
-
-// issueDefinitelyFailed 能否确定卡台没有发码（只有这时才能释放占位）。
-// 卡台文档：发码整批成功或整批回滚，业务拒绝和密钥错误不会发码；请求没发出去（连不上、DNS 失败）当然也没发。
-// 其余一律算结果不明：超时、断连、5xx、409 同键处理中、429、响应解析不了（可能是网关页面）。
-func issueDefinitelyFailed(err error) bool {
-	var ae *cardplatform.APIError
-	if errors.As(err, &ae) {
-		switch ae.HTTPStatus {
-		case http.StatusUnauthorized:
-			return true
-		case http.StatusBadRequest, http.StatusForbidden, http.StatusNotFound:
-			return ae.Code != 0 || ae.ErrorCode != ""
-		}
-		return false
-	}
-	var dnsErr *net.DNSError
-	if errors.As(err, &dnsErr) {
-		return true
-	}
-	var opErr *net.OpError
-	return errors.As(err, &opErr) && opErr.Op == "dial"
 }
 
 // agentExchangeConflict 这张旧码已有占位时的响应。

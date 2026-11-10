@@ -14,6 +14,7 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/db/dbtest"
 	"github.com/tuzi/cdk-recharge-system/internal/provider"
+	"github.com/tuzi/cdk-recharge-system/internal/provider/providertest"
 )
 
 var providerAdminRoutes = []struct{ method, path string }{
@@ -47,7 +48,7 @@ func TestProviderRoutesRegisteredAndRequireAdminAuth(t *testing.T) {
 			t.Errorf("路由缺失: %s %s", rt.method, rt.path)
 			continue
 		}
-		req := httptest.NewRequest(rt.method, strings.NewReplacer(":id", "1", ":name", "zovocard", ":product_id", "P1").Replace(rt.path), strings.NewReader(`{}`))
+		req := httptest.NewRequest(rt.method, strings.NewReplacer(":id", "1", ":name", "marswallex", ":product_id", "P1").Replace(rt.path), strings.NewReader(`{}`))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
@@ -124,11 +125,12 @@ func TestCardPoolOptionsWiresProviderGate(t *testing.T) {
 	if on, err := opts.MarsWallexSelected(ctx); err != nil || !on {
 		t.Fatalf("出厂配置 GPT 用 MarsWallex，应选用: %v %v", on, err)
 	}
-	if err := provider.SaveDefault(provider.ZovoCard); err != nil {
+	providertest.Register(t, providertest.NewTestUp())
+	if err := provider.SaveDefault(providertest.TestUp); err != nil {
 		t.Fatal(err)
 	}
 	if on, err := opts.MarsWallexSelected(ctx); err != nil || on {
-		t.Fatalf("切到 ZovoCard 后应未选用: %v %v", on, err)
+		t.Fatalf("切到别家后应未选用: %v %v", on, err)
 	}
 	if err := provider.SaveDefault(provider.MarsWallex); err != nil {
 		t.Fatal(err)
@@ -139,7 +141,7 @@ func TestCardPoolOptionsWiresProviderGate(t *testing.T) {
 	if err := db.SetSetting(provider.SettingDefault, "bogus"); err != nil {
 		t.Fatal(err)
 	}
-	// 值不合法按现状（ZovoCard）算：对自动补卡来说是暂停，不会多花钱
+	// 值不合法时全局默认为空：对自动补卡来说是暂停，不会多花钱
 	if on, err := opts.MarsWallexSelected(ctx); err != nil || on {
 		t.Fatalf("值不合法应按未选用: %v %v", on, err)
 	}

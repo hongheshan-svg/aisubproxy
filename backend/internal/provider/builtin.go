@@ -8,25 +8,7 @@ import (
 )
 
 func init() {
-	Register(zovoCard{})
 	Register(marsWallex{})
-}
-
-// zovoCard 是卡台：上游发码，四条产品线。具体档位以卡台实时下发为准（发码时校验），这里只认产品线。
-// 它是兜底上游：谁都不认领的码和令牌交给它，这是接入多家之前的行为。
-type zovoCard struct{}
-
-func (zovoCard) Name() Name              { return ZovoCard }
-func (zovoCard) DisplayName() string     { return "ZovoCard" }
-func (zovoCard) Kind() Kind              { return KindUpstream }
-func (zovoCard) Products() []string      { return []string{"gpt", "x", "grok", "claude"} }
-func (zovoCard) PlanNote(string) string  { return "" }
-func (zovoCard) ClaimsCode(string) bool  { return false }
-func (zovoCard) ClaimsToken(string) bool { return false }
-func (zovoCard) Fallback() bool          { return true }
-func (zovoCard) CodeList() string        { return "cardplatform" }
-func (z zovoCard) Supports(product, _ string) bool {
-	return slices.Contains(z.Products(), normProduct(product))
 }
 
 // marsWallex 供卡·本站付款。能力直接取自付款引擎实际实现的流程（payengine.SupportedPlanKeys：GPT 五档新开通、Codex 点数六档），
@@ -43,7 +25,7 @@ func (marsWallex) Supports(product, plan string) bool {
 	return normProduct(product) == "gpt" && slices.Contains(payengine.SupportedPlanKeys(), strings.TrimSpace(plan))
 }
 
-// PlanNote pro_20x 在 ZovoCard 是「Plus 升级 Pro」，在 MarsWallex 是新开通，同名不同义，必须标出来。
+// PlanNote pro_20x 在 MarsWallex 是新开通（不是 Plus 升级 Pro），同名不同义，必须标出来。
 // 点数档只卖给已订阅 Plus 或 Pro 的账号，按账号计费币种付款（设计 2026-11-03 §5.1）。
 func (marsWallex) PlanNote(plan string) string {
 	plan = strings.TrimSpace(plan)

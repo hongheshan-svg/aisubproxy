@@ -936,7 +936,7 @@ func localCDKExchange(c *gin.Context, cs provider.CardSupply, code, ip string) {
 		localReply(c, http.StatusInternalServerError, gin.H{"error": "换码暂时不可用，请稍后再试", "error_code": "unavailable"})
 		return
 	}
-	// OldID 必须是 0：这张记录的 old_upstream_id 指卡台的码 ID，人工定论时会拿它去禁用卡台的码，本地 ID 不能填进去
+	// OldID 必须是 0：维护循环靠 old_upstream_id=0 识别本站码的换码记录并自动收尾；old_upstream_id>0 的是已移除的 ZovoCard 留下的历史记录，不自动收尾，本地 ID 不能填进去
 	exID, err := db.ReserveAgentCDKExchange(db.AgentExchangeReservation{
 		OldHash: codeHash, OldID: 0, OldPrefix: row.CodePrefix, Plan: row.PlanKey,
 		OrderStatus: "not_submitted", IP: ip, PasswordFP: agentSwapPasswordFP(),

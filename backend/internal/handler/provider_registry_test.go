@@ -15,7 +15,7 @@ import (
 )
 
 // 用两家假服务商证明注册表可扩展：供卡型 testcard（TC- / tct_）走通用的本地流程，
-// 上游型 testup（认领 TU- / tut_）走它自己的适配器，原有的 ZovoCard、MarsWallex 都不受影响。
+// 上游型 testup（认领 TU- / tut_）走它自己的适配器，MarsWallex 不受影响。
 
 // fakeCardCheck 是 testcard 的就绪检查。
 type fakeCardCheck struct{ fail string }
@@ -32,17 +32,31 @@ func (a fakeCardCheck) Check(_ context.Context, _, _ string, _ bool) providerSta
 	return st
 }
 
-// fakeUpstream 是 testup 的适配器：记下收到的调用；预检时像 ZovoCard 一样写一条绑定（服务商 testup）。
+// fakeUpstream 是假上游的适配器：记下收到的调用；预检时像真上游一样写一条绑定（服务商为它自己的名字，默认 testup）。
 // 没有实现代理换码、宽限期恢复、卡密查询这几项可选能力。
 type fakeUpstream struct {
 	mu    sync.Mutex
 	calls []string
+	name  provider.Name // 为空时是 testup
+}
+
+func (u *fakeUpstream) nm() provider.Name {
+	if u.name != "" {
+		return u.name
+	}
+	return providertest.TestUp
 }
 
 func (u *fakeUpstream) hit(what string) {
 	u.mu.Lock()
 	u.calls = append(u.calls, what)
 	u.mu.Unlock()
+}
+
+func (u *fakeUpstream) callCount() int {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return len(u.calls)
 }
 
 func (u *fakeUpstream) log() string {
@@ -62,7 +76,7 @@ func (u *fakeUpstream) Preflight(c *gin.Context, body map[string]any) {
 	if cred, ok := body["credential"].(map[string]any); ok {
 		sess = str(cred["session"])
 	}
-	if err := db.BindCDKSession(string(providertest.TestUp), str(body["code"]), str(body["redemption_token"]), sess); err != nil {
+	if err := db.BindCDKSession(string(u.nm()), str(body["code"]), str(body["redemption_token"]), sess); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
@@ -90,18 +104,38 @@ func (u *fakeUpstream) Issue(c *gin.Context, req cdkIssueRequest) {
 }
 
 func (u *fakeUpstream) Check(context.Context) providerStatus {
-	st := newProviderStatus(providertest.TestUp)
+	st := newProviderStatus(u.nm())
 	st.Readiness.Pass("fake", "测试检查", "就绪")
 	return st
 }
 
-// useTestProviders 注册两家假服务商、接上适配器，付款引擎给 testcard 也接一个卡池（借用 MarsWallex 的卡池实现，引擎只认名字）。
-func (e *localEnv) useTestProviders() *fakeUpstream {
+// watchUpstream 注册 testup 假上游并接上记录调用的适配器：本站码和认不出的码都不应让它收到请求。
+func (e *localEnv) watchUpstream() *fakeUpstream {
 	e.t.Helper()
-	providertest.RegisterBoth(e.t)
-	withCardSupplyAdapter(e.t, providertest.TestCard, fakeCardCheck{})
+	if _, ok := provider.Get(providertest.TestUp); !ok { // 同一个测试里建多个环境时只注册一次，适配器每个环境换新的
+		providertest.Register(e.t, providertest.NewTestUp())
+	}
 	up := &fakeUpstream{}
 	withUpstreamAdapter(e.t, providertest.TestUp, up)
+	return up
+}
+
+// useSecondUpstream 再注册一家假上游 testup2（认领 TV- 码和 tvt_ 令牌）：跨服务商的规则要对「两家不同的上游」也成立。
+func (e *localEnv) useSecondUpstream() *fakeUpstream {
+	e.t.Helper()
+	const name provider.Name = "testup2"
+	up2 := &fakeUpstream{name: name}
+	providertest.Register(e.t, providertest.Up{N: name, Display: "TestUp2", CodePfx: "TV-", TokenPfx: "tvt_", Prods: []string{"gpt", "x"}})
+	withUpstreamAdapter(e.t, name, up2)
+	return up2
+}
+
+// useTestProviders 再注册供卡型的 testcard（testup 环境里已经有）、接上适配器，付款引擎给 testcard 也接一个卡池（借用 MarsWallex 的卡池实现，引擎只认名字）。
+func (e *localEnv) useTestProviders() *fakeUpstream {
+	e.t.Helper()
+	providertest.Register(e.t, providertest.NewTestCard())
+	withCardSupplyAdapter(e.t, providertest.TestCard, fakeCardCheck{})
+	up := e.up
 	e.engine = payengine.New(payengine.Options{
 		Pools:    map[string]payengine.Pool{string(provider.MarsWallex): e.pool, string(providertest.TestCard): e.pool},
 		ChatGPT:  func(string) (payengine.ChatGPT, error) { return e.gpt, nil },
@@ -199,8 +233,8 @@ func TestIssueDispatchByProvider(t *testing.T) {
 			t.Fatalf("库里应记 testcard: %q", p)
 		}
 	}
-	if e.zovo.hits("/openapi/v1/gpt-direct/cdks") != 0 || up.log() != "" {
-		t.Fatalf("发 testcard 的码不应碰上游: %v %s", e.zovo.paths, up.log())
+	if up.callCount() != 0 {
+		t.Fatalf("发 testcard 的码不应碰上游: %s", up.log())
 	}
 
 	// 显式选了不支持的档位：400，不换成别家
@@ -209,7 +243,7 @@ func TestIssueDispatchByProvider(t *testing.T) {
 		t.Fatalf("%d %v", code, m)
 	}
 	// 没带服务商：按产品配置选出 testcard，不支持就 400 并提示手动选择
-	if err := provider.SaveConfig(provider.ZovoCard, map[string]provider.Name{"gpt": providertest.TestCard}); err != nil {
+	if err := provider.SaveConfig(provider.MarsWallex, map[string]provider.Name{"gpt": providertest.TestCard}); err != nil {
 		t.Fatal(err)
 	}
 	code, m = issue("/admin/cdks/issue", map[string]any{"plan": "pro_5x", "region": "PH", "count": 1, "funding_confirmed": true})
@@ -220,15 +254,14 @@ func TestIssueDispatchByProvider(t *testing.T) {
 	if code != http.StatusOK || m["provider"] != "testcard" {
 		t.Fatalf("按产品配置应发 testcard: %d %v", code, m)
 	}
-	// X 没有产品配置，跟随全局默认 ZovoCard
+	// X 没有产品配置，跟随全局默认 MarsWallex（它不做 X，发码被拒，不会换成别家）
 	if code, m = issue("/admin/cdks/issue", map[string]any{"plan": "x_premium", "product": "x", "count": 1, "funding_confirmed": true}); code == http.StatusBadRequest && strings.Contains(localBody(t, m), "testcard") {
 		t.Fatalf("X 不应选到 testcard: %v", m)
 	}
 
-	// 上游型交给它的适配器，不发往卡台
-	before := e.zovo.hits("/openapi/v1/gpt-direct/cdks")
+	// 上游型交给它的适配器
 	code, m = issue("/admin/cdks/issue", map[string]any{"provider": "testup", "plan": "plus", "count": 1, "funding_confirmed": true})
-	if code != http.StatusOK || m["from"] != "testup" || up.log() != "issue:plus" || e.zovo.hits("/openapi/v1/gpt-direct/cdks") != before {
+	if code != http.StatusOK || m["from"] != "testup" || up.log() != "issue:plus" {
 		t.Fatalf("testup 发码: %d %v %s", code, m, up.log())
 	}
 	if code, m = issue("/admin/cdks/issue", map[string]any{"provider": "nope", "plan": "plus", "count": 1, "funding_confirmed": true}); code != http.StatusBadRequest || !strings.Contains(m["error"].(string), "未知的卡服务商") {
@@ -236,7 +269,7 @@ func TestIssueDispatchByProvider(t *testing.T) {
 	}
 }
 
-// 公开分派：TC- 码查不到时「码不存在」且不发任何上游请求；TU- 只交给 testup；其余交给 ZovoCard；
+// 公开分派：TC- 码查不到时「码不存在」且不发任何上游请求；TU- 只交给 testup；认不出的码 404 且不发往任何上游；
 // MW- 码的库行服务商不是 MarsWallex 时按码不存在处理。
 func TestPublicDispatchByProvider(t *testing.T) {
 	e := newLocalEnv(t)
@@ -258,29 +291,33 @@ func TestPublicDispatchByProvider(t *testing.T) {
 	if w := e.do("POST", "/public/cdk/preflight", localBody(t, map[string]any{"code": "TC-NOPE1-NOPE2", "credential": map[string]any{"mode": "session", "session": localSession("x@example.com")}})); w.Code != http.StatusNotFound {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}
-	if e.zovo.count() != 0 || up.log() != "" {
-		t.Fatalf("TC 码绝不发往上游: %v %s", e.zovo.paths, up.log())
+	if up.callCount() != 0 {
+		t.Fatalf("TC 码绝不发往上游: %s", up.log())
 	}
 
-	if code, m := preview("TU-AAAA-BBBB"); code != http.StatusOK || m["from"] != "testup" || up.log() != "preview:TU-AAAA-BBBB" || e.zovo.count() != 0 {
-		t.Fatalf("TU 码只交给 testup: %d %v %s %v", code, m, up.log(), e.zovo.paths)
+	if code, m := preview("TU-AAAA-BBBB"); code != http.StatusOK || m["from"] != "testup" || up.log() != "preview:TU-AAAA-BBBB" {
+		t.Fatalf("TU 码只交给 testup: %d %v %s", code, m, up.log())
 	}
-	if w := e.do("GET", "/public/cdk/result?token=tut_abc", ""); w.Code != http.StatusOK || !strings.Contains(up.log(), "result:tut_abc") || e.zovo.count() != 0 {
+	if w := e.do("GET", "/public/cdk/result?token=tut_abc", ""); w.Code != http.StatusOK || !strings.Contains(up.log(), "result:tut_abc") {
 		t.Fatalf("tut 令牌只交给 testup: %d %s", w.Code, up.log())
 	}
-	if w := e.do("GET", "/public/cdk/result-by-code?code=TU-AAAA-BBBB", ""); w.Code != http.StatusOK || !strings.Contains(up.log(), "result_by_code:TU-AAAA-BBBB") || e.zovo.count() != 0 {
+	if w := e.do("GET", "/public/cdk/result-by-code?code=TU-AAAA-BBBB", ""); w.Code != http.StatusOK || !strings.Contains(up.log(), "result_by_code:TU-AAAA-BBBB") {
 		t.Fatalf("TU 码按码查结果只交给 testup: %d %s", w.Code, up.log())
 	}
-	// 一家的码绝不跟着另一家的令牌发出去
-	if w := e.do("POST", "/public/cdk/redeem", localBody(t, map[string]any{"code": "TU-AAAA-BBBB", "redemption_token": "zc-tok-1"})); w.Code != http.StatusBadRequest || e.zovo.count() != 0 || strings.Contains(up.log(), "redeem") {
+	// 一家的码绝不跟着另一家的令牌发出去；令牌认不出同样不发
+	up2 := e.useSecondUpstream()
+	if w := e.do("POST", "/public/cdk/redeem", localBody(t, map[string]any{"code": "TU-AAAA-BBBB", "redemption_token": "tvt_other"})); w.Code != http.StatusBadRequest || strings.Contains(up.log(), "redeem") || up2.callCount() != 0 {
 		t.Fatalf("码和令牌不是同一家: %d %s", w.Code, w.Body.String())
 	}
+	if w := e.do("POST", "/public/cdk/redeem", localBody(t, map[string]any{"code": "TU-AAAA-BBBB", "redemption_token": "zc-tok-1"})); w.Code != http.StatusNotFound || strings.Contains(up.log(), "redeem") {
+		t.Fatalf("令牌认不出应 404 且不发出去: %d %s", w.Code, w.Body.String())
+	}
 
-	if code, m := preview("ZC-FAKE-0001"); code != http.StatusOK || m["redemption_token"] != "zc-tok-1" || e.zovo.hits("/api/v1/cdk/preview") != 1 {
-		t.Fatalf("其余码交给 ZovoCard: %d %v", code, m)
+	if code, m := preview("ZC-FAKE-0001"); code != http.StatusNotFound || m["error"] != unrecognizedCodeText {
+		t.Fatalf("谁都不认领的码应 404: %d %v", code, m)
 	}
 	if strings.Contains(up.log(), "ZC-FAKE") {
-		t.Fatalf("ZovoCard 的码不应交给 testup: %s", up.log())
+		t.Fatalf("认不出的码不应交给 testup: %s", up.log())
 	}
 
 	// MW- 码的库行被标成 testcard：按码不存在处理，也不交给 testcard 或上游
@@ -288,7 +325,7 @@ func TestPublicDispatchByProvider(t *testing.T) {
 	if _, err := db.DB.Exec(`UPDATE local_cdks SET provider = 'testcard' WHERE id = ?`, mwID); err != nil {
 		t.Fatal(err)
 	}
-	zcBefore := e.zovo.count()
+	zcBefore := e.up.callCount()
 	if code, m := preview(mwCode); code != http.StatusNotFound || m["error"] != localCDKNotFoundText {
 		t.Fatalf("库行服务商对不上应按码不存在: %d %v", code, m)
 	}
@@ -298,8 +335,8 @@ func TestPublicDispatchByProvider(t *testing.T) {
 	if m := localJSON(t, e.do("GET", "/lookup/cdk?code="+mwCode, "")); m["status"] != "unknown" {
 		t.Fatalf("查询页也按未找到: %v", m)
 	}
-	if e.zovo.count() != zcBefore {
-		t.Fatalf("不应发往卡台: %v", e.zovo.paths)
+	if e.up.callCount() != zcBefore {
+		t.Fatalf("不应发往上游: %s", e.up.log())
 	}
 }
 
@@ -400,8 +437,8 @@ func TestTestCardPublicFlowCarriesProviderFields(t *testing.T) {
 	}
 	assertProviderFields(t, "代理换码", m, name, kind, display)
 
-	if e.zovo.count() != 0 || up.log() != "" {
-		t.Fatalf("testcard 的流程不应碰任何上游: %v %s", e.zovo.paths, up.log())
+	if up.callCount() != 0 {
+		t.Fatalf("testcard 的流程不应碰任何上游: %s", up.log())
 	}
 
 	// 上游没实现的可选能力：明说不支持，不转给别家
@@ -416,8 +453,8 @@ func TestTestCardPublicFlowCarriesProviderFields(t *testing.T) {
 	if m := localJSON(t, e.do("GET", "/lookup/cdk?code=TU-AAAA-BBBB-CCCC", "")); m["status"] != "unsupported" {
 		t.Fatalf("没实现查询能力的上游按暂不支持在线查询: %v", m)
 	}
-	if e.zovo.count() != 0 {
-		t.Fatalf("不应发往卡台: %v", e.zovo.paths)
+	if up.callCount() != 0 {
+		t.Fatalf("不应发往上游: %s", up.log())
 	}
 }
 
@@ -433,18 +470,19 @@ func TestMarsWallexPublicResponsesCarryProviderFields(t *testing.T) {
 	assertProviderFields(t, "兑换", localJSON(t, w), "marswallex", "card_supply", "MarsWallex")
 	assertProviderFields(t, "按令牌查结果", localJSON(t, e.result(token)), "marswallex", "card_supply", "MarsWallex")
 	assertProviderFields(t, "按码查结果", localJSON(t, e.do("GET", "/public/cdk/result-by-code?code="+code, "")), "marswallex", "card_supply", "MarsWallex")
-	// 上游转发的原始 JSON 不加字段
-	if m := localJSON(t, e.do("POST", "/public/cdk/preview", `{"code":"ZC-FAKE-0001"}`)); m["provider_kind"] != nil {
-		t.Fatalf("上游转发不加字段: %v", m)
+	// 认不出的码回 404，不带服务商字段
+	if m := localJSON(t, e.do("POST", "/public/cdk/preview", `{"code":"ZC-FAKE-0001"}`)); m["provider_kind"] != nil || m["provider"] != nil {
+		t.Fatalf("认不出的码不带服务商字段: %v", m)
 	}
 }
 
-// 跨服务商互斥：testcard、testup、ZovoCard 三家两两互斥。别家的绑定、任意一家的在途或待人工付款单、进程内的账号锁都会拦；
+// 跨服务商互斥：testcard、testup、testup2（第二家上游）三家两两互斥。别家的绑定、任意一家的在途或待人工付款单、进程内的账号锁都会拦；
 // 自己的绑定不拦。
 func TestCrossProviderMutexThreeWay(t *testing.T) {
 	e := newLocalEnv(t)
 	up := e.useTestProviders()
 	e.seedProviderRealPayment(providertest.TestCard)
+	up2 := e.useSecondUpstream()
 	cred := func(email string) map[string]any {
 		return map[string]any{"mode": "session", "session": localSession(email)}
 	}
@@ -464,16 +502,16 @@ func TestCrossProviderMutexThreeWay(t *testing.T) {
 		"testup": func(email string) int {
 			return send(map[string]any{"code": "TU-AAAA-" + email, "credential": cred(email)})
 		},
-		"zovocard": func(email string) int {
-			return send(map[string]any{"code": "ZC-FAKE-" + email, "credential": cred(email)})
+		"testup2": func(email string) int {
+			return send(map[string]any{"code": "TV-AAAA-" + email, "credential": cred(email)})
 		},
 	}
 	all := func(code int) map[string]int {
-		return map[string]int{"testcard": code, "testup": code, "zovocard": code}
+		return map[string]int{"testcard": code, "testup": code, "testup2": code}
 	}
 	expect := func(t *testing.T, email string, want map[string]int) {
 		t.Helper()
-		for _, prov := range []string{"testcard", "testup", "zovocard"} {
+		for _, prov := range []string{"testcard", "testup", "testup2"} {
 			if got := preflight[prov](email); got != want[prov] {
 				t.Errorf("%s 走 %s: %d，期望 %d", email, prov, got, want[prov])
 			}
@@ -482,7 +520,7 @@ func TestCrossProviderMutexThreeWay(t *testing.T) {
 
 	t.Run("没人占用时三家都能预检", func(t *testing.T) {
 		// 上游预检会写绑定，所以每家用各自的账号
-		for _, prov := range []string{"testcard", "testup", "zovocard"} {
+		for _, prov := range []string{"testcard", "testup", "testup2"} {
 			if got := preflight[prov]("free-" + prov + "@example.com"); got != http.StatusOK {
 				t.Errorf("%s: %d", prov, got)
 			}
@@ -493,14 +531,14 @@ func TestCrossProviderMutexThreeWay(t *testing.T) {
 		if got := preflight["testup"](email); got != http.StatusOK || !strings.Contains(up.log(), "preflight") {
 			t.Fatalf("testup 预检: %d %s", got, up.log())
 		}
-		expect(t, email, map[string]int{"testcard": http.StatusConflict, "testup": http.StatusOK, "zovocard": http.StatusConflict})
+		expect(t, email, map[string]int{"testcard": http.StatusConflict, "testup": http.StatusOK, "testup2": http.StatusConflict})
 	})
-	t.Run("ZovoCard 的绑定拦住另外两家", func(t *testing.T) {
-		const email = "zc@example.com"
-		if got := preflight["zovocard"](email); got != http.StatusOK {
-			t.Fatalf("ZovoCard 预检: %d", got)
+	t.Run("testup2 的绑定拦住另外两家", func(t *testing.T) {
+		const email = "up2@example.com"
+		if got := preflight["testup2"](email); got != http.StatusOK {
+			t.Fatalf("testup2 预检: %d", got)
 		}
-		expect(t, email, map[string]int{"testcard": http.StatusConflict, "testup": http.StatusConflict, "zovocard": http.StatusOK})
+		expect(t, email, map[string]int{"testcard": http.StatusConflict, "testup": http.StatusConflict, "testup2": http.StatusOK})
 	})
 	t.Run("testcard 的在途单拦住所有家", func(t *testing.T) {
 		const email = "tc@example.com"
@@ -518,9 +556,9 @@ func TestCrossProviderMutexThreeWay(t *testing.T) {
 		if !ok {
 			t.Fatal("共享锁")
 		}
-		zcBefore := e.zovo.hits("/api/v1/cdk/preflight")
-		if got := preflight["zovocard"](email); got != http.StatusConflict || e.zovo.hits("/api/v1/cdk/preflight") != zcBefore {
-			t.Fatalf("testup 转发期间 ZovoCard 应拦下且不转发: %d", got)
+		up2Before := up2.callCount()
+		if got := preflight["testup2"](email); got != http.StatusConflict || up2.callCount() != up2Before {
+			t.Fatalf("testup 转发期间 testup2 应拦下且不转发: %d", got)
 		}
 		if got := preflight["testup"](email); got != http.StatusOK {
 			t.Fatalf("同一家之间不互斥: %d", got)
@@ -530,7 +568,7 @@ func TestCrossProviderMutexThreeWay(t *testing.T) {
 		if !ok {
 			t.Fatal("独占锁")
 		}
-		if got := preflight["zovocard"](email); got != http.StatusConflict {
+		if got := preflight["testup2"](email); got != http.StatusConflict {
 			t.Fatalf("供卡型建单期间上游应拦下: %d", got)
 		}
 		excl()
@@ -547,8 +585,8 @@ func TestAdminProviderReadinessPerProvider(t *testing.T) {
 	withCardSupplyAdapter(t, providertest.TestCard, panicCheck{})
 	m := localJSON(t, e.do("GET", "/admin/providers/readiness", ""))
 	providers := m["providers"].(map[string]any)
-	if len(providers) != 4 {
-		t.Fatalf("四家: %v", providers)
+	if len(providers) != 3 {
+		t.Fatalf("三家: %v", providers)
 	}
 	tc := providers["testcard"].(map[string]any)
 	if tc["ok"] != false || !strings.Contains(localBody(t, tc["problems"]), "就绪检查本身出错") || tc["combos"] == nil {
@@ -559,9 +597,6 @@ func TestAdminProviderReadinessPerProvider(t *testing.T) {
 	}
 	if mw := providers["marswallex"].(map[string]any); mw["ok"] != true {
 		t.Fatalf("别家不受影响: %v", mw)
-	}
-	if zc := providers["zovocard"].(map[string]any); zc["ok"] != true {
-		t.Fatalf("别家不受影响: %v", zc)
 	}
 }
 

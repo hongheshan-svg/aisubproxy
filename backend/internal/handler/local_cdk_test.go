@@ -25,9 +25,10 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/paybrowser"
 	"github.com/tuzi/cdk-recharge-system/internal/payengine"
 	"github.com/tuzi/cdk-recharge-system/internal/provider"
+	"github.com/tuzi/cdk-recharge-system/internal/provider/providertest"
 )
 
-// 发码一路走到兑换成功：注资和点支付都只发生一次，码变 consumed，会话清空，整条链路不碰 ZovoCard，日志里没有码和会话。
+// 发码一路走到兑换成功：注资和点支付都只发生一次，码变 consumed，会话清空，整条链路不碰任何上游，日志里没有码和会话。
 func TestLocalCDKEndToEnd(t *testing.T) {
 	var logs bytes.Buffer
 	log.SetOutput(&logs)
@@ -64,8 +65,8 @@ func TestLocalCDKEndToEnd(t *testing.T) {
 	if _, fills, submits := e.br.counts(); fills != 1 || submits != 1 {
 		t.Fatalf("填表 %d 次，点支付 %d 次", fills, submits)
 	}
-	if e.zovo.count() != 0 {
-		t.Fatalf("MW 码不能碰 ZovoCard: %v", e.zovo.paths)
+	if e.up.callCount() != 0 {
+		t.Fatalf("MW 码不能碰上游: %s", e.up.log())
 	}
 
 	// 只有一张单，来源和引用正确；开通成功后关闭续费，会话随之清空
@@ -107,7 +108,7 @@ func TestLocalCDKEndToEnd(t *testing.T) {
 		t.Fatalf("%v", o)
 	}
 
-	// 整条链路的日志、审计、ZovoCard 请求里都没有码和会话
+	// 整条链路的日志、审计、上游收到的调用里都没有码和会话
 	for what, text := range map[string]string{"日志": logs.String(), "审计": localAudit(t), "告警": e.alertTexts()} {
 		if strings.Contains(text, code) || strings.Contains(text, payAccessToken) || strings.Contains(text, paySessionToken) {
 			t.Fatalf("%s里有敏感内容: %s", what, text)
@@ -679,8 +680,8 @@ func TestLocalCDKFundedFailuresLimit(t *testing.T) {
 		t.Fatalf("%s", a)
 	}
 	// 失败再多次也绝不换服务商重试
-	if e.zovo.count() != 0 {
-		t.Fatalf("不能转去 ZovoCard: %v", e.zovo.paths)
+	if e.up.callCount() != 0 {
+		t.Fatalf("不能转去上游: %s", e.up.log())
 	}
 }
 
@@ -803,7 +804,7 @@ func TestLocalCDKHardGateAlsoGuardsRedeem(t *testing.T) {
 	}
 }
 
-// 小写、带空白、带零宽字符的 MW 码也不能漏给 ZovoCard。
+// 小写、带空白、带零宽字符的 MW 码也不能漏给上游。
 func TestLocalCDKRoutingIsCaseInsensitive(t *testing.T) {
 	e := newLocalEnv(t)
 	e.seedRealPayment()
@@ -828,10 +829,10 @@ func TestLocalCDKRoutingIsCaseInsensitive(t *testing.T) {
 			t.Fatalf("%s: %d %s", w.path, r.Code, r.Body.String())
 		}
 	}
-	// mwt 令牌配 ZovoCard 码、MW 码配 ZovoCard 令牌，都不能发往 ZovoCard
+	// mwt 令牌配上游的码、MW 码配上游的令牌，都不能发往上游
 	for _, body := range []string{
-		`{"code":"ZC-AAAA","redemption_token":"mwt_nope","credential":{"session":"x"}}`,
-		localBody(t, map[string]any{"code": code, "redemption_token": "zc-tok-1", "credential": map[string]any{"session": "x"}}),
+		`{"code":"TU-AAAA","redemption_token":"mwt_nope","credential":{"session":"x"}}`,
+		localBody(t, map[string]any{"code": code, "redemption_token": "tut_abc", "credential": map[string]any{"session": "x"}}),
 	} {
 		for _, path := range []string{"/public/cdk/preflight", "/public/cdk/redeem"} {
 			e.do("POST", path, body)
@@ -848,11 +849,11 @@ func TestLocalCDKRoutingIsCaseInsensitive(t *testing.T) {
 	if w := cdkRequest(SessionBillingCheck, "POST", "/billing", localBody(t, map[string]any{"cdk_code": code})); w.Code != http.StatusNotFound {
 		t.Fatalf("账单: %d %s", w.Code, w.Body.String())
 	}
-	if e.zovo.count() != 0 {
-		t.Fatalf("不应碰 ZovoCard: %v", e.zovo.paths)
+	if e.up.callCount() != 0 {
+		t.Fatalf("不应碰上游: %s", e.up.log())
 	}
-	if strings.Contains(e.zovo.requestBodies(), code) {
-		t.Fatal("码发往了 ZovoCard")
+	if strings.Contains(e.up.log(), code) {
+		t.Fatal("码发往了上游")
 	}
 	// 预览绝不写绑定表（BindCDKRedemptionToken 会存完整码明文）
 	var n int
@@ -862,38 +863,31 @@ func TestLocalCDKRoutingIsCaseInsensitive(t *testing.T) {
 	}
 }
 
-// 分流只看码：ZovoCard 码的处理和响应字段完全不变，MW 码按本地走。
+// 分流只看码：谁都不认领的码（比如已移除的 ZovoCard 留下的 ZC- 码）四个公开入口都回 404，不发往任何上游；MW 码按本地走。
 func TestRedeemRoutesByCDKProvider(t *testing.T) {
 	e := newLocalEnv(t)
 	e.seedRealPayment()
-	// ZovoCard 码：透传上游字节，不建付款单，也没有 provider 字段。
 	sess := localSession("zc@example.com")
 	for _, tc := range []struct {
-		method, path, body, want string
+		method, path, body string
 	}{
-		{"POST", "/public/cdk/preview", `{"code":"ZC-FAKE-0001"}`, zovoPreviewBody},
-		{"POST", "/public/cdk/preflight", localBody(t, map[string]any{"code": "ZC-FAKE-0001", "redemption_token": "zc-tok-1", "credential": map[string]any{"mode": "session", "session": sess}}), zovoPreflightBody},
-		{"POST", "/public/cdk/redeem", `{"redemption_token":"zc-tok-1","preflight_token":"pf-1"}`, zovoRedeemBody},
-		{"GET", "/public/cdk/result?token=zc-tok-1", "", zovoResultBody},
+		{"POST", "/public/cdk/preview", `{"code":"ZC-FAKE-0001"}`},
+		{"POST", "/public/cdk/preflight", localBody(t, map[string]any{"code": "ZC-FAKE-0001", "redemption_token": "zc-tok-1", "credential": map[string]any{"mode": "session", "session": sess}})},
+		{"POST", "/public/cdk/redeem", `{"redemption_token":"zc-tok-1","preflight_token":"pf-1"}`},
+		{"GET", "/public/cdk/result?token=zc-tok-1", ""},
 	} {
 		w := e.do(tc.method, tc.path, tc.body)
-		if w.Code != http.StatusOK || w.Body.String() != tc.want {
+		if w.Code != http.StatusNotFound || localJSON(t, w)["error"] != unrecognizedCodeText {
 			t.Fatalf("%s: %d %s", tc.path, w.Code, w.Body.String())
-		}
-	}
-	for _, p := range []string{"preview", "preflight", "redeem", "result"} {
-		if e.zovo.hits("/api/v1/cdk/"+p) != 1 {
-			t.Fatalf("%s 应打到 ZovoCard 一次: %v", p, e.zovo.paths)
 		}
 	}
 	var orders int
 	db.DB.QueryRow(`SELECT COUNT(*) FROM pay_orders WHERE source = 'cdk'`).Scan(&orders)
-	if orders != 0 {
-		t.Fatalf("ZovoCard 码不应建付款单: %d", orders)
+	if orders != 0 || e.up.callCount() != 0 {
+		t.Fatalf("认不出的码不应建付款单或发往上游: %d %s", orders, e.up.log())
 	}
 
-	// MW 码：ZovoCard 桩收不到新请求，建一张单
-	before := e.zovo.count()
+	// MW 码：上游收不到请求，建一张单
 	code, id := e.issueCode("plus", "PH")
 	token, pf := e.preflight(code, localSession("mw@example.com"))
 	if w := e.redeem(token, pf); w.Code != http.StatusOK {
@@ -902,8 +896,8 @@ func TestRedeemRoutesByCDKProvider(t *testing.T) {
 	if w := e.result(token); w.Code != http.StatusOK {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}
-	if e.zovo.count() != before {
-		t.Fatalf("MW 码碰了 ZovoCard: %v", e.zovo.paths)
+	if e.up.callCount() != 0 {
+		t.Fatalf("MW 码碰了上游: %s", e.up.log())
 	}
 	if n := cdkOrderCount(t, id); n != 1 {
 		t.Fatalf("%d", n)
@@ -971,10 +965,10 @@ func TestCrossProviderInflightBlocked(t *testing.T) {
 	const email = "both@example.com"
 	sess := localSession(email)
 	zcPreflight := func(s string) string {
-		return localBody(t, map[string]any{"code": "ZC-FAKE-0001", "redemption_token": "zc-tok-1", "credential": map[string]any{"mode": "session", "session": s}})
+		return localBody(t, map[string]any{"code": "TU-AAAA-0001", "redemption_token": "tut_abc", "credential": map[string]any{"mode": "session", "session": s}})
 	}
 
-	t.Run("MarsWallex 在途时 ZovoCard 预检和兑换被拒", func(t *testing.T) {
+	t.Run("MarsWallex 在途时 testup 预检和兑换被拒", func(t *testing.T) {
 		for _, state := range []string{payengine.StateQueued, payengine.StateFunding, payengine.StateVerifying, payengine.StateNeedsReview} {
 			e := newLocalEnv(t)
 			e.insertOrder("cdk", "1", 0, email, state, "", false)
@@ -983,22 +977,22 @@ func TestCrossProviderInflightBlocked(t *testing.T) {
 			if w.Code != http.StatusConflict {
 				t.Fatalf("%s 预检: %d %s", state, w.Code, w.Body.String())
 			}
-			if e.zovo.hits("/api/v1/cdk/preflight") != 0 {
+			if strings.Contains(e.up.log(), "preflight") {
 				t.Fatalf("%s: 不应转发", state)
 			}
 			// 兑换靠请求自带的凭据、或令牌绑定的邮箱判断
-			w = e.do("POST", "/public/cdk/redeem", localBody(t, map[string]any{"redemption_token": "zc-tok-1", "credential": map[string]any{"mode": "session", "session": sess}}))
+			w = e.do("POST", "/public/cdk/redeem", localBody(t, map[string]any{"redemption_token": "tut_abc", "credential": map[string]any{"mode": "session", "session": sess}}))
 			if w.Code != http.StatusConflict {
 				t.Fatalf("%s 兑换: %d %s", state, w.Code, w.Body.String())
 			}
-			if err := db.BindCDKSession("zovocard", "ZC-FAKE-0001", "zc-tok-1", sess); err != nil {
+			if err := db.BindCDKSession("testup", "TU-AAAA-0001", "tut_abc", sess); err != nil {
 				t.Fatal(err)
 			}
-			w = e.do("POST", "/public/cdk/redeem", `{"redemption_token":"zc-tok-1","preflight_token":"pf-1"}`)
+			w = e.do("POST", "/public/cdk/redeem", `{"redemption_token":"tut_abc","preflight_token":"pf-1"}`)
 			if w.Code != http.StatusConflict {
 				t.Fatalf("%s 按令牌兑换: %d %s", state, w.Code, w.Body.String())
 			}
-			if e.zovo.hits("/api/v1/cdk/redeem") != 0 {
+			if strings.Contains(e.up.log(), "redeem") {
 				t.Fatalf("%s: 不应转发", state)
 			}
 			if strings.Contains(w.Body.String(), "provider") {
@@ -1007,7 +1001,7 @@ func TestCrossProviderInflightBlocked(t *testing.T) {
 		}
 	})
 
-	t.Run("终态和试运行的单不拦 ZovoCard", func(t *testing.T) {
+	t.Run("终态和试运行的单不拦上游 testup", func(t *testing.T) {
 		for _, tc := range []struct {
 			state, failure string
 			dry            int
@@ -1015,7 +1009,7 @@ func TestCrossProviderInflightBlocked(t *testing.T) {
 			e := newLocalEnv(t)
 			e.insertOrder("cdk", "1", tc.dry, email, tc.state, tc.failure, false)
 			w := e.do("POST", "/public/cdk/preflight", zcPreflight(sess))
-			if w.Code != http.StatusOK || w.Body.String() != zovoPreflightBody {
+			if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"from":"testup"`) {
 				t.Fatalf("%+v: %d %s", tc, w.Code, w.Body.String())
 			}
 		}
@@ -1032,16 +1026,16 @@ func TestCrossProviderInflightBlocked(t *testing.T) {
 			t.Fatalf("%d %s", w.Code, w.Body.String())
 		}
 		// 邮箱密码模式按邮箱判断
-		w := e.do("POST", "/public/cdk/preflight", localBody(t, map[string]any{"code": "ZC-1", "redemption_token": "zc-2", "credential": map[string]any{"mode": "mailbox", "email": email, "password": "p"}}))
+		w := e.do("POST", "/public/cdk/preflight", localBody(t, map[string]any{"code": "TU-1", "redemption_token": "tut_2", "credential": map[string]any{"mode": "mailbox", "email": email, "password": "p"}}))
 		if w.Code != http.StatusConflict {
 			t.Fatalf("%d %s", w.Code, w.Body.String())
 		}
 	})
 
-	t.Run("ZovoCard 绑定 15 分钟内 MarsWallex 被拒", func(t *testing.T) {
+	t.Run("testup 的绑定 15 分钟内 MarsWallex 被拒", func(t *testing.T) {
 		e := newLocalEnv(t)
 		e.seedRealPayment()
-		// 走真实的 ZovoCard 预检，绑定由它写入（密文）
+		// 走假上游 testup 的预检，绑定由它写入（密文）
 		if w := e.do("POST", "/public/cdk/preflight", zcPreflight(localSession(" BOTH@example.com "))); w.Code != http.StatusOK {
 			t.Fatalf("%d %s", w.Code, w.Body.String())
 		}
@@ -1058,7 +1052,7 @@ func TestCrossProviderInflightBlocked(t *testing.T) {
 		}
 		// 复用现有加密字段，绑定表里没有明文邮箱
 		var payload, sealed string
-		if err := db.DB.QueryRow(`SELECT session_payload, account_email_sealed FROM cdk_session_bindings WHERE cdk_code = 'ZC-FAKE-0001'`).Scan(&payload, &sealed); err != nil {
+		if err := db.DB.QueryRow(`SELECT session_payload, account_email_sealed FROM cdk_session_bindings WHERE cdk_code = 'TU-AAAA-0001'`).Scan(&payload, &sealed); err != nil {
 			t.Fatal(err)
 		}
 		if strings.Contains(strings.ToLower(payload+sealed), email) || sealed == "" {
@@ -1092,7 +1086,7 @@ func TestCrossProviderInflightBlocked(t *testing.T) {
 		e.seedRealPayment()
 		code, id := e.issueCode("plus", "PH")
 		if _, err := db.DB.Exec(`INSERT INTO cdk_session_bindings (cdk_code, session_payload, redemption_token, account_email_sealed, session_bound_at, updated_at)
-			VALUES ('ZC-BROKEN', '', 'x', 'v1:not-a-real-ciphertext', ?, CURRENT_TIMESTAMP)`, time.Now().Unix()); err != nil {
+			VALUES ('TU-BROKEN', '', 'x', 'v1:not-a-real-ciphertext', ?, CURRENT_TIMESTAMP)`, time.Now().Unix()); err != nil {
 			t.Fatal(err)
 		}
 		w := e.do("POST", "/public/cdk/redeem", localBody(t, map[string]any{"code": code, "credential": map[string]any{"mode": "session", "session": sess}}))
@@ -1104,17 +1098,17 @@ func TestCrossProviderInflightBlocked(t *testing.T) {
 		}
 	})
 
-	t.Run("账号锁：ZovoCard 转发期间 MarsWallex 进不来，反过来也一样", func(t *testing.T) {
-		release, ok := holdAccountShared(email, provider.ZovoCard)
+	t.Run("账号锁：上游转发期间 MarsWallex 进不来，反过来也一样", func(t *testing.T) {
+		release, ok := holdAccountShared(email, providertest.TestUp)
 		if !ok {
 			t.Fatal("共享锁")
 		}
-		rel2, ok := holdAccountShared(email, provider.ZovoCard)
+		rel2, ok := holdAccountShared(email, providertest.TestUp)
 		if !ok {
-			t.Fatal("ZovoCard 之间不互斥")
+			t.Fatal("同一家上游之间不互斥")
 		}
-		if _, ok := holdAccountShared(email, "testup"); ok {
-			t.Fatal("别的上游要等 ZovoCard 转发完")
+		if _, ok := holdAccountShared(email, "other_up"); ok {
+			t.Fatal("别的上游要等这家转发完")
 		}
 		if _, ok := holdAccountExclusive(email); ok {
 			t.Fatal("有共享锁时不能取独占锁")
@@ -1128,7 +1122,7 @@ func TestCrossProviderInflightBlocked(t *testing.T) {
 		if !ok {
 			t.Fatal("独占锁")
 		}
-		if _, ok := holdAccountShared(email, provider.ZovoCard); ok {
+		if _, ok := holdAccountShared(email, providertest.TestUp); ok {
 			t.Fatal("有独占锁时不能取共享锁")
 		}
 		if _, ok := holdAccountExclusive(email); ok {
@@ -1184,7 +1178,7 @@ func TestLocalCDKLookup(t *testing.T) {
 		t.Fatalf("%v", m)
 	}
 
-	// 批量：MW 和 ZovoCard 混在一起，MW 码不发往 ZovoCard，ZovoCard 走原路径
+	// 批量：MW 码不发往上游
 	code2, id2 := e.issueCode("plus", "PH")
 	if _, err := db.DisableLocalCDK(context.Background(), id2, time.Now()); err != nil {
 		t.Fatal(err)
@@ -1197,8 +1191,8 @@ func TestLocalCDKLookup(t *testing.T) {
 	if !strings.Contains(body, `"status":"used"`) || !strings.Contains(body, `"status":"disabled"`) || !strings.Contains(body, `"status":"unknown"`) {
 		t.Fatal(body)
 	}
-	if e.zovo.count() != 0 {
-		t.Fatalf("不应碰 ZovoCard: %v", e.zovo.paths)
+	if e.up.callCount() != 0 {
+		t.Fatalf("不应碰上游: %s", e.up.log())
 	}
 	// 不存在：404
 	if w := e.do("GET", "/lookup/cdk?code=MW-NOPE", ""); w.Code != http.StatusNotFound {
@@ -1206,7 +1200,7 @@ func TestLocalCDKLookup(t *testing.T) {
 	}
 }
 
-// 公开接口限流：在按码分派之前，MW 分支和 ZovoCard 分支都算（Task 12 F1 起上游型服务商也覆盖）。
+// 公开接口限流：在按码分派之前，MW 分支和上游分支都算（Task 12 F1 起上游型服务商也覆盖）。
 func TestLocalCDKRateLimit(t *testing.T) {
 	e := newLocalEnv(t)
 	e.seedRealPayment()
@@ -1232,8 +1226,8 @@ func TestLocalCDKRateLimit(t *testing.T) {
 	if localRateLimits[localRateQuery] < 3600/3*5 {
 		t.Fatal("结果接口的额度要够 3 秒一次、同时轮询多张码")
 	}
-	// ZovoCard 码同样受这个限流
-	if w := e.do("POST", "/public/cdk/preview", `{"code":"ZC-FAKE-0001"}`); w.Code != http.StatusTooManyRequests {
+	// 上游的码同样受这个限流
+	if w := e.do("POST", "/public/cdk/preview", `{"code":"TU-AAAA-0001"}`); w.Code != http.StatusTooManyRequests {
 		t.Fatalf("%d", w.Code)
 	}
 }
@@ -1251,7 +1245,7 @@ func TestLocalCDKOnlyHashesStored(t *testing.T) {
 	if codeHash != db.HashCDKCode(code) || tokenHash != provider.HashToken(token) || prefix != code[:8] {
 		t.Fatalf("%s %s %s", codeHash, tokenHash, prefix)
 	}
-	// 拿入库哈希当令牌用不了。不带 mwt_ 的不是本地令牌，交给 ZovoCard 判断，这里只要没有读到本地的单就行
+	// 拿入库哈希当令牌用不了。不带 mwt_ 的不是本地令牌，由分派判断，这里只要没有读到本地的单就行
 	for _, tok := range []string{"mwt_" + tokenHash, "mwt_" + codeHash, tokenHash, codeHash} {
 		w := e.result(tok)
 		if strings.HasPrefix(tok, "mwt_") && w.Code != http.StatusNotFound {

@@ -21,6 +21,7 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/payengine"
 	"github.com/tuzi/cdk-recharge-system/internal/provider"
+	"github.com/tuzi/cdk-recharge-system/internal/provider/providertest"
 )
 
 // 旧前端保存卡池策略时不传新字段：补卡开关不能被悄悄关掉，显式传时才改。
@@ -75,11 +76,11 @@ func TestDefaultProviderReadWriteAudited(t *testing.T) {
 	if n, _ := provider.LoadDefault(); n != provider.MarsWallex {
 		t.Fatal("非法值不能生效")
 	}
-	w := e.do("PUT", "/admin/providers/default", `{"provider":"zovocard"}`)
+	w := e.do("PUT", "/admin/providers/default", `{"provider":"testup"}`)
 	if w.Code != http.StatusOK || localJSON(t, w)["previous"] != "marswallex" {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}
-	if a := localAudit(t); !strings.Contains(a, "provider_default_update from=marswallex to=zovocard") {
+	if a := localAudit(t); !strings.Contains(a, "provider_default_update from=marswallex to=testup") {
 		t.Fatalf("切换要写审计: %s", a)
 	}
 
@@ -89,7 +90,7 @@ func TestDefaultProviderReadWriteAudited(t *testing.T) {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}
 	m = localJSON(t, w)
-	if m["provider"] != "marswallex" || m["previous"] != "zovocard" {
+	if m["provider"] != "marswallex" || m["previous"] != "testup" {
 		t.Fatalf("%v", m)
 	}
 	ready := m["readiness"].(map[string]any)
@@ -99,7 +100,7 @@ func TestDefaultProviderReadWriteAudited(t *testing.T) {
 	if n, _ := provider.LoadDefault(); n != provider.MarsWallex {
 		t.Fatal("应保存")
 	}
-	if a := localAudit(t); !strings.Contains(a, "provider_default_update from=zovocard to=marswallex") {
+	if a := localAudit(t); !strings.Contains(a, "provider_default_update from=testup to=marswallex") {
 		t.Fatalf("切换要写审计: %s", a)
 	}
 }
@@ -108,25 +109,25 @@ func TestDefaultProviderReadWriteAudited(t *testing.T) {
 func TestDefaultProviderOnlyAffectsNewIssues(t *testing.T) {
 	e := newLocalEnv(t)
 	e.seedRealPayment()
-	localSet(t, provider.SettingDefault, string(provider.ZovoCard)) // 出厂默认是 MarsWallex，这里从 zovocard 开始
-	// 默认 zovocard：老接口发码走卡台
+	up := e.up
+	localSet(t, provider.SettingDefault, string(providertest.TestUp)) // 出厂默认是 MarsWallex，这里从假上游 testup 开始
+	// 默认 testup：老接口发码走它的适配器
 	w := e.do("POST", "/admin/cardplatform/cdks", `{"plan":"plus","count":1,"funding_confirmed":true}`)
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "ZC-FAKE-ISSUED-CODE-0001") {
+	if w.Code != http.StatusOK {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}
-	// 原有字段不变，按设计 §3.4 加上服务商
-	if m := localJSON(t, w); m["server_stored"] != true || m["provider"] != "zovocard" || m["provider_display_name"] != "ZovoCard" {
-		t.Fatalf("ZovoCard 响应字段: %v", m)
+	if m := localJSON(t, w); m["from"] != "testup" || m["provider"] != "testup" {
+		t.Fatalf("testup 响应字段: %v", m)
 	}
-	if e.zovo.hits("/openapi/v1/gpt-direct/cdks") != 1 {
-		t.Fatalf("%v", e.zovo.paths)
+	if up.log() != "issue:plus" {
+		t.Fatalf("%s", up.log())
 	}
-	mwCode, mwID := e.issueCode("plus", "PH") // 显式指定 MarsWallex，默认还是 zovocard
+	mwCode, mwID := e.issueCode("plus", "PH") // 显式指定 MarsWallex，默认还是 testup
 
 	if w := e.do("PUT", "/admin/providers/default", `{"provider":"marswallex"}`); w.Code != http.StatusOK {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}
-	// 老接口不传 provider：现在走本地发码，卡台收不到新发码请求
+	// 老接口不传 provider：现在走本地发码，上游收不到新发码请求
 	w = e.do("POST", "/admin/cardplatform/cdks", `{"plan":"plus","payment_country":"PH","count":2,"funding_confirmed":true}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
@@ -138,28 +139,28 @@ func TestDefaultProviderOnlyAffectsNewIssues(t *testing.T) {
 	if !strings.HasPrefix(m["issued"].([]any)[0].(map[string]any)["code"].(string), "MW-") {
 		t.Fatalf("%v", m)
 	}
-	if e.zovo.hits("/openapi/v1/gpt-direct/cdks") != 1 {
-		t.Fatal("切到 MarsWallex 后不应再向卡台发码")
+	if up.log() != "issue:plus" {
+		t.Fatalf("切到 MarsWallex 后不应再向上游发码: %s", up.log())
 	}
-	// 切换后，存量 ZovoCard 码还在 ZovoCard 兑换
-	if w := e.do("POST", "/public/cdk/preview", `{"code":"ZC-FAKE-ISSUED-CODE-0001"}`); w.Body.String() != zovoPreviewBody {
+	// 切换后，存量 testup 码还在 testup 兑换
+	if w := e.do("POST", "/public/cdk/preview", `{"code":"TU-AAAA-BBBB"}`); w.Code != http.StatusOK || localJSON(t, w)["from"] != "testup" {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}
-	if e.zovo.hits("/api/v1/cdk/preview") != 1 {
-		t.Fatal("存量 ZovoCard 码应打 ZovoCard")
+	if !strings.Contains(up.log(), "preview:TU-AAAA-BBBB") {
+		t.Fatalf("存量 testup 码应打 testup: %s", up.log())
 	}
-	// 显式指定 zovocard 也能发
-	if w := e.do("POST", "/admin/cdks/issue", `{"provider":"zovocard","plan":"plus","count":1,"funding_confirmed":true}`); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "ZC-FAKE") {
+	// 显式指定 testup 也能发
+	if w := e.do("POST", "/admin/cdks/issue", `{"provider":"testup","plan":"plus","count":1,"funding_confirmed":true}`); w.Code != http.StatusOK || localJSON(t, w)["from"] != "testup" {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}
 
-	// 切回 zovocard：存量 MW 码、在途单不受影响
+	// 切回 testup：存量 MW 码、在途单不受影响
 	token, pf := e.preflight(mwCode, localSession("mw@example.com"))
 	if w := e.redeem(token, pf); w.Code != http.StatusOK {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}
-	before := e.zovo.count()
-	if w := e.do("PUT", "/admin/providers/default", `{"provider":"zovocard"}`); w.Code != http.StatusOK {
+	before := up.callCount()
+	if w := e.do("PUT", "/admin/providers/default", `{"provider":"testup"}`); w.Code != http.StatusOK {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}
 	var state string
@@ -172,13 +173,13 @@ func TestDefaultProviderOnlyAffectsNewIssues(t *testing.T) {
 	if w := e.result(token); w.Code != http.StatusOK || localJSON(t, w)["provider"] != "marswallex" {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}
-	// 切换本身（查 ZovoCard 就绪）之外，存量 MW 码查结果不碰 ZovoCard
-	if e.zovo.hits("/api/v1/cdk/result") != 0 {
-		t.Fatalf("%v (之前 %d 个)", e.zovo.paths, before)
+	// 存量 MW 码查结果不碰上游
+	if strings.Contains(up.log(), "result:") {
+		t.Fatalf("%s (之前 %d 个)", up.log(), before)
 	}
 }
 
-// MarsWallex 不支持的产品 400，不回落到 ZovoCard。
+// MarsWallex 不支持的产品 400，不回落到别家。
 func TestIssueRejectsUnsupportedProductForMarsWallex(t *testing.T) {
 	e := newLocalEnv(t)
 	e.seedRealPayment()
@@ -197,8 +198,8 @@ func TestIssueRejectsUnsupportedProductForMarsWallex(t *testing.T) {
 			}
 		}
 	}
-	if e.zovo.count() != 0 {
-		t.Fatalf("ZovoCard 桩不应收到请求: %v", e.zovo.paths)
+	if e.up.callCount() != 0 {
+		t.Fatalf("上游不应收到请求: %s", e.up.log())
 	}
 	var n int
 	db.DB.QueryRow(`SELECT COUNT(*) FROM local_cdks`).Scan(&n)
@@ -290,8 +291,8 @@ func TestReadinessBlocksLocalIssue(t *testing.T) {
 			if n != 0 {
 				t.Fatalf("不应发码: %d", n)
 			}
-			if e.zovo.count() != 0 {
-				t.Fatalf("不应回落到 ZovoCard: %v", e.zovo.paths)
+			if e.up.callCount() != 0 {
+				t.Fatalf("不应回落到上游: %s", e.up.log())
 			}
 		})
 	}
@@ -481,7 +482,7 @@ func TestLocalIssueIdempotency(t *testing.T) {
 	})
 }
 
-// 本地码的旧码和新码在同一个事务里换好，换码记录不能停在 disabling。人工定论 issued 之后也要能走到 done，不能去卡台禁用。
+// 本地码的旧码和新码在同一个事务里换好，换码记录不能停在 disabling。人工定论 issued 之后也要能走到 done，不碰任何上游。
 func TestLocalExchangeRecordNotStuckInDisabling(t *testing.T) {
 	e := newLocalEnv(t)
 	if _, err := db.DB.Exec(`INSERT INTO agent_cdk_exchanges (old_code_hash, old_upstream_id, old_code_prefix, plan, order_status, ip, state, created_at, updated_at)
@@ -492,8 +493,8 @@ func TestLocalExchangeRecordNotStuckInDisabling(t *testing.T) {
 	if st := db.AgentCDKExchangeState("h-local"); st != db.AgentExchangeDone {
 		t.Fatalf("%s", st)
 	}
-	if e.zovo.count() != 0 {
-		t.Fatalf("不能去卡台禁用: %v", e.zovo.paths)
+	if e.up.callCount() != 0 {
+		t.Fatalf("不应发出任何上游请求: %s", e.up.log())
 	}
 }
 
@@ -597,7 +598,7 @@ func TestAdminListLocalCDKs(t *testing.T) {
 	if m := localJSON(t, e.do("GET", "/admin/cdks?plan=pro_20x", "")); m["total"].(float64) != 1 {
 		t.Fatalf("%v", m)
 	}
-	if m := localJSON(t, e.do("GET", "/admin/cdks?provider=zovocard", "")); m["total"].(float64) != 0 {
+	if m := localJSON(t, e.do("GET", "/admin/cdks?provider=gone", "")); m["total"].(float64) != 0 {
 		t.Fatalf("%v", m)
 	}
 	m = localJSON(t, e.do("GET", "/admin/cdks?page=2&page_size=2", ""))
@@ -686,16 +687,16 @@ func TestAdminDisableEnableLocalCDK(t *testing.T) {
 	}
 }
 
-// 就绪接口：每家的状态、extras、warnings，供卡型另有组合明细；能力矩阵。原来顶层的 combos、zovocard 去掉。
+// 就绪接口：每家的状态、extras、warnings，供卡型另有组合明细；能力矩阵。原来顶层的 combos 和按服务商名的顶层字段去掉。
 func TestAdminProviderReadiness(t *testing.T) {
 	e := newLocalEnv(t)
 	m := localJSON(t, e.do("GET", "/admin/providers/readiness", ""))
-	if m["default"] != "marswallex" || localBody(t, m["by_product"]) != `{"claude":"zovocard","grok":"zovocard","x":"zovocard"}` || m["combos"] != nil || m["zovocard"] != nil {
+	if m["default"] != "marswallex" || localBody(t, m["by_product"]) != `{}` || m["combos"] != nil || m["testup"] != nil {
 		t.Fatalf("%v", m)
 	}
 	providers := m["providers"].(map[string]any)
 	if len(providers) != 2 {
-		t.Fatalf("内置两家: %v", providers)
+		t.Fatalf("MarsWallex 加环境里的假上游 testup: %v", providers)
 	}
 	for name, v := range providers {
 		st := v.(map[string]any)
@@ -717,12 +718,9 @@ func TestAdminProviderReadiness(t *testing.T) {
 	if checks["first_real_payment"] || !checks["config"] || !checks["breaker"] || !checks["engine"] || !checks["wallet_sync"] {
 		t.Fatalf("%v", checks)
 	}
-	zc := providers["zovocard"].(map[string]any)
-	if zc["ok"] != true || zc["combos"] != nil {
-		t.Fatalf("上游型没有 combos: %v", zc)
-	}
-	if extras := localBody(t, zc["extras"]); !strings.Contains(extras, "卡台余额") || !strings.Contains(extras, "可用余额") {
-		t.Fatalf("卡台余额放进 ZovoCard 的 extras: %v", zc)
+	tu := providers["testup"].(map[string]any)
+	if tu["ok"] != true || tu["combos"] != nil {
+		t.Fatalf("上游型没有 combos: %v", tu)
 	}
 	if !strings.Contains(localBody(t, m["capabilities"]), "仅限无订阅账号") {
 		t.Fatalf("%v", m["capabilities"])
@@ -759,12 +757,6 @@ func TestAdminProviderReadiness(t *testing.T) {
 	mw = m["providers"].(map[string]any)["marswallex"].(map[string]any)
 	if mw["ok"] != false || !strings.Contains(localBody(t, mw["problems"]), "没有可用的套餐") {
 		t.Fatalf("%v", mw)
-	}
-	// ZovoCard 没配 Key
-	localSet(t, "card_api_key", "")
-	m = localJSON(t, e.do("GET", "/admin/providers/readiness", ""))
-	if zc := m["providers"].(map[string]any)["zovocard"].(map[string]any); zc["ok"] != false || !strings.Contains(localBody(t, zc["problems"]), "API Key") {
-		t.Fatalf("%v", zc)
 	}
 }
 
@@ -890,8 +882,8 @@ func TestAgentExchangeLocalCDK(t *testing.T) {
 		if !strings.Contains(a, "local_cdk_exchange") || strings.Contains(a, newCode) || strings.Contains(a, code) {
 			t.Fatalf("%s", a)
 		}
-		if e.zovo.count() != 0 {
-			t.Fatalf("不应碰卡台: %v", e.zovo.paths)
+		if e.up.callCount() != 0 {
+			t.Fatalf("不应碰上游: %s", e.up.log())
 		}
 	})
 
@@ -1026,8 +1018,8 @@ func TestAgentExchangeLocalCDK(t *testing.T) {
 		if st, m := exchange(e, "MW-NOPE-NOPE-NOPE"); st != http.StatusNotFound {
 			t.Fatalf("%d %v", st, m)
 		}
-		if e.zovo.count() != 0 {
-			t.Fatalf("不应碰卡台: %v", e.zovo.paths)
+		if e.up.callCount() != 0 {
+			t.Fatalf("不应碰上游: %s", e.up.log())
 		}
 	})
 }
@@ -1044,12 +1036,12 @@ func TestMarsWallexSelectedForReplenish(t *testing.T) {
 			t.Fatalf("%v %v，期望 %v", got, err, want)
 		}
 	}
-	check(true) // 出厂配置：GPT 用 MarsWallex
-	localSet(t, provider.SettingDefault, string(provider.ZovoCard))
+	check(true) // 出厂配置：全局默认 MarsWallex
+	localSet(t, provider.SettingDefault, string(providertest.TestUp))
 	check(false)
 	localSet(t, provider.SettingDefault, string(provider.MarsWallex))
 	check(true)
-	localSet(t, provider.SettingDefault, string(provider.ZovoCard))
+	localSet(t, provider.SettingDefault, string(providertest.TestUp))
 	check(false)
 	_, id := e.issueCode("plus", "PH")
 	check(true) // 还有没用的 MarsWallex 码

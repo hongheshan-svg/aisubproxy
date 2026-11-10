@@ -329,3 +329,73 @@ func TestCardSupplyFactsGenericProvider(t *testing.T) {
 		t.Fatalf("%+v", r)
 	}
 }
+
+// ---- 售后查询公共层的断言（原来由 ZovoCard 的查询测试顺带覆盖，现在改用本站码证明）----
+
+// 邮箱一律打码：响应里不出现完整邮箱，不论单子是已开通还是在处理中。
+func TestCardSupplyLookupMasksEmail(t *testing.T) {
+	e := newLocalEnv(t)
+	e.seedRealPayment()
+	const full = "buyer.user@example.com"
+	for _, state := range []string{"succeeded", "queued"} {
+		t.Run(state, func(t *testing.T) {
+			code, id := e.issueCode("plus", "PH")
+			e.insertOrder("cdk", db.LocalCDKSourceRef(id), 0, full, state, "", state == "succeeded")
+			raw, _ := json.Marshal(lookupAfterSale(context.Background(), code, ""))
+			if strings.Contains(string(raw), full) {
+				t.Fatalf("响应里出现完整邮箱: %s", raw)
+			}
+			if r := lookupAfterSale(context.Background(), code, ""); r.AccountEmail != "bu***@example.com" {
+				t.Fatalf("邮箱应打码: %+v", r)
+			}
+		})
+	}
+}
+
+// 换出的新码严格按换码记录里的新码 ID 取：两张新码前缀被改成一样，也不会串到对方。
+func TestCardSupplyReplacementIsStrictByID(t *testing.T) {
+	e := newSealedExchangeEnv(t)
+	codeA, _ := exchangeableCode(t, e)
+	_, newA, idA := doSealedExchange(t, e, codeA)
+	codeB, _ := exchangeableCode(t, e)
+	_, newB, idB := doSealedExchange(t, e, codeB)
+	if _, err := db.DB.Exec(`UPDATE local_cdks SET code_prefix = (SELECT code_prefix FROM local_cdks WHERE id = ?) WHERE id = ?`, idA, idB); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ old, want, other string }{{codeA, newA, newB}, {codeB, newB, newA}} {
+		r := lookupAfterSale(context.Background(), tc.old, "")
+		raw, _ := json.Marshal(r)
+		if r.Status != "replaced" || r.Replacement == nil || r.Replacement.Code != tc.want || strings.Contains(string(raw), tc.other) {
+			t.Fatalf("应只给出自己的新码: %s", raw)
+		}
+	}
+}
+
+// 已开通的码：UsedAt 是 RFC3339 UTC（以 Z 结尾），与服务器所在时区无关。
+func TestCardSupplyUsedAtIsRFC3339UTC(t *testing.T) {
+	e := newLocalEnv(t)
+	e.seedRealPayment()
+	code, id := e.issueCode("plus", "PH")
+	no := e.insertOrder("cdk", db.LocalCDKSourceRef(id), 0, "a@example.com", "succeeded", "", true)
+	setOrderSQL(t, no, `finished_at = ?`, 1700000000)
+	r := lookupAfterSale(context.Background(), code, "")
+	if r.Status != "used" || r.UsedAt == nil || *r.UsedAt != "2023-11-14T22:13:20Z" {
+		t.Fatalf("%+v", r)
+	}
+	if _, err := time.Parse(time.RFC3339, *r.UsedAt); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// 过期判定在公共层：facts 给出 expired，就对外显示「卡密已过期」。本站码没有过期时间，所以这一条直接测公共层。
+func TestAfterSaleResultExpiredStatus(t *testing.T) {
+	r := afterSaleResult("MW-AAAAA-BBBBB", afterSaleFacts{Found: true, Status: "expired"})
+	if r.Status != "expired" || r.Used || r.Message != "卡密已过期" {
+		t.Fatalf("%+v", r)
+	}
+	// 只有已开通的码才给到期时间，过期的码不给
+	exp := time.Now().Add(-time.Hour)
+	if r := afterSaleResult("MW-AAAAA-BBBBB", afterSaleFacts{Found: true, Status: "expired", ExpiresAt: &exp}); r.ExpiresAt != nil {
+		t.Fatalf("过期的码不给到期时间: %+v", r)
+	}
+}

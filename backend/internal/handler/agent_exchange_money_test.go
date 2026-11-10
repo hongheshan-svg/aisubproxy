@@ -3,12 +3,9 @@ package handler
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -16,7 +13,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/tuzi/cdk-recharge-system/internal/cardplatform"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/db/dbtest"
 	"github.com/tuzi/cdk-recharge-system/internal/provider"
@@ -61,35 +57,6 @@ func exchangeRow(t *testing.T, code string) (state string, newID int64, rows int
 		t.Fatal(err)
 	}
 	return state, newID, rows
-}
-
-func TestIssueDefinitelyFailedClassification(t *testing.T) {
-	dial := &net.OpError{Op: "dial", Err: errors.New("connection refused")}
-	cases := []struct {
-		name string
-		err  error
-		want bool
-	}{
-		{"连不上（请求没发出）", &url.Error{Op: "Post", URL: "http://x", Err: dial}, true},
-		{"DNS 解析失败", &url.Error{Op: "Post", URL: "http://x", Err: &net.DNSError{Err: "no such host"}}, true},
-		{"401", &cardplatform.APIError{HTTPStatus: 401, Msg: "x"}, true},
-		{"400 业务码", &cardplatform.APIError{HTTPStatus: 400, Code: 1001}, true},
-		{"400 错误码", &cardplatform.APIError{HTTPStatus: 400, ErrorCode: "bad"}, true},
-		{"404 业务码", &cardplatform.APIError{HTTPStatus: 404, Code: 404}, true},
-		{"400 无业务错误", &cardplatform.APIError{HTTPStatus: 400, Msg: "invalid json"}, false},
-		{"500", &cardplatform.APIError{HTTPStatus: 500, Code: 500}, false},
-		{"409", &cardplatform.APIError{HTTPStatus: 409, Code: 409}, false},
-		{"429", &cardplatform.APIError{HTTPStatus: 429, Code: 429}, false},
-		{"已发出后读超时", &url.Error{Op: "Post", URL: "http://x", Err: &net.OpError{Op: "read", Err: errors.New("reset")}}, false},
-		{"超时", &url.Error{Op: "Post", URL: "http://x", Err: context.DeadlineExceeded}, false},
-		{"取消", context.Canceled, false},
-		{"其他", errors.New("boom"), false},
-	}
-	for _, c := range cases {
-		if got := issueDefinitelyFailed(c.err); got != c.want {
-			t.Errorf("%s: got %v want %v", c.name, got, c.want)
-		}
-	}
 }
 
 func TestAgentSwapDailyLimitSetting(t *testing.T) {
@@ -322,8 +289,8 @@ func localSwapConcurrent(t *testing.T, e *localEnv) {
 	if rows != 1 || st != db.AgentExchangeDone || gotNew <= 0 || gotNew != newID.Load() {
 		t.Fatalf("换码记录不符: rows=%d st=%s new=%d resp=%d", rows, st, gotNew, newID.Load())
 	}
-	if e.zovo.count() != 0 {
-		t.Fatalf("本站码换码不应碰卡台: %v", e.zovo.paths)
+	if e.up.callCount() != 0 {
+		t.Fatalf("本站码换码不应发出任何上游请求: %s", e.up.log())
 	}
 }
 
@@ -602,7 +569,7 @@ func TestAdminResolveLocalExchangeIssued(t *testing.T) {
 	if !strings.Contains(detail, "result=issued") || !strings.Contains(detail, fmt.Sprintf("new_cdk=%d", newID)) {
 		t.Fatalf("审计: %s", detail)
 	}
-	if e.zovo.count() != 0 {
-		t.Fatalf("不应发出任何上游请求: %v", e.zovo.paths)
+	if e.up.callCount() != 0 {
+		t.Fatalf("不应发出任何上游请求: %v", e.up.log())
 	}
 }

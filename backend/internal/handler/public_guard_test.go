@@ -12,9 +12,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// bigJSON 是一个超过 256 KB 的合法 JSON：码是 ZovoCard 的，进了业务逻辑就会转发上游。
+// bigJSON 是一个超过 256 KB 的合法 JSON：码是假上游 testup 认领的，进了业务逻辑就会转发给它。
 func bigJSON() string {
-	return `{"code":"ZC-FAKE-0001","text":"ZC-FAKE-0001","pad":"` + strings.Repeat("x", 300<<10) + `"}`
+	return `{"code":"TU-AAAA-0001","text":"TU-AAAA-0001","pad":"` + strings.Repeat("x", 300<<10) + `"}`
 }
 
 // readCounter 记下请求体有没有被读过；长度未知，走 MaxBytesReader 的路径。
@@ -57,21 +57,25 @@ func TestPublicBodyTooLarge(t *testing.T) {
 			}
 		}
 	}
-	if e.zovo.count() != 0 {
-		t.Fatalf("请求太大不应进业务逻辑: %v", e.zovo.paths)
+	if e.up.callCount() != 0 {
+		t.Fatalf("请求太大不应进业务逻辑: %s", e.up.log())
 	}
 	// 没超的照常处理
-	if w := e.do("POST", "/public/cdk/preview", `{"code":"ZC-FAKE-0001"}`); w.Code != http.StatusOK {
+	e.seedRealPayment()
+	code, _ := e.issueCode("plus", "PH")
+	if w := e.do("POST", "/public/cdk/preview", `{"code":"`+code+`"}`); w.Code != http.StatusOK {
 		t.Fatalf("正常大小的请求应照常处理: %d %s", w.Code, w.Body.String())
 	}
 }
 
-// F1：限流放在读请求体之前，所有方法、上游型服务商的码都算：超了额度的 IP 带着大请求体来，也不读体就拒。
+// F1：限流放在读请求体之前，所有方法、各家服务商的码都算：超了额度的 IP 带着大请求体来，也不读体就拒。
 func TestPublicRateLimitBeforeBody(t *testing.T) {
 	e := newLocalEnv(t)
 	const ip = "198.51.100.7"
+	e.seedRealPayment()
+	code, _ := e.issueCode("plus", "PH")
 	for i := 0; i < localRateLimits[localRateMutate]; i++ {
-		if w := e.doBody("POST", "/public/cdk/preview", strings.NewReader(`{"code":"ZC-FAKE-0001"}`), ip); w.Code != http.StatusOK {
+		if w := e.doBody("POST", "/public/cdk/preview", strings.NewReader(`{"code":"`+code+`"}`), ip); w.Code != http.StatusOK {
 			t.Fatalf("第 %d 次: %d %s", i, w.Code, w.Body.String())
 		}
 	}
@@ -85,10 +89,10 @@ func TestPublicRateLimitBeforeBody(t *testing.T) {
 		t.Fatal("限流应在读请求体之前")
 	}
 	// 查询接口是另一个桶，照常可用；别的 IP 不受影响
-	if w := e.doBody("POST", "/lookup/cdk/batch", strings.NewReader(`{"codes":["ZC-FAKE-0001"]}`), ip); w.Code == http.StatusTooManyRequests {
+	if w := e.doBody("POST", "/lookup/cdk/batch", strings.NewReader(`{"codes":["`+code+`"]}`), ip); w.Code == http.StatusTooManyRequests {
 		t.Fatalf("查询不该被变更接口的额度挡住: %d", w.Code)
 	}
-	if w := e.doBody("POST", "/public/cdk/preview", strings.NewReader(`{"code":"ZC-FAKE-0001"}`), "198.51.100.8"); w.Code != http.StatusOK {
+	if w := e.doBody("POST", "/public/cdk/preview", strings.NewReader(`{"code":"`+code+`"}`), "198.51.100.8"); w.Code != http.StatusOK {
 		t.Fatalf("别的 IP 不受影响: %d", w.Code)
 	}
 }

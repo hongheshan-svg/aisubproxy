@@ -210,4 +210,4 @@ systemd 部署：停止服务后备份并删除 `/opt/cdk-recharge/data/` 下的
 
 ## 许可证
 
-许可证见仓库说明。
+本项目以 MIT 许可证发布，全文见仓库根目录的 [LICENSE](LICENSE)。

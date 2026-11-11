@@ -196,7 +196,7 @@ install_files() {
 wait_healthy() {
   local _ port
   # app.env 可能是手写的、没有 SERVER_PORT（程序默认 8080）；同一个键写了多行时取最后一行
-  port="$(grep -E '^SERVER_PORT=' "$INSTALL_DIR/app.env" 2>/dev/null | tail -n 1 | cut -d= -f2 | tr -d '[:space:]"'"'"'' || true)"
+  port="$(grep -E '^SERVER_PORT=' "$INSTALL_DIR/app.env" 2>/dev/null | tail -n 1 | cut -d= -f2- | sed 's/[[:space:]]*#.*$//' | tr -d '[:space:]"'"'"'' || true)"
   port="${port:-8080}"
   for _ in $(seq 1 30); do
     if curl -fsS -o /dev/null "http://127.0.0.1:${port}/api/v1"; then

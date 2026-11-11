@@ -9,6 +9,8 @@
 #   curl -fsSL https://raw.githubusercontent.com/hongheshan-svg/aisubproxy/master/deploy/docker-deploy.sh | bash -s -- --domain gpt66.cc
 #   或本地: ./deploy/docker-deploy.sh --domain gpt66.cc
 #
+# 前提：Docker Compose V2（docker compose 命令）。不支持旧的 docker-compose 1.x。
+#
 # 权限：安装 Docker 需要 root；Docker 已装好时，docker 组里的用户也可运行本脚本
 # （安装目录需对该用户可写，默认 /opt/cdk-recharge：sudo install -d -o "$USER" /opt/cdk-recharge）。
 #
@@ -93,16 +95,19 @@ else
   echo "[1/6] Docker 已安装 ✓"
 fi
 
+# 只支持 Docker Compose V2（docker compose 命令）。docker-compose 1.x 解析不了 docker-compose.yml
+# （env_file 用了 path/required 对象写法），所以不再回落到旧命令。
+COMPOSE_NEED="需要 Docker Compose V2（docker compose 命令，不是旧的 docker-compose）"
 if docker compose version &>/dev/null; then
   DC="docker compose"
-elif command -v docker-compose &>/dev/null; then
-  DC="docker-compose"
 else
-  [[ $EUID -eq 0 ]] || die "缺少 docker compose 插件，安装它需要 root"
+  echo "[1/6] 未检测到 Docker Compose V2（docker compose 命令）。${COMPOSE_NEED}"
+  [[ $EUID -eq 0 ]] || die "缺少 Docker Compose V2，安装它需要 root。${COMPOSE_NEED}；请先用 root 或 sudo 运行一次本脚本，或自行安装 docker-compose-plugin"
   echo "[1/6] 安装 docker-compose-plugin..."
   { apt-get update -qq && apt-get install -y -qq docker-compose-plugin; } 2>/dev/null \
     || yum install -y docker-compose-plugin 2>/dev/null \
-    || die "请手动安装 docker compose plugin"
+    || die "请手动安装 docker-compose-plugin。${COMPOSE_NEED}"
+  docker compose version &>/dev/null || die "安装后仍无法运行 docker compose。${COMPOSE_NEED}"
   DC="docker compose"
 fi
 echo "  compose: $DC ✓"
@@ -219,7 +224,8 @@ if [[ -n "$DOMAIN" ]]; then
 else
   echo "  访问: http://$(curl -s ifconfig.me 2>/dev/null || echo '<本机IP>'):80"
 fi
-echo "  首次打开进入安装向导，设置管理员账号"
+echo "  首次打开进入安装向导，设置管理员账号。向导需要 Setup Token，只在容器首次启动的日志里打印一次，用这条命令查看："
+echo "    docker logs cdk-recharge 2>&1 | grep 'Setup Token'"
 echo "  请备份 ${ENV_FILE}（其中 APP_MASTER_KEY 丢失后，已保存的 MarsWallex 密钥无法解密）"
 echo
 echo "  常用命令:"

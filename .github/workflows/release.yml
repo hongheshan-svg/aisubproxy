@@ -6,7 +6,6 @@
 # 签名私钥在仓库 Secret RELEASE_SIGNING_KEY（PEM）；公钥在 deploy/release-signing.pub.pem，
 # 并内置于程序（internal/handler/selfupdate.go）。缺少 Secret 时拒绝发布未签名的包。
 # 漏洞扫描不在发版必过项里（见 security.yml）：不能让外部新公布的漏洞卡住紧急修复版。
-# deploy/github-release.workflow.yml 是本文件的副本，以本文件为准。
 name: release
 
 on:
@@ -168,6 +167,24 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
+
+      - name: Allow Chrome sandbox
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      - name: Build release image (not pushed)
+        # 先构建同一个 release 目标并只加载到本机，试跑通过后才推送：
+        # 与 ci.yml 里 docker 任务的冒烟测试同一份脚本，但这里测的是 release 目标（发布包里的静态程序）
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: release
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: cdk-recharge:release-smoke
+
+      - name: Smoke test
+        run: bash scripts/docker-smoke.sh cdk-recharge:release-smoke
 
       - name: Build and push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0

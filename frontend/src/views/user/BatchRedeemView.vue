@@ -701,13 +701,23 @@ async function pollBatch() {
       // 「还没查到」的不改，仍是「结果未知」
       for (const [id, target] of group) {
         const it = byToken.get(target.token)
-        if (it) applyPollResult(id, target, it.status, it.data)
+        if (!it) continue
+        try {
+          applyPollResult(id, target, it.status, it.data)
+        } catch {
+          // 这一张读结果、写条目时意外出错：算这一轮没查到，下一轮再查，不影响别的（FE2 审查次要 2）
+          failed = true
+        }
       }
     }
+  } catch {
+    // 别处意外出错：算这一轮失败，下面照常检查时限、排下一轮，查询不会就此停下（FE2 审查次要 2）
+    failed = true
   } finally {
     // 换了批次时 stopAllPolls 已经复位，新批次可能已有一轮在途，不能替它清
     if (gen === batchSeq) pollInFlight = false
   }
+  if (!live(gen)) return
   // 不管这一轮查到 404、5xx 还是整体失败，结果未知的到时限都停下
   expireUnknownTargets(Date.now())
   const remaining = Object.values(pollTargets.value).filter((v) => !v.terminal).length

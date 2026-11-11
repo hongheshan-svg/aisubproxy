@@ -114,6 +114,18 @@ describe('兑换请求结果未知时只查不重发（F2-03）', () => {
     // 停查（重置、换批次、离开页面）时一起清掉
     expect(body('stopAllPolls')).toMatch(/if \(expiryTimer\) clearTimeout\(expiryTimer\)\s*expiryTimer = null/)
   })
+  it('查询轮里意外抛错：算这一轮失败，照常检查时限、排下一轮，查询不会停、重置不会一直锁着（FE2 审查次要 2）', () => {
+    const p = body('pollBatch')
+    // 每一张的归类、写条目各自接住，一张出错不影响别的
+    expect(p).toMatch(/try \{\s*applyPollResult\(id, target, it\.status, it\.data\)\s*\} catch \{[^}]*failed = true\s*\}/)
+    // 整段再接一层：别处出错也落到这一轮失败
+    expect(p).toMatch(/\} catch \{[^}]*failed = true\s*\} finally \{\s*(\/\/[^\n]*\s*)*if \(gen === batchSeq\) pollInFlight = false/)
+    // 接住之后照常往下走：先看批次还在，再检查时限、排下一轮
+    const tail = p.slice(p.lastIndexOf('} finally {'))
+    expect(tail.indexOf('if (!live(gen)) return')).toBeGreaterThan(0)
+    expect(tail.indexOf('if (!live(gen)) return')).toBeLessThan(tail.indexOf('expireUnknownTargets(Date.now())'))
+    expect(tail.indexOf('expireUnknownTargets(Date.now())')).toBeLessThan(tail.indexOf('schedulePoll(plan.delayMs)'))
+  })
   it('统计和导出用 lib 里的 batchStats、successRows、unknownRows', () => {
     expect(src).toMatch(/const stats = computed\(\(\) => batchStats\(items\.value\)\)/)
     const x = body('exportBatchSuccess')

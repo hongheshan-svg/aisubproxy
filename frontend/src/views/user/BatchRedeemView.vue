@@ -1190,7 +1190,7 @@ onUnmounted(() => stopAllPolls())
 @media (max-width: 1023px) {
   .user-ui .batch-page { max-width: 768px; }
 }
-/* 本页还在用旧变量名：这里把它们接到用户端配色，不再随后台皮肤变 */
+/* 本页还在用旧变量名：这里把它们接到用户端配色（--u-*，颜色取自当前皮肤） */
 .user-ui .batch-page {
   --primary: var(--u-primary); --soft: var(--u-tint); --muted: var(--u-muted); --ink: var(--u-ink); --ink-2: var(--u-muted);
   --brd: var(--u-line); --err: var(--u-error-ink); --warn: var(--u-warn-ink); --good: var(--u-primary);

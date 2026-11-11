@@ -152,7 +152,7 @@ func AdminCardPoolConversion(c *gin.Context) {
 			return
 		}
 		amt, _ := marswallex.FormatAmount(o.AmountCents)
-		poolAudit(c, "wallet_conversion", fmt.Sprintf("out_order_no=%s sell=%s%s buy=%s state=%s", o.OutOrderNo, amt, o.Currency, o.BuyCurrency, o.State))
+		poolAudit(c, orderAuditAction("wallet_conversion", o), fmt.Sprintf("out_order_no=%s sell=%s%s buy=%s state=%s", o.OutOrderNo, amt, o.Currency, o.BuyCurrency, o.State))
 		c.JSON(http.StatusOK, o)
 	})(c)
 }
@@ -186,7 +186,7 @@ func AdminCardPoolWalletTransfer(c *gin.Context) {
 			return
 		}
 		amt, _ := marswallex.FormatAmount(o.AmountCents)
-		poolAudit(c, "wallet_transfer", fmt.Sprintf("out_order_no=%s payer=%s payee=%s amount=%s currency=%s state=%s",
+		poolAudit(c, orderAuditAction("wallet_transfer", o), fmt.Sprintf("out_order_no=%s payer=%s payee=%s amount=%s currency=%s state=%s",
 			o.OutOrderNo, o.PayerAccountNo, o.PayeeAccountNo, amt, o.Currency, o.State))
 		c.JSON(http.StatusOK, o)
 	})(c)

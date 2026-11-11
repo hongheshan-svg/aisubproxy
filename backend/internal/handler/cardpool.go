@@ -117,18 +117,52 @@ func poolAuditFailed(c *gin.Context, action, detail string, err error) {
 	}
 }
 
-// poolAuditOrderFailed 用于单据类操作（开卡、注资、冻结、解冻、注销、清零、兑换、钱包转账）：平台的结果记在单据里、
-// 不以错误返回（结果不明时照常返回 unknown 的单据，成功审计里带单据状态），返回的平台错误都来自发单前的查询
-// （刷新卡、同步账户），所以只有 ErrMaybeApplied（已发出、本地没记下）才记 <action>_failed。
+// poolAuditOrderFailed 用于单据类操作（开卡、注资、冻结、解冻、注销、清零、兑换、钱包转账）出错时：平台的结果记在单据里、
+// 不以错误返回（结果不明时照常返回 unknown 的单据，审计见 orderAuditAction），返回的平台错误都来自发单前的查询
+// （刷新卡、同步账户），所以出错时只有 ErrMaybeApplied（已发出、本地没记下）才记 <action>_failed。
 func poolAuditOrderFailed(c *gin.Context, action, detail string, err error) {
 	if errors.Is(err, cardpool.ErrMaybeApplied) {
 		poolAudit(c, action+"_failed", detail+" result="+poolResultText(err))
 	}
 }
 
-// orderAuditSuffix 是单据类操作成功审计的后缀：单号和提交后的单据状态（平台结果不明时为 unknown）。
+// orderAuditAction 是单据类操作提交成功后审计用的动作名：单据结果不明（state=unknown，平台可能已生效）记 <action>_failed，
+// 和直接调平台的操作同一口径；其余（处理中、成功、平台明确失败、未发出）记 <action>。只记一条，detail 里都带单号和状态。
+func orderAuditAction(action string, o *cardpool.Order) string {
+	if o.State == cardpool.StateUnknown {
+		return action + "_failed"
+	}
+	return action
+}
+
+// orderAuditSuffix 是单据类操作审计的后缀：单号和提交后的单据状态（平台结果不明时为 unknown）。
 func orderAuditSuffix(o *cardpool.Order) string {
 	return fmt.Sprintf(" order=%s state=%s", o.OutOrderNo, o.State)
+}
+
+// applyCardsAudit 决定批量开卡记哪条审计，返回动作名和 detail 后缀（动作名为空表示不记）：
+// 返回的单据里有结果不明的，或最后一张已发出、本地没记下（ErrMaybeApplied），记 apply_cards_failed，后缀写结果不明的张数
+// （算上没记下的那张）；否则建了单（或没出错）记 apply_cards；一张没建、也不可能已生效的不记。
+func applyCardsAudit(orders []cardpool.Order, err error) (string, string) {
+	unknown := 0
+	for i := range orders {
+		if orders[i].State == cardpool.StateUnknown {
+			unknown++
+		}
+	}
+	maybe := errors.Is(err, cardpool.ErrMaybeApplied)
+	switch {
+	case unknown > 0 || maybe:
+		tail := ""
+		if maybe {
+			unknown++
+			tail = " last_result=" + poolResultText(err)
+		}
+		return "apply_cards_failed", fmt.Sprintf(" unknown=%d", unknown) + tail
+	case len(orders) > 0 || err == nil:
+		return "apply_cards", ""
+	}
+	return "", ""
 }
 
 // poolNote 把进审计的备注去首尾空白并截到 200 字。
@@ -274,16 +308,9 @@ func AdminCardPoolApplyCards(c *gin.Context) {
 			return
 		}
 		orders, err := s.ApplyCards(c.Request.Context(), req.ProductID, req.CardHolderID, req.Count, adminName(c))
-		detail := fmt.Sprintf("product_id=%s card_holder_id=%s count=%d created=%d",
-			req.ProductID, req.CardHolderID, req.Count, len(orders))
-		switch {
-		case len(orders) > 0 || err == nil:
-			if errors.Is(err, cardpool.ErrMaybeApplied) {
-				detail += " last_result=" + poolResultText(err) // 最后一张已发出、本地没记下
-			}
-			poolAudit(c, "apply_cards", detail)
-		default:
-			poolAuditOrderFailed(c, "apply_cards", detail, err)
+		if action, tail := applyCardsAudit(orders, err); action != "" {
+			poolAudit(c, action, fmt.Sprintf("product_id=%s card_holder_id=%s count=%d created=%d",
+				req.ProductID, req.CardHolderID, req.Count, len(orders))+tail)
 		}
 		if err != nil {
 			if len(orders) > 0 {
@@ -357,8 +384,8 @@ func cardAction(action string, fn func(c *gin.Context, s *cardpool.Service, id s
 	})
 }
 
-// orderAction 生成「对一张卡提交一张单据」的 POST 处理器（冻结、解冻、注销、清零）：成功审计带单号和单据状态，
-// 出错时按 poolAuditOrderFailed 记失败审计。
+// orderAction 生成「对一张卡提交一张单据」的 POST 处理器（冻结、解冻、注销、清零）：审计带单号和单据状态，
+// 结果不明记 <action>_failed（见 orderAuditAction）；出错时按 poolAuditOrderFailed 记失败审计。
 func orderAction(action string, fn func(c *gin.Context, s *cardpool.Service, id string) (*cardpool.Order, error)) gin.HandlerFunc {
 	return poolRoute(func(c *gin.Context, s *cardpool.Service) {
 		id := c.Param("id")
@@ -368,7 +395,7 @@ func orderAction(action string, fn func(c *gin.Context, s *cardpool.Service, id 
 			poolFail(c, err)
 			return
 		}
-		poolAudit(c, action, "card_id="+id+orderAuditSuffix(o))
+		poolAudit(c, orderAuditAction(action, o), "card_id="+id+orderAuditSuffix(o))
 		c.JSON(http.StatusOK, o)
 	})
 }
@@ -445,7 +472,7 @@ func AdminCardPoolFundCard(c *gin.Context) {
 			poolFail(c, err)
 			return
 		}
-		poolAudit(c, "fund_card", fmt.Sprintf("card_id=%s order=%s amount_cents=%d state=%s", id, o.OutOrderNo, cents, o.State))
+		poolAudit(c, orderAuditAction("fund_card", o), fmt.Sprintf("card_id=%s order=%s amount_cents=%d state=%s", id, o.OutOrderNo, cents, o.State))
 		c.JSON(http.StatusOK, o)
 	})(c)
 }

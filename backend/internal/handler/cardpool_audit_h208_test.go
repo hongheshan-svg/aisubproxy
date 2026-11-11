@@ -44,7 +44,8 @@ func TestSetCardLimitFailedAuditOnlyWhenMaybeApplied(t *testing.T) {
 	}
 }
 
-// 冻结、注资等单据类操作：平台结果不明时照常返回单据，审计里带上单号和单据状态，看得出结果不明。
+// 冻结、注资等单据类操作：平台结果不明（单据 state=unknown）记 <动作>_failed，和 set_card_limit_failed 同一口径；
+// 确定成功的照旧记成功名。审计都带单号和单据状态。
 func TestOrderActionAuditCarriesOrderState(t *testing.T) {
 	c, mw, _ := cpEnv(t, false)
 	cpInsertCard(t, c, "c1", cardpool.PoolAvailable, "")
@@ -53,8 +54,21 @@ func TestOrderActionAuditCarriesOrderState(t *testing.T) {
 		t.Fatalf("冻结: %d %s", w.Code, w.Body.String())
 	}
 	a := cpAudit(t, c)
-	if !strings.Contains(a, "cardpool.freeze_card card_id=c1 order=") || !strings.Contains(a, "state=unknown") {
-		t.Fatalf("冻结审计应带单号和状态: %s", a)
+	if !strings.Contains(a, "cardpool.freeze_card_failed card_id=c1 order=") || !strings.Contains(a, "state=unknown") {
+		t.Fatalf("冻结结果不明应记失败审计，带单号和状态: %s", a)
+	}
+	if strings.Contains(a, "cardpool.freeze_card card_id=c1") {
+		t.Fatalf("结果不明不应再记成功动作名: %s", a)
+	}
+
+	cpInsertCard(t, c, "c3", cardpool.PoolAvailable, "")
+	mw.On("PUT", "/v1/card/status", mwtest.OK(`{}`))
+	if w := cpDo(AdminCardPoolFreezeCard, "POST", "/c/:id", "/c/c3", ``); w.Code != 200 {
+		t.Fatalf("冻结: %d %s", w.Code, w.Body.String())
+	}
+	if a := cpAudit(t, c); !strings.Contains(a, "cardpool.freeze_card card_id=c3 order=") || !strings.Contains(a, "state=success") ||
+		strings.Contains(a, "freeze_card_failed card_id=c3") {
+		t.Fatalf("确定成功的照旧记成功名: %s", a)
 	}
 
 	cpInsertCard(t, c, "c2", cardpool.PoolAvailable, "")
@@ -65,8 +79,116 @@ func TestOrderActionAuditCarriesOrderState(t *testing.T) {
 	if w := cpDo(AdminCardPoolFundCard, "POST", "/c/:id", "/c/c2", `{"amount":"1.00"}`); w.Code != 200 {
 		t.Fatalf("注资: %d %s", w.Code, w.Body.String())
 	}
-	if a := cpAudit(t, c); !strings.Contains(a, "cardpool.fund_card card_id=c2") || !strings.Contains(a, "amount_cents=100 state=unknown") {
-		t.Fatalf("注资审计应带状态: %s", a)
+	a = cpAudit(t, c)
+	if !strings.Contains(a, "cardpool.fund_card_failed card_id=c2 order=") || !strings.Contains(a, "amount_cents=100 state=unknown") {
+		t.Fatalf("注资结果不明应记失败审计并带状态: %s", a)
+	}
+	if strings.Contains(a, "cardpool.fund_card card_id=c2") {
+		t.Fatalf("注资结果不明不应再记成功动作名: %s", a)
+	}
+}
+
+// 兑换、钱包转账结果不明：同样记 <动作>_failed 并带 state=unknown。
+func TestWalletOrderAuditFailedWhenUnknown(t *testing.T) {
+	c, mw, _ := cpEnv(t, false)
+	mw.On("GET", cpPathAccounts, cpTopPage(
+		`{"account_no":"M1","account_name":"main","account_status":"ACTIVE","account_type":"MAIN","balance_list":[{"currency":"USDT","available_balance":"100.00","freeze_balance":"0.00"},{"currency":"USD","available_balance":"50.00","freeze_balance":"0.00"}]}`,
+		`{"account_no":"S1","account_name":"Ops","account_status":"ACTIVE","account_type":"SUB_ACCOUNT","balance_list":[]}`))
+	mw.On("POST", cpPathConversion, mwtest.Unknown())
+	if w := cpDo(AdminCardPoolConversion, "POST", "/x", "/x", `{"sell_currency":"USDT","sell_amount":"1.00","buy_currency":"USD"}`); w.Code != 200 {
+		t.Fatalf("兑换: %d %s", w.Code, w.Body.String())
+	}
+	a := cpAudit(t, c)
+	if !strings.Contains(a, "cardpool.wallet_conversion_failed out_order_no=MC") || !strings.Contains(a, "state=unknown") ||
+		strings.Contains(a, "cardpool.wallet_conversion out_order_no=") {
+		t.Fatalf("兑换结果不明应记失败审计: %s", a)
+	}
+
+	mw.On("POST", "/v1/transfer", mwtest.Unknown())
+	if w := cpDo(AdminCardPoolWalletTransfer, "POST", "/x", "/x",
+		`{"payer_account_no":"M1","payee_account_no":"S1","currency":"USD","amount":"10"}`); w.Code != 200 {
+		t.Fatalf("转账: %d %s", w.Code, w.Body.String())
+	}
+	a = cpAudit(t, c)
+	if !strings.Contains(a, "cardpool.wallet_transfer_failed out_order_no=MT") || !strings.Contains(a, "currency=USD state=unknown") ||
+		strings.Contains(a, "cardpool.wallet_transfer out_order_no=") {
+		t.Fatalf("转账结果不明应记失败审计: %s", a)
+	}
+}
+
+// 批量开卡：返回的单据里有结果不明的，记 apply_cards_failed，带已建张数和结果不明的张数；全部确定的照旧记 apply_cards。
+func TestApplyCardsAuditFailedWhenUnknown(t *testing.T) {
+	c, mw, _ := cpEnv(t, false)
+	cpInsertHolder(t, "h1", "APPROVED")
+	mw.On("GET", "/v1/card/product", mwtest.OK(`[{"product_id":"p1","card_label":"VISA","card_country":"US","card_mode":"PREPAID","card_currency":"USD"}]`))
+
+	mw.On("POST", "/v2/card", mwtest.OK(`{"transaction_id":"T1"}`))
+	if w := cpDo(AdminCardPoolApplyCards, "POST", "/x", "/x", `{"product_id":"p1","card_holder_id":"h1","count":2}`); w.Code != 200 {
+		t.Fatalf("开卡: %d %s", w.Code, w.Body.String())
+	}
+	if a := cpAudit(t, c); !strings.Contains(a, "cardpool.apply_cards product_id=p1 card_holder_id=h1 count=2 created=2") ||
+		strings.Contains(a, "apply_cards_failed") {
+		t.Fatalf("全部确定的记 apply_cards: %s", a)
+	}
+
+	mw.On("POST", "/v2/card", mwtest.Unknown())
+	if w := cpDo(AdminCardPoolApplyCards, "POST", "/x", "/x", `{"product_id":"p1","card_holder_id":"h1","count":3}`); w.Code != 200 {
+		t.Fatalf("开卡: %d %s", w.Code, w.Body.String())
+	}
+	a := cpAudit(t, c)
+	if !strings.Contains(a, "cardpool.apply_cards_failed product_id=p1 card_holder_id=h1 count=3 created=1 unknown=1") {
+		t.Fatalf("有结果不明的单据应记 apply_cards_failed: %s", a)
+	}
+	if strings.Count(a, "count=3") != 1 {
+		t.Fatalf("一次开卡只记一条审计: %s", a)
+	}
+}
+
+// 批量开卡最后一张已发出、本地没记下（ErrMaybeApplied）：也记 apply_cards_failed，结果不明的张数算上这一张。
+func TestApplyCardsAuditMaybeApplied(t *testing.T) {
+	maybe := fmt.Errorf("%w: disk I/O error", cardpool.ErrMaybeApplied)
+	ok := cardpool.Order{State: cardpool.StateProcessing}
+	unknown := cardpool.Order{State: cardpool.StateUnknown}
+	cases := []struct {
+		name         string
+		orders       []cardpool.Order
+		err          error
+		action, tail string
+	}{
+		{"全部确定", []cardpool.Order{ok, ok}, nil, "apply_cards", ""},
+		{"有结果不明", []cardpool.Order{ok, unknown}, nil, "apply_cards_failed", " unknown=1"},
+		{"最后一张没记下", []cardpool.Order{ok}, maybe, "apply_cards_failed", " unknown=1 last_result=已发出，本地没记下结果"},
+		{"第一张就没记下", nil, maybe, "apply_cards_failed", " unknown=1 last_result=已发出，本地没记下结果"},
+		{"建了单后明确出错", []cardpool.Order{ok}, cardpool.ErrNoCard, "apply_cards", ""},
+		{"一张没建、明确没生效", nil, fmt.Errorf("%w: x", cardpool.ErrBadRequest), "", ""},
+	}
+	for _, tc := range cases {
+		action, tail := applyCardsAudit(tc.orders, tc.err)
+		if action != tc.action || tail != tc.tail {
+			t.Errorf("%s: 得到 %q %q，应为 %q %q", tc.name, action, tail, tc.action, tc.tail)
+		}
+	}
+}
+
+// 新建持卡人平台结果不明：记 holder_create_failed 并带 state=unknown；成功的记 holder_create 并带 state。
+func TestCreateCardholderAuditUnknownAsFailed(t *testing.T) {
+	c, mw, _ := cpEnv(t, false)
+	mw.On("POST", cpPathCreateHolder, mwtest.Unknown())
+	if w := cpDo(AdminCardPoolCreateCardholder, "POST", "/x", "/x", cpProfileJSON(t)); w.Code != 202 {
+		t.Fatalf("结果不明: %d %s", w.Code, w.Body.String())
+	}
+	a := cpAudit(t, c)
+	if !strings.Contains(a, "cardpool.holder_create_failed out_card_holder_id=CH") || !strings.Contains(a, "state=unknown") ||
+		strings.Contains(a, "cardpool.holder_create out_card_holder_id=") {
+		t.Fatalf("新建持卡人结果不明应记失败审计并带状态: %s", a)
+	}
+
+	mw.On("POST", cpPathCreateHolder, mwtest.OK(`{"card_holder_id":"h9"}`))
+	if w := cpDo(AdminCardPoolCreateCardholder, "POST", "/x", "/x", cpProfileJSON(t)); w.Code != 200 {
+		t.Fatalf("成功: %d %s", w.Code, w.Body.String())
+	}
+	if a := cpAudit(t, c); !strings.Contains(a, "cardpool.holder_create out_card_holder_id=CH") || !strings.Contains(a, "card_holder_id=h9 state=linked") {
+		t.Fatalf("新建持卡人成功记 holder_create 并带状态: %s", a)
 	}
 }
 

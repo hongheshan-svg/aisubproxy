@@ -85,17 +85,18 @@ func AdminCardPoolCreateCardholder(c *gin.Context) {
 			return
 		}
 		sub, err := s.CreateCardholder(c.Request.Context(), p, adminName(c))
-		if sub != nil {
-			poolAudit(c, "holder_create", fmt.Sprintf("out_card_holder_id=%s card_holder_id=%s", sub.OutCardHolderID, sub.CardHolderID))
-		}
 		if err != nil {
-			if sub == nil {
-				// 只记结果摘要，不带资料和平台错误原文
-				poolAuditFailed(c, "holder_create", "country="+strings.TrimSpace(p.CountryCode), err)
-			}
+			// 只记结果摘要，不带资料和平台错误原文
+			poolAuditFailed(c, "holder_create", "country="+strings.TrimSpace(p.CountryCode), err)
 			holderFail(c, err)
 			return
 		}
+		// 平台结果不明（提交记录为 unknown）记 holder_create_failed，和单据类操作同一口径；detail 都带提交记录的状态
+		action := "holder_create"
+		if sub.State == cardpool.SubmissionUnknown {
+			action += "_failed"
+		}
+		poolAudit(c, action, fmt.Sprintf("out_card_holder_id=%s card_holder_id=%s state=%s", sub.OutCardHolderID, sub.CardHolderID, sub.State))
 		if sub.State == cardpool.SubmissionUnknown {
 			c.JSON(http.StatusAccepted, gin.H{"submission": sub, "unknown": true})
 			return

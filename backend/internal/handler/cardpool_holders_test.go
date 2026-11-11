@@ -179,7 +179,8 @@ func TestCreateCardholderUnknownReturns202(t *testing.T) {
 	if m["unknown"] != true || sub["state"] != "unknown" || !strings.HasPrefix(outID, "CH") {
 		t.Fatalf("body %v", m)
 	}
-	if a := cpAudit(t, c); !strings.Contains(a, "cardpool.holder_create out_card_holder_id="+outID+" card_holder_id=") {
+	// 平台结果不明记失败动作名并带状态（H2-08）
+	if a := cpAudit(t, c); !strings.Contains(a, "cardpool.holder_create_failed out_card_holder_id="+outID+" card_holder_id= state=unknown") {
 		t.Errorf("audit %q", a)
 	}
 

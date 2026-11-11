@@ -184,8 +184,7 @@ func Launch(ctx context.Context, o LaunchOptions) (*Browser, error) {
 	// Chrome 只拿到白名单环境变量（不带密钥），DISPLAY 也经由这里给
 	sandbox, err := sandboxOptions(dir, display)
 	if err != nil {
-		_ = os.RemoveAll(dir)
-		releaseProfileLock(lock)
+		removeProfile(dir, lock)
 		return nil, err
 	}
 
@@ -342,9 +341,8 @@ func (b *Browser) Close() {
 			cancel()
 		}
 		b.cancelTab()
-		b.cancelAlloc() // 等 Chrome 进程退出
-		_ = os.RemoveAll(b.dir)
-		releaseProfileLock(b.lock) // 删完目录才放锁：放早了，别的清理会以为主人不在
+		b.cancelAlloc()              // 等 Chrome 进程退出
+		removeProfile(b.dir, b.lock) // 删完目录才放锁：放早了，别的清理会以为主人不在
 	})
 }
 

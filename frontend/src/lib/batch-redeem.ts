@@ -24,6 +24,18 @@ export async function runSubmitPool<T>(
   await Promise.all(runners)
 }
 
+/**
+ * 登记「这张卡密要发兑换请求了」（FE2 审查重要 3）。本批已经登记过的返回 false，调用方不能再发。
+ * 这是在途守卫之外的结构性保险：即使以后守卫被改坏、同一张卡密被排进两次，也发不出第二个兑换请求。
+ * 卡密按粘贴去重的写法比较（去空格、转大写，见 lib/batch-session.ts parseCdks）。sent 随批次号重建。
+ */
+export function claimRedeem(sent: Set<string>, cardKey: string): boolean {
+  const k = String(cardKey || '').trim().toUpperCase()
+  if (!k || sent.has(k)) return false
+  sent.add(k)
+  return true
+}
+
 const FAIL_STATUSES = new Set(['declined', 'failed_precharge', 'cancelled', 'failed'])
 
 /** 单据状态是开通成功 */

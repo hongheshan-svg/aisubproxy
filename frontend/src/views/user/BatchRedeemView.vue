@@ -355,6 +355,7 @@ import ExcelImportBlock from '../../components/ExcelImportBlock.vue'
 import { POLL_REQUEST_TIMEOUT_MS, chunkTokens, nextPollPlan, parsePollResponse, withAbortTimeout } from '../../lib/batch-poll'
 import {
   batchStats,
+  claimRedeem,
   hasUnknownQuerying,
   isSubmittable,
   pollVerdict,
@@ -482,6 +483,8 @@ const pollNotice = ref('')
 let unmounted = false
 // 批次号：每次开始验证、重置都加一。在途请求回来时批次号对不上就丢掉，不写到新批次上，也不再提交（F2-04b）
 let batchSeq = 0
+// 本批已经发出兑换请求的卡密（FE2 审查重要 3）：发之前登记，登记过的不再发。开始验证、重置时随批次号换新集合
+let redeemClaimed = new Set<string>()
 
 /** 这一批还算数吗：页面还在、且没有换批次。不算数时不再提交还没开始的卡密，回来的结果也不写。 */
 function live(gen: number) {
@@ -834,6 +837,7 @@ async function handleVerifyBatch() {
     return
   }
   const gen = ++batchSeq
+  redeemClaimed = new Set<string>()
   verifying.value = true
   sessionError.value = ''
   stopAllPolls()
@@ -1042,6 +1046,8 @@ async function runPreflightRedeem(
     const email = String(body.email || body.account_email || fallbackEmail || '')
     // 兑换是唯一会用掉卡密的请求：发出前最后看一次，页面已离开或换了批次就不再提交这一张
     if (!live(item.batch)) return 'fail'
+    // 结构性保险：这张卡密本批已经发过兑换请求就不再发，也不改条目（由先发的那一次负责显示结果）
+    if (!claimRedeem(redeemClaimed, item.cardKey)) return 'fail'
     updateItem(item.id, {
       email,
       ownEmail: ownEmailOf(fallbackEmail, body.email, body.account_email),
@@ -1256,6 +1262,7 @@ function resetAll() {
   if (submitting.value || autoSubmitting.value || unknownQuerying.value) return
   // 换批次：还在路上的验证、查询回来都对不上，不会写到下一批上
   batchSeq++
+  redeemClaimed = new Set<string>()
   stopAllPolls()
   verifying.value = false
   phase.value = 'input'

@@ -222,8 +222,8 @@ func terminalEffects(ctx context.Context, tx *sql.Tx, o *Order, now int64, cance
 			return nil
 		}
 		_, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO mw_cards (card_id, card_holder_id, product_id, currency,
-			source, pool_state, next_action_at, created_at, updated_at) VALUES (?, ?, ?, ?, 'opened', ?, ?, ?, ?)`,
-			o.CardID, o.CardHolderID, o.ProductID, o.Currency, PoolReleasing, now, now, now)
+			source, pool_state, next_action_at, released_at, created_at, updated_at) VALUES (?, ?, ?, ?, 'opened', ?, ?, ?, ?, ?)`,
+			o.CardID, o.CardHolderID, o.ProductID, o.Currency, PoolReleasing, now, now, now, now)
 		return err
 	case KindRecharge, KindWithdraw:
 		_, err := tx.ExecContext(ctx, `UPDATE mw_cards SET next_action_at = ?, updated_at = ? WHERE card_id = ?`, now, now, o.CardID)
@@ -390,6 +390,24 @@ func (s *Service) recordFirstSend(ctx context.Context, no string, v sendVerdict)
 	return o, nil
 }
 
+// recordSent 是请求已经发到平台之后的 recordFirstSend。记录失败、且初判不是明确被拒或未发出时，平台可能已经生效，
+// 错误包上 ErrMaybeApplied（单据留在 pending，2 分钟后按 unknown 查单），调用方据此留失败审计、提示勿重复提交。
+func (s *Service) recordSent(ctx context.Context, no string, v sendVerdict) (*Order, error) {
+	o, err := s.recordFirstSend(ctx, no, v)
+	if err != nil && v.state != StateFailed && v.state != StateNotSent {
+		return nil, maybeApplied(err)
+	}
+	return o, err
+}
+
+// maybeApplied 给「平台可能已经生效、本地没记下」的错误包上 ErrMaybeApplied；nil 原样返回。
+func maybeApplied(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%w: %w", ErrMaybeApplied, err)
+}
+
 // abortIfCanceled 在写入 pending 之后、发送之前检查 ctx：已取消时请求确定没有发出，单据记为 not_sent，返回 ctx 的错误。
 // 记录失败时单据留在 pending，2 分钟后按 unknown 处理（偏保守）。
 func (s *Service) abortIfCanceled(ctx context.Context, no string) error {
@@ -457,7 +475,7 @@ func (s *Service) submitApply(ctx context.Context, p applyParams) (*Order, error
 		v = sendVerdict{state: StateProcessing, txnID: res.TransactionID}
 	}
 	// 请求已经发出，记录结果不受调用方取消影响
-	return s.recordFirstSend(context.WithoutCancel(ctx), o.OutOrderNo, v)
+	return s.recordSent(context.WithoutCancel(ctx), o.OutOrderNo, v)
 }
 
 // submitTransfer 提交一笔转入（recharge）或转出（withdraw）。同卡已有在途的转入或转出单时返回 ErrCardBusy，不发请求。
@@ -514,7 +532,7 @@ func (s *Service) submitTransfer(ctx context.Context, kind, cardID string, amoun
 	} else {
 		v = transferVerdict(res)
 	}
-	return s.recordFirstSend(context.WithoutCancel(ctx), o.OutOrderNo, v)
+	return s.recordSent(context.WithoutCancel(ctx), o.OutOrderNo, v)
 }
 
 // submitStatus 提交一张改状态单（ACTIVE / REVOKED / CANCELED）。注销不传 account_no，余额回到默认主钱包。
@@ -542,7 +560,7 @@ func (s *Service) submitStatus(ctx context.Context, cardID, target, by string) (
 	if err != nil {
 		v = classifySendErr(err, false)
 	}
-	return s.recordFirstSend(context.WithoutCancel(ctx), o.OutOrderNo, v)
+	return s.recordSent(context.WithoutCancel(ctx), o.OutOrderNo, v)
 }
 
 // finalize 是 Webhook、对账查单和人工再查共用的定论函数。

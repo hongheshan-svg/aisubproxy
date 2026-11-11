@@ -161,7 +161,7 @@ func TestPaySubmitProvider(t *testing.T) {
 			t.Fatalf("%s: %d %s", tc.prov, w.Code, w.Body.String())
 		}
 	}
-	if _, total, _ := payEngine.List(context.Background(), "", 1, 10); total != 0 {
+	if _, total, _ := payEngine.ListBy(context.Background(), payengine.OrderFilter{}, 1, 10); total != 0 {
 		t.Fatalf("拒绝时不应建单: %d", total)
 	}
 	for _, prov := range []string{"", "marswallex"} {
@@ -204,6 +204,24 @@ func TestPaySubmitAuditHasNoSession(t *testing.T) {
 	var src, ref string
 	if err := db.DB.QueryRow(`SELECT source, source_ref FROM pay_orders WHERE order_no = ?`, ok.OrderNo).Scan(&src, &ref); err != nil || src != "admin_test" || ref != "alice" {
 		t.Fatalf("source = %q, source_ref = %q, %v", src, ref, err)
+	}
+}
+
+// H2-04 / F2-20：列表里的账号邮箱打码，详情保留完整邮箱（人工核对用）。
+func TestPayListMasksEmailDetailKeepsFull(t *testing.T) {
+	payEnv(t)
+	w := payDo(AdminPaySubmit, "POST", "/orders", "/orders", paySubmitBody("plus", "PH", paySession("alice.longname@example.com"), false))
+	var ok struct {
+		OrderNo string `json:"order_no"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &ok)
+	l := payDo(AdminPayList, "GET", "/orders", "/orders", "")
+	if strings.Contains(l.Body.String(), "alice.longname@example.com") || !strings.Contains(l.Body.String(), "al***@example.com") {
+		t.Fatalf("列表邮箱应打码: %s", l.Body.String())
+	}
+	d := payDo(AdminPayGet, "GET", "/orders/:no", "/orders/"+ok.OrderNo, "")
+	if !strings.Contains(d.Body.String(), "alice.longname@example.com") {
+		t.Fatalf("详情应保留完整邮箱: %s", d.Body.String())
 	}
 }
 

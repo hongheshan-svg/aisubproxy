@@ -8,6 +8,11 @@ export function isAdminPath(path: string): boolean {
   return path === OPS_BASE || path.startsWith(OPS_BASE + '/')
 }
 
+/** 页面属于用户端（user）还是后台一类（console：后台、登录页、安装页、代理商后台）。皮肤的页面底纹只画在 console。 */
+export function surfaceOf(path: string): 'user' | 'console' {
+  return isAdminPath(path) || path === '/agent' || path.startsWith('/agent/') ? 'console' : 'user'
+}
+
 export const routes: RouteRecordRaw[] = [
   {
     path: '/',
@@ -17,7 +22,14 @@ export const routes: RouteRecordRaw[] = [
   // 旧登录路径 → 隐蔽入口
   { path: '/auth/login', redirect: `${OPS_BASE}/login` },
   { path: '/admin', redirect: OPS_BASE },
-  { path: '/admin/:pathMatch(.*)*', redirect: (to) => `${OPS_BASE}/${to.params.pathMatch || ''}` },
+  {
+    path: '/admin/:pathMatch(.*)*',
+    redirect: (to) => {
+      // 多段地址时 pathMatch 是数组，直接拼进模板字符串会变成逗号
+      const p = to.params.pathMatch
+      return `${OPS_BASE}/${Array.isArray(p) ? p.join('/') : p || ''}`
+    },
+  },
   {
     path: `${OPS_BASE}/login`,
     name: 'Login',
@@ -71,7 +83,7 @@ export const routes: RouteRecordRaw[] = [
   {
     path: OPS_BASE,
     component: () => import('../layouts/AdminLayout.vue'),
-    meta: { requiresAuth: true, requiresAdmin: true },
+    meta: { requiresAdmin: true },
     children: [
       { path: '', name: 'AdminDashboard', component: () => import('../views/admin/AdminDashboard.vue'), meta: { title: '总览', group: '', icon: 'Odometer' } },
       // 通用能力

@@ -184,3 +184,62 @@ func TestFindProfileProcs(t *testing.T) {
 		t.Fatalf("没有 /proc（macOS）时什么也不做: %v", got)
 	}
 }
+
+// P2-04：关浏览器时用户目录删干净了，锁文件随之删掉、锁放开。
+func TestRemoveProfile(t *testing.T) {
+	dir := mkProfile(t, t.TempDir(), "closed")
+	lock, err := holdProfileLock(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	removeProfile(dir, lock)
+	if exists(dir) || exists(dir+profileLockSuffix) {
+		t.Fatal("目录删干净了，目录和锁文件都应已删掉")
+	}
+}
+
+// P2-04：关浏览器时用户目录删不干净（Chrome 子进程还没退完又往里写），不能把锁文件也删了：
+// 删了就只能按老规则等一小时没变化才清，会话 cookie 留得更久。只放锁、留锁文件，下一轮清理拿得到锁就立即删。
+func TestRemoveProfileKeepsLockWhenRemoveFails(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("以 root 运行时造不出删不掉的目录")
+	}
+	root := t.TempDir()
+	dir := mkProfile(t, root, "stuck")
+	lock, err := holdProfileLock(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sub := filepath.Join(dir, "Default") // 里面有 Cookies；子目录没有写权限，里面的文件删不掉
+	if err := os.Chmod(sub, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sub, 0o700) })
+
+	removeProfile(dir, lock)
+	if !exists(dir) {
+		t.Fatal("测试前提不成立：目录应删不掉")
+	}
+	lockPath := dir + profileLockSuffix
+	if !exists(lockPath) {
+		t.Fatal("目录没删掉时不能删锁文件")
+	}
+	release, gone := ownerGone(lockPath)
+	if !gone {
+		t.Fatal("锁应已放开：下一轮清理要能判出主人已不在")
+	}
+	release()
+
+	// 残留的进程退完了，下一轮清理拿得到锁：结束用这个目录的进程，删目录和锁文件
+	if err := os.Chmod(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	k := &killLog{}
+	cleanProfilesIn(root, time.Now().Add(2*profileLockGrace), k.kill)
+	if exists(dir) || exists(lockPath) {
+		t.Fatal("下一轮清理应删掉目录和锁文件")
+	}
+	if !reflect.DeepEqual(k.dirs, []string{dir}) {
+		t.Fatalf("删之前应先结束用这个目录的进程: %v", k.dirs)
+	}
+}

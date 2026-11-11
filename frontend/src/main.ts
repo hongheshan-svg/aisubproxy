@@ -7,7 +7,7 @@ import './style.css'
 import './styles/skins.css'
 import './styles/user-theme.css'
 import { useAuthStore } from './stores/auth'
-import { initTheme, setSiteBrand, setSkin, setTheme, type SkinId, type ThemeMode } from './theme'
+import { initTheme, setSiteBrand, setSkin, applySiteThemeMode, type SkinId, type ThemeMode } from './theme'
 import { i18n } from './i18n'
 import { initLayoutMode } from './lib/layoutMode'
 
@@ -24,10 +24,8 @@ async function loadPublicSite() {
     // Logo 版本（没有 Logo 时 logo_version 为空串）
     setSiteBrand({ logoVersion: d.logo_version || '' })
     if (d.skin) setSkin(d.skin as SkinId)
-    // 明暗：用户本机偏好优先；无偏好时跟服务端默认
-    let hasLocalMode = false
-    try { hasLocalMode = !!localStorage.getItem('theme-mode') } catch { /* 取不到按站点设置 */ }
-    if (!hasLocalMode && d.theme_mode) setTheme(d.theme_mode as ThemeMode)
+    // 明暗：访客本机的选择优先；没选过就跟站点默认（只记站点默认，不当成访客的选择）
+    if (d.theme_mode) applySiteThemeMode(d.theme_mode as ThemeMode)
   } catch {
     /* offline / first boot */
   }

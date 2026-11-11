@@ -14,9 +14,11 @@ export async function copyToClipboard(text: string): Promise<boolean> {
     /* fall through */
   }
 
-  // 2) 传统回退：可在多数 HTTP 管理后台环境使用
+  // 2) 传统回退：可在多数 HTTP 管理后台环境使用。
+  // 内容可能是明文密码：临时文本框无论成功、失败还是抛异常都要清空并移除（finally）
+  let ta: HTMLTextAreaElement | null = null
   try {
-    const ta = document.createElement('textarea')
+    ta = document.createElement('textarea')
     ta.value = value
     ta.setAttribute('readonly', '')
     ta.style.position = 'fixed'
@@ -34,10 +36,13 @@ export async function copyToClipboard(text: string): Promise<boolean> {
     ta.focus()
     ta.select()
     ta.setSelectionRange(0, value.length)
-    const ok = document.execCommand('copy')
-    document.body.removeChild(ta)
-    return ok
+    return document.execCommand('copy')
   } catch {
     return false
+  } finally {
+    if (ta) {
+      ta.value = ''
+      ta.parentNode?.removeChild(ta)
+    }
   }
 }

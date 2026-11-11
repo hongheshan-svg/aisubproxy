@@ -131,6 +131,10 @@ func fundAbort(err error) error {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return abort("fund_timeout", "注资超时，结果不明，已放弃")
 	}
+	if errors.Is(err, cardpool.ErrMaybeApplied) { // 卡池的提示是写给后台管理员的，内部错误只进日志
+		log.Printf("[payengine] 注资已发出、卡池没记下结果: %v", err)
+		return abort("fund_failed", "注资已发出，结果不明，已放弃")
+	}
 	return abort("fund_failed", "注资失败：%v", err)
 }
 

@@ -137,6 +137,7 @@ onMounted(() => {
 })
 
 async function query() {
+  if (loading.value) return
   error.value = ''
   summary.value = null
   record.value = null

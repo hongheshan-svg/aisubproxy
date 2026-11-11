@@ -17,10 +17,8 @@ import (
 // 这里不写 HTTP 响应、不写审计，只返回订单和码或者具名错误；调用方按错误类型映射成自己的响应，按 Replayed 写审计。
 // 完整的码只出现在返回值里，不进日志、错误信息。
 
-// 具名错误，调用方用 errors.Is / errors.As 区分。
+// 具名错误，调用方用 errors.Is 区分；主密钥不可用、数据库忙是带字段的错误类型（*agentOrderNoKeyError、*agentOrderBusyError），用 errors.As 取。
 var (
-	errAgentOrderNoKey    = errors.New("主密钥不可用")      // 具体是 *agentOrderNoKeyError
-	errAgentOrderBusy     = errors.New("数据库忙")        // 具体是 *agentOrderBusyError
 	errAgentOrderSeal     = errors.New("码加密失败")       // 后台：503 maintenance，不发主密钥告警（原因已由 sealLocalCDKCode 记下）
 	errAgentOrderInternal = errors.New("生成码失败")       // 后台：500 internal
 	errProductUnavailable = errors.New("商品不可售")       // 不存在、下架、这个代理商取不到价
@@ -31,8 +29,7 @@ var (
 // agentOrderNoKeyError 主密钥不可用：下单前检查不通过，或重放时码一张也解不开。Kind 是 secretErrKind 给出的错误类型。
 type agentOrderNoKeyError struct{ Kind string }
 
-func (e *agentOrderNoKeyError) Error() string        { return "主密钥不可用: " + e.Kind }
-func (e *agentOrderNoKeyError) Is(target error) bool { return target == errAgentOrderNoKey }
+func (e *agentOrderNoKeyError) Error() string { return "主密钥不可用: " + e.Kind }
 
 // agentOrderBusyError 读写库失败（含等同号锁时请求被取消）。Op 是哪一步，后台日志写成「代理商 N <Op>失败: <Err>」；
 // Err 是库或 ctx 的错误，里面没有码。用同一个请求号重试是安全的。
@@ -41,9 +38,8 @@ type agentOrderBusyError struct {
 	Err error
 }
 
-func (e *agentOrderBusyError) Error() string        { return fmt.Sprintf("%s失败: %v", e.Op, e.Err) }
-func (e *agentOrderBusyError) Is(target error) bool { return target == errAgentOrderBusy }
-func (e *agentOrderBusyError) Unwrap() error        { return e.Err }
+func (e *agentOrderBusyError) Error() string { return fmt.Sprintf("%s失败: %v", e.Op, e.Err) }
+func (e *agentOrderBusyError) Unwrap() error { return e.Err }
 
 // priceChangedError 代理商确认时看到的单价和现在的不一致。CurrentCents 是现价。
 type priceChangedError struct{ CurrentCents int64 }

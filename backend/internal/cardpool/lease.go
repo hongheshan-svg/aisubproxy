@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/tuzi/cdk-recharge-system/internal/db"
-	"github.com/tuzi/cdk-recharge-system/internal/marswallex"
 )
 
 // 选卡时每批查询的候选卡数；一批都不合格或都没抢到时接着查下一批。
@@ -258,17 +257,12 @@ func (s *Service) Fund(ctx context.Context, l *Lease, amountCents int64) (*Order
 	return s.submitTransfer(ctx, KindRecharge, c.CardID, amountCents, c.Currency, "lease:"+c.LeaseOwner)
 }
 
-// markSensitive 在调接口之前记下本次租约已取卡号；只对仍持有该令牌的租用中的卡生效。
-func (s *Service) markSensitive(ctx context.Context, cardID, token string, requireLive bool) (bool, error) {
+// markSensitive 在调接口之前记下本次租约已取卡号；只对仍持有该令牌、未过期的租用中的卡生效。
+func (s *Service) markSensitive(ctx context.Context, cardID, token string) (bool, error) {
 	now := s.now().Unix()
-	q := `UPDATE mw_cards SET lease_sensitive = 1, last_sensitive_at = ?, updated_at = ?
-		WHERE card_id = ? AND pool_state = ? AND lease_token = ?`
-	args := []any{now, now, cardID, PoolLeased, token}
-	if requireLive {
-		q += ` AND lease_expires_at > ?`
-		args = append(args, now)
-	}
-	res, err := db.DB.ExecContext(ctx, q, args...)
+	res, err := db.DB.ExecContext(ctx, `UPDATE mw_cards SET lease_sensitive = 1, last_sensitive_at = ?, updated_at = ?
+		WHERE card_id = ? AND pool_state = ? AND lease_token = ? AND lease_expires_at > ?`,
+		now, now, cardID, PoolLeased, token, now)
 	if err != nil {
 		return false, err
 	}
@@ -299,7 +293,7 @@ func (s *Service) Sensitive(ctx context.Context, l *Lease) (*CardSensitive, erro
 	if err != nil {
 		return nil, err
 	}
-	ok, err := s.markSensitive(ctx, c.CardID, l.Token, true)
+	ok, err := s.markSensitive(ctx, c.CardID, l.Token)
 	if err != nil {
 		return nil, err
 	}
@@ -308,7 +302,7 @@ func (s *Service) Sensitive(ctx context.Context, l *Lease) (*CardSensitive, erro
 	}
 	sv, err := client.GetCardSensitive(ctx, c.CardID)
 	if err != nil {
-		return nil, err
+		return nil, redactPAN(err)
 	}
 	if sv == nil {
 		return nil, errors.New("发卡平台没有返回卡号")
@@ -387,9 +381,9 @@ func (s *Service) releaseCardIf(ctx context.Context, cardID, token string, onlyE
 		use_count = use_count + lease_sensitive,
 		pool_state = CASE WHEN retire_reason <> '' OR use_count + lease_sensitive >= ? THEN ? ELSE ? END,
 		lease_token = '', lease_owner = '', lease_expires_at = NULL, lease_sensitive = 0,
-		next_action_at = ?, frozen_since = NULL, updated_at = ?
+		next_action_at = ?, frozen_since = NULL, released_at = ?, updated_at = ?
 		WHERE card_id = ? AND pool_state = ? AND lease_token = ?`
-	args := []any{pol.MaxUsesPerCard, PoolUsed, PoolReleasing, now, now, cardID, PoolLeased, token}
+	args := []any{pol.MaxUsesPerCard, PoolUsed, PoolReleasing, now, now, now, cardID, PoolLeased, token}
 	if onlyExpired {
 		q += ` AND (lease_expires_at IS NULL OR lease_expires_at <= ?)`
 		args = append(args, now)
@@ -519,31 +513,4 @@ func (s *Service) AdminRelease(ctx context.Context, cardID, by string) error {
 	}
 	log.Printf("[cardpool] 管理员 %s 释放卡 %s", by, cardID)
 	return nil
-}
-
-// ViewSensitive 管理员查看完整卡号：available 要先租用；leased（不论持有方）先记为本次租约已取卡号再查询；
-// 其他状态只查询、不改状态。返回值不得记日志。
-func (s *Service) ViewSensitive(ctx context.Context, cardID, by string) (*marswallex.CardSensitive, error) {
-	c, err := getCard(ctx, cardID)
-	if err != nil {
-		return nil, err
-	}
-	if c.PoolState == PoolAvailable {
-		return nil, badRequest("请先租用")
-	}
-	client, err := s.opts.Client()
-	if err != nil {
-		return nil, err
-	}
-	if c.PoolState == PoolLeased {
-		ok, err := s.markSensitive(ctx, c.CardID, c.LeaseToken, false)
-		if err != nil {
-			return nil, err
-		}
-		if !ok {
-			return nil, badRequest("卡状态已变化，请重试")
-		}
-	}
-	log.Printf("[cardpool] 管理员 %s 查看卡 %s 的卡号（池状态 %s）", by, cardID, c.PoolState)
-	return client.GetCardSensitive(ctx, c.CardID)
 }

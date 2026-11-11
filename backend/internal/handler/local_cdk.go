@@ -127,37 +127,20 @@ func sweepLocalRate(now time.Time) int {
 	return n
 }
 
-// rateIPKey 限流用的来源键：IPv6 按 /64 聚合（一个客户端通常拿到整段 /64，逐地址计数等于没限），IPv4 和解析不了的原样。
+// rateIPKey 限流用的来源键：IPv6 按 /64 聚合（一个客户端通常拿到整段 /64，逐地址计数等于没限），IPv4 和解析不了的原样，IPv4 映射的 IPv6（::ffff:a.b.c.d）按 IPv4 处理。
 func rateIPKey(ip string) string {
 	addr, err := netip.ParseAddr(ip)
-	if err != nil || addr.Is4() || addr.Is4In6() {
+	if err != nil || addr.Is4() {
 		return ip
+	}
+	if addr.Is4In6() {
+		return addr.Unmap().String() // IPv4 映射的 IPv6 和对应的 IPv4 是同一个来源
 	}
 	p, err := addr.Prefix(64)
 	if err != nil {
 		return ip
 	}
 	return p.String()
-}
-
-func resetLocalRate() {
-	localRateMu.Lock()
-	localRateHits = map[string]*localRateEntry{}
-	localRateOrder = list.New()
-	localRateMu.Unlock()
-	resetInspectCache() // 测试里每个库的码 ID 都从 1 开始，账号核对的缓存要一起清
-}
-
-func localRateKeys() int {
-	localRateMu.Lock()
-	defer localRateMu.Unlock()
-	return len(localRateHits)
-}
-
-func localRateHas(kind, ip string) bool {
-	localRateMu.Lock()
-	defer localRateMu.Unlock()
-	return localRateHits[kind+"|"+rateIPKey(ip)] != nil
 }
 
 // 同一张码同一时刻只有一个请求能往下走：状态检查和建单之间不能插进别的兑换或换码。

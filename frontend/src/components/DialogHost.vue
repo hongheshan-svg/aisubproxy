@@ -16,12 +16,16 @@
   <!-- 用户端页面（不在 UserShell 里）的弹窗：外面套一层 user-ui 取 --u-* 配色，display: contents 不影响布局 -->
   <div v-if="d" class="dlg-wrap" :class="{ 'user-ui': userSide }">
   <div class="modal-mask fixed inset-0 z-[9998] flex items-center justify-center p-4" @click.self="onCancel">
-    <div :class="userSide ? 'u-card dlg-user w-full max-w-md' : 'card card-solid w-full max-w-md'" role="dialog" aria-modal="true" @keydown.enter="onEnter" @keydown.esc="onCancel">
+    <!-- 面板上不处理回车：回车只作用于获得焦点的元素（按钮自己点击、输入框交回输入）。
+         否则输入框里的回车冒泡上来，会把调用方紧接着弹出的确认框直接点成「确定」（如「恢复付款派发」）。
+         Esc 处理完不再冒泡，免得 document 上 Element 弹窗的 Esc 监听把底下的表单也关掉。 -->
+    <div ref="panelEl" :class="userSide ? 'u-card dlg-user w-full max-w-md' : 'card card-solid w-full max-w-md'" role="dialog" aria-modal="true" tabindex="-1"
+      @keydown.esc.stop="onCancel" @keydown.tab="onTab">
       <h3 :class="userSide ? 'dlg-title' : 'text-lg font-semibold text-ink mb-2'">{{ d.title }}</h3>
       <div v-if="d.message" :class="userSide ? 'dlg-msg whitespace-pre-line' : 'text-sm text-muted whitespace-pre-line mb-4'">{{ d.message }}</div>
 
       <input v-if="d.kind === 'prompt'" ref="inputEl" v-model="d.value" :placeholder="d.placeholder"
-        :class="userSide ? 'u-input dlg-input' : 'input w-full mb-4'" @keydown.enter.prevent="onEnter" />
+        :class="userSide ? 'u-input dlg-input' : 'input w-full mb-4'" @keydown.enter.prevent.stop="onEnter" />
 
       <div v-if="d.kind === 'select'" class="flex flex-col gap-2 mb-4">
         <button v-for="(o, i) in d.options" :key="i"
@@ -33,8 +37,8 @@
       </div>
 
       <div class="flex justify-end gap-2" :class="{ 'dlg-actions': userSide }">
-        <button v-if="d.kind !== 'alert'" :class="userSide ? 'u-btn-secondary' : 'btn-secondary'" @click="onCancel">{{ d.cancelText || '取消' }}</button>
-        <button v-if="d.kind === 'alert' || d.kind === 'confirm' || d.kind === 'prompt'"
+        <button v-if="d.kind !== 'alert'" ref="cancelEl" :class="userSide ? 'u-btn-secondary' : 'btn-secondary'" @click="onCancel">{{ d.cancelText || '取消' }}</button>
+        <button v-if="d.kind === 'alert' || d.kind === 'confirm' || d.kind === 'prompt'" ref="okEl"
           :class="userSide ? ['u-btn-primary', { 'dlg-danger': d.danger }] : (d.danger ? 'btn-danger' : 'btn-primary')" @click="onEnter">{{ d.okText || '确定' }}</button>
       </div>
     </div>
@@ -46,21 +50,41 @@
 import { computed, ref, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { dialogState, resolveActive } from '../lib/dialog'
-import { isAdminPath } from '../router/routes'
+import { createFocusReturn, initialFocus, nextFocusIndex } from '../lib/dialogFocus'
+import { surfaceOf } from '../router/routes'
 
 const route = useRoute()
-const userSide = computed(() => !isAdminPath(route.path) && !route.path.startsWith('/agent'))
+const userSide = computed(() => surfaceOf(route.path) === 'user')
 
 const d = computed(() => dialogState.active)
+const panelEl = ref<HTMLElement | null>(null)
 const inputEl = ref<HTMLInputElement | null>(null)
+const cancelEl = ref<HTMLButtonElement | null>(null)
+const okEl = ref<HTMLButtonElement | null>(null)
+// 弹出前的焦点（通常是点开这个框的按钮），关闭后还回去
+const focusReturn = createFocusReturn(() => (typeof document === 'undefined' ? null : (document.activeElement as HTMLElement | null)))
 
-watch(d, async (val) => {
-  if (val && val.kind === 'prompt') {
+// 弹出后焦点移到框内：确认、选择默认在「取消」上，提示在「确定」上，输入在输入框上
+watch(d, async (val, old) => {
+  if (val && !old) focusReturn.save()
+  if (val) {
     await nextTick()
-    inputEl.value?.focus()
-    inputEl.value?.select()
-  }
+    const target = initialFocus(val.kind)
+    if (target === 'input') { inputEl.value?.focus(); inputEl.value?.select() }
+    else (target === 'cancel' ? cancelEl.value : okEl.value)?.focus()
+    if (typeof document !== 'undefined' && !panelEl.value?.contains(document.activeElement)) panelEl.value?.focus()
+  } else if (old) focusReturn.restore()
 })
+
+// Tab 在框内循环，不跑到底下的页面上
+function onTab(e: KeyboardEvent) {
+  const panel = panelEl.value
+  if (!panel) return
+  const items = Array.from(panel.querySelectorAll<HTMLElement>('button, input, select, textarea, [href]')).filter((el) => !el.hasAttribute('disabled'))
+  const i = nextFocusIndex(items.length, items.indexOf(document.activeElement as HTMLElement), e.shiftKey)
+  e.preventDefault()
+  if (i >= 0) items[i].focus()
+}
 
 function onEnter() {
   const a = d.value

@@ -748,3 +748,20 @@ func TestAgentDBReadErrorIs503(t *testing.T) {
 		t.Fatalf("me/password: %d %s", w.Code, w.Body)
 	}
 }
+
+// H1-10：退出接口需要登录；退出只清本浏览器的 cookie，不让会话作废（不踢其他设备）。
+func TestAgentLogoutRequiresLoginAndKeepsSession(t *testing.T) {
+	e := newAgentEnv(t)
+	_, pw, secret := e.seedAgent("alice", e.seedTier("普通"))
+	if w := e.send("POST", agentBase+"/auth/logout", "", nil, nil); w.Code != 401 {
+		t.Fatalf("未登录退出应 401，实际 %d", w.Code)
+	}
+	s := e.login("alice", pw, secret)
+	if w := e.agentDo(s, "POST", agentBase+"/auth/logout", ""); w.Code != 200 {
+		t.Fatalf("登录后退出应 200，实际 %d", w.Code)
+	}
+	// 同一个令牌（代表另一台设备上的登录）仍然有效
+	if w := e.agentDo(s, "GET", agentBase+"/me", ""); w.Code != 200 {
+		t.Fatalf("退出不应让会话作废，/me 实际 %d", w.Code)
+	}
+}

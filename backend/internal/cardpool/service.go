@@ -23,6 +23,8 @@ var (
 	ErrNoAccounts = errors.New("平台未返回任何账户，本次未提交，请稍后刷新账户再试")
 	// ErrHolderAccepted：平台已受理新建持卡人，但本地写入失败
 	ErrHolderAccepted = errors.New("平台已受理，请勿重复提交；稍后刷新或在提交记录中查看")
+	// ErrMaybeApplied：请求已经发到平台（平台可能已经生效），但本地没能记下结果。包在原错误外面，调用方据此留失败审计、提示勿重复提交
+	ErrMaybeApplied = errors.New("请求已发出，但本地没能记下结果，平台可能已经生效；请勿重复提交，稍后到单据或列表里核对")
 )
 
 // badRequestError 的 Error() 即消息本身，并可被 errors.Is(err, ErrBadRequest) 识别。
@@ -103,6 +105,9 @@ type Service struct {
 
 	alertMu   sync.Mutex
 	alertSent map[string]int64 // key → 最后发送时所在的北京日起点（Unix 秒）
+
+	refreshFailMu sync.Mutex
+	refreshFails  map[string]refreshFail // 回收中刷新卡详情连续失败的卡 → 失败计时，刷新成功即删除
 }
 
 // New 创建服务。
@@ -118,6 +123,7 @@ func New(opts Options) *Service {
 		kickEvents:      make(chan struct{}, 1),
 		kickReplenishCh: make(chan struct{}, 1),
 		alertSent:       map[string]int64{},
+		refreshFails:    map[string]refreshFail{},
 	}
 }
 

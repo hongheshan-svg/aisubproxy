@@ -43,6 +43,7 @@ func AdminCardPoolCreateAccount(c *gin.Context) {
 		}
 		a, err := s.CreateSubAccount(c.Request.Context(), req.AccountName, adminName(c))
 		if err != nil {
+			poolAuditFailed(c, "wallet_create_account", "name="+strings.TrimSpace(req.AccountName), err)
 			poolFail(c, err)
 			return
 		}
@@ -64,11 +65,12 @@ func AdminCardPoolAccountStatus(c *gin.Context) {
 		no := c.Param("no")
 		a, err := s.SetSubAccountStatus(c.Request.Context(), no, req.Status, req.Remark, adminName(c))
 		if err != nil {
+			poolAuditFailed(c, "wallet_account_status", fmt.Sprintf("account_no=%s status=%s remark=%s", no, req.Status, poolNote(req.Remark)), err)
 			poolFail(c, err)
 			return
 		}
 		poolAudit(c, "wallet_account_status", fmt.Sprintf("account_no=%s status=%s remark=%s",
-			a.AccountNo, req.Status, strings.TrimSpace(req.Remark)))
+			a.AccountNo, req.Status, poolNote(req.Remark)))
 		c.JSON(http.StatusOK, a)
 	})(c)
 }
@@ -144,11 +146,13 @@ func AdminCardPoolConversion(c *gin.Context) {
 			SellCurrency: req.SellCurrency, BuyCurrency: req.BuyCurrency, SellCents: cents, By: adminName(c),
 		})
 		if err != nil {
+			amt, _ := marswallex.FormatAmount(cents)
+			poolAuditOrderFailed(c, "wallet_conversion", fmt.Sprintf("sell=%s%s buy=%s", amt, strings.TrimSpace(req.SellCurrency), strings.TrimSpace(req.BuyCurrency)), err)
 			poolFail(c, err)
 			return
 		}
 		amt, _ := marswallex.FormatAmount(o.AmountCents)
-		poolAudit(c, "wallet_conversion", fmt.Sprintf("out_order_no=%s sell=%s%s buy=%s", o.OutOrderNo, amt, o.Currency, o.BuyCurrency))
+		poolAudit(c, orderAuditAction("wallet_conversion", o), fmt.Sprintf("out_order_no=%s sell=%s%s buy=%s state=%s", o.OutOrderNo, amt, o.Currency, o.BuyCurrency, o.State))
 		c.JSON(http.StatusOK, o)
 	})(c)
 }
@@ -175,12 +179,15 @@ func AdminCardPoolWalletTransfer(c *gin.Context) {
 			Remark: req.Remark, AmountCents: cents, By: adminName(c),
 		})
 		if err != nil {
+			amt, _ := marswallex.FormatAmount(cents)
+			poolAuditOrderFailed(c, "wallet_transfer", fmt.Sprintf("payer=%s payee=%s amount=%s currency=%s",
+				strings.TrimSpace(req.PayerAccountNo), strings.TrimSpace(req.PayeeAccountNo), amt, strings.TrimSpace(req.Currency)), err)
 			poolFail(c, err)
 			return
 		}
 		amt, _ := marswallex.FormatAmount(o.AmountCents)
-		poolAudit(c, "wallet_transfer", fmt.Sprintf("out_order_no=%s payer=%s payee=%s amount=%s currency=%s",
-			o.OutOrderNo, o.PayerAccountNo, o.PayeeAccountNo, amt, o.Currency))
+		poolAudit(c, orderAuditAction("wallet_transfer", o), fmt.Sprintf("out_order_no=%s payer=%s payee=%s amount=%s currency=%s state=%s",
+			o.OutOrderNo, o.PayerAccountNo, o.PayeeAccountNo, amt, o.Currency, o.State))
 		c.JSON(http.StatusOK, o)
 	})(c)
 }

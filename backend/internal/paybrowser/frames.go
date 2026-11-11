@@ -206,37 +206,84 @@ func (b *Browser) eval(ctx context.Context, f frameRef, expr string) (*runtime.R
 	return r, nil
 }
 
-// evalElem 求值并把非空对象结果当作元素返回。
+// evalElem 求值并把非空对象结果当作元素返回。读不出的 frame 跳过。
 func (b *Browser) evalElem(ctx context.Context, frames []frameRef, expr string) *elem {
-	for _, f := range frames {
-		if r, err := b.eval(ctx, f, expr); err == nil && r.ObjectID != "" {
-			return &elem{frame: f, obj: r.ObjectID}
-		}
-	}
-	return nil
+	e, _ := b.evalElemIn(ctx, frames, expr)
+	return e
 }
 
-// find 按 sels 顺序逐个选择器在各 frame 中找第一个可见元素；找不到返回 nil。
-// 选择器顺序优先于 frame 顺序：不能让前面 frame 里只命中宽泛选择器的元素，压过后面 frame 里命中精确选择器的元素。
-func (b *Browser) find(ctx context.Context, frames []frameRef, sels []string, needText bool) *elem {
-	for _, s := range sels {
-		if e := b.evalElem(ctx, frames, fmt.Sprintf("%s(%s, %s, %t)", findJS, mustJSON([]string{s}), visibleJS, needText)); e != nil {
-			e.sel = s
-			return e
+// evalElemIn 同 evalElem，另外报告找到之前（找不到时是全部 frame）有没有 frame 读不出（求值出错）。
+func (b *Browser) evalElemIn(ctx context.Context, frames []frameRef, expr string) (e *elem, unreadable bool) {
+	for _, f := range frames {
+		r, err := b.eval(ctx, f, expr)
+		if err != nil {
+			unreadable = true
+			continue
+		}
+		if r.ObjectID != "" {
+			return &elem{frame: f, obj: r.ObjectID}, unreadable
 		}
 	}
-	return nil
+	return nil, unreadable
+}
+
+// errFrameUnreadable 表示有 frame 读不出：iframe 原地换了文档（还是同一个 frame）后，本包缓存的执行环境失效，在里面求值出错。
+// 轮询的查找下一轮会重建执行环境，不受影响；只查一次的检查（findOnce、findAnyOnce）遇到它要报错放弃这一单，不点支付：
+// 那个 frame 里可能就有要找的东西，不能当成「页面没有」（P2-02，同 countSavePayment）。
+var errFrameUnreadable = errors.New("有 frame 读不出")
+
+// find 按 sels 顺序逐个选择器在各 frame 中找第一个可见元素；找不到返回 nil。读不出的 frame 跳过，轮询时用它。
+// 选择器顺序优先于 frame 顺序：不能让前面 frame 里只命中宽泛选择器的元素，压过后面 frame 里命中精确选择器的元素。
+func (b *Browser) find(ctx context.Context, frames []frameRef, sels []string, needText bool) *elem {
+	e, _ := b.lookup(ctx, frames, sels, findExpr(needText))
+	return e
 }
 
 // findAny 同 find，但不要求可见：透明、盖在样式元素上的勾选框按可见规则找不到。
 func (b *Browser) findAny(ctx context.Context, frames []frameRef, sels []string) *elem {
+	e, _ := b.lookup(ctx, frames, sels, findAnyExpr)
+	return e
+}
+
+// findOnce 同 find，给只查一次、没有下一轮的检查用：查找途中有 frame 读不出就返回 errFrameUnreadable，
+// 找到了也一样（读不出的 frame 里可能有排在前面的命中）。拿不准就放弃这一单，不当成「没找到」。
+func (b *Browser) findOnce(ctx context.Context, frames []frameRef, sels []string, needText bool) (*elem, error) {
+	e, unreadable := b.lookup(ctx, frames, sels, findExpr(needText))
+	if unreadable {
+		return nil, errFrameUnreadable
+	}
+	return e, nil
+}
+
+// findAnyOnce 同 findAny，读不出的处理同 findOnce。
+func (b *Browser) findAnyOnce(ctx context.Context, frames []frameRef, sels []string) (*elem, error) {
+	e, unreadable := b.lookup(ctx, frames, sels, findAnyExpr)
+	if unreadable {
+		return nil, errFrameUnreadable
+	}
+	return e, nil
+}
+
+func findExpr(needText bool) func(sel string) string {
+	return func(sel string) string {
+		return fmt.Sprintf("%s(%s, %s, %t)", findJS, mustJSON([]string{sel}), visibleJS, needText)
+	}
+}
+
+func findAnyExpr(sel string) string { return fmt.Sprintf("%s(%s)", findAnyJS, mustJSON([]string{sel})) }
+
+// lookup 按 sels 顺序逐个选择器在各 frame 求 exprOf(选择器)，返回第一个元素，以及找到之前（找不到时是整个查找）有没有 frame 读不出。
+func (b *Browser) lookup(ctx context.Context, frames []frameRef, sels []string, exprOf func(sel string) string) (*elem, bool) {
+	unreadable := false
 	for _, s := range sels {
-		if e := b.evalElem(ctx, frames, fmt.Sprintf("%s(%s)", findAnyJS, mustJSON([]string{s}))); e != nil {
+		e, bad := b.evalElemIn(ctx, frames, exprOf(s))
+		unreadable = unreadable || bad
+		if e != nil {
 			e.sel = s
-			return e
+			return e, unreadable
 		}
 	}
-	return nil
+	return nil, unreadable
 }
 
 // visibleTexts 按 sels 顺序逐个选择器在各 frame 中收集命中元素的文字，相同文字只留一条。读不出的 frame 跳过。

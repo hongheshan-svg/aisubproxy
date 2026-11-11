@@ -313,7 +313,7 @@ func AdminAddCardHead(c *gin.Context) {
 		cardHeadDBError(c, err)
 		return
 	}
-	if err := db.SaveManualCardHead(h, c.GetString("username"), time.Now().Unix()); err != nil {
+	if err := db.SaveManualCardHead(h, adminName(c), time.Now().Unix()); err != nil {
 		cardHeadDBError(c, err)
 		return
 	}
@@ -378,7 +378,7 @@ func AdminUpdateCardHead(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	by, now := c.GetString("username"), time.Now().Unix()
+	by, now := adminName(c), time.Now().Unix()
 	if manual {
 		err = db.SaveManualCardHead(h, by, now)
 	} else {

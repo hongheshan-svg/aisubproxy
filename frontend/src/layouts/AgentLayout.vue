@@ -16,7 +16,7 @@
 
     <template #foot="{ rail }">
       <AgentSideMe v-if="me" :name="me.display_name || me.username || ''" :balance-cents="me.balance_cents || 0" :rail="rail" />
-      <div class="sn-tools"><ThemeToggle /></div>
+      <div v-if="!themeLocked" class="sn-tools"><ThemeToggle /></div>
       <button type="button" class="sn-logout" title="退出登录" @click="logout">
         <el-icon><SwitchButton /></el-icon>
         <span v-if="!rail">退出登录</span>
@@ -28,12 +28,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { agentApi, setAgentUnauthorizedHandler } from '../lib/agentApi'
+import { agentApi, agentLogout, setAgentUnauthorizedHandler } from '../lib/agentApi'
+import { dialog } from '../lib/dialog'
 import { resetAgentSession } from '../lib/agentSession'
 import { orderRetry } from '../lib/agentViews'
-import { siteBrand } from '../theme'
+import { siteBrand, themeLocked } from '../theme'
 import ThemeToggle from '../components/ThemeToggle.vue'
 import AgentSideMe from '../components/shell/AgentSideMe.vue'
 import SideNavShell from '../components/shell/SideNavShell.vue'
@@ -73,9 +74,13 @@ function toLogin() {
   router.replace({ path: '/agent/login', query: { redirect: route.fullPath } })
 }
 
+// 侧栏余额：进入时读一次，之后每次切换页面再读一次（F2-15），下单后切到别的菜单就对得上
+let meSeq = 0
 async function loadMe() {
+  const my = ++meSeq
   try {
     const r = await agentApi('/me')
+    if (my !== meSeq) return // 已有更新的请求，丢弃旧响应
     if (r.ok) {
       me.value = r.data
       // 核对身份：恢复本人结果未知的订单（并拦截刷新、关标签页），别人的丢弃
@@ -87,11 +92,13 @@ async function loadMe() {
 }
 
 async function logout() {
-  if (orderRetry.refresh() && !window.confirm('有一笔订单结果未知，退出后这台电脑上不能再原样重试。确定退出吗？')) return
-  try {
-    await agentApi('/auth/logout', 'POST')
-  } catch {
-    /* 退出失败也回登录页，cookie 过期后自然失效 */
+  if (orderRetry.refresh() && !(await dialog.confirm('有一笔订单结果未知，退出后这台电脑上不能再原样重试。确定退出吗？', { title: '订单结果未知', okText: '仍然退出', danger: true }))) return
+  // 服务端没确认退出时留在页面：HttpOnly 的会话 cookie 还在，回登录页会让人以为已经退了
+  const out = await agentLogout()
+  if (out !== 'done') {
+    if (out === 'csrf') dialog.toast('退出失败：浏览器里本站的校验 Cookie 丢了，服务器拒绝退出，重试也不会成功。请在浏览器设置里清除本站的 Cookie，清除后这台电脑上就退出了', 'err', 10000)
+    else dialog.toast('退出失败，服务器上的登录状态还在，请重试', 'err')
+    return
   }
   // 退出登录清掉待重试订单（只有请求号和下单内容），换别的代理商登录也拿不到
   orderRetry.clear()
@@ -117,6 +124,10 @@ onMounted(() => {
   checkEnabled()
   loadMe()
 })
+// 只看路径：同一页面里改查询参数（翻页、筛选）不重读。
+// 离开代理商后台（如退出回登录页）不读：会话已清，/me 回 401 会触发整页跳转
+const layoutRecord = route.matched[0]
+watch(() => route.path, (n, o) => { if (n !== o && route.matched[0] === layoutRecord) loadMe() })
 onBeforeUnmount(() => setAgentUnauthorizedHandler(null))
 </script>
 

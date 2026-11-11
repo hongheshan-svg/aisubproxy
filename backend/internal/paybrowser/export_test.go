@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/chromedp/cdproto/runtime"
 	"github.com/chromedp/chromedp"
 )
 
@@ -252,5 +253,46 @@ func callOnFirst(ctx context.Context, b *Browser, sel, fn string, res any) error
 			return fmt.Errorf("找不到 %s", sel)
 		}
 		return callOn(ctx, e.obj, fn, res)
+	})
+}
+
+// resetXvfbState 清掉共享 Xvfb 的失败时刻和告警标记，让每个用例从头开始。
+func resetXvfbState() {
+	xvfb.mu.Lock()
+	xvfb.failedAt, xvfb.alerted = time.Time{}, false
+	xvfb.mu.Unlock()
+}
+
+// OneShotCheck 单独跑一项填表里只查一次的检查，返回它的错误：link-save（disableLinkSave）、email（fillEmail，账号邮箱为空）、
+// link-modal（checkLinkModal）、terms（acceptTerms）、absent（checkAbsent，复查「城市」）。
+func OneShotCheck(ctx context.Context, b *Browser, name string) error {
+	return b.do(ctx, func(ctx context.Context) error {
+		switch name {
+		case "link-save":
+			return b.disableLinkSave(ctx)
+		case "email":
+			return b.fillEmail(ctx, &fillState{}, "")
+		case "link-modal":
+			return b.checkLinkModal(ctx)
+		case "terms":
+			return b.acceptTerms(ctx)
+		case "absent":
+			return b.checkAbsent(ctx, []field{{label: "城市", sels: Sel.City, value: "Portland", kind: kindText}})
+		}
+		return fmt.Errorf("没有这项检查: %s", name)
+	})
+}
+
+// ReloadFrame 让主页面上 sel 命中的 iframe 原地重新加载（还是同一个 frame，换成新文档），等新文档加载完再返回。
+// 本包缓存的这个 frame 的执行环境随旧文档失效，下一次在里面求值必然出错。
+func ReloadFrame(ctx context.Context, b *Browser, sel string) error {
+	js := fmt.Sprintf(`new Promise(resolve => {
+		const f = document.querySelector(%s)
+		f.addEventListener('load', () => resolve(true), { once: true })
+		f.src = f.src
+	})`, mustJSON(sel))
+	return b.do(ctx, func(ctx context.Context) error {
+		var ok bool
+		return chromedp.Evaluate(js, &ok, func(p *runtime.EvaluateParams) *runtime.EvaluateParams { return p.WithAwaitPromise(true) }).Do(ctx)
 	})
 }

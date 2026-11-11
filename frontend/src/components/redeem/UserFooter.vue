@@ -17,6 +17,7 @@ function toFaq(e: Event) {
     <router-link v-else to="/#help" class="u-link">{{ t('redeemUi.home.footerFaq') }}</router-link>
     <router-link to="/batch" class="u-link">{{ t('redeemUi.home.footerBatch') }}</router-link>
     <router-link to="/billing" class="u-link">{{ t('redeemUi.home.footerBilling') }}</router-link>
+    <router-link to="/history" class="u-link">{{ t('redeemUi.home.footerLookup') }}</router-link>
   </footer>
 </template>
 

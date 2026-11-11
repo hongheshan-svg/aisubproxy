@@ -46,6 +46,20 @@ func releaseProfileLock(lock *os.File) {
 	_ = lock.Close()
 }
 
+// removeProfile 删掉用户目录，删干净了才删锁文件、放锁（releaseProfileLock）。
+// 删不干净时（例如 Chrome 的子进程还没退完又往里写文件）打日志，只放锁、留下锁文件：下一轮清理（cleanProfilesIn）
+// 看到锁文件、拿得到锁，就先结束用这个目录的残留进程再删；锁文件也删了的话，只能按老规则等一小时没变化才删。
+func removeProfile(dir string, lock *os.File) {
+	if err := os.RemoveAll(dir); err != nil {
+		log.Printf("[paybrowser] 删除 Chrome 临时目录 %s 失败，留给下一轮清理: %v", filepath.Base(dir), err)
+		if lock != nil {
+			_ = lock.Close()
+		}
+		return
+	}
+	releaseProfileLock(lock)
+}
+
 // ownerGone 试着拿 lockPath 的排他锁：拿到说明持有它的进程已经不在，锁一直持有到调用返回的 release。
 // 锁文件是符号链接、打不开、锁被别人持有时返回 gone = false。
 func ownerGone(lockPath string) (release func(), gone bool) {

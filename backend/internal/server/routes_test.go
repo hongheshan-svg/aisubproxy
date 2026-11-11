@@ -63,7 +63,7 @@ func TestMarsWallexKeypairRouteRegistered(t *testing.T) {
 	t.Fatal("route missing: POST /api/v1/admin/marswallex/keypair")
 }
 
-// 付款后台接口的 10 条路由都注册在 /api/v1/admin/pay 下。
+// 付款后台接口的路由都注册在 /api/v1/admin/pay 下。
 func TestPayRoutesRegistered(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	t.Setenv("WEB_DIR", "")
@@ -79,12 +79,14 @@ func TestPayRoutesRegistered(t *testing.T) {
 		"GET " + p + "/orders",
 		"GET " + p + "/orders/:no",
 		"POST " + p + "/orders/:no/resolve",
+		"POST " + p + "/orders/:no/renewal/retry",
 		"GET " + p + "/orders/:no/shots/:name",
 		"GET " + p + "/config",
 		"PUT " + p + "/config",
 		"GET " + p + "/proxies",
 		"PUT " + p + "/proxies",
 		"POST " + p + "/browser-check",
+		"POST " + p + "/proxies/test",
 	} {
 		if !have[want] {
 			t.Errorf("route missing: %s", want)
@@ -92,7 +94,7 @@ func TestPayRoutesRegistered(t *testing.T) {
 	}
 }
 
-// 付款接口必须在 admin 组内：走真实路由和中间件，无凭证一律 401，防止路由被挪出鉴权。
+// 代理换码的后台接口必须在 admin 组内：无凭证一律 401。
 func TestAgentExchangeAdminRoutesRequireAdminAuth(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	t.Setenv("WEB_DIR", "")
@@ -111,6 +113,7 @@ func TestAgentExchangeAdminRoutesRequireAdminAuth(t *testing.T) {
 	}
 }
 
+// 付款接口必须在 admin 组内：走真实路由和中间件，无凭证一律 401，防止路由被挪出鉴权。
 func TestPayRoutesRequireAdminAuth(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	t.Setenv("WEB_DIR", "")
@@ -119,6 +122,7 @@ func TestPayRoutesRequireAdminAuth(t *testing.T) {
 	const no = "PO260101000000abcdef01"
 	for _, c := range []struct{ method, path string }{
 		{"POST", "/orders"}, {"GET", "/orders"}, {"GET", "/orders/" + no},
+		{"POST", "/orders/" + no + "/renewal/retry"}, {"POST", "/proxies/test"},
 		{"POST", "/orders/" + no + "/resolve"}, {"GET", "/orders/" + no + "/shots/01-form.png"},
 		{"GET", "/config"}, {"PUT", "/config"}, {"GET", "/proxies"}, {"PUT", "/proxies"}, {"POST", "/browser-check"},
 		{"GET", "/breaker"}, {"POST", "/breaker/resume"},
@@ -129,5 +133,26 @@ func TestPayRoutesRequireAdminAuth(t *testing.T) {
 		if w.Code != http.StatusUnauthorized {
 			t.Errorf("%s %s 无凭证应 401，实际 %d", c.method, c.path, w.Code)
 		}
+	}
+}
+
+// 「查看卡号」下线（H2-03）：它只多给前 6 位，却要向平台取一次完整卡号和 CVV、把卡记成用过一次。
+// 路由不再注册；查看验证码等其他卡操作照旧。
+func TestCardPoolSensitiveRouteRemoved(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Setenv("WEB_DIR", "")
+	r := gin.New()
+	setupRoutes(r)
+	for _, rt := range r.Routes() {
+		if rt.Path == "/api/v1/admin/cardpool/cards/:id/sensitive" {
+			t.Fatalf("查看卡号的路由应已删除: %s %s", rt.Method, rt.Path)
+		}
+	}
+	have := map[string]bool{}
+	for _, rt := range r.Routes() {
+		have[rt.Method+" "+rt.Path] = true
+	}
+	if !have["POST /api/v1/admin/cardpool/cards/:id/otp"] {
+		t.Fatal("查看验证码的路由应仍在")
 	}
 }

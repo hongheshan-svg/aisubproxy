@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -714,7 +713,6 @@ func TestAdminLeaseFlow(t *testing.T) {
 	ctx := context.Background()
 	s, mw, clock, _ := newTestService(t)
 	insertCard(t, Card{CardID: "c1", ProductID: "p1"})
-	insertCard(t, Card{CardID: "used", ProductID: "p1", PoolState: PoolUsed})
 	insertCard(t, Card{CardID: "rel", ProductID: "p1", PoolState: PoolReleasing})
 
 	if _, err := s.AdminLease(ctx, "rel", "alice"); !errors.Is(err, ErrBadRequest) {
@@ -723,13 +721,6 @@ func TestAdminLeaseFlow(t *testing.T) {
 	if _, err := s.AdminLease(ctx, "nope", "alice"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("不存在的卡: %v", err)
 	}
-	if _, err := s.ViewSensitive(ctx, "c1", "alice"); !errors.Is(err, ErrBadRequest) {
-		t.Fatalf("available 的卡要先租用: %v", err)
-	}
-	if n := len(mw.Requests("GET", sensitivePath("c1"))); n != 0 {
-		t.Fatalf("不应查询卡号: %d", n)
-	}
-
 	l, err := s.AdminLease(ctx, "c1", "alice")
 	if err != nil {
 		t.Fatal(err)
@@ -763,35 +754,18 @@ func TestAdminLeaseFlow(t *testing.T) {
 		t.Fatalf("%+v", o)
 	}
 
-	// leased（不论持有方）查看卡号 → 标记
-	mw.On("GET", sensitivePath("c1"), mwtest.OK(sensitiveJSON("c1")))
-	sv, err := s.ViewSensitive(ctx, "c1", "bob")
-	if err != nil || sv.CardNo != "4111111111111111" {
-		t.Fatalf("%+v %v", sv, err)
-	}
-	if c := mustGetCard(t, "c1"); !c.LeaseSensitive || i64(c.LastSensitiveAt) != clock.Now().Unix() {
-		t.Fatalf("leased 查看后应标记: %+v", c)
-	}
-
-	// used 的卡只查看、不改状态
-	mw.On("GET", sensitivePath("used"), mwtest.OK(sensitiveJSON("used")))
-	before := mustGetCard(t, "used")
-	if _, err := s.ViewSensitive(ctx, "used", "alice"); err != nil {
-		t.Fatal(err)
-	}
-	if after := mustGetCard(t, "used"); !reflect.DeepEqual(after, before) {
-		t.Fatalf("used 的卡不应改变:\n%+v\n%+v", before, after)
-	}
-
-	// 本人释放：取过卡号、上限 1 → used
+	// 本人释放：后台租用不取卡号（「查看卡号」已下线，H2-03）→ 回收中、使用次数不变
 	if err := s.AdminRelease(ctx, "c1", "alice"); err != nil {
 		t.Fatal(err)
 	}
-	if c := mustGetCard(t, "c1"); c.PoolState != PoolUsed || c.UseCount != 1 || c.LeaseOwner != "" {
+	if c := mustGetCard(t, "c1"); c.PoolState != PoolReleasing || c.UseCount != 0 || c.LeaseOwner != "" || c.LeaseSensitive {
 		t.Fatalf("AdminRelease 后: %+v", c)
 	}
 	if n := countOutcomes(t); n != 0 {
 		t.Fatalf("管理员释放不记录结果: %d", n)
+	}
+	if n := len(mw.Requests("GET", sensitivePath("c1"))); n != 0 {
+		t.Fatalf("后台租用、转入、释放都不应查询卡号: %d", n)
 	}
 
 	// 过期：不能转入，但可以释放

@@ -224,7 +224,8 @@ export function extractCdkSession(raw: string): string {
   const s = raw.trim()
   if (!s) return ''
   if (!s.startsWith('{') && s.split('.').length >= 5) return s
-  if (!s.startsWith('{') && s.startsWith('eyJ') && s.split('.').length === 3) return ''
+  // 纯 Access Token（三段 JWT，带 Bearer 前缀也算）不能当凭证
+  if (!s.startsWith('{') && looksLikeJwt(s)) return ''
   if (s.startsWith('{')) {
     try {
       const o = JSON.parse(s)
@@ -619,9 +620,14 @@ export async function readWorkbookRows(file: File): Promise<unknown[][]> {
   }) as unknown[][]
 }
 
+/**
+ * 导出本批成功号。unknownRows 非空时另起一页「结果未知」（卡密、邮箱、GPT密码、邮箱密码、at、状态），
+ * 成功页「账号」的格式不变，结果未知的不会混进成功页。
+ */
 export async function exportSuccessWorkbook(
   rows: Array<[string, string, string, string]>,
   filenamePrefix = 'batch_success',
+  unknownRows: string[][] = [],
 ) {
   const XLSX = await loadXLSX()
   const sheet = XLSX.utils.aoa_to_sheet([['邮箱', 'GPT密码', '邮箱密码', 'at'], ...rows])
@@ -629,6 +635,11 @@ export async function exportSuccessWorkbook(
   sheet['!autofilter'] = { ref: `A1:D${rows.length + 1}` }
   const workbook = XLSX.utils.book_new()
   XLSX.utils.book_append_sheet(workbook, sheet, '账号')
+  if (unknownRows.length) {
+    const unknown = XLSX.utils.aoa_to_sheet([['卡密', '邮箱', 'GPT密码', '邮箱密码', 'at', '状态'], ...unknownRows])
+    unknown['!cols'] = [{ wch: 28 }, { wch: 32 }, { wch: 24 }, { wch: 24 }, { wch: 72 }, { wch: 40 }]
+    XLSX.utils.book_append_sheet(workbook, unknown, '结果未知')
+  }
   XLSX.writeFile(workbook, `${filenamePrefix}_${Date.now()}.xlsx`, { compression: true })
 }
 

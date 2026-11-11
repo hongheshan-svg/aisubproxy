@@ -15,9 +15,11 @@ func RegisterAgentRoutes(api *gin.RouterGroup) {
 	auth.GET("/totp/setup", AgentTOTPSetup)
 	auth.POST("/totp/confirm", AgentTOTPConfirm)
 	auth.POST("/totp", AgentTOTPLogin)
-	auth.POST("/logout", AgentLogout)
 
 	sess := g.Group("", AgentAuthMiddleware())
+	// 退出放在需要登录（带 CSRF）的组里：第三方页面不能随手发一个 POST 把代理商踢下线。
+	// 退出只清这台浏览器的 cookie，不让其他设备的会话失效。
+	sess.POST("/auth/logout", AgentLogout)
 	sess.GET("/me", AgentMe)
 	sess.POST("/me/password", AgentChangePassword)
 	sess.GET("/products", AgentListProducts)

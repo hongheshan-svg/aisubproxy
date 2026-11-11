@@ -87,7 +87,7 @@ func (s *Service) pollCard(ctx context.Context, client *marswallex.Client, c *Ca
 		return uerr
 	}
 	if err != nil {
-		return errors.New(safeErr(err))
+		return errors.New(safeErr(redactPAN(err)))
 	}
 	status := normStatus(d.Status)
 	if status == "" {

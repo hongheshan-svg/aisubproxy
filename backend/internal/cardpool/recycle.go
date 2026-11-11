@@ -86,8 +86,8 @@ func (s *Service) advanceCardsOnce(ctx context.Context) error {
 	return firstErr
 }
 
-// advanceReleasing：刷新 → 平台已注销则退役、已冻结则停用 → 有可用余额就转出 →
-// 只剩冻结余额就 10 分钟后再查 → 都为 0 回到 available。
+// advanceReleasing：刷新 → 平台已注销则退役、已冻结则停用（本系统冻结的写「管理员冻结」、不告警，见 frozenByUs；
+// 其余写「平台冻结」并按外部冻结告警）→ 有可用余额就转出 → 只剩冻结余额就 10 分钟后再查 → 都为 0 回到 available。
 func (s *Service) advanceReleasing(ctx context.Context, c *Card) error {
 	fresh, err := s.refreshForRecycle(ctx, c)
 	if err != nil || fresh == nil {
@@ -101,6 +101,18 @@ func (s *Service) advanceReleasing(ctx context.Context, c *Card) error {
 		log.Printf("[cardpool] 卡 %s 已在平台注销，退役", c.CardID)
 		return nil
 	case "REVOKED":
+		ours, err := s.frozenByUs(ctx, c.CardID)
+		if err != nil {
+			return err
+		}
+		if ours {
+			// 管理员在回收中冻结了这张卡：和可用卡被管理员冻结一样停用，不当成外部冻结告警
+			if _, err := s.moveCard(ctx, c.CardID, PoolReleasing, PoolDisabled, "管理员冻结"); err != nil {
+				return err
+			}
+			log.Printf("[cardpool] 卡 %s 回收中被本系统冻结，停用", c.CardID)
+			return nil
+		}
 		moved, err := s.moveCard(ctx, c.CardID, PoolReleasing, PoolDisabled, "平台冻结")
 		if err != nil {
 			return err
@@ -125,6 +137,24 @@ func (s *Service) advanceReleasing(ctx context.Context, c *Card) error {
 		return err
 	}
 	return nil
+}
+
+// frozenByUs 判断卡现在的冻结是不是本系统发起的：这张卡最近一张未失败（在途或已成功）的改状态单目标是 REVOKED。
+// 不用 ourStatusOrder 的 600 秒窗口：回收中的卡只剩冻结余额或被限流时 10 分钟后才再查，冻结单成功可能早已超过 600 秒。
+// 之后本系统又解冻过（最近一张是 ACTIVE）就不算，再出现 REVOKED 按外部冻结处理。
+func (s *Service) frozenByUs(ctx context.Context, cardID string) (bool, error) {
+	var target string
+	err := db.DB.QueryRowContext(ctx, `SELECT target_status FROM mw_card_orders
+		WHERE kind = ? AND card_id = ? AND state IN (?, ?, ?, ?, ?)
+		ORDER BY id DESC LIMIT 1`,
+		KindStatus, cardID, StatePending, StateProcessing, StateUnknown, StateNeedsReview, StateSuccess).Scan(&target)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return target == "REVOKED", nil
 }
 
 // 只剩冻结余额的卡（MO-05）：一笔授权长期不结算也不撤销时，卡上的钱冻着，回收每 10 分钟查一次。
@@ -221,8 +251,8 @@ func (s *Service) advanceFrozen(ctx context.Context, c *Card) error {
 	return s.recycleStatus(ctx, fresh, "CANCELED")
 }
 
-// refreshForRecycle 刷新卡详情。出错时 next_action_at = now + 60 并返回错误；
-// 刷新期间卡的池状态已经变化时返回 (nil, nil)，留给下一轮按新状态处理。
+// refreshForRecycle 刷新卡详情。出错时 next_action_at = now + 60 并返回错误，连续失败满 30 分钟告警（见 noteRefreshFailure）；
+// 刷新成功就清掉失败计时。刷新期间卡的池状态已经变化时返回 (nil, nil)，留给下一轮按新状态处理。
 func (s *Service) refreshForRecycle(ctx context.Context, c *Card) (*Card, error) {
 	fresh, err := s.refreshCard(ctx, c.CardID, sourceRecycle)
 	if err != nil {
@@ -230,12 +260,49 @@ func (s *Service) refreshForRecycle(ctx context.Context, c *Card) (*Card, error)
 		if uerr := s.setNextAction(ctx, c.CardID, c.PoolState, &at); uerr != nil {
 			return nil, uerr
 		}
+		s.noteRefreshFailure(c, err)
 		return nil, fmt.Errorf("刷新卡详情失败，1 分钟后重试: %w", err)
 	}
+	s.refreshFailMu.Lock()
+	delete(s.refreshFails, c.CardID)
+	s.refreshFailMu.Unlock()
 	if fresh.PoolState != c.PoolState {
 		return nil, nil
 	}
 	return fresh, nil
+}
+
+const (
+	// refreshFailAlertAfter：回收中刷新卡详情连续失败多久才告警。平台偶尔抖一下不告警，卡一直卡住才提醒。
+	refreshFailAlertAfter = 30 * time.Minute
+	// refreshFailGap：两次刷新失败隔得比这还久，就不算连续失败，从头计时。正常每分钟重试一次，一轮回收再慢
+	// （50 张卡 × 30 秒超时 ≈ 25 分钟）也不会隔这么久；隔得更久说明这张卡中间没在回收里重试（离开过回收，
+	// 或被未定论的单据挡住整张跳过），之前的失败不能算进「已连续失败 N 分钟」。
+	refreshFailGap = 30 * time.Minute
+)
+
+// refreshFail 是一张卡回收时刷新卡详情的失败计时（Unix 秒）：since 是这一段连续失败的开始，last 是最近一次失败。
+type refreshFail struct{ since, last int64 }
+
+// noteRefreshFailure 记下卡 c 回收时刷新卡详情失败：第一次失败、或离上次失败超过 refreshFailGap 时从头计时
+// （只在内存里，进程重启从头计时），连续失败满 refreshFailAlertAfter 告警（key recycle-refresh:<卡>，每卡每个北京日一条；
+// 不和 recycle:<卡> 共用，免得互相压掉）。告警文字只带 safeErr 摘要，不带平台返回的 message。
+func (s *Service) noteRefreshFailure(c *Card, err error) {
+	now := s.now().Unix()
+	s.refreshFailMu.Lock()
+	f, ok := s.refreshFails[c.CardID]
+	if !ok || time.Duration(now-f.last)*time.Second > refreshFailGap {
+		f.since = now
+	}
+	f.last = now
+	s.refreshFails[c.CardID] = f
+	s.refreshFailMu.Unlock()
+	age := time.Duration(now-f.since) * time.Second
+	if age < refreshFailAlertAfter {
+		return
+	}
+	s.alert("recycle-refresh:"+c.CardID, fmt.Sprintf("卡 %s 回收（%s）时刷新卡详情已连续失败 %d 分钟，卡停在 %s，每分钟重试一次；请到 MarsWallex 后台核查这张卡。最后错误：%s",
+		c.CardID, poolStateNames[c.PoolState], int(age/time.Minute), c.PoolState, truncate(safeErr(err), 200)))
 }
 
 // recycleWithdraw 把卡上的可用余额全部转出。

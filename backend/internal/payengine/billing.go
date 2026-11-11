@@ -16,7 +16,7 @@ type taxFreeState struct {
 	cities [][2]string // {城市, 邮编前缀}
 }
 
-// taxFreeStates 取自原型 automation/lib/address.js。
+// taxFreeStates 沿用早期原型脚本里的免税州地址表。
 var taxFreeStates = []taxFreeState{
 	{"DE", [][2]string{{"Wilmington", "198"}, {"Newark", "197"}, {"Dover", "199"}}},
 	{"OR", [][2]string{{"Portland", "972"}, {"Salem", "973"}, {"Eugene", "974"}}},

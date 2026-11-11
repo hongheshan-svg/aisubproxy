@@ -3,6 +3,7 @@ package cardpool
 import (
 	"context"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -48,11 +49,11 @@ func (s *Service) PreviewCard(ctx context.Context, cardID string) (*CardPreview,
 	}
 	avail, err := parseBalance(d.AvailableBalance)
 	if err != nil {
-		return nil, errors.New("解析可用余额失败")
+		return nil, previewBalanceErr("可用余额", err)
 	}
 	frozen, err := parseBalance(d.FreezeBalance)
 	if err != nil {
-		return nil, errors.New("解析冻结余额失败")
+		return nil, previewBalanceErr("冻结余额", err)
 	}
 	inPool := true
 	if _, err := getCard(ctx, cardID); errors.Is(err, ErrNotFound) {
@@ -69,9 +70,19 @@ func (s *Service) PreviewCard(ctx context.Context, cardID string) (*CardPreview,
 	}, nil
 }
 
+// previewBalanceErr 是预览里余额解析失败的错误：负数单独写明；都不带平台原文。
+func previewBalanceErr(field string, err error) error {
+	if errors.Is(err, ErrNegativeBalance) {
+		return fmt.Errorf("平台返回的%s为负数: %w", field, ErrNegativeBalance)
+	}
+	return errors.New("解析" + field + "失败")
+}
+
 var longDigits = regexp.MustCompile(`\d(?:[ -]?\d){11,}`)
 
-// redactPAN 去掉错误全文里夹带的长数字串（可能是完整卡号）：平台错误的 Code、Message、被包裹的底层错误都打码，
+// redactPAN 去掉错误全文里夹带的长数字串（可能是完整卡号）。卡详情（GetCard）和取卡号（GetCardSensitive）的平台错误
+// 都要先过它再返回、记日志或告警：这两个接口的回复里有完整卡号，平台的 message 也可能回显。
+// 平台错误的 Code、Message、被包裹的底层错误都打码，
 // 别的错误对整条文本打码。错误类型不变，errors.Is / errors.As 照常可用；errors.As 取到的平台错误是打过码的副本。
 func redactPAN(err error) error {
 	if err == nil {

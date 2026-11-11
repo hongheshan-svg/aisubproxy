@@ -150,7 +150,7 @@ type CDKSessionSweep struct {
 }
 
 // SweepCDKSessions 清空到期的会话：绑定满 CDKSessionTTL，或本站已记录该码兑换完成。
-// 兑换完成的主路径是 Webhook 与结果查询里的 ClearCDKSessionBy*，这里兜住漏网的（Webhook 没配、用户不再查询）。
+// 现在没有代码再往 cdk_session_bindings 写入，这里只负责清掉升级前留下的旧会话，到期即清空。
 //
 // 主密钥缺失时，到期的旧明文行不清：邮箱无法加密保全，清掉就再也找不回来，属于破坏现有数据。
 // 这些行留到配上密钥（下次启动先加密）；PlaintextLeft 用来持续告警。
@@ -363,7 +363,7 @@ func migrateCDKSessionColumns() error {
 		WHERE session_bound_at IS NULL AND TRIM(session_payload) != ''`); err != nil {
 		return err
 	}
-	// 清理按完整码关联 CDK 状态；同一表达式也让 LookupStoredCDKByCode 不用全表扫描
+	// 清理按完整码关联 CDK 状态；同一表达式让清理不用全表扫描
 	_, err := DB.Exec(`CREATE INDEX IF NOT EXISTS idx_cp_cdk_code_norm ON cardplatform_cdk_codes(upper(trim(code)))`)
 	return err
 }

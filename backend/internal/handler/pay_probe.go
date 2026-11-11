@@ -28,8 +28,10 @@ import (
 )
 
 // 免付款探测：用测试账号的会话，在服务器上确认升级、点数、开通结账页的实际行为。
-// 全部不付款；HTTP 部分只走 chatgpt.ProbeAllowlist 里的「方法 + 路径」；浏览器部分只打开、等待、截图、读文字，不点击、不填表。
-// 结果、存档、日志里不出现会话、token、完整邮箱、完整卡 id、完整结账链接。
+// 全部不付款；HTTP 部分只走 chatgpt.ProbeAllowlist 里的「方法 + 路径」；浏览器部分只打开、等待、读文字，不点击、不填表。
+// 文字结果、存档的结果和日志里不出现会话、token、完整邮箱、完整卡 id、完整结账链接。
+// 截图：只有「浏览器打开 ChatGPT」一项截图（chatgpt.com 首页的可视区域，页面原样、不打码），存在 pay-shots/probe-xxxxxxxx/，
+// 只有管理员能看，随探测记录淘汰时删除。「账单门户」一项不截图：门户页上就有账单邮箱、卡尾号、地址和金额，只留文字判断。
 
 // 探测项 key（顺序即执行顺序与展示顺序）。
 var probeKeys = []string{
@@ -760,14 +762,18 @@ func (r *probeRun) checkCreditBalance() probeResult {
 
 // ---------------------------------------------------------------- 浏览器探测
 
-// browse 启动浏览器打开 pageURL，读页面并截图，用完关闭。截图失败不算探测失败。
+// browse 启动浏览器打开 pageURL，读页面，shotName 非空时再截图，用完关闭。截图失败不算探测失败。
+// shotName 为空表示这一项不截图：启动浏览器时也不给截图目录，本次探测也不因此建截图子目录。
 func (r *probeRun) browse(shotName, pageURL string, cookies []paybrowser.Cookie) (paybrowser.ProbePage, string, string, error) {
-	if r.shotDir == "" {
-		b := make([]byte, 4)
-		_, _ = rand.Read(b)
-		r.shotDir = "probe-" + hex.EncodeToString(b)
+	dir := ""
+	if shotName != "" {
+		if r.shotDir == "" {
+			b := make([]byte, 4)
+			_, _ = rand.Read(b)
+			r.shotDir = "probe-" + hex.EncodeToString(b)
+		}
+		dir = filepath.Join(r.shotRoot, r.shotDir)
 	}
-	dir := filepath.Join(r.shotRoot, r.shotDir)
 	br, err := probeLaunch(r.ctx, r.proxy, dir)
 	if err != nil {
 		return paybrowser.ProbePage{}, "", "", fmt.Errorf("启动浏览器失败：%s", err.Error())
@@ -779,6 +785,9 @@ func (r *probeRun) browse(shotName, pageURL string, cookies []paybrowser.Cookie)
 	pg, err := br.ProbeRead(r.ctx)
 	if err != nil {
 		return paybrowser.ProbePage{}, "", "", err
+	}
+	if shotName == "" {
+		return pg, "", "", nil
 	}
 	shot, shotErr := br.Shot(r.ctx, shotName, paybrowser.ShotPage)
 	note := ""
@@ -831,9 +840,10 @@ func (r *probeRun) checkCustomerPortal() probeResult {
 		res.Details = d
 		return res
 	}
-	// 门户链接本身带会话凭据，只交给浏览器，不进任何输出；不注入 chatgpt.com 的 cookie
+	// 门户链接本身带会话凭据，只交给浏览器，不进任何输出；不注入 chatgpt.com 的 cookie。
+	// 不截图（审查 H2-02）：门户页上就有账单邮箱、卡尾号、账单地址和历史金额，截图又不打码；判断只靠下面的文字匹配。
 	r.sc.secrets = append(r.sc.secrets, raw)
-	pg, shot, note, err := r.browse("customer_portal", raw, nil)
+	pg, _, _, err := r.browse("", raw, nil)
 	if err != nil {
 		res := r.fail("customer_portal", "门户链接域名 %s（在白名单内）；%s", host, err.Error())
 		res.Details = d
@@ -841,7 +851,6 @@ func (r *probeRun) checkCustomerPortal() probeResult {
 	}
 	fh, fp := chatgpt.ProbeURLParts(pg.URL)
 	d["final_host"], d["final_path_prefix"], d["page_title"] = fh, fp, pg.Title
-	d["screenshot"], d["screenshot_note"] = shot, note
 	if paybrowser.IsCFChallengePage(pg) {
 		d["cloudflare_blocked"] = true
 		res := r.fail("customer_portal", "门户页被 Cloudflare 挑战拦截（%s），如实记录，不尝试绕过", fh)

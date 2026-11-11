@@ -153,6 +153,29 @@ export class OrderRetry {
     this.refresh()
   }
 
+  /** 存储里当前代理商待重试那笔的请求号；内容和 shown（页面上显示的）一致才返回，否则（或还没核对身份）为 null。弹确认框前记下它。 */
+  pendingKey(shown: PendingOrder | null): string | null {
+    const cur = this.owner ? this.lock.current(this.owner) : null
+    return cur && shown && samePendingOrder(cur.payload, shown) ? cur.key : null
+  }
+
+  /**
+   * 确认框（异步）返回后的放弃（F2-18）：等待期间别的标签页可能已处理完这笔、或放弃后锁定了另一笔。
+   * 重读存储：请求号还是弹框前记下的 key、内容也还是显示的那笔才清（只清这个请求号），返回 go；
+   * 别处已处理完返回 settled；存储里是另一笔（内容不同，或内容相同但请求号不同）返回 locked（改显示它）。这两种都不动存储。
+   */
+  abandonShown(shown: PendingOrder | null, key: string | null): OrderRecheck {
+    const cur = this.owner ? this.lock.current(this.owner) : null
+    if (!cur) { this.refresh(); return { kind: 'settled' } }
+    if (!shown || !key || cur.key !== key || !samePendingOrder(cur.payload, shown)) {
+      this.refresh()
+      return { kind: 'locked', pending: cur.payload }
+    }
+    this.lock.done(key)
+    this.refresh()
+    return { kind: 'go' }
+  }
+
   /** 退出登录：清掉记录，忘掉身份。 */
   clear(): void {
     this.lock.clear()
@@ -209,6 +232,16 @@ export function beijingRange(fromDate: string, toDate: string): { from: number; 
   const t = ymdToBeijingSec(toDate)
   if (f === null || t === null || t < f) return null
   return { from: f, to: t + DAY }
+}
+
+/**
+ * 钱包流水的起止（Unix 秒）：起止日按北京时间日界，起点是起始日 0 点，终点是结束日次日 0 点前一秒，
+ * 且不晚于 nowSec。日期不合法或起点晚于终点返回 null。
+ */
+export function walletSerialRange(startDate: string, endDate: string, nowSec: number): { start: number; end: number } | null {
+  const r = beijingRange(startDate, endDate)
+  if (!r) return null
+  return { start: r.from, end: Math.min(r.to - 1, nowSec) }
 }
 
 /** Unix 秒 → 北京时间的 HH:mm。 */

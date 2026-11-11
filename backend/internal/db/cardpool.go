@@ -107,6 +107,9 @@ func MigrateCardPool() error {
 		{"mw_cards", "frozen_since", "INTEGER"},
 		// 定时查询卡状态的上次查询时间（Unix 秒）；为空表示从没查过，排在最前
 		{"mw_cards", "status_polled_at", "INTEGER"},
+		// 卡进入回收的时间（Unix 秒）：释放、开卡成功建卡、导入时写入，回收推进时不改；每日汇总按它数卡住的卡。
+		// 旧行为空，汇总按 updated_at 兜底
+		{"mw_cards", "released_at", "INTEGER"},
 	}
 	for _, c := range cols {
 		var n int

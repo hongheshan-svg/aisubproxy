@@ -21,27 +21,23 @@ func IsXPremiumPlan(plan string) bool {
 	return false
 }
 
-// Grok 档位：旧注册表里是裸键（premium_monthly / plus_yearly …），ACC 定价表里带 grok_ 前缀。
+// Grok 档位键：裸键（plus_monthly / super_yearly …）或带 grok_ 前缀（grok_premium_monthly …）。
+// 这里只用来按档位键推断产品线（handler 的 issueProduct），没有上游，也不改写发码时的档位键。
 //
 // 2026-10-19 改名对齐 xAI 现行四档 Plus / Premium / Super / Ultra：
-// lite→plus($8)、monthly/yearly→premium($30)、plus→super($100)、heavy→ultra($200)。
-// ★裸 premium_monthly 同时是 X Premium 的键★：没有产品信息时 X 优先（issueProduct 先判 X），
-// Grok 发码一律带 grok_ 前缀（GrokIssuePlan）。旧键 lite/heavy/monthly/yearly 仍认，按新键处理。
+// lite→plus($8)、monthly/yearly→premium($30)、plus→super($100)、heavy→ultra($200)。旧键 lite/heavy/monthly/yearly 仍认。
+// ★裸键和 X 会员的键重名★（plus/premium/super/ultra_monthly|yearly）：没有产品信息时 X 优先（issueProduct 先判 X）。
 // 带 grok_ 前缀时认全部四档；裸键不认 premium_*（归 X）。
-// ★2026-10-24 Grok 专属半价档★：grok_<tier>_monthly_half(严格半价档,发码给顾客用)。
-// 只在带 grok_ 前缀时认 _half 后缀;裸键不认(半价一律带前缀发码)。
+// ★2026-10-24 Grok 专属半价档★：grok_<tier>_monthly_half，只在带 grok_ 前缀时认 _half 后缀，裸键不认。
 var grokPlanRe = regexp.MustCompile(`^(?:grok_(?:(?:plus|premium|super|ultra|lite|heavy)_)?(?:monthly|yearly)(?:_half)?|(?:(?:plus|super|ultra|lite|heavy)_)?(?:monthly|yearly))$`)
 
 func IsGrokPlan(plan string) bool {
 	return grokPlanRe.MatchString(strings.ToLower(strings.TrimSpace(plan)))
 }
 
-// Claude 档位：旧注册表里是裸键（pro / max_5x / max_20x），ACC 定价表里带 claude_ 前缀
-// （claude_pro / claude_max_5x / claude_max_20x）。本站界面与码上统一用裸键，发码一律带
-// claude_ 前缀（ClaudeIssuePlan），让上游直接定位到 Claude，不靠「遍历各产品档位表」反查。
-//
-// Claude 直冲为恒价 USD（claudeProduct.UsesFlatFundingPrice），兑换一律按 US/USD 收单，
-// 与 Grok 同构。三档裸键唯一，不与 GPT（plus/pro_20x…）、X、Grok 的键冲突。
+// Claude 档位键：裸键（pro / max_5x / max_20x）或带 claude_ 前缀（claude_pro / claude_max_5x / claude_max_20x）。
+// 这里只用来按档位键推断产品线（handler 的 issueProduct），没有上游，也不改写发码时的档位键。
+// 三档裸键唯一，不与 GPT（plus/pro_20x…）、X、Grok 的键冲突。
 var claudeBarePlans = map[string]bool{
 	"pro":     true,
 	"max_5x":  true,

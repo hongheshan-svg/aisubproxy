@@ -104,7 +104,6 @@
                     <el-button size="small" type="primary" plain @click="fundCard(row)">注资</el-button>
                     <el-button size="small" plain @click="releaseCard(row)">释放</el-button>
                   </template>
-                  <el-button v-if="canViewSensitive(row)" size="small" type="primary" plain @click="viewSensitive(row)">查看卡号</el-button>
                   <el-button v-if="row.pool_state !== 'retired'" size="small" type="primary" plain @click="viewOtp(row)">查看验证码</el-button>
                   <el-button v-if="row.pool_state === 'disabled'" size="small" type="success" plain @click="enableCard(row)">启用</el-button>
                   <el-button v-if="canFreeze(row.platform_status)" size="small" plain @click="runOrderAction(row, 'freeze', '冻结')">冻结</el-button>
@@ -327,7 +326,7 @@
                 </el-form-item>
                 <el-form-item label="单日注资笔数上限（按北京日，笔）">
                   <el-input-number v-model="policy.daily_fund_count_cap" :min="1" :max="100000" :step="10" :precision="0" data-field="daily_count_cap" />
-                  <div class="text-xs text-muted mt-1">充值和带金额的开卡都算一笔，明确失败、没发出的不算。到上限后当天不再注资，发码和兑换也会暂停，北京时间次日 0 点恢复。</div>
+                  <div class="text-xs text-muted mt-1">充值和带金额的开卡都算一笔；不带金额的开卡（开卡金额为 0，例如默认的自动补卡）不算，明确失败、没发出的也不算。到上限后当天不再注资，发码和兑换也会暂停，北京时间次日 0 点恢复。</div>
                 </el-form-item>
                 <el-form-item label="未选用 MarsWallex 时仍自动补卡">
                   <el-switch v-model="policy.replenish_when_unselected" />
@@ -528,15 +527,6 @@
         @submitted="submitHolder" @cancel="holderFormOpen = false" />
     </el-dialog>
 
-    <!-- 卡号弹窗：关闭即清空 -->
-    <el-dialog v-model="sensitiveOpen" title="卡号（已打码）" width="440px" destroy-on-close :close-on-click-modal="false" @closed="clearSensitive">
-      <el-descriptions v-if="sensitive" :column="1" border size="small">
-        <el-descriptions-item label="卡号"><span class="mono">{{ sensitive.cardNoMasked }}</span></el-descriptions-item>
-      </el-descriptions>
-      <p class="text-xs text-subtle mt-2">只显示前 6 位和后 4 位；完整卡号和 CVV2 不在后台显示。</p>
-      <template #footer><el-button type="primary" @click="sensitiveOpen = false">关闭</el-button></template>
-    </el-dialog>
-
     <!-- 验证码弹窗：关闭即清空 -->
     <el-dialog v-model="otpOpen" title="3DS 验证码" width="440px" destroy-on-close :close-on-click-modal="false" @closed="clearOtp">
       <el-descriptions v-if="otp" :column="1" border size="small">
@@ -551,6 +541,7 @@
 </template>
 
 <script setup lang="ts">
+import { fmtBeijingAny } from '../../lib/mwwebhook'
 import ApiErrorNotice from '../../components/ApiErrorNotice.vue'
 import { mapApiError } from '../../lib/errors'
 import AdminPageHeader from '../../components/AdminPageHeader.vue'
@@ -564,9 +555,8 @@ import {
   orderStateText, orderToast, withoutSelection, type CardholderFormValue,
 } from '../../lib/cardpool'
 import {
-  canFreeze, canUnfreeze, importProductOptions, importSweepWarning, previewMatchesInput, releaseConfirmText, releaseDoneText, sensitiveNote, usedStateNote,
+  canFreeze, canUnfreeze, importProductOptions, importSweepWarning, previewMatchesInput, releaseConfirmText, releaseDoneText, usedStateNote,
 } from '../../lib/mwcardtext'
-import { toSensitiveView, type SensitiveView } from '../../lib/cardpool-sensitive'
 import { dialog } from '../../lib/dialog'
 import { useAuthStore } from '../../stores/auth'
 
@@ -638,8 +628,7 @@ const tab = useRouteTab('/ops/cardpool')
 
 // ---------- 通用 ----------
 function fmtIso(s: string) {
-  const d = new Date(s)
-  return isNaN(d.getTime()) ? s : d.toLocaleString()
+  return fmtBeijingAny(s)
 }
 
 function poolStateLabel(s: string) {
@@ -672,12 +661,6 @@ function productLabel(id: string) {
 
 function isMine(c: Card) {
   return c.pool_state === 'leased' && c.lease_owner === 'admin:' + auth.username
-}
-
-// 查看卡号：本人租用中的卡（计为本次租约已取卡号）；已用、停用、清零中的卡仅供排查，只查看、不改状态。
-// 可用的卡要先租用；别人租用中的卡不提供（会算到对方的租约上）。
-function canViewSensitive(c: Card) {
-  return isMine(c) || ['used', 'disabled', 'releasing'].includes(c.pool_state)
 }
 
 // ---------- 概览 ----------
@@ -736,18 +719,22 @@ const cardTotal = ref(0)
 const cardsLoading = ref(false)
 const cardFilter = reactive({ state: '', product_id: '', page: 1 })
 
+// 连改筛选、翻页时先发的请求可能后到：只认最新一次
+let cardsSeq = 0
 async function loadCards() {
+  const my = ++cardsSeq
   cardsLoading.value = true
   try {
     const q = new URLSearchParams({ page: String(cardFilter.page), page_size: String(PAGE_SIZE) })
     if (cardFilter.state) q.set('state', cardFilter.state)
     if (cardFilter.product_id) q.set('product_id', cardFilter.product_id)
     const r = await api<{ items: Card[]; total: number }>('/cards?' + q)
+    if (my !== cardsSeq) return // 已有更新的请求，丢弃旧响应
     if (!r.ok) return dialog.toast(errText(r, '加载卡失败'), 'err')
     cards.value = r.data.items
     cardTotal.value = r.data.total
   } finally {
-    cardsLoading.value = false
+    if (my === cardsSeq) cardsLoading.value = false
   }
 }
 function resetCards() {
@@ -823,30 +810,12 @@ async function fundCard(row: Card) {
   await runOrderAction(row, 'fund', '注资', { amount })
 }
 
-// 敏感信息：只存在内存里，关闭弹窗即清空；不写日志、不进存储。
-const sensitive = ref<SensitiveView | null>(null)
-const sensitiveOpen = ref(false)
+// 验证码：只存在内存里，关闭弹窗即清空；不写日志、不进存储。
 const otp = ref<{ otp: string; merchant_name: string; amount: string; currency: string; received_at: string } | null>(null)
 const otpOpen = ref(false)
 
-function clearSensitive() {
-  sensitive.value = null
-}
 function clearOtp() {
   otp.value = null
-}
-
-async function viewSensitive(row: Card) {
-  const note = sensitiveNote(row.pool_state, policy.value)
-  const ok = await dialog.confirm(`将显示卡 ${row.card_id}（后四位 ${row.last4}）的打码卡号（前 6 后 4），此操作会被记录。${note}继续？`, {
-    title: '查看卡号', okText: '查看',
-  })
-  if (!ok) return
-  const r = await api(`/cards/${encodeURIComponent(row.card_id)}/sensitive`, 'POST')
-  if (!r.ok) return dialog.toast(errText(r, '获取卡号失败'), 'err')
-  sensitive.value = toSensitiveView(r.data)
-  sensitiveOpen.value = true
-  loadCards()
 }
 
 async function viewOtp(row: Card) {
@@ -1167,18 +1136,21 @@ const orderTotal = ref(0)
 const ordersLoading = ref(false)
 const orderFilter = reactive({ state: '', kind: '', page: 1 })
 
+let ordersSeq = 0
 async function loadOrders() {
+  const my = ++ordersSeq
   ordersLoading.value = true
   try {
     const q = new URLSearchParams({ page: String(orderFilter.page), page_size: String(PAGE_SIZE) })
     if (orderFilter.state) q.set('state', orderFilter.state)
     if (orderFilter.kind) q.set('kind', orderFilter.kind)
     const r = await api<{ items: Order[]; total: number }>('/orders?' + q)
+    if (my !== ordersSeq) return // 已有更新的请求，丢弃旧响应
     if (!r.ok) return dialog.toast(errText(r, '加载单据失败'), 'err')
     orders.value = r.data.items
     orderTotal.value = r.data.total
   } finally {
-    ordersLoading.value = false
+    if (my === ordersSeq) ordersLoading.value = false
   }
 }
 function resetOrders() {
@@ -1211,17 +1183,20 @@ const txnTotal = ref(0)
 const txnsLoading = ref(false)
 const txnFilter = reactive({ card_id: '', page: 1 })
 
+let txnsSeq = 0
 async function loadTxns() {
+  const my = ++txnsSeq
   txnsLoading.value = true
   try {
     const q = new URLSearchParams({ page: String(txnFilter.page), page_size: String(PAGE_SIZE) })
     if (txnFilter.card_id.trim()) q.set('card_id', txnFilter.card_id.trim())
     const r = await api<{ items: Txn[]; total: number }>('/transactions?' + q)
+    if (my !== txnsSeq) return // 已有更新的请求，丢弃旧响应
     if (!r.ok) return dialog.toast(errText(r, '加载交易失败'), 'err')
     txns.value = r.data.items
     txnTotal.value = r.data.total
   } finally {
-    txnsLoading.value = false
+    if (my === txnsSeq) txnsLoading.value = false
   }
 }
 function resetTxns() {
@@ -1443,30 +1418,25 @@ watch(tab, onTab)
 
 onMounted(() => {
   loadProducts()
-  loadPolicy(true) // 查看卡号、释放的确认文字要读使用次数上限和注销天数
+  loadPolicy(true) // 释放的确认文字要读使用次数上限和注销天数
   // 刷新后从 ?tab= 直接落在非概览标签时，加载该标签的数据
   if (tab.value === 'overview') loadOverview()
   else { loadOverview(); onTab(tab.value) }
 })
 
 onBeforeUnmount(() => {
-  clearSensitive()
   clearOtp()
 })
 </script>
 
 <style scoped>
-.text-warn {
-  color: #d97706;
-}
 :deep(.mismatch-row td) {
-  background: rgba(220, 38, 38, 0.12) !important;
-  color: #dc2626;
+  background: var(--err-soft) !important;
+  color: var(--err-ink);
 }
 .field-error {
   margin-bottom: 8px;
   font-size: 13px;
-  color: #dc2626;
 }
 .pending-chip {
   padding: 8px 14px;
@@ -1481,7 +1451,7 @@ onBeforeUnmount(() => {
   font-size: 16px;
 }
 .pending-chip:hover {
-  border-color: #3b82f6;
+  border-color: var(--primary);
 }
 .grid-form {
   display: grid;

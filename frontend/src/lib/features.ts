@@ -28,11 +28,6 @@ export function shouldLeaveFeaturePage(meta: Record<string, unknown> | undefined
   return !!f && state.loaded && !featureOn(state, f)
 }
 
-/** 后端在代理商功能关闭时对受控接口返回 404 agent_disabled。 */
-export function isAgentDisabled(status: number, data: any): boolean {
-  return status === 404 && !!data && data.error === 'agent_disabled'
-}
-
 /** 读开关；失败时保持原状（loaded 仍为 false 就不显示代理商菜单）。 */
 export async function loadAdminFeatures(): Promise<void> {
   const r = await adminApi<{ agent_enabled?: boolean }>('/features')

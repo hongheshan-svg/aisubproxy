@@ -686,6 +686,26 @@ func TestFundCallErrorNotRetried(t *testing.T) {
 	}
 }
 
+// 注资已发出、卡池没记下结果（ErrMaybeApplied）：放弃原因只写一句「注资已发出，结果不明，已放弃」，
+// 不带写给后台管理员的长句和数据库错误；资金处理照旧（不重发、不查单、卡照旧回收）。
+func TestFundMaybeAppliedAbortReason(t *testing.T) {
+	h := newPayHarness(t, nil)
+	h.pool.fund = func(context.Context, *cardpool.Lease, int64) (*cardpool.Order, error) {
+		return nil, fmt.Errorf("%w: disk I/O error", cardpool.ErrMaybeApplied)
+	}
+	h.start(t)
+	g := waitDone(t, h.submit(t, false).OrderNo)
+	assertNotSubmitted(t, g, "fund_failed")
+	if g.ErrorMessage != "注资已发出，结果不明，已放弃" {
+		t.Fatalf("放弃原因应只写结果不明: %q", g.ErrorMessage)
+	}
+	assertReleases(t, h, cardpool.ResultAborted)
+	if h.pool.count("Fund") != 1 || h.pool.count("WaitOrder") != 0 || h.pool.count("Sensitive") != 0 {
+		t.Fatalf("不重发、不查单、不取卡号: fund=%d wait=%d sensitive=%d", h.pool.count("Fund"), h.pool.count("WaitOrder"), h.pool.count("Sensitive"))
+	}
+	assertSubmitCount(t, h, 0)
+}
+
 func TestFillFailureReleasesAborted(t *testing.T) {
 	h := newPayHarness(t, nil)
 	h.br.fill = func(paybrowser.Card, paybrowser.Billing) error { return errors.New("找不到卡号输入框") }

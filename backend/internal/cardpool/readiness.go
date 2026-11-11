@@ -29,6 +29,7 @@ func (s *Service) replenishAllowed(ctx context.Context, pol Policy) (bool, error
 
 // SelectableCards 统计该套餐现在能选到多少张指定币种的卡，口径和 Acquire 一致：
 // 产品优先级（没配时取 default）、跳过停用的产品、selectableWhere、有效期还剩一个月以上。
+// 例外：currency 必填，传空串时返回 0（Acquire 的空币种表示不限，这里不支持）。
 func (s *Service) SelectableCards(ctx context.Context, planKey, currency string) (int, error) {
 	pol, err := LoadPolicy()
 	if err != nil {
@@ -92,12 +93,12 @@ func (s *Service) CheckMainWallet(ctx context.Context, currency string, cents in
 	return checkAvailable(a, "主钱包", currency, cents)
 }
 
-// dailyFundCount 今天（北京日）已经注资多少笔，口径和 insertPendingFund 一致。
+// dailyFundCount 今天（北京日）已经注资多少笔，口径和 insertPendingFund 一致：只数带金额的转入和开卡。
 func (s *Service) dailyFundCount(ctx context.Context, now time.Time) (int64, error) {
 	day := beijingDayStart(now)
 	var n int64
 	err := db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM mw_card_orders
-		WHERE kind IN (?, ?) AND created_at >= ? AND created_at < ? AND state NOT IN (?, ?)`,
+		WHERE kind IN (?, ?) AND created_at >= ? AND created_at < ? AND state NOT IN (?, ?) AND amount_cents > 0`,
 		KindRecharge, KindApply, day.Unix(), day.AddDate(0, 0, 1).Unix(), StateFailed, StateNotSent).Scan(&n)
 	return n, err
 }

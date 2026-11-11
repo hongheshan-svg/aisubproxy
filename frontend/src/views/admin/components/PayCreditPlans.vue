@@ -83,7 +83,3 @@ function rowFloorProblem(row: FormRow) {
   return floorProblem(toMinor(row.floor || 0, cur), toMinor(row.expect || 0, cur), toMinor(row.cap || 0, cur))
 }
 </script>
-
-<style scoped>
-.text-warn { color: #d97706; }
-</style>

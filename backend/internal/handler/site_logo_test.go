@@ -203,3 +203,40 @@ func TestSiteLogoBadStoredTypeIs404(t *testing.T) {
 		t.Fatalf("类型被改坏应 404: %d", w.Code)
 	}
 }
+
+// H1-05：带着匹配的 ETag 来时不读出、不解码图片本体（内容坏了也能回 304，说明没碰它）。
+func TestPublicSiteLogoNotModifiedWithoutReadingBody(t *testing.T) {
+	dbtest.Open(t)
+	if err := db.SetSettings(map[string]string{
+		siteLogoKey:     "!!!not-base64!!!",
+		siteLogoTypeKey: "image/png",
+		siteLogoVerKey:  "v1v1v1v1v1v1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/logo", PublicSiteLogo)
+	req := httptest.NewRequest("GET", "/logo", nil)
+	req.Header.Set("If-None-Match", `"v1v1v1v1v1v1"`)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusNotModified {
+		t.Fatalf("应 304，实际 %d", w.Code)
+	}
+}
+
+func TestSettingNonEmpty(t *testing.T) {
+	dbtest.Open(t)
+	if db.SettingNonEmpty("nope") {
+		t.Fatal("不存在应为假")
+	}
+	_ = db.SetSetting("k1", "")
+	if db.SettingNonEmpty("k1") {
+		t.Fatal("空串应为假")
+	}
+	_ = db.SetSetting("k1", "v")
+	if !db.SettingNonEmpty("k1") {
+		t.Fatal("非空应为真")
+	}
+}

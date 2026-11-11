@@ -22,7 +22,7 @@ func serveLatestRelease(t *testing.T, body string) {
 			"tag_name": "v1.5.1",
 			"html_url": "https://github.com/o/r/releases/tag/v1.5.1",
 			"body":     body,
-			"assets":   []map[string]any{{"name": "cdk-bundle-linux-amd64.tgz"}},
+			"assets":   []map[string]any{{"name": testBundleName}},
 		})
 	}))
 	t.Cleanup(srv.Close)
@@ -70,5 +70,12 @@ func TestVersionReleaseNotesTruncated(t *testing.T) {
 	}
 	if !utf8.ValidString(notes) {
 		t.Fatal("截断不能切坏多字节字符")
+	}
+}
+
+func TestVersionHasBundleNeedsSignature(t *testing.T) {
+	serveLatestRelease(t, "x") // 附件只有包，没有 .sha256 和 .sig
+	if out := getVersion(t, true); out["has_bundle"] != false {
+		t.Fatalf("缺校验和签名时 has_bundle 应为假：%v", out["has_bundle"])
 	}
 }

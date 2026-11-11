@@ -71,13 +71,14 @@ import { agentApi, agentErrorText } from '../../lib/agentApi'
 import { fmtUsd } from '../../lib/agentMoney'
 import { codesTxt, downloadText } from '../../lib/agentExport'
 import {
-  keepPendingOnRateLimit, orderFailureKind, NOTE_MAX, orderLockState, orderPreview, orderRetry, pickLatestOrder, recentOrderWarning, validQuantity,
+  keepPendingOnRateLimit, orderFailureKind, NOTE_MAX, orderLockState, orderPreview, orderRetry, pickLatestOrder, recentOrderWarning, samePendingOrder, validQuantity,
   type PendingOrder, type RecentOrder,
 } from '../../lib/agentViews'
 import { ORDER_RETRY_KEY } from '../../lib/retryLock'
 import { IdempotencyLockedError } from '../../lib/idempotency'
 import { fmtBeijing } from '../../lib/mwwebhook'
 import { copyToClipboard } from '../../lib/clipboard'
+import { dialog } from '../../lib/dialog'
 import AgentOrderCodes from '../../components/AgentOrderCodes.vue'
 
 const products = ref<any[]>([])
@@ -115,6 +116,7 @@ function showPending(p: PendingOrder | null) {
 const SETTLED_ELSEWHERE = '这笔订单已在别的页面处理完（成功或已放弃），请先到「订单」核对，再决定是否重新下单'
 const LOCKED_ELSEWHERE = '有一笔订单结果未知（可能是在别的页面下的），请先原样重试或放弃'
 const OTHER_ACCOUNT = '这个浏览器里另一个代理商账号有一笔结果未知的订单，请刷新页面，确认当前登录的账号后再下单'
+const ABANDON_CHANGED = '确认期间这笔订单的状态在别的页面变了，这次没有放弃'
 
 async function loadAll() {
   try {
@@ -161,9 +163,31 @@ function askConfirm() {
   confirming.value = true
 }
 
-function abandon() {
-  if (!window.confirm('放弃后将用新请求号重新下单；如果上一笔其实已成功，会被重复扣款。确定放弃吗？')) return
-  orderRetry.abandon(); pending.value = null; err.value = ''
+async function abandon() {
+  if (busy.value) return
+  const shown = pending.value
+  if (!shown) return
+  // 弹框前记下这笔的请求号：确认后按请求号核对（别的标签页放弃后又下了内容相同的一笔，内容一样、请求号不同）
+  const key = orderRetry.pendingKey(shown)
+  if (!key) {
+    // 存储里已经不是这笔了（storage 事件没赶上）：照提交前的重读处理，不弹框
+    const rc = orderRetry.recheck(shown)
+    if (rc.kind === 'locked') { showPending(rc.pending); notice.value = ''; err.value = LOCKED_ELSEWHERE }
+    else { showPending(null); err.value = ''; notice.value = SETTLED_ELSEWHERE; loadLatest() }
+    return
+  }
+  const ok = await dialog.confirm('放弃后将用新请求号重新下单；如果上一笔其实已成功，会被重复扣款。确定放弃吗？', {
+    title: '放弃结果未知的订单', okText: '放弃并重新下单', danger: true,
+  })
+  if (!ok) return
+  // 确认框是异步的，等待期间状态可能变了：这页发起了原样重试（请求在路上），或页面上显示的已不是这笔，都不放弃
+  if (busy.value) return
+  if (!samePendingOrder(pending.value, shown)) { if (pending.value) err.value = ABANDON_CHANGED; return }
+  // 再重读存储：别处已处理完、或存储里已是另一个请求号（别的标签页放弃后又锁定了一笔），都不清（只清记下的这个请求号）
+  const rc = orderRetry.abandonShown(shown, key)
+  if (rc.kind === 'locked') { showPending(rc.pending); notice.value = ''; err.value = `${ABANDON_CHANGED}。${LOCKED_ELSEWHERE}`; return }
+  if (rc.kind === 'settled') { showPending(null); err.value = ''; notice.value = SETTLED_ELSEWHERE; loadLatest(); return }
+  pending.value = null; err.value = ''
   loadLatest()
 }
 

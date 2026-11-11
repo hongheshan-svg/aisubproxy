@@ -24,3 +24,17 @@ export function appendAuditPage<T extends { id: number }>(existing: T[], incomin
 export function nextAuditCursor<T extends { id: number }>(page: AuditPageResponse<T>): number {
   return page.has_more && page.next_before_id && page.next_before_id > 0 ? page.next_before_id : 0
 }
+
+export type AuditPageResult<T extends { id: number }> =
+  | { failed: true }
+  | { failed: false; logs: T[]; cursor: number }
+
+/**
+ * 一次审计日志请求的结果。非 2xx 或响应体读不出来都算失败（F2-08）：
+ * 不能把失败当成「没有记录」显示成空表。
+ */
+export function auditPageResult<T extends { id: number }>(ok: boolean, data: unknown): AuditPageResult<T> {
+  if (!ok || !data || typeof data !== 'object') return { failed: true }
+  const page = data as AuditPageResponse<T>
+  return { failed: false, logs: page.logs || [], cursor: nextAuditCursor(page) }
+}

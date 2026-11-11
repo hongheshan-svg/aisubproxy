@@ -31,7 +31,7 @@
     </template>
 
     <template #foot="{ rail }">
-      <div class="sn-tools"><ThemeToggle /></div>
+      <div v-if="!themeLocked" class="sn-tools"><ThemeToggle /></div>
       <el-dropdown class="sn-user-menu" trigger="click" placement="top-start" @command="onUserCommand">
         <button type="button" class="sn-user" :title="username">
           <span class="sn-avatar">{{ username.slice(0, 1).toUpperCase() }}</span>
@@ -77,7 +77,7 @@ import { useAuthStore } from '../stores/auth'
 import { authFetch, serverLogout } from '../lib/api'
 import { dialog } from '../lib/dialog'
 import { adjustHasAnyPending, clearAdjustRetries } from '../lib/agentAdmin'
-import { siteBrand } from '../theme'
+import { siteBrand, themeLocked } from '../theme'
 import ThemeToggle from '../components/ThemeToggle.vue'
 import SideNavShell from '../components/shell/SideNavShell.vue'
 import { PAGE_TABS, tabCrumb, marsEnv, type EnvBadge } from '../lib/adminui'
@@ -162,12 +162,20 @@ async function onUserCommand(cmd: string) {
   } else if (cmd === 'logout') {
     // 从存储判断（别的标签页留下的未决也算），不只看本页内存
     if (adjustHasAnyPending() && !(await dialog.confirm('有调账结果未知，退出后这台电脑上不能再原样重试，请先到代理商的「余额流水」核对。确定退出吗？', { title: '调账结果未知', okText: '仍然退出', danger: true }))) return
-    await serverLogout()
+    // 服务端没确认退出时留在后台：HttpOnly 的会话 cookie 还在，回登录页会让人以为已经退了
+    const out = await serverLogout()
+    if (out !== 'done') {
+      // csrf_token cookie 丢了：后端没有补发，重试、关标签页都没用（cookie 和会话同一有效期），只能清本站 Cookie
+      if (out === 'csrf') dialog.toast('退出失败：浏览器里本站的校验 Cookie 丢了，服务器拒绝退出，重试也不会成功。请在浏览器设置里清除本站的 Cookie，清除后这台电脑上就退出了', 'err', 10000)
+      else dialog.toast('退出失败，服务器上的登录状态还在，请重试', 'err')
+      return
+    }
     clearAdjustRetries() // 退出登录清掉调账的待重试记录（只有幂等键、金额和原因）
     router.push('/ops/login')
   }
 }
 async function submitPwd() {
+  if (pwdLoading.value) return
   pwdError.value = ''
   if (pwdForm.new_password !== pwdForm.confirm) {
     pwdError.value = '两次新密码不一致'
@@ -189,6 +197,8 @@ async function submitPwd() {
     auth.logout()
     dialog.toast('密码已修改，请用新密码重新登录', 'ok')
     router.push('/ops/login')
+  } catch {
+    pwdError.value = '网络错误，不确定密码是否已修改，请重新登录确认'
   } finally {
     pwdLoading.value = false
   }
@@ -228,9 +238,9 @@ async function submitPwd() {
   font-size: 12px; line-height: 1; padding: 5px 8px; border-radius: 999px; white-space: nowrap;
   border: 1px solid var(--brd); color: var(--ink-2); background: var(--surface); cursor: default;
 }
-.env-badge.env-prod { color: var(--good, #16a34a); border-color: currentColor; }
-.env-badge.env-test { color: var(--warn, #d97706); border-color: currentColor; }
-.env-badge.env-custom, .env-badge.env-unknown { color: var(--err, #dc2626); border-color: currentColor; }
+.env-badge.env-prod { color: var(--good-ink); border-color: currentColor; }
+.env-badge.env-test { color: var(--warn-ink); border-color: currentColor; }
+.env-badge.env-custom, .env-badge.env-unknown { color: var(--err-ink); border-color: currentColor; }
 .env-badge.env-unconfigured { color: var(--ink-3); }
 .is-mobile .crumb-group, .is-mobile .crumb-group + .crumb-sep { display: none; }
 /* 手机上不显示分组，页面名换成带服务商名的完整页名 */

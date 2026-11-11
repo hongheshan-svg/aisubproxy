@@ -5,7 +5,7 @@ help:
 	@echo "==================="
 	@echo "  make dev          - 本地开发（需装 Go + Node）"
 	@echo "  make build        - 构建前后端"
-	@echo "  make docker-up    - Docker 一键启动（构建 + 运行）"
+	@echo "  make docker-up    - Docker 一键启动（从本仓库源码构建 + 运行）"
 	@echo "  make docker-down  - 停止 Docker 容器"
 	@echo "  make docker-logs  - 查看 Docker 日志"
 	@echo "  make clean        - 清理构建产物"
@@ -25,9 +25,10 @@ build:
 docker-up:
 	@if [ ! -f .env ]; then \
 		echo "JWT_SECRET=$$(openssl rand -hex 32)" > .env; \
+		echo "APP_MASTER_KEY=$$(openssl rand -base64 32)" >> .env; \
 		echo "INSTALL_MODE=wizard" >> .env; \
 		chmod 600 .env; \
-		echo "✓ 已生成 .env（含 JWT_SECRET）"; \
+		echo "✓ 已生成 .env（含 JWT_SECRET 和 APP_MASTER_KEY，请备份）"; \
 	fi
 	@if grep -q 'YOUR_DOMAIN' Caddyfile 2>/dev/null; then \
 		echo ""; \
@@ -36,7 +37,7 @@ docker-up:
 		echo ""; \
 		exit 1; \
 	fi
-	docker compose up -d --build
+	docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 
 docker-down:
 	docker compose down

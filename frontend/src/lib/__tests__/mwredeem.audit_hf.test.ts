@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { mwStatusText, redeemRejectedBeforeOrder } from '../mwredeem'
+import { redeemRejectedBeforeOrder } from '../mwredeem'
 
 describe('兑换被拒且没有建单：停在确认页（F-5）', () => {
   it('码已禁用、已换码（400 带 status）没建单：停在确认页，不去轮询', () => {
@@ -14,14 +14,5 @@ describe('兑换被拒且没有建单：停在确认页（F-5）', () => {
     expect(redeemRejectedBeforeOrder(409, { error: '处理中（已使用，可查询进度）', status: 'reserved' })).toBe(false)
     expect(redeemRejectedBeforeOrder(409, { error: '已使用', status: 'consumed' })).toBe(false)
     expect(redeemRejectedBeforeOrder(409, { error: '已转人工', status: 'failed' })).toBe(false)
-  })
-})
-
-describe('结果页状态标签不显示英文原值（F-5）', () => {
-  it('本站码的状态有中文说明', () => {
-    expect(mwStatusText('error')).toBe('兑换失败')
-    expect(mwStatusText('disabled')).toBe('已禁用')
-    expect(mwStatusText('reserved')).toBe('处理中')
-    expect(mwStatusText('consumed')).toBe('已使用')
   })
 })

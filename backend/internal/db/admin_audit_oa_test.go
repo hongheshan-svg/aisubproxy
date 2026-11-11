@@ -119,6 +119,26 @@ func TestOAAdminPasswordEnvRejectsWeak(t *testing.T) {
 	}
 }
 
+// 终审后端次要 2：ADMIN_PASSWORD 超过 72 字节时给出明确报错（不是哈希库的英文错误），不建号；--check 与启动同一结论。
+func TestOAAdminPasswordEnvTooLong(t *testing.T) {
+	t.Setenv("SETUP_BOOTSTRAP_TOKEN", "")
+	oaOpenFileDB(t)
+	t.Setenv("INSTALL_MODE", "auto")
+	t.Setenv("ADMIN_USERNAME", "brand_new_admin")
+	t.Setenv("ADMIN_PASSWORD", strings.Repeat("Ab1-", 19)) // 76 字节
+	want := "ADMIN_PASSWORD 太长：最多 72 字节"
+	err := db.Migrate()
+	if err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("启动应报太长，实际 %v", err)
+	}
+	if err := db.CheckDefaultAdmin(); err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("--check 应报太长，实际 %v", err)
+	}
+	if db.AdminCount() != 0 {
+		t.Fatal("超长口令不应建号")
+	}
+}
+
 // A-16：建表、建索引失败（这里用一张缺列的旧表让建索引失败）要终止启动，不能只打警告继续跑。
 func TestOACreateTablesFailsFast(t *testing.T) {
 	c := oaOpenFileDB(t)

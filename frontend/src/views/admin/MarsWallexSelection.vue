@@ -121,7 +121,7 @@ import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import CardHeadsPanel from './components/CardHeadsPanel.vue'
 import { dialog } from '../../lib/dialog'
 import { mapApiError } from '../../lib/errors'
-import { errText, fmtTs, poolApi as api, type Selection } from '../../lib/cardpool'
+import { errText, fmtTs, poolApi as api, splitSelectionSaved, usedUpNotice, type Selection, type SelectionSaved } from '../../lib/cardpool'
 import { cardHeadOptionLabel, cardHeadsByProduct, type CardHead } from '../../lib/cardheads'
 
 interface Product { product_id: string; product_name: string; card_label: string }
@@ -199,14 +199,16 @@ async function save() {
   saveError.value = ''
   saving.value = true
   try {
-    const r = await api<Selection>('/selection', 'PUT', sel.value)
+    const r = await api<SelectionSaved>('/selection', 'PUT', sel.value)
     if (!r.ok) {
       saveError.value = errText(r, '保存失败')
       return
     }
-    r.data.plan_products = r.data.plan_products || {}
-    sel.value = r.data
+    // 调低单卡最大使用次数时，后端带回将不再可用的卡数：只提示，由管理员手动处理
+    const { selection, unusable } = splitSelectionSaved(r.data)
+    sel.value = selection
     dialog.toast('选卡规则已保存', 'ok')
+    if (unusable > 0) await dialog.alert(usedUpNotice(unusable), { title: '有卡将不再可用' })
   } finally {
     saving.value = false
   }
@@ -242,7 +244,6 @@ onMounted(() => {
 .field-error {
   margin-bottom: 8px;
   font-size: 13px;
-  color: #dc2626;
 }
 .grid-form {
   display: grid;

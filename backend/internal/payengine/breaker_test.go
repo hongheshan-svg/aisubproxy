@@ -416,3 +416,16 @@ func TestBreakerScansRecentOrdersInOrder(t *testing.T) {
 		t.Fatalf("触发单号和时刻应按结束时间顺序: %+v %v", st.OrderNos, st.TrippedAt)
 	}
 }
+
+// P1-05：已暂停期间熔断查询时好时坏，告警原因在「查询失败」和真实原因之间来回变，每种原因同一次暂停同一北京日仍只告警一次。
+func TestBreakerAlertDedupSurvivesAlternatingReasons(t *testing.T) {
+	alerts := &alertLog{}
+	s := New(Options{Alert: alerts.add, ShotDir: t.TempDir()})
+	for i := 0; i < 3; i++ {
+		s.breakerAlert(BreakerReasonCheck, 0, "查询失败")
+		s.breakerAlert(BreakerReasonSubmit, 0, "连续失败")
+	}
+	if got := alerts.Texts(); len(got) != 2 {
+		t.Fatalf("两种原因交替出现应各告警一次，共 2 次: %v", got)
+	}
+}

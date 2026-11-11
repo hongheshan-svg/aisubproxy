@@ -122,7 +122,6 @@ DB_PATH=$INSTALL_DIR/data/cdk_recharge.db
 WEB_DIR=$INSTALL_DIR/web
 CDK_INSTALL_DIR=$INSTALL_DIR
 JWT_SECRET=$(openssl rand -hex 32)
-JWT_EXPIRATION_HOURS=24
 APP_MASTER_KEY=$(openssl rand -base64 32)
 INSTALL_MODE=wizard
 SETUP_ALLOW_CIDRS=
@@ -194,9 +193,12 @@ install_files() {
 }
 
 wait_healthy() {
-  local _
+  local _ port
+  # app.env 可能是手写的、没有 SERVER_PORT（程序默认 8080）；同一个键写了多行时取最后一行
+  port="$(grep -E '^SERVER_PORT=' "$INSTALL_DIR/app.env" 2>/dev/null | tail -n 1 | cut -d= -f2- | sed 's/[[:space:]]*#.*$//' | tr -d '[:space:]"'"'"'' || true)"
+  port="${port:-8080}"
   for _ in $(seq 1 30); do
-    if curl -fsS -o /dev/null "http://127.0.0.1:$(grep -E '^SERVER_PORT=' "$INSTALL_DIR/app.env" | cut -d= -f2)/api/v1"; then
+    if curl -fsS -o /dev/null "http://127.0.0.1:${port}/api/v1"; then
       return 0
     fi
     sleep 1

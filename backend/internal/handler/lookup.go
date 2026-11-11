@@ -45,7 +45,6 @@ func LookupCDKStatus(c *gin.Context) {
 	if code == "" {
 		code = strings.TrimSpace(c.Query("cdk_code"))
 	}
-	code = strings.TrimSpace(code)
 	if code == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "请输入卡密"})
 		return

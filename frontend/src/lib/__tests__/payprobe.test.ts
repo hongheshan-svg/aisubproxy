@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  PROBE_CHECKS, pollProbe, probeBlockReason, probeCounts, probeErrorText, probeNeedsBrowser, probeOrderChecks, probeStatusLabel, probeToText,
+  PROBE_CHECKS, pollProbe, probeBlockReason, probeCounts, probeErrorText, probeNeedsBrowser, probeStatusLabel, probeToText,
 } from '../payprobe'
 import { PAGE_TABS } from '../adminui'
 
@@ -20,14 +20,17 @@ describe('payprobe lib', () => {
     expect(probeBlockReason('{"a":1}', ['account'], false)).toBe('')
   })
 
+  it('账单门户不截图，只有打开 ChatGPT 那一项截图（H2-02）', () => {
+    const desc = (k: string) => PROBE_CHECKS.find((c) => c.key === k)?.desc ?? ''
+    expect(desc('customer_portal')).not.toContain('并截图')
+    expect(desc('customer_portal')).toContain('不截图')
+    expect(desc('chatgpt_browser')).toContain('截图')
+  })
+
   it('浏览器探测项识别', () => {
     expect(probeNeedsBrowser(['account'])).toBe(false)
     expect(probeNeedsBrowser(['account', 'customer_portal'])).toBe(true)
     expect(probeNeedsBrowser(['chatgpt_browser'])).toBe(true)
-  })
-
-  it('probeOrderChecks 按固定顺序', () => {
-    expect(probeOrderChecks(['credit_balance', 'account'])).toEqual(['account', 'credit_balance'])
   })
 
   it('状态文字与计数', () => {

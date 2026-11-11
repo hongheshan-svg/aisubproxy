@@ -1,6 +1,6 @@
 <template>
   <div class="space-y-3" data-testid="agent-shared-panel">
-    <p v-if="err" class="text-sm text-red-500" role="alert">{{ err }}</p>
+    <p v-if="err" class="text-sm text-err" role="alert">{{ err }}</p>
     <div v-if="data" class="space-y-3">
       <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 text-sm">
         <div><div class="opacity-70">状态</div><div class="font-semibold">{{ view.statusText }}</div></div>

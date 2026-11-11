@@ -1,4 +1,4 @@
-// 卡池页的文案与显示规则（纯函数）：查看卡号、释放、用后注销时间、导入清零提醒、冻结按钮。
+// 卡池页的文案与显示规则（纯函数）：释放、用后注销时间、导入清零提醒、冻结按钮。
 import { fmtBeijing } from './mwwebhook'
 import { money } from './cardpool'
 
@@ -33,13 +33,13 @@ function usedUpFate(c: LeaseLike, p: UsePolicy | null | undefined): string {
 
 /** 释放确认框的文字。 */
 export function releaseConfirmText(c: LeaseLike & { card_id: string; last4: string }, p: UsePolicy | null | undefined): string {
-  const taken = c.lease_sensitive ? '本次租约已取过卡号' : '本次租约没有取过卡号'
+  const taken = c.lease_sensitive ? '本次租约已取过卡号，' : ''
   const used = releaseWillBeUsedUp(c, p)
   let fate: string
   if (used === null) fate = '卡的去向取决于使用次数是否达到上限（策略未加载，无法预判）'
   else if (used) fate = usedUpFate(c, p)
   else fate = '余额清零后回到可用'
-  return `确认释放卡 ${c.card_id}（后四位 ${c.last4}）？${taken}，释放后：${fate}。`
+  return `确认释放卡 ${c.card_id}（后四位 ${c.last4}）？${taken}释放后：${fate}。`
 }
 
 /** 释放成功后的提示：卡的去向。 */
@@ -47,14 +47,6 @@ export function releaseDoneText(c: LeaseLike, p: UsePolicy | null | undefined): 
   const used = releaseWillBeUsedUp(c, p)
   if (used === null) return '已释放'
   return used ? `已释放，卡${usedUpFate(c, p)}` : '已释放，卡会清零后回到可用'
-}
-
-/** 「查看卡号」确认框里的说明。租用中的卡写明用满后的后果。 */
-export function sensitiveNote(poolState: string, p: UsePolicy | null | undefined): string {
-  if (poolState !== 'leased') return '仅供排查，不改变卡的状态。'
-  const base = '本次租用将计为已取卡号（使用次数 +1）。'
-  if (!p) return base
-  return `${base}用满 ${p.max_uses_per_card} 次后，释放时这张卡会被清零、冻结，${cancelWhen(p.cancel_after_days)}。`
 }
 
 /** 卡列表状态列标签下面的小字：已用且有注销时间显示北京时间 MM-DD HH:mm，已用但还没冻结显示等待。其他状态为空。 */

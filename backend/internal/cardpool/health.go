@@ -228,7 +228,8 @@ type ProductHealth struct {
 	Reason      string `json:"reason"`
 }
 
-// HealthReport 汇总所有出现过的产品×套餐的 24 小时与 7 天成功失败数及停用状态。
+// HealthReport 汇总近 7 天出现过的产品×套餐的 24 小时与 7 天成功失败数，以及停用记录里的产品×套餐的停用状态。
+// 只查近 7 天的用卡结果：这张表只增不减，不带时间条件就要随历史线性变慢；更早的结果留在表里，不参与统计。
 func (s *Service) HealthReport(ctx context.Context) ([]ProductHealth, error) {
 	now := s.now()
 	t24 := now.Add(-24 * time.Hour).Unix()
@@ -237,10 +238,10 @@ func (s *Service) HealthReport(ctx context.Context) ([]ProductHealth, error) {
 		`SELECT product_id, plan_key,
 		   COALESCE(SUM(CASE WHEN result=? AND created_at>? THEN 1 ELSE 0 END),0),
 		   COALESCE(SUM(CASE WHEN result=? AND created_at>? THEN 1 ELSE 0 END),0),
-		   COALESCE(SUM(CASE WHEN result=? AND created_at>? THEN 1 ELSE 0 END),0),
-		   COALESCE(SUM(CASE WHEN result=? AND created_at>? THEN 1 ELSE 0 END),0)
-		 FROM mw_card_outcomes GROUP BY product_id, plan_key`,
-		ResultSuccess, t24, ResultFailed, t24, ResultSuccess, t7, ResultFailed, t7)
+		   COALESCE(SUM(CASE WHEN result=? THEN 1 ELSE 0 END),0),
+		   COALESCE(SUM(CASE WHEN result=? THEN 1 ELSE 0 END),0)
+		 FROM mw_card_outcomes WHERE created_at > ? GROUP BY product_id, plan_key`,
+		ResultSuccess, t24, ResultFailed, t24, ResultSuccess, ResultFailed, t7)
 	if err != nil {
 		return nil, err
 	}

@@ -113,7 +113,34 @@ func (s *Service) recoverRenewal(ctx context.Context, no string, r any) {
 		log.Printf("[payengine] 单据 %s 关闭续费时内部错误，记失败也没成功，下一轮再试: %v", no, err)
 		return
 	}
-	s.opts.Alert(fmt.Sprintf("付款单 %s 开通成功，但%s。单据仍是成功；请在 1 小时内到后台点「重试关闭续费」，或让用户自行在 ChatGPT 设置里关闭续费。", no, msg))
+	o, _ := getOrder(ctx, no) // 只用来算会话清空时刻；读不到时告警改说「尽快」
+	s.opts.Alert(fmt.Sprintf("付款单 %s 开通成功，但%s。单据仍是成功；%s", no, msg, s.renewalRetryHint(o)))
+}
+
+// beijingZone 是告警里写具体时刻用的北京时间。
+var beijingZone = time.FixedZone("UTC+8", 8*3600)
+
+// renewalRetryHint 是关闭续费失败告警的后半句：写明会话清空的具体时刻（北京时间，精确到分钟、往前取整），不写固定的「1 小时内」
+// （审查 P1-08）：告警发出时离起算点往往已过去十几分钟以上。起算点和 sweepSessions 一致（sessionKeepFrom）：
+// 人工定论过的从定论时刻算，其余从结束时刻算。o 为 nil 或两个时刻都没有时说「尽快」；已经到点时直接请用户自己关。
+func (s *Service) renewalRetryHint(o *Order) string {
+	const fallback = "请尽快到后台点「重试关闭续费」（会话保留到点就清空），或让用户自行在 ChatGPT 设置里关闭续费。"
+	if o == nil {
+		return fallback
+	}
+	from := o.ResolvedAt
+	if from == nil {
+		from = o.FinishedAt
+	}
+	if from == nil {
+		return fallback
+	}
+	deadline := time.Unix(*from, 0).Add(s.t.SessionKeep)
+	at := deadline.In(beijingZone).Format("2006-01-02 15:04")
+	if !s.now().Before(deadline) {
+		return fmt.Sprintf("会话已到清空时刻（%s，北京时间），请让用户自行在 ChatGPT 设置里关闭续费。", at)
+	}
+	return fmt.Sprintf("请在 %s（北京时间）前到后台点「重试关闭续费」（到点会话清空），或让用户自行在 ChatGPT 设置里关闭续费。", at)
 }
 
 // errRenewalBusy 表示这张单正在关闭续费（续费协程和手动重试不同时做）。
@@ -234,7 +261,7 @@ func (s *Service) renewOnce(ctx context.Context, no string, manual bool) (string
 		return "", err
 	}
 	if !manual {
-		s.opts.Alert(fmt.Sprintf("付款单 %s 开通成功，但%s。单据仍是成功；请在 1 小时内到后台点「重试关闭续费」，或让用户自行在 ChatGPT 设置里关闭续费。", no, msg))
+		s.opts.Alert(fmt.Sprintf("付款单 %s 开通成功，但%s。单据仍是成功；%s", no, msg, s.renewalRetryHint(o)))
 	}
 	return RenewalFailed, nil
 }
@@ -399,47 +426,76 @@ func (s *Service) sweepSessions(ctx context.Context) {
 // 每张单只记一行日志（单号，不含会话和邮箱），再追加一条时间线事件。已人工定论的单不在这里处理，仍按 SessionKeep 从定论时刻计时。
 func (s *Service) sweepReviewSessions(ctx context.Context) {
 	cutoff := s.now().Add(-reviewSessionKeep).Unix()
-	rows, err := db.DB.QueryContext(ctx, `SELECT order_no FROM pay_orders
-		WHERE state = ? AND session_sealed != '' AND resolved_at IS NULL AND COALESCE(finished_at, created_at) <= ? ORDER BY id`,
-		StateNeedsReview, cutoff)
+	nos, err := reviewSessionsDue(ctx, cutoff)
 	if err != nil {
 		if ctx.Err() == nil {
 			log.Printf("[payengine] 读取待人工超期的会话失败: %v", err)
 		}
-		return
+		return // 读到一半出错也不处理半张列表：下一轮再读
 	}
-	var nos []string
-	for rows.Next() {
-		var no string
-		if rows.Scan(&no) == nil {
-			nos = append(nos, no)
-		}
-	}
-	rows.Close()
 	for _, no := range nos {
 		if ctx.Err() != nil {
 			return
 		}
-		now := time.Now().UTC().Unix()
-		tx, err := db.DB.BeginTx(ctx, nil)
+		cleared, err := clearReviewSession(ctx, no, cutoff)
 		if err != nil {
+			if ctx.Err() == nil {
+				log.Printf("[payengine] 单据 %s 待人工已满 30 天，清空会话失败，下一轮再试: %v", no, err)
+			}
 			continue
 		}
-		res, err := tx.ExecContext(ctx, `UPDATE pay_orders SET session_sealed = '', updated_at = ?
-			WHERE order_no = ? AND state = ? AND session_sealed != '' AND resolved_at IS NULL AND COALESCE(finished_at, created_at) <= ?`,
-			now, no, StateNeedsReview, cutoff)
-		if err == nil {
-			if n, _ := res.RowsAffected(); n > 0 {
-				_, err = tx.ExecContext(ctx, `INSERT INTO pay_order_events (order_no, at, state, level, message)
-					VALUES (?, ?, ?, 'info', ?)`, no, now, StateNeedsReview, "待人工已满 30 天，会话已清空；之后定论成功将无法自动关闭续费")
-				if err == nil && tx.Commit() == nil {
-					log.Printf("[payengine] 单据 %s 待人工已满 30 天，已清空会话", no)
-				}
-				continue
-			}
+		if cleared {
+			log.Printf("[payengine] 单据 %s 待人工已满 30 天，已清空会话", no)
 		}
-		tx.Rollback()
 	}
+}
+
+// reviewSessionsDue 返回待人工、未定论、起算时刻不晚于 cutoff、还留着会话的单号（按 id 升序）。
+func reviewSessionsDue(ctx context.Context, cutoff int64) ([]string, error) {
+	rows, err := db.DB.QueryContext(ctx, `SELECT order_no FROM pay_orders
+		WHERE state = ? AND session_sealed != '' AND resolved_at IS NULL AND COALESCE(finished_at, created_at) <= ? ORDER BY id`,
+		StateNeedsReview, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var nos []string
+	for rows.Next() {
+		var no string
+		if err := rows.Scan(&no); err != nil {
+			return nil, err
+		}
+		nos = append(nos, no)
+	}
+	return nos, rows.Err()
+}
+
+// clearReviewSession 清空一张待人工超期单据的会话并记一条事件，两者同在一个事务里：任何一步出错整笔回滚，不占着写锁。
+// 条件在同一条 UPDATE 里重查：读列表之后刚被人工定论的单不会被清。cleared 为 false 表示条件已不满足、什么都没改。
+func clearReviewSession(ctx context.Context, no string, cutoff int64) (cleared bool, err error) {
+	now := time.Now().UTC().Unix()
+	tx, err := db.DB.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `UPDATE pay_orders SET session_sealed = '', updated_at = ?
+		WHERE order_no = ? AND state = ? AND session_sealed != '' AND resolved_at IS NULL AND COALESCE(finished_at, created_at) <= ?`,
+		now, no, StateNeedsReview, cutoff)
+	if err != nil {
+		return false, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return false, nil
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO pay_order_events (order_no, at, state, level, message)
+		VALUES (?, ?, ?, 'info', ?)`, no, now, StateNeedsReview, "待人工已满 30 天，会话已清空；之后定论成功将无法自动关闭续费"); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // dueRenewals 返回续费待处理且到了处理时刻的成功单（按 id 升序）。会话已清空的也返回，由 renewOnce 记成 skipped。

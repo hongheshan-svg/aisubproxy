@@ -118,6 +118,9 @@ func DefaultTimeouts() Timeouts {
 // MaxPayDuration 是一单付款从取卡租约到定论最长可能占用卡的时间，卡池租约须不短于它：
 // 注资 + 填表 + 点支付后等页面结果 + 3DS 页面加载 + 验证码 + 填验证码并等结果 + 被拒宽限 + 确认 + 确认间隔 + 扫描间隔 + 5 秒关闭浏览器
 // + 两次定论前补拉（期限到达之前最后一轮，加上到期那一轮，都可能等满补拉时限）。
+// 没算进去的三段：点支付前复核金额（最多 PageLoad）、两次等结果外层各多出的 OutcomeMargin、到期那一轮检查（最多 VerifyCheck）。
+// 不算也不要紧：提交之前的各步加起来远小于这个数；确认阶段每一轮都给卡续租（renewVerifyLeases），租约不会因为这几段到期。
+// 公式不改：就绪检查和后台付款入口拿它当租约下限，加大它会让现在够用的租约配置突然报「租约太短」。
 func MaxPayDuration(t Timeouts) time.Duration {
 	return t.Fund + t.Fill + t.SubmitResult + t.SubmitResult + t.PageLoad + t.OTP +
 		t.SubmitResult + t.SubmitResult + t.DeclineGrace + t.Verify + t.VerifyEvery + t.VerifyTick + 5*time.Second + 2*t.Backfill
@@ -156,7 +159,7 @@ type Service struct {
 	// verifyFails 记各单确认阶段查账号连续出错的次数（单号 → 次数），用来退避下次检查；只在内存里，成功一次或单据定论时删除。受 mu 保护。
 	verifyFails map[string]int
 
-	breakerAlerted string // 熔断告警的去重键，见 breakerAlert；受 mu 保护
+	breakerAlerted map[string]struct{} // 发过的熔断告警的去重键集合，见 breakerAlert；恢复时清空；受 mu 保护
 	// panicAlerted 记接管、收敛停滞单时 panic 的告警发到了哪一天（单号|阶段 → 北京日），见 panicAlert；受 mu 保护
 	panicAlerted map[string]string
 
@@ -357,11 +360,6 @@ func (s *Service) Get(ctx context.Context, no string) (*Order, []Event, error) {
 		return nil, nil, err
 	}
 	return o, ev, nil
-}
-
-// List 按 id 倒序分页列出单据，state 为空不筛选；返回总数。
-func (s *Service) List(ctx context.Context, state string, page, size int) ([]Order, int, error) {
-	return listOrders(ctx, state, page, size)
 }
 
 // ListBy 按筛选条件（状态、续费进度、种类）分页列出单据，id 倒序；返回总数。

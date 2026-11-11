@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
@@ -25,7 +26,7 @@ const (
 )
 
 // swapRateAllow 每 IP（IPv6 按 /64）每小时最多 20 次换码尝试。
-// 复用公开接口的限流表（localRateAllow）：有键数上限，过期键由 PublicGuard 每分钟清扫，不会随来源 IP 无限增长。
+// 复用公开接口的限流表（localRateAllow）：有键数上限，过期键由 StartLocalRateSweep 每分钟清扫，不会随来源 IP 无限增长。
 func swapRateAllow(ip string) bool {
 	return localRateAllow(localRateSwap, ip)
 }
@@ -46,10 +47,9 @@ const (
 
 var swapPasswordFails = newFailLimiter(swapPasswordMaxFailures, swapPasswordLockWindow, 1)
 
-// noteSwapPasswordFailure 记一次口令错误；这一次正好触发锁定时告警。
+// noteSwapPasswordFailure 记一次口令错误；只在这一次刚好触发锁定时告警（并发输错时后续的失败不重复发）。
 func noteSwapPasswordFailure() {
-	swapPasswordFails.failed(swapPasswordFailKey)
-	if ok, _ := swapPasswordFails.allowed(swapPasswordFailKey); !ok {
+	if swapPasswordFails.failed(swapPasswordFailKey) {
 		opsAlert(fmt.Sprintf("代理换码口令 1 小时内输错 %d 次，换码接口已暂停 1 小时。如果不是代理自己输错，可能有人在猜口令：请在后台「CDK 卡密 → 代理换码」重设换码口令（重设后立即恢复）。", swapPasswordMaxFailures))
 	}
 }
@@ -100,7 +100,7 @@ func agentSwapWrongToday() int {
 // noteAgentSwapPasswordUsed 口令验证通过时调用：库里存的是哈希看不出长度，只能这时用明文判断。
 // 短于新规则的老口令继续可用，但打上标记，后台设置页提示尽快更换。
 func noteAgentSwapPasswordUsed(plain string) {
-	if len(strings.TrimSpace(plain)) >= minAgentSwapPasswordLen || agentSwapPasswordWeak() {
+	if utf8.RuneCountInString(strings.TrimSpace(plain)) >= minAgentSwapPasswordLen || agentSwapPasswordWeak() {
 		return
 	}
 	_ = db.SetSetting(agentSwapWeakKey, "1")
@@ -111,16 +111,32 @@ func agentSwapPasswordWeak() bool {
 	return strings.TrimSpace(v) == "1"
 }
 
+// validateAgentSwapPassword 只校验不写库：长度和弱口令。空串表示清除口令，视为合格。
+func validateAgentSwapPassword(plain string) error {
+	plain = strings.TrimSpace(plain)
+	if plain == "" {
+		return nil
+	}
+	if utf8.RuneCountInString(plain) < minAgentSwapPasswordLen {
+		return errPasswordTooShort
+	}
+	if db.PasswordTooLong(plain) {
+		return errPasswordTooLong
+	}
+	if db.IsWeakPassword(plain) {
+		return errPasswordWeak
+	}
+	return nil
+}
+
+// setAgentSwapPassword 校验不过返回 errPasswordTooShort / errPasswordWeak，写库失败返回原始错误。
 func setAgentSwapPassword(plain string) error {
 	plain = strings.TrimSpace(plain)
 	if plain == "" {
 		return db.DeleteSetting(agentSwapPasswordKey)
 	}
-	if len(plain) < minAgentSwapPasswordLen {
-		return errPasswordTooShort
-	}
-	if db.IsWeakPassword(plain) {
-		return errPasswordWeak
+	if err := validateAgentSwapPassword(plain); err != nil {
+		return err
 	}
 	hash, err := db.HashAdminPassword(plain)
 	if err != nil {
@@ -130,11 +146,16 @@ func setAgentSwapPassword(plain string) error {
 		return err
 	}
 	swapPasswordFails.succeeded(swapPasswordFailKey) // 换了口令，旧口令上的猜测计数作废，立即解锁
-	return db.DeleteSetting(agentSwapWeakKey)
+	if err := db.DeleteSetting(agentSwapWeakKey); err != nil {
+		// 口令已经换成功；只是「弱口令」标记没清掉，不能因此报失败
+		log.Printf("[settings] 清除换码口令弱标记失败: %v", err)
+	}
+	return nil
 }
 
 var (
 	errPasswordTooShort = &simpleError{"代理换码密码至少 12 位"}
+	errPasswordTooLong  = &simpleError{"代理换码密码太长：最多 72 字节（英文、数字每个占 1 字节，中文每个占 3 字节）"}
 	errPasswordWeak     = &simpleError{"代理换码密码太简单：不能用常见口令、同一字符重复或连续数字，请换一个"}
 )
 

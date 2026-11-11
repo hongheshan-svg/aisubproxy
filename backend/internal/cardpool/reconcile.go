@@ -169,7 +169,7 @@ func (s *Service) queryOrder(ctx context.Context, c *marswallex.Client, o *Order
 	case KindStatus:
 		d, err := c.GetCard(ctx, o.CardID)
 		if err != nil {
-			return queryResult{}, false, err
+			return queryResult{}, false, redactPAN(err)
 		}
 		st := normStatus(d.Status)
 		if st == o.TargetStatus {
@@ -306,7 +306,7 @@ const reviewSummaryHour = 9
 
 // dailyReviewSummary 每个北京日在 09:00 之后的第一轮维护时，汇总仍需人工处理的事项并告警一次（key review-summary）。
 // 单笔告警只发一次，漏看后没有人再提醒；这里补上每日提醒。没有待办时不发。
-// 统计：卡池资金单 needs_review、释放超过 24 小时仍未回收的卡、付款单 needs_review（付款单在 pay_orders），
+// 统计：卡池资金单 needs_review、进入回收（released_at）超过 24 小时仍在回收中的卡、付款单 needs_review（付款单在 pay_orders），
 // 以及近 30 天开通成功、但没能关闭续费的付款单（renewal_state = failed，设计 2026-11-03 §3.1）。
 func (s *Service) dailyReviewSummary(ctx context.Context) error {
 	now := s.now()
@@ -317,7 +317,8 @@ func (s *Service) dailyReviewSummary(ctx context.Context) error {
 	if err := db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM mw_card_orders WHERE state = ?`, StateNeedsReview).Scan(&orders); err != nil {
 		return err
 	}
-	if err := db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM mw_cards WHERE pool_state = ? AND updated_at <= ?`,
+	// 按进入回收的时间数：回收每推进一次都会改 updated_at，卡住多天的卡按它永远是「刚动过」。旧行没有这个时间，按 updated_at 兜底
+	if err := db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM mw_cards WHERE pool_state = ? AND COALESCE(released_at, updated_at) <= ?`,
 		PoolReleasing, now.Unix()-86400).Scan(&cards); err != nil {
 		return err
 	}

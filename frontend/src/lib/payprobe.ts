@@ -1,6 +1,8 @@
 // 免付款探测页的公共函数：探测项定义、提交前检查、结果转文本。
 // 探测全部不付款；结果里不含会话、token、完整邮箱和完整结账链接（后端已脱敏）。
 
+import { fmtBeijing } from './mwwebhook'
+
 export type ProbeStatus = 'ok' | 'fail' | 'skipped'
 
 export interface ProbeResult {
@@ -40,7 +42,7 @@ export const PROBE_CHECKS: ProbeCheckDef[] = [
   { key: 'credit_checkout', title: '点数结账会话形态', kind: 'create', desc: '仅有订阅账号：按自动付款同样的请求建一次 250 点会话，不付款' },
   { key: 'payment_methods', title: '已存付款方式', kind: 'readonly', desc: '已存卡数量、有没有默认卡、备用付款方式开关' },
   { key: 'upgrade_preview', title: '升级预览', kind: 'readonly', desc: '仅有订阅账号：读更高各档的应付金额、币种、续费日' },
-  { key: 'customer_portal', title: '账单门户', kind: 'browser', desc: '取门户链接，浏览器打开并截图，看有没有「添加付款方式」入口；只看不点' },
+  { key: 'customer_portal', title: '账单门户', kind: 'browser', desc: '取门户链接，浏览器打开读页面文字，看有没有「添加付款方式」入口；不截图（门户页上有账单邮箱和地址），只看不点' },
   { key: 'chatgpt_browser', title: '浏览器打开 ChatGPT', kind: 'browser', desc: '注入会话后打开 chatgpt.com 并截图，判断是否被 Cloudflare 拦截；只看不点' },
   { key: 'credit_balance', title: '点数余额接口', kind: 'readonly', desc: '读 /wham/usage，看返回结构里有哪些字段' },
 ]
@@ -74,20 +76,9 @@ export function probeNeedsBrowser(checks: string[]): boolean {
   return PROBE_CHECKS.some((c) => c.kind === 'browser' && checks.includes(c.key))
 }
 
-/** 按固定顺序（探测项定义的顺序）排列选中的探测项，请求体里的顺序不影响后端，这里只让展示稳定。 */
-export function probeOrderChecks(checks: string[]): string[] {
-  return PROBE_CHECKS.map((c) => c.key).filter((k) => checks.includes(k))
-}
-
-function fmtDate(ts: number): string {
-  const d = new Date(ts * 1000)
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
-}
-
 /** 把一次探测记录转成纯文本，用来「复制为文本」发给开发。内容就是后端已脱敏的结果，这里不再加任何会话相关的东西。 */
 export function probeToText(rec: ProbeRecord): string {
-  const lines = [`免付款探测 #${rec.id || '-'}　${rec.created_at ? fmtDate(rec.created_at) : ''}${rec.region ? `　地区 ${rec.region}` : ''}`]
+  const lines = [`免付款探测 #${rec.id || '-'}　${rec.created_at ? fmtBeijing(rec.created_at) : ''}${rec.region ? `　地区 ${rec.region}` : ''}`]
   for (const r of rec.results || []) {
     lines.push('', `[${probeStatusLabel(r.status)}] ${r.key} ${r.title}`, `  ${r.summary}`)
     if (r.details && Object.keys(r.details).length) {

@@ -241,3 +241,41 @@ func TestHealthReport(t *testing.T) {
 		t.Fatalf("x: %+v", x)
 	}
 }
+
+// 健康度报告只查近 7 天的用卡结果（C1-10）：不删数据，只是更早的结果不再参与统计；
+// 只有 7 天前结果的产品×套餐不再列出，停用记录里有的照常列出。
+func TestHealthReportOnlyLast7Days(t *testing.T) {
+	s, _, clock, _ := newTestService(t)
+	c := insertCard(t, Card{CardID: "c1", ProductID: "p1"})
+	okOut(t, s, &c, "old", "a")
+	okOut(t, s, &c, "gpt", "a")
+	if _, err := db.DB.Exec(`INSERT INTO mw_product_health (product_id, plan_key, suspended_at, reason) VALUES ('p1', 'susp', ?, 'test')`,
+		clock.Now().Unix()); err != nil {
+		t.Fatal(err)
+	}
+	okOut(t, s, &c, "susp", "a")
+	clock.Advance(8 * 24 * time.Hour)
+	okOut(t, s, &c, "gpt", "b")
+
+	rep, err := s.HealthReport(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]ProductHealth{}
+	for _, h := range rep {
+		got[h.PlanKey] = h
+	}
+	if _, ok := got["old"]; ok {
+		t.Fatalf("只有 7 天前结果的组合不应再列出: %+v", rep)
+	}
+	if g, ok := got["gpt"]; !ok || g.Success7d != 1 || g.Success24h != 1 {
+		t.Fatalf("gpt 只算近 7 天: %+v", rep)
+	}
+	if h, ok := got["susp"]; !ok || !h.Suspended || h.Success7d != 0 {
+		t.Fatalf("停用记录里的组合照常列出: %+v", rep)
+	}
+	var n int
+	if err := db.DB.QueryRow(`SELECT COUNT(*) FROM mw_card_outcomes`).Scan(&n); err != nil || n != 4 {
+		t.Fatalf("不删任何用卡结果: %d %v", n, err)
+	}
+}

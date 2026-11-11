@@ -64,7 +64,7 @@
         <input class="input font-mono text-lg tracking-wide" :value="resultPass" readonly @focus="($event.target as HTMLInputElement).select()" />
       </div>
       <button class="btn-secondary w-full" type="button" @click="copyCreds">
-        {{ copied ? '已复制' : '复制账号密码' }}
+        {{ copied ? '已复制' : copyFailed ? '复制失败，请手动选中上面的密码复制' : '复制账号密码' }}
       </button>
       <label class="flex items-center gap-2 text-sm text-muted">
         <input v-model="saved" type="checkbox" /> 我已安全保存密码
@@ -85,6 +85,7 @@
 import { onMounted, ref } from 'vue'
 import { useAuthStore } from '../../stores/auth'
 import { clearSetupLeftovers } from '../../lib/session'
+import { copyToClipboard } from '../../lib/clipboard'
 import AuthCard from '../../components/AuthCard.vue'
 
 const authStore = useAuthStore()
@@ -105,6 +106,8 @@ const resultUser = ref('')
 const resultPass = ref('')
 const saved = ref(false)
 const copied = ref(false)
+// 用 http://IP:端口 打开时没有剪贴板接口，回退也可能失败：明说，让管理员手动选中复制（密码只显示一次）
+const copyFailed = ref(false)
 
 onMounted(async () => {
   try {
@@ -154,10 +157,15 @@ async function bootstrap(m: 'generate' | 'manual') {
         'invalid setup token': 'Setup Token 错误（请填服务器给的安装钥匙）',
         'setup not allowed from this address': '当前 IP 不允许安装（联系管理员放开 SETUP_ALLOW_CIDRS）',
         'password too weak (min 12, not common, not equal to username)': '密码太弱：至少 12 位，不能是常见词加数字或符号（如 Password2026!）、同一字符重复或连续数字，也不能和用户名相同',
+        'username must be 3-32 chars [a-zA-Z0-9_]': '用户名只能用英文字母、数字、下划线，长 3 到 32 位',
+        'setup failed, please retry': '安装没有完成（已自动撤销，可直接重试）',
         'passwords do not match': '两次密码不一致',
         'password must include letters and digits': '密码需同时包含字母和数字',
+        'password too long (max 72 bytes)': '密码太长：最多 72 字节（英文、数字每个占 1 字节，中文每个占 3 字节）',
       }
-      error.value = map[d.error] || d.error || '安装失败'
+      error.value = d.rollback_failed
+        ? '安装没有完成，而且自动撤销也失败了，需要人工处理：请查看服务器日志，不要直接重试'
+        : map[d.error] || d.error || '安装失败'
       return
     }
     resultUser.value = d.username
@@ -180,12 +188,9 @@ async function bootstrap(m: 'generate' | 'manual') {
 
 async function copyCreds() {
   const text = `username: ${resultUser.value}\npassword: ${resultPass.value}`
-  try {
-    await navigator.clipboard.writeText(text)
-    copied.value = true
-  } catch {
-    /* ignore */
-  }
+  const ok = await copyToClipboard(text)
+  copied.value = ok
+  copyFailed.value = !ok
 }
 
 function enterOps() {

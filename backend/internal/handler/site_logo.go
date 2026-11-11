@@ -49,11 +49,11 @@ func loadSiteLogo() (b []byte, typ, version string) {
 }
 
 // currentLogoVersion 只读版本号，不解码图片；缺类型或内容时同样当作没有 Logo。
+// 内容只查「有没有」，不把整张图的 base64 读出来。
 func currentLogoVersion() string {
-	raw, _ := db.GetSetting(siteLogoKey)
 	typ, _ := db.GetSetting(siteLogoTypeKey)
 	version, _ := db.GetSetting(siteLogoVerKey)
-	if raw == "" || version == "" || !siteLogoTypes[typ] {
+	if version == "" || !siteLogoTypes[typ] || !db.SettingNonEmpty(siteLogoKey) {
 		return ""
 	}
 	return version
@@ -121,18 +121,28 @@ func AdminDeleteSiteLogo(c *gin.Context) {
 
 // PublicSiteLogo GET /api/v1/public/site/logo
 func PublicSiteLogo(c *gin.Context) {
+	// 先只看版本号：浏览器带着匹配的 ETag 来，就不用读出、解码整张图
+	version := currentLogoVersion()
+	if version == "" {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	etag := `"` + version + `"`
+	if c.GetHeader("If-None-Match") == etag {
+		c.Header("ETag", etag)
+		c.Header("Cache-Control", "public, max-age=300")
+		c.Header("X-Content-Type-Options", "nosniff")
+		c.Status(http.StatusNotModified)
+		return
+	}
 	b, typ, version := loadSiteLogo()
 	if b == nil {
 		c.Status(http.StatusNotFound)
 		return
 	}
-	etag := `"` + version + `"`
+	etag = `"` + version + `"`
 	c.Header("ETag", etag)
 	c.Header("Cache-Control", "public, max-age=300")
 	c.Header("X-Content-Type-Options", "nosniff")
-	if c.GetHeader("If-None-Match") == etag {
-		c.Status(http.StatusNotModified)
-		return
-	}
 	c.Data(http.StatusOK, typ, b)
 }

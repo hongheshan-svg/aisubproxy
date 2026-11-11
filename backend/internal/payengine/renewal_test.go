@@ -699,3 +699,84 @@ func TestRenewalNoRecheckForPaidOrder(t *testing.T) {
 		t.Fatalf("付费单关续费阶段不应多查账号: %d", n)
 	}
 }
+
+// P1-08：关闭续费自动重试用完、或内部错误停止自动重试时，告警写明会话清空的具体时刻（北京时间），不写固定的「1 小时内」。
+// 起算点和 sweepSessions 一致：没经过人工定论的从结束时刻算，人工定论过的从定论时刻算。
+func TestRenewalFailedAlertNamesSessionDeadline(t *testing.T) {
+	h := newPayHarness(t, nil)
+	h.gpt.subStatusFn = func(int) (chatgpt.RenewalInfo, error) { return chatgpt.RenewalInfo{WillRenew: boolPtr(true)}, nil }
+	bj := time.FixedZone("UTC+8", 8*3600)
+	base := h.clock.Now()
+	setTimes := func(o *Order, finished time.Time, resolved *time.Time) {
+		t.Helper()
+		var r any
+		if resolved != nil {
+			r = resolved.Unix()
+		}
+		if _, err := db.DB.Exec(`UPDATE pay_orders SET finished_at = ?, resolved_at = ? WHERE order_no = ?`, finished.Unix(), r, o.OrderNo); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plain := presetSucceeded(t, h, "deadline-plain@example.com", map[string]any{"renewal_attempts": renewalAutoRetries})
+	setTimes(plain, base.Add(-4*time.Minute), nil)
+	resolved := presetSucceeded(t, h, "deadline-resolved@example.com", map[string]any{"renewal_attempts": renewalAutoRetries})
+	resolvedAt := base.Add(-17 * time.Minute)
+	setTimes(resolved, base.Add(-3*time.Hour), &resolvedAt)
+	panicked := presetSucceeded(t, h, "deadline-panic@example.com", nil)
+	setTimes(panicked, base.Add(-26*time.Minute), nil)
+
+	if st, err := h.svc.renewOnce(ctx, plain.OrderNo, false); err != nil || st != RenewalFailed {
+		t.Fatalf("自动重试用完应转 failed: %q %v", st, err)
+	}
+	if st, err := h.svc.renewOnce(ctx, resolved.OrderNo, false); err != nil || st != RenewalFailed {
+		t.Fatalf("自动重试用完应转 failed: %q %v", st, err)
+	}
+	h.svc.recoverRenewal(ctx, panicked.OrderNo, "boom")
+
+	alerts := h.alerts.Texts()
+	for _, c := range []struct {
+		no       string
+		deadline time.Time
+	}{
+		{plain.OrderNo, base.Add(-4 * time.Minute).Add(time.Hour)},
+		{resolved.OrderNo, resolvedAt.Add(time.Hour)},
+		{panicked.OrderNo, base.Add(-26 * time.Minute).Add(time.Hour)},
+	} {
+		want := "请在 " + c.deadline.In(bj).Format("2006-01-02 15:04") + "（北京时间）前"
+		var got string
+		for _, a := range alerts {
+			if strings.Contains(a, c.no) {
+				got = a
+			}
+		}
+		if !strings.Contains(got, want) || strings.Contains(got, "1 小时内") {
+			t.Fatalf("单据 %s 的告警应写明截止时刻 %q: %q", c.no, want, got)
+		}
+		if strings.Contains(got, "@example.com") || strings.Contains(got, testAccessToken) {
+			t.Fatalf("告警不应带邮箱和令牌: %q", got)
+		}
+	}
+}
+
+// P1-08：告警发出时已经过了清空时刻（例如关闭续费那一趟本身拖过了点），不再请管理员「在某时刻前重试」，直接请用户自己关；
+// 读不到单据时改说「尽快」，也不写固定的「1 小时内」。
+func TestRenewalRetryHintPastDeadlineAndUnknown(t *testing.T) {
+	h := newPayHarness(t, nil)
+	h.gpt.subStatusFn = func(int) (chatgpt.RenewalInfo, error) { return chatgpt.RenewalInfo{WillRenew: boolPtr(true)}, nil }
+	late := presetSucceeded(t, h, "deadline-late@example.com", map[string]any{"renewal_attempts": renewalAutoRetries})
+	finished := h.clock.Now().Add(-61 * time.Minute)
+	if _, err := db.DB.Exec(`UPDATE pay_orders SET finished_at = ? WHERE order_no = ?`, finished.Unix(), late.OrderNo); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := h.svc.renewOnce(ctx, late.OrderNo, false); err != nil || st != RenewalFailed {
+		t.Fatalf("自动重试用完应转 failed: %q %v", st, err)
+	}
+	a := waitAlerts(t, h, 1)
+	at := finished.Add(time.Hour).In(time.FixedZone("UTC+8", 8*3600)).Format("2006-01-02 15:04")
+	if len(a) != 1 || !strings.Contains(a[0], "会话已到清空时刻（"+at+"，北京时间）") || strings.Contains(a[0], "请在 ") || strings.Contains(a[0], "1 小时内") {
+		t.Fatalf("过了清空时刻应直接请用户自己关: %v", a)
+	}
+	if hint := h.svc.renewalRetryHint(nil); !strings.Contains(hint, "尽快") || strings.Contains(hint, "1 小时内") {
+		t.Fatalf("读不到单据时应说尽快: %q", hint)
+	}
+}

@@ -31,13 +31,10 @@ func FromTrustedProxy(remoteAddr string) bool {
 	if ip == nil {
 		return false
 	}
-	for _, part := range strings.Split(os.Getenv("TRUSTED_PROXIES"), ",") {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
+	valid, _ := SplitTrustedProxies(os.Getenv("TRUSTED_PROXIES"))
+	for _, part := range valid {
 		if strings.Contains(part, "/") {
-			if _, n, err := net.ParseCIDR(part); err == nil && n.Contains(ip) {
+			if _, n, _ := net.ParseCIDR(part); n != nil && n.Contains(ip) {
 				return true
 			}
 			continue
@@ -47,4 +44,29 @@ func FromTrustedProxy(remoteAddr string) bool {
 		}
 	}
 	return false
+}
+
+// SplitTrustedProxies 把 TRUSTED_PROXIES（逗号分隔）拆成能用的项（IP 或 CIDR）和写错的项。
+// gin 的 SetTrustedProxies 和 FromTrustedProxy 共用这一个规则：坏项跳过，其余照常生效（B1-01）。
+func SplitTrustedProxies(raw string) (valid, invalid []string) {
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if strings.Contains(part, "/") {
+			if _, _, err := net.ParseCIDR(part); err == nil {
+				valid = append(valid, part)
+			} else {
+				invalid = append(invalid, part)
+			}
+			continue
+		}
+		if net.ParseIP(part) != nil {
+			valid = append(valid, part)
+		} else {
+			invalid = append(invalid, part)
+		}
+	}
+	return valid, invalid
 }

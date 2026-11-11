@@ -230,6 +230,7 @@ import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRouteTab } from '../../lib/useRouteTab'
 import { dialog } from '../../lib/dialog'
+import { walletSerialRange, ymdBeijing } from '../../lib/agentViews'
 import { copyToClipboard } from '../../lib/clipboard'
 import {
   errText, FLAG_LABEL, fmtTs, hasEmoji, isUncertain, TXN_LABEL, kindLabel, ledgerPagerTotal, mainSellCurrencies, money,
@@ -527,7 +528,7 @@ function addDays(s: string, n: number) {
   d.setDate(d.getDate() + n)
   return ymd(d)
 }
-const today = ymd(new Date())
+const today = ymdBeijing(Math.floor(Date.now() / 1000))
 const ser = reactive({
   account_no: '', currency: '', start: addDays(today, -6), end: today,
   items: [] as any[], total: 0, page: 1, loading: false,
@@ -553,8 +554,11 @@ async function querySerials(page = 1) {
   if (!ser.start || !ser.end || ser.start > ser.end) return dialog.toast('请选择有效的时间段', 'warn')
   const spanDays = Math.round((parseYmd(ser.end).getTime() - parseYmd(ser.start).getTime()) / DAY_MS) + 1
   if (spanDays > MAX_DAYS) return dialog.toast('时间段不能超过 90 天', 'warn')
-  const startSec = Math.floor(parseYmd(ser.start).getTime() / 1000)
-  const endSec = Math.min(Math.floor(parseYmd(addDays(ser.end, 1)).getTime() / 1000) - 1, Math.floor(Date.now() / 1000))
+  // 起止日按北京时间日界，和列表显示的北京时间一致，与浏览器所在时区无关
+  const range = walletSerialRange(ser.start, ser.end, Math.floor(Date.now() / 1000))
+  if (!range) return dialog.toast('请选择有效的时间段', 'warn')
+  const startSec = range.start
+  const endSec = range.end
   ser.page = page
   ser.loading = true
   try {
@@ -593,8 +597,6 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.text-warn { color: #d97706; }
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .date-input {
   height: 32px;
   padding: 0 8px;

@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { isAdminPath, routes } from '../routes'
 import { buildNavItems, groupNavItems } from '../../lib/adminNav'
 
@@ -42,5 +44,49 @@ describe('后台菜单', () => {
   it('MarsWallex 的几项都在', () => {
     const full = items().map((i) => i.fullTitle)
     for (const t of ['MarsWallex 接入配置', 'MarsWallex 钱包', 'MarsWallex 卡池', 'MarsWallex 选卡规则', 'CDK 卡密', '自动付款', '卡服务商']) expect(full).toContain(t)
+  })
+})
+
+describe('旧地址 /admin/... 重定向（F1-06）', () => {
+  const legacy = () => routes.find((r) => r.path === '/admin/:pathMatch(.*)*')
+  const go = (pathMatch: string | string[]) => {
+    const redirect = legacy()?.redirect as (to: { params: Record<string, unknown> }) => string
+    return redirect({ params: { pathMatch } })
+  }
+  it('多段地址用斜杠拼，不是逗号', () => expect(go(['agents', '5'])).toBe('/ops/agents/5'))
+  it('单段地址', () => expect(go(['cdkeys'])).toBe('/ops/cdkeys'))
+  it('空', () => expect(go('')).toBe('/ops/'))
+  it('字符串形式也行', () => expect(go('cdkeys')).toBe('/ops/cdkeys'))
+})
+
+describe('路由守卫只在后台页面等 /setup/status（F1-03）', () => {
+  const src = readFileSync(fileURLToPath(new URL('../index.ts', import.meta.url)), 'utf8')
+  it('isAdminPath 的提前返回出现在 ensureSetupStatus() 调用之前', () => {
+    const guard = src.slice(src.indexOf('router.beforeEach'))
+    const early = guard.indexOf('if (!isAdminPath(to.path)) return')
+    const call = guard.indexOf('await ensureSetupStatus()')
+    expect(early).toBeGreaterThan(-1)
+    expect(call).toBeGreaterThan(early)
+  })
+  it('请求失败不把 setupChecked 置真（下次跳转再问），也不看 JSON 前先看 r.ok', () => {
+    const fn = src.slice(src.indexOf('async function ensureSetupStatus'), src.indexOf('const isLoginPath'))
+    const catchBlock = fn.slice(fn.indexOf('catch'), fn.indexOf('\n  }\n', fn.indexOf('catch')))
+    expect(catchBlock).not.toContain('setupChecked = true')
+    expect(fn).toContain('r.ok')
+  })
+  it('需要管理员、安装页、登录页的路由路径都在 /ops 下', () => {
+    const flat: Array<{ path: string; meta?: Record<string, unknown>; name?: unknown }> = []
+    const walk = (list: typeof routes, base: string, inherited: Record<string, unknown>) => {
+      for (const r of list) {
+        const path = r.path.startsWith('/') ? r.path : `${base}/${r.path}`
+        const meta = { ...inherited, ...(r.meta || {}) }
+        flat.push({ path, meta, name: r.name })
+        if (r.children) walk(r.children, path, meta)
+      }
+    }
+    walk(routes, '', {})
+    const guarded = flat.filter((r) => r.meta?.requiresAdmin || r.meta?.setupPage || r.name === 'Login')
+    expect(guarded.length).toBeGreaterThan(5)
+    for (const r of guarded) expect(isAdminPath(r.path), r.path).toBe(true)
   })
 })

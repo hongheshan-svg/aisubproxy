@@ -138,28 +138,44 @@ func TestLockedBrowserStillFillsButNeverClicks(t *testing.T) {
 	assertLockedAfterNoClick(t, f, b, ctx)
 }
 
-// 正在等支付按钮时被锁定：等到按钮出现也不能点。这是锁内那次复查要挡住的情形。
+// 正在等支付按钮时被锁定：等到按钮出现也不能点。这是锁内那次复查（Submit 置位之前再看一次 submitLocked）要挡住的情形。
+// 按钮等用例放行才出现（latepay=gate），时序是确定的：Submit 已过了开头那次检查、正在等按钮时锁定，然后才放出按钮。
+// 以前靠「邮编填好 1.5 秒后才出现」碰时序，碰不到就跳过，CI 不带 -v 看不出来（P2-12）。
 func TestLockWhileSubmitWaitingForButton(t *testing.T) {
 	needChrome(t)
 	f := newFakeCheckout(t)
-	b, ctx := openKind(t, f, stripeCheckout, "latepay=1&mode=success", paybrowser.LaunchOptions{})
+	b, ctx := openKind(t, f, stripeCheckout, "latepay=gate&mode=success", paybrowser.LaunchOptions{})
 	if err := b.Fill(ctx, testCard, testBilling); err != nil {
 		t.Fatalf("Fill: %v", err)
 	}
-	// Fill 刚填完邮编不久，按钮要过一会儿才出现
 	done := make(chan error, 1)
 	go func() { done <- b.Submit(ctx) }()
-	time.Sleep(50 * time.Millisecond)
-	locked := b.LockSubmit()
-	err := <-done
-	if locked {
-		t.Skip("这台机器上按钮已经先出现、点击先发生了，碰不到要测的时序")
+	// 按钮没放出来，Submit 只能一直等；过一会儿再锁定，它早已过了开头那次检查
+	select {
+	case err := <-done:
+		t.Fatalf("按钮还没出现 Submit 就返回了: %v", err)
+	case <-time.After(500 * time.Millisecond):
 	}
-	if !errors.Is(err, paybrowser.ErrSubmitLocked) {
-		t.Fatalf("Submit = %v，期望 ErrSubmitLocked", err)
+	if b.LockSubmit() {
+		t.Fatal("按钮还没出现，不可能点过：LockSubmit 应返回 false")
+	}
+	// 锁定之后 Submit 仍在等按钮：它不是在开头那次检查返回的，接下来只能靠锁内的复查拦住
+	select {
+	case err := <-done:
+		t.Fatalf("放出按钮之前 Submit 就返回了: %v", err)
+	case <-time.After(300 * time.Millisecond):
+	}
+	f.payGate.Store(true)
+	select {
+	case err := <-done:
+		if !errors.Is(err, paybrowser.ErrSubmitLocked) {
+			t.Fatalf("Submit = %v，期望 ErrSubmitLocked", err)
+		}
+	case <-time.After(outcomeWait):
+		t.Fatal("放出按钮后 Submit 一直没有返回")
 	}
 	time.Sleep(300 * time.Millisecond)
-	if n := f.submitClicks.Load(); n != 0 {
-		t.Fatalf("锁定后页面收到 %d 次点击", n)
+	if n, pays := f.submitClicks.Load(), len(f.payments()); n != 0 || pays != 0 {
+		t.Fatalf("锁定后不应点击：点了 %d 次，/pay %d 次", n, pays)
 	}
 }

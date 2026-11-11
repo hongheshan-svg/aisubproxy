@@ -22,6 +22,6 @@ export const i18n = createI18n({
 
 export function setLocale(next: AppLocale) {
   i18n.global.locale.value = next
-  localStorage.setItem(STORAGE_KEY, next)
   document.documentElement.lang = next === 'zh' ? 'zh-CN' : 'en'
+  try { localStorage.setItem(STORAGE_KEY, next) } catch { /* 存不了就只在本次生效 */ }
 }

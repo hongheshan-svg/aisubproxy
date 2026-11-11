@@ -85,13 +85,18 @@ func AdminCardPoolCreateCardholder(c *gin.Context) {
 			return
 		}
 		sub, err := s.CreateCardholder(c.Request.Context(), p, adminName(c))
-		if sub != nil {
-			poolAudit(c, "holder_create", fmt.Sprintf("out_card_holder_id=%s card_holder_id=%s", sub.OutCardHolderID, sub.CardHolderID))
-		}
 		if err != nil {
+			// 只记结果摘要，不带资料和平台错误原文
+			poolAuditFailed(c, "holder_create", "country="+strings.TrimSpace(p.CountryCode), err)
 			holderFail(c, err)
 			return
 		}
+		// 平台结果不明（提交记录为 unknown）记 holder_create_failed，和单据类操作同一口径；detail 都带提交记录的状态
+		action := "holder_create"
+		if sub.State == cardpool.SubmissionUnknown {
+			action += "_failed"
+		}
+		poolAudit(c, action, fmt.Sprintf("out_card_holder_id=%s card_holder_id=%s state=%s", sub.OutCardHolderID, sub.CardHolderID, sub.State))
 		if sub.State == cardpool.SubmissionUnknown {
 			c.JSON(http.StatusAccepted, gin.H{"submission": sub, "unknown": true})
 			return
@@ -101,7 +106,7 @@ func AdminCardPoolCreateCardholder(c *gin.Context) {
 }
 
 // AdminCardPoolCardholderProfile 实时返回平台上的完整持卡人资料（修改时预填），不缓存、不落地。
-// 成功返回时写审计，只记持卡人 ID（同 view_sensitive）。
+// 成功返回时写审计，只记持卡人 ID，不记证件、电话等原文。
 func AdminCardPoolCardholderProfile(c *gin.Context) {
 	poolRoute(func(c *gin.Context, s *cardpool.Service) {
 		c.Header("Cache-Control", "no-store")
@@ -125,6 +130,7 @@ func AdminCardPoolUpdateCardholder(c *gin.Context) {
 		}
 		h, err := s.UpdateCardholder(c.Request.Context(), c.Param("id"), p, adminName(c))
 		if err != nil {
+			poolAuditFailed(c, "holder_update", "card_holder_id="+strings.TrimSpace(c.Param("id")), err)
 			holderFail(c, err)
 			return
 		}
@@ -144,6 +150,8 @@ func AdminCardPoolCardholderStatus(c *gin.Context) {
 		}
 		h, err := s.SetCardholderStatus(c.Request.Context(), c.Param("id"), req.Status, adminName(c))
 		if err != nil {
+			poolAuditFailed(c, "holder_status", fmt.Sprintf("card_holder_id=%s status=%s",
+				strings.TrimSpace(c.Param("id")), strings.ToUpper(strings.TrimSpace(req.Status))), err)
 			poolFail(c, err)
 			return
 		}

@@ -13,11 +13,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	_ "github.com/mattn/go-sqlite3"
-	"github.com/tuzi/cdk-recharge-system/internal/config"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -78,7 +79,7 @@ func writeInitialAdminPasswordFile(path, username, password string) error {
 	return os.Chmod(path, 0o600)
 }
 
-func Init(cfg *config.DatabaseConfig) error {
+func Init() error {
 	dbPath := ResolvePath()
 	log.Printf("使用数据库: %s", dbPath)
 	// WAL 让读不阻塞写；busy_timeout 让并发写等待锁而不是立刻报 database is locked。
@@ -107,7 +108,7 @@ func Init(cfg *config.DatabaseConfig) error {
 	db.SetMaxIdleConns(5)
 
 	DB = db
-	log.Println("✓ SQLite 数据库连接成功: data/cdk_recharge.db")
+	log.Println("✓ SQLite 数据库连接成功")
 
 	// 创建表
 	if err := createTables(); err != nil {
@@ -342,10 +343,6 @@ func createTables() error {
 		if _, err := DB.Exec(query); err != nil {
 			// 语句都带 IF NOT EXISTS，正常不会失败；失败多半是磁盘满、库文件损坏或表结构不对，
 			// 带病启动只会在后面以更难懂的方式出错，这里直接终止（审计 A-16）。
-			if strings.Contains(err.Error(), "already exists") {
-				log.Printf("创建表时提示已存在，跳过: %v", err)
-				continue
-			}
 			return fmt.Errorf("建表失败（%s）: %w", ddlHead(query), err)
 		}
 	}
@@ -458,7 +455,6 @@ func legacySHA256(password string) string {
 	return hex.EncodeToString(hash[:])
 }
 
-// HashAdminPassword 现在使用 bcrypt（带盐、慢哈希）。
 // WriteAudit 记录一条管理员操作审计日志（best-effort，失败只记日志不影响主流程）。
 func WriteAudit(username, action, detail, ip string) {
 	if DB == nil {
@@ -472,6 +468,7 @@ func WriteAudit(username, action, detail, ip string) {
 	}
 }
 
+// HashAdminPassword 现在使用 bcrypt（带盐、慢哈希）。
 func HashAdminPassword(password string) (string, error) {
 	b, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {
@@ -593,6 +590,13 @@ func GetSetting(key string) (string, error) {
 	return v, err
 }
 
+// SettingNonEmpty 该设置项存在且非空。只查有没有，不把值读出来（适合很大的值，如 Logo 的 base64）。
+func SettingNonEmpty(key string) bool {
+	var one int
+	err := DB.QueryRow(`SELECT 1 FROM site_settings WHERE key = ? AND value <> '' LIMIT 1`, key).Scan(&one)
+	return err == nil
+}
+
 func SetSetting(key, value string) error {
 	_, err := DB.Exec(`
 		INSERT INTO site_settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
@@ -656,16 +660,34 @@ func VerifySetupToken(plain string) bool {
 	return subtle.ConstantTimeCompare([]byte(got), []byte(stored)) == 1
 }
 
-// RollbackAdminBootstrap 撤销一次没通过自检的安装：删掉刚建的管理员和安装完成标记，
+// RollbackAdminBootstrap 撤销一次没走完的安装：删掉刚建的管理员和安装完成标记，
 // 并把安装令牌恢复成这次用的那个（CreateAdminUser 已把它删了），管理员不用重启就能用同一个令牌重试（审计 A-11）。
-func RollbackAdminBootstrap(userID int64, setupToken string) error {
+// userID 为 0（读回 id 失败）时按 username 找。只有「库里恰好只有这一个管理员」时才动手：
+// 多于一个说明里面有回滚之前就存在的管理员，一个都不删，返回错误。
+func RollbackAdminBootstrap(userID int64, username, setupToken string) error {
 	tx, err := DB.Begin()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec(`DELETE FROM admin_users WHERE id = ?`, userID); err != nil {
+	var n int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM admin_users`).Scan(&n); err != nil {
 		return err
+	}
+	if n != 1 {
+		return fmt.Errorf("库里有 %d 个管理员，不是刚建的唯一一个，拒绝回滚", n)
+	}
+	if userID == 0 {
+		if err := tx.QueryRow(`SELECT id FROM admin_users WHERE username = ?`, username).Scan(&userID); err != nil {
+			return err
+		}
+	}
+	res, err := tx.Exec(`DELETE FROM admin_users WHERE id = ?`, userID)
+	if err != nil {
+		return err
+	}
+	if k, _ := res.RowsAffected(); k != 1 {
+		return fmt.Errorf("没有找到要回滚的管理员 id=%d", userID)
 	}
 	if _, err := tx.Exec(`DELETE FROM site_settings WHERE key = 'install_completed_at'`); err != nil {
 		return err
@@ -697,11 +719,17 @@ var weakPasswordWords = map[string]bool{
 	"root": true, "test": true, "default": true,
 }
 
+// MaxPasswordBytes bcrypt 只取口令的前 72 字节，超过的哈希函数直接报错。
+const MaxPasswordBytes = 72
+
+// PasswordTooLong 口令超过 bcrypt 的 72 字节上限（英文数字每个 1 字节，汉字每个 3 字节）。
+func PasswordTooLong(p string) bool { return len(strings.TrimSpace(p)) > MaxPasswordBytes }
+
 // IsWeakPassword 拦截常见弱口令与历史默认口令：名单原文、常见词加首尾数字或符号、
 // 同一字符重复、连续数字（升序或降序，可跨 9→0）。只在设置或修改口令时检查，已保存的口令不受影响。
 func IsWeakPassword(p string) bool {
 	p = strings.TrimSpace(p)
-	if len(p) < 12 {
+	if utf8.RuneCountInString(p) < 12 { // 按字符数，和各处「至少 12 位」口径一致
 		return true
 	}
 	lower := strings.ToLower(p)
@@ -785,6 +813,9 @@ func planDefaultAdmin() (defaultAdminPlan, error) {
 	if InstallMode() == "wizard" && password == "" {
 		return p, nil
 	}
+	if PasswordTooLong(password) {
+		return p, fmt.Errorf("ADMIN_PASSWORD 太长：最多 72 字节")
+	}
 	if password != "" && (IsWeakPassword(password) || strings.EqualFold(password, p.username)) {
 		// 和安装向导同样的强度要求（审计 A-12）。拒绝启动，错误信息里不带口令本身。
 		return p, fmt.Errorf("ADMIN_PASSWORD 太弱：至少 12 位、不能是常见弱口令、不能和用户名相同。请换成强口令，或删掉 ADMIN_PASSWORD 改用安装向导 /ops/setup")
@@ -848,6 +879,8 @@ func ensureDefaultAdmin() error {
 	if err != nil {
 		return err
 	}
+	var others int
+	_ = DB.QueryRow(`SELECT COUNT(*) FROM admin_users`).Scan(&others)
 	// 随机密码不进日志（CodeQL go/clear-text-logging）：先写 0600 文件再建号，写不了就拒绝启动。
 	pwPath := InitialAdminPasswordPath()
 	if generated {
@@ -865,6 +898,7 @@ func ensureDefaultAdmin() error {
 		return err
 	}
 	_ = MarkInstalled(username)
+	recordBootstrapAdmin(username, generated, others)
 
 	if generated {
 		log.Printf("已创建管理员账号 %s，初始随机密码已写入 %s（权限 0600），请立即登录修改密码，改密成功后该文件会自动删除", username, pwPath)
@@ -872,6 +906,38 @@ func ensureDefaultAdmin() error {
 		log.Printf("✓ 已用 ADMIN_PASSWORD 创建管理员账号: %s", username)
 	}
 	return nil
+}
+
+// recordBootstrapAdmin 记下「启动时按环境变量建了管理员」（B1-10）：写一条审计，并留一条待发告警。
+// 这一步在 db.Init 里，那时 Telegram 告警还没接好，所以告警文字先存着，由 server 在告警就绪后用 TakeBootstrapNotice 取走发送。
+// 审计和告警都只写用户名和来源，不含密码。
+func recordBootstrapAdmin(username string, generated bool, others int) {
+	src := "ADMIN_PASSWORD 环境变量"
+	if generated {
+		src = "随机初始密码（INSTALL_MODE=auto）"
+	}
+	extra := ""
+	if others > 0 {
+		extra = fmt.Sprintf("；库里此前已有 %d 个管理员", others)
+	}
+	WriteAudit("system", "admin_bootstrap_env", fmt.Sprintf("username=%s source=%s others=%d", username, src, others), "")
+	bootstrapMu.Lock()
+	bootstrapNotice = fmt.Sprintf("启动时自动创建了管理员「%s」（来源：%s）%s。如果不是你操作的，请立刻检查 ADMIN_USERNAME / ADMIN_PASSWORD 环境变量并核对管理员列表。", username, src, extra)
+	bootstrapMu.Unlock()
+}
+
+var (
+	bootstrapMu     sync.Mutex
+	bootstrapNotice string
+)
+
+// TakeBootstrapNotice 取走（并清空）启动时建管理员留下的待发告警文字，没有则返回空串。
+func TakeBootstrapNotice() string {
+	bootstrapMu.Lock()
+	defer bootstrapMu.Unlock()
+	n := bootstrapNotice
+	bootstrapNotice = ""
+	return n
 }
 
 // CreateAdminUser 事务安全创建管理员（安装向导用）。若已有任意管理员则失败。

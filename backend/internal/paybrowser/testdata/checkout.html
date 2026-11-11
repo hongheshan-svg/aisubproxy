@@ -36,6 +36,8 @@
                               卡片 iframe 里多一个可见的 submit 按钮（点击会被服务端计数）
     latepay=1                 支付按钮在邮编填好 1.5 秒后才出现
     otpflaky=1                3DS 验证页第一次输满验证码时提交按钮短暂消失（见 acs.html 的 flaky）
+    challenge=full            mode=3ds 时验证框 iframe 铺满整个窗口、背景透明（不是 420×280 的小框）
+    successtext=文字          成功标志 #payment-success 的文字（默认 Payment successful）
   每次提交把收到的全部字段 POST 到本服务的 /pay，供测试断言。
 -->
 <section id="summary">
@@ -198,10 +200,12 @@
       var frame = document.createElement('iframe')
       frame.name = 'stripe-challenge-frame'
       frame.src = CARD_ORIGIN + '/acs.html?wrap=1' + (q.get('otpflaky') === '1' ? '&flaky=1' : '')
+      // 铺满窗口、背景透明的验证框：下面的卡号、有效期、CVC 都透得出来
+      if (q.get('challenge') === 'full') frame.style.cssText = 'position: fixed; inset: 0; width: 100vw; height: 100vh; background: transparent'
       modal.appendChild(frame)
       document.body.appendChild(modal)
     } else {
-      show('payment-success', 'Payment successful')
+      show('payment-success', q.get('successtext') || 'Payment successful')
     }
   }
 

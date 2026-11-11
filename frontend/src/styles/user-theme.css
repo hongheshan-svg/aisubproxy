@@ -56,7 +56,7 @@ html[data-tone="dark"] .user-ui {
   .user-ui .u-page--split { max-width: 1120px; padding-left: 24px; padding-right: 24px; }
 }
 
-.user-ui .u-title { font-size: 28px; font-weight: 700; line-height: 1.3; margin: 0 0 12px; }
+.user-ui .u-title { font-size: 28px; font-weight: 700; font-style: normal; letter-spacing: -0.03em; line-height: 1.3; margin: 0 0 12px; }
 @media (max-width: 480px) {
   .user-ui .u-title { font-size: 24px; }
 }
@@ -146,3 +146,40 @@ html[data-tone="dark"] .user-ui {
     transition: none !important;
   }
 }
+
+/* 用户端按钮纯色（规格 B §3.5：用户端只从皮肤取颜色和圆角）：
+   皮肤给 .btn-primary / .btn-secondary 配的渐变、硬投影、粗描边、位移和大写，在用户端一律复位。
+   选择器多带 [data-tone]，优先级压过 html[data-skin] 和 html.dark[data-skin] 上的变量定义。
+   后台和登录页的 data-surface 是 console，不受影响。 */
+html[data-surface="user"][data-skin][data-tone] {
+  --btn-img: none;
+  --btn-shadow: none;
+  --btn-shadow-hover: none;
+  --btn-shadow-active: none;
+  --btn-border: 0 solid transparent;
+  --btn-hover-move: none;
+  --btn-active-move: none;
+  --btn-case: none;
+  --btn-track: 0;
+  --btn2-shadow: none;
+  --btn2-shadow-hover: none;
+  --btn2-border: 1px solid var(--brd-2);
+  --btn2-hover-move: none;
+  --btn-hover-filter: none;
+  --input-focus-shadow: 0 0 0 3px var(--primary-soft);
+  /* 卡片：描边粗细、阴影、背景回到 A 规格的样子（1px、标准阴影、纯色面），只从皮肤取颜色和 --radius-lg */
+  --card-bg: var(--surface);
+  --card-border: 1px solid var(--brd);
+  --card-radius: var(--radius-lg);
+  --card-shadow: var(--shadow-sm);
+}
+
+/* zovo 的主按钮在 style.css 里直接写了金色渐变和外发光，不走上面的变量；用户端压回纯色主色 */
+html[data-surface="user"][data-skin="zovo"][data-tone] .btn-primary,
+html[data-surface="user"][data-skin="zovo"][data-tone] .btn-primary:hover {
+  background: var(--primary);
+  color: var(--primary-on);
+  box-shadow: none;
+  filter: none;
+}
+html[data-surface="user"][data-skin="zovo"][data-tone] .btn-primary:hover:not(:disabled) { background: var(--primary-hover); }

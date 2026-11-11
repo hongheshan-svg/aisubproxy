@@ -20,12 +20,12 @@ const (
 	setupLockWindow  = time.Hour
 )
 
-// 安装接口的失败计数用和登录同一种有上限的限流表（setupLimiter，见 ratelimit.go），按来源 IP 计。
-func setupAllowed(ip string) (bool, time.Duration) { return setupLimiter.allowed(ip) }
+// 安装接口的失败计数用和登录同一种有上限的限流表（setupLimiter，见 ratelimit.go），按来源 IP 计（IPv6 按 /64 归并）。
+func setupAllowed(ip string) (bool, time.Duration) { return setupLimiter.allowed(rateIPKey(ip)) }
 
-func setupFailed(ip string) { setupLimiter.failed(ip) }
+func setupFailed(ip string) { setupLimiter.failed(rateIPKey(ip)) }
 
-func setupSucceeded(ip string) { setupLimiter.succeeded(ip) }
+func setupSucceeded(ip string) { setupLimiter.succeeded(rateIPKey(ip)) }
 
 // SetupStatus GET /api/v1/setup/status — 仅返回是否已安装，不泄露细节。
 func SetupStatus(c *gin.Context) {
@@ -103,6 +103,10 @@ func SetupBootstrap(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "passwords do not match"})
 			return
 		}
+		if db.PasswordTooLong(password) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "password too long (max 72 bytes)"})
+			return
+		}
 		if db.IsWeakPassword(password) || strings.EqualFold(password, username) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "password too weak (min 12, not common, not equal to username)"})
 			return
@@ -127,36 +131,56 @@ func SetupBootstrap(c *gin.Context) {
 		return
 	}
 
-	// 读回 user id，安装成功后立刻签发登录态，避免用户手抄密码再登录失败
+	// 管理员已建好：下面任何一步失败都回滚这次创建（保留安装令牌，可直接重试），
+	// 否则站点已算「已安装」，而自动生成的密码没人知道。
 	var userID int64
-	_ = db.DB.QueryRow(`SELECT id FROM admin_users WHERE username = ?`, username).Scan(&userID)
+	// 回滚成功返回「可重试」；回滚本身失败要让前端知道（rollback_failed），不能再让人以为可以重试
+	rollback := func(step string, retryMsg string) {
+		if err := db.RollbackAdminBootstrap(userID, username, token); err != nil {
+			log.Printf("setup bootstrap: rollback failed (%s): %v", step, err)
+			db.WriteAudit(username, "install_rollback_failed", step, ip)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "setup failed, rollback failed", "rollback_failed": true})
+			return
+		}
+		db.WriteAudit(username, "install_rollback", step, ip)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": retryMsg})
+	}
+
+	// 读回 user id，安装成功后立刻签发登录态，避免用户手抄密码再登录失败
+	if err := setupStep("lookup_id"); err == nil {
+		_ = db.DB.QueryRow(`SELECT id FROM admin_users WHERE username = ?`, username).Scan(&userID)
+	}
 	if userID == 0 {
 		log.Printf("setup bootstrap: admin created but id lookup failed for %s", username)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "setup failed"})
+		rollback("id lookup failed", "setup failed, please retry")
 		return
 	}
 
 	// 自检：生成口令必须能通过校验，否则回滚并报错（防止“生成成功但登不进”）
 	var storedHash string
-	if err := db.DB.QueryRow(`SELECT password_hash FROM admin_users WHERE id = ?`, userID).Scan(&storedHash); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "setup failed"})
+	err := setupStep("read_hash")
+	if err == nil {
+		err = db.DB.QueryRow(`SELECT password_hash FROM admin_users WHERE id = ?`, userID).Scan(&storedHash)
+	}
+	if err != nil {
+		log.Printf("setup bootstrap: hash lookup failed: %v", err)
+		rollback("password hash read failed", "setup failed, please retry")
 		return
 	}
 	if ok, _ := verifyAdminPassword(storedHash, password); !ok {
 		log.Printf("setup bootstrap: password self-check failed for %s", username)
-		// 回滚时保留这次用的安装令牌，不用重启就能重试（原来连令牌一起删，重启前装不了）
-		if err := db.RollbackAdminBootstrap(userID, token); err != nil {
-			log.Printf("setup bootstrap: rollback failed: %v", err)
-		}
-		db.WriteAudit(username, "install_rollback", "password self-check failed", ip)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "password self-check failed, please retry"})
+		rollback("password self-check failed", "password self-check failed, please retry")
 		return
 	}
 
-	sess, err := issueAdminSession(c, userID, username, "System Admin", 0) // 新建账号的版本号是 0
+	var sess gin.H
+	err = setupStep("issue_session")
+	if err == nil {
+		sess, err = issueAdminSession(c, userID, username, "System Admin", 0) // 新建账号的版本号是 0
+	}
 	if err != nil {
 		log.Printf("setup bootstrap session error: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "setup failed"})
+		rollback("session issue failed", "setup failed, please retry")
 		return
 	}
 
@@ -173,16 +197,28 @@ func SetupBootstrap(c *gin.Context) {
 	})
 }
 
+// validAdminUsername 3–32 位，只收英文字母、数字、下划线（和提示一致）。
 func validAdminUsername(u string) bool {
 	if len(u) < 3 || len(u) > 32 {
 		return false
 	}
 	for _, r := range u {
-		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' {
+		ok := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_'
+		if !ok {
 			return false
 		}
 	}
 	return true
+}
+
+// setupStepHook 只给测试用：在管理员建好之后的各步骤注入失败。生产里恒为 nil。
+var setupStepHook func(step string) error
+
+func setupStep(step string) error {
+	if setupStepHook != nil {
+		return setupStepHook(step)
+	}
+	return nil
 }
 
 func hasLetterAndDigit(s string) bool {

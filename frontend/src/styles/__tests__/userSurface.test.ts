@@ -77,3 +77,11 @@ describe('皮肤的元素级装饰不命中用户端', () => {
     for (const v of used) expect(body, v).toContain(v + ':')
   })
 })
+
+describe('zovo 主按钮在用户端也是纯色', () => {
+  it('style.css 里 zovo 的渐变主按钮，用户端有覆盖规则', () => {
+    expect(css).toMatch(/html\[data-skin="zovo"\] \.btn-primary \{[^}]*--accent-grad/)
+    const ut = read('../user-theme.css')
+    expect(ut).toMatch(/html\[data-surface="user"\]\[data-skin="zovo"\]\[data-tone\] \.btn-primary,[\s\S]*?\{[^}]*background: var\(--primary\);[^}]*box-shadow: none;/)
+  })
+})

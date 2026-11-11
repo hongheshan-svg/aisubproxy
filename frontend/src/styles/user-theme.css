@@ -166,3 +166,13 @@ html[data-surface="user"][data-skin][data-tone] {
   --btn2-border: 1px solid var(--brd-2);
   --btn2-hover-move: none;
 }
+
+/* zovo 的主按钮在 style.css 里直接写了金色渐变和外发光，不走上面的变量；用户端压回纯色主色 */
+html[data-surface="user"][data-skin="zovo"][data-tone] .btn-primary,
+html[data-surface="user"][data-skin="zovo"][data-tone] .btn-primary:hover {
+  background: var(--primary);
+  color: var(--primary-on);
+  box-shadow: none;
+  filter: none;
+}
+html[data-surface="user"][data-skin="zovo"][data-tone] .btn-primary:hover:not(:disabled) { background: var(--primary-hover); }

@@ -663,16 +663,34 @@ func VerifySetupToken(plain string) bool {
 	return subtle.ConstantTimeCompare([]byte(got), []byte(stored)) == 1
 }
 
-// RollbackAdminBootstrap 撤销一次没通过自检的安装：删掉刚建的管理员和安装完成标记，
+// RollbackAdminBootstrap 撤销一次没走完的安装：删掉刚建的管理员和安装完成标记，
 // 并把安装令牌恢复成这次用的那个（CreateAdminUser 已把它删了），管理员不用重启就能用同一个令牌重试（审计 A-11）。
-func RollbackAdminBootstrap(userID int64, setupToken string) error {
+// userID 为 0（读回 id 失败）时按 username 找。只有「库里恰好只有这一个管理员」时才动手：
+// 多于一个说明里面有回滚之前就存在的管理员，一个都不删，返回错误。
+func RollbackAdminBootstrap(userID int64, username, setupToken string) error {
 	tx, err := DB.Begin()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec(`DELETE FROM admin_users WHERE id = ?`, userID); err != nil {
+	var n int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM admin_users`).Scan(&n); err != nil {
 		return err
+	}
+	if n != 1 {
+		return fmt.Errorf("库里有 %d 个管理员，不是刚建的唯一一个，拒绝回滚", n)
+	}
+	if userID == 0 {
+		if err := tx.QueryRow(`SELECT id FROM admin_users WHERE username = ?`, username).Scan(&userID); err != nil {
+			return err
+		}
+	}
+	res, err := tx.Exec(`DELETE FROM admin_users WHERE id = ?`, userID)
+	if err != nil {
+		return err
+	}
+	if k, _ := res.RowsAffected(); k != 1 {
+		return fmt.Errorf("没有找到要回滚的管理员 id=%d", userID)
 	}
 	if _, err := tx.Exec(`DELETE FROM site_settings WHERE key = 'install_completed_at'`); err != nil {
 		return err

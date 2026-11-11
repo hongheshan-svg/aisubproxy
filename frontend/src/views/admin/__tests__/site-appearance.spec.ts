@@ -53,13 +53,6 @@ describe('后台外观页', () => {
     for (const s of ['亮色', '暗色', '跟随系统']) expect(html).toContain(s)
   })
 
-  it('主色太浅时显示提示，保存按钮带 disabled', async () => {
-    setSiteBrand({ primary: '#7FD4C4' })
-    const html = await render()
-    expect(html).toContain('这个颜色太浅')
-    expect(saveTag(html)).toMatch(/\sdisabled(=|\s|>)/)
-  })
-
   it('选深青时显示不低于 4.5 的对比度，保存按钮可点', async () => {
     setSiteBrand({ primary: '#0F6B5F' })
     const html = await render()

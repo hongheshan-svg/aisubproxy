@@ -424,9 +424,9 @@ html[data-skin='rose'] {
 }
 html[data-skin='rose'] .btn-primary:hover:not(:disabled) { color: var(--bg); }
 html[data-skin='rose'] .btn-secondary:hover:not(:disabled) { background: var(--ink); color: var(--bg); }
-html[data-skin='rose'] .input { border-width: 0 0 1px; padding-left: 2px; }
-html[data-skin='rose'] textarea.input { border-width: 1px; padding-left: 12px; }
-html[data-skin='rose'] .input:focus { border-color: var(--primary); }
+html:not([data-surface="user"])[data-skin='rose'] .input { border-width: 0 0 1px; padding-left: 2px; }
+html:not([data-surface="user"])[data-skin='rose'] textarea.input { border-width: 1px; padding-left: 12px; }
+html:not([data-surface="user"])[data-skin='rose'] .input:focus { border-color: var(--primary); }
 
 /* 粗野主义 noir：2px 粗描边、硬投影、按下回弹、反白标签、方块步骤号 */
 html[data-skin='noir'] {
@@ -493,7 +493,7 @@ html:not([data-surface="user"])[data-skin='paper'] .u-title {
   text-underline-offset: 12px;
   text-decoration-skip-ink: none;
 }
-html[data-skin='paper'] textarea.input { border-style: dashed; }
+html:not([data-surface="user"])[data-skin='paper'] textarea.input { border-style: dashed; }
 
 @media (prefers-reduced-motion: reduce) {
   html[data-skin='ember'] .btn-primary::after { animation: none; transition: none; }

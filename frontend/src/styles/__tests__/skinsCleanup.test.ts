@@ -30,3 +30,22 @@ describe('F2-10 skins.css 旧骨架已清理', () => {
     }
   })
 })
+
+// FE1 复审留下的两条次要：用户端复位块补变量；rose/paper 的输入框装饰限定到非用户端
+describe('用户端复位块与输入框装饰选择器', () => {
+  const ut = strip(readFileSync(dir + 'user-theme.css', 'utf8'))
+  const i = ut.indexOf('html[data-surface="user"][data-skin][data-tone] {')
+  const reset = ut.slice(i, ut.indexOf('}', i))
+  it.each(['--input-focus-shadow', '--btn-hover-filter'])('复位块含 %s', (v) => {
+    expect(reset).toMatch(new RegExp(`${v}:\\s*[^;]+;`))
+  })
+  it('皮肤里用到的 --logo-shadow / --dot-current-shadow 已随旧骨架删除，不再需要复位', () => {
+    expect(skins).not.toContain('--logo-shadow')
+    expect(skins).not.toContain('--dot-current-shadow')
+  })
+  it('rose 的 .input 下划线、paper 的 textarea 虚线限定到非用户端', () => {
+    const lines = skins.split('\n').filter((l) => /\[data-skin='(rose|paper)'\][^{]*(\.input|textarea)/.test(l))
+    expect(lines.length).toBeGreaterThanOrEqual(4)
+    for (const l of lines) expect(l, l).toMatch(/^html:not\(\[data-surface="user"\]\)\[data-skin=/)
+  })
+})

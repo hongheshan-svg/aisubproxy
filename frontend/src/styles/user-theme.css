@@ -165,6 +165,8 @@ html[data-surface="user"][data-skin][data-tone] {
   --btn2-shadow-hover: none;
   --btn2-border: 1px solid var(--brd-2);
   --btn2-hover-move: none;
+  --btn-hover-filter: none;
+  --input-focus-shadow: 0 0 0 3px var(--primary-soft);
   /* 卡片：描边粗细、阴影、背景回到 A 规格的样子（1px、标准阴影、纯色面），只从皮肤取颜色和 --radius-lg */
   --card-bg: var(--surface);
   --card-border: 1px solid var(--brd);

@@ -6,6 +6,9 @@ import { describe, expect, it } from 'vitest'
 
 const src = readFileSync(resolve(__dirname, '../../views/user/BatchRedeemView.vue'), 'utf8')
 
+/** 去掉整行的 // 注释，下面的正则就不用再处理注释（避免嵌套量词回溯）。 */
+const dropLineComments = (s: string) => s.replace(/^[ \t]*\/\/.*$/gm, '')
+
 /** 取 `function name(...) {` 的函数体（按花括号配对）。 */
 function body(name: string): string {
   const m = new RegExp(`function\\s+${name}\\s*\\([^)]*\\)[^{]*\\{`).exec(src)
@@ -67,7 +70,7 @@ describe('重置、离开页面、换批次（F2-04b）', () => {
   it('自动提交结束后复位放在 finally 里，每一张意外抛错按结果未知收尾（FE2 审查次要 3）', () => {
     const b = body('handleAutoSubmitAll')
     // 两条分支都是 try { await runSubmitPool(...) } finally { ...autoSubmitting.value = false }
-    const blocks = [...b.matchAll(/try \{\s*(?:\/\/[^\n]*\s*)*await runSubmitPool\([\s\S]*?\} finally \{([\s\S]*?)\}/g)]
+    const blocks = [...dropLineComments(b).matchAll(/try \{\s*await runSubmitPool\([\s\S]*?\} finally \{([\s\S]*?)\}/g)]
     expect(blocks.length).toBe(2)
     for (const m of blocks) expect(m[1]).toContain('autoSubmitting.value = false')
     // finally 之外不再单独复位

@@ -67,7 +67,9 @@ describe('index.html 首屏', () => {
 // 真的跑一遍首屏脚本（vm），覆盖有记录 / 无记录 / 存储抛错三种情形
 import { runInNewContext } from 'node:vm'
 describe('index.html 首屏脚本行为', () => {
-  const script = html.match(/<script>([\s\S]*?)<\/script>/)![1]
+  // 按位置切出首屏脚本（index.html 里第一个不带属性的 <script>），不用正则剥标签
+  const scriptStart = html.indexOf('<script>') + '<script>'.length
+  const script = html.slice(scriptStart, html.indexOf('</script>', scriptStart))
   function run(opts: { store?: Record<string, string> | 'throw'; path?: string; systemDark?: boolean }) {
     const attrs: Record<string, string> = {}
     const classes = new Set<string>()

@@ -6,6 +6,9 @@ import { describe, expect, it } from 'vitest'
 
 const src = readFileSync(resolve(__dirname, '../../views/user/BatchRedeemView.vue'), 'utf8')
 
+/** 去掉整行的 // 注释，下面的正则就不用再处理注释（避免嵌套量词回溯）。 */
+const dropLineComments = (s: string) => s.replace(/^[ \t]*\/\/.*$/gm, '')
+
 /** 取 `function name(...) {` 的函数体（按花括号配对）。 */
 function body(name: string): string {
   const m = new RegExp(`function\\s+${name}\\s*\\([^)]*\\)[^{]*\\{`).exec(src)
@@ -49,7 +52,7 @@ describe('兑换请求结果未知时只查不重发（F2-03）', () => {
   it('回复按 redeemOutcome 归类，5xx 走结果未知', () => {
     const b = body('runPreflightRedeem')
     expect(b).toContain('redeemOutcome(redeem.r.status, st, redeem.data)')
-    expect(b).toMatch(/outcome === 'unknown'\) \{(\s*\/\/[^\n]*)*\s*markResultUnknown\(/)
+    expect(dropLineComments(b)).toMatch(/outcome === 'unknown'\) \{\s*markResultUnknown\(/)
     expect(b).not.toContain('redeem.r.status !== 202')
   })
   it('结果未知：标处理中、写明正在查询，并带上开始时间去查', () => {
@@ -124,7 +127,7 @@ describe('兑换请求结果未知时只查不重发（F2-03）', () => {
     // 每一张的归类、写条目各自接住，一张出错不影响别的
     expect(p).toMatch(/try \{\s*applyPollResult\(id, target, it\.status, it\.data\)\s*\} catch \{[^}]*failed = true\s*\}/)
     // 整段再接一层：别处出错也落到这一轮失败
-    expect(p).toMatch(/\} catch \{[^}]*failed = true\s*\} finally \{\s*(\/\/[^\n]*\s*)*if \(gen === batchSeq\) pollInFlight = false/)
+    expect(dropLineComments(p)).toMatch(/\} catch \{[^}]*failed = true\s*\} finally \{\s*if \(gen === batchSeq\) pollInFlight = false/)
     // 接住之后照常往下走：先看批次还在，再检查时限、排下一轮
     const tail = p.slice(p.lastIndexOf('} finally {'))
     expect(tail.indexOf('if (!live(gen)) return')).toBeGreaterThan(0)

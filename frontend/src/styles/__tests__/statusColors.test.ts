@@ -100,7 +100,12 @@ function walk(dir: string, out: string[] = []): string[] {
 }
 const adminFiles = [...walk(join(SRC, 'views/admin')), join(SRC, 'layouts/AdminLayout.vue')]
 const styleOf = (src: string) => [...src.matchAll(/<style[^>]*>([\s\S]*?)<\/style>/g)].map((m) => m[1]).join('\n')
-const templateOf = (src: string) => src.replace(/<script[\s\S]*?<\/script>/g, '').replace(/<style[\s\S]*?<\/style>/g, '')
+// 只取 <template> 块（按位置切，不用正则剥标签：读的是自己仓库的 .vue 源码，不是在过滤 HTML）
+const templateOf = (src: string) => {
+  const s = src.indexOf('<template')
+  const e = src.lastIndexOf('</template>')
+  return s >= 0 && e > s ? src.slice(s, e + '</template>'.length) : ''
+}
 
 describe('后台页面不再写死状态色（F2-17）', () => {
   it('作用域样式里没有 .text-warn / .text-err / .text-ok / .warn-box / .step-title / .step-no / .mono 的重复定义', () => {

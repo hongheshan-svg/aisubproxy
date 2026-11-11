@@ -1044,10 +1044,10 @@ async function runPreflightRedeem(
     )
     const cardLastFour = extractCardLastFour(order)
     const orderEmail = String(order.account_email || order.email || email).trim()
-    const outcome = redeemOutcome(redeem.r.status, st)
+    const outcome = redeemOutcome(redeem.r.status, st, redeem.data)
 
     if (outcome === 'unknown') {
-      // 5xx：服务器可能已经建单（建单不跟随连接），按结果未知去查，不当失败
+      // 5xx（本站后端明确拒绝的 503 除外）：服务器可能已经建单（建单不跟随连接），按结果未知去查，不当失败
       markResultUnknown(item, redemptionToken, orderEmail || email)
       return 'ok'
     }

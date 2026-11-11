@@ -80,6 +80,37 @@ describe('兑换请求的结果归类（F2-03）', () => {
   })
 })
 
+describe('本站后端明确回的 503 才算「被拒、没建单」（F2-03 裁定 2 补）', () => {
+  // 本站后端的 503 由 localReply 写出，带服务商字段和 error（backend/internal/handler/provider_adapter.go:246-279）
+  const own = { error: '兑换暂不可用，请稍后再试', provider: 'marswallex', provider_kind: 'card_supply', provider_display_name: 'MarsWallex' }
+  it('本站后端的 503：直接判失败', () => {
+    expect(redeemOutcome(503, '', own)).toBe('rejected')
+  })
+  it('网关、代理回的 503（HTML、空体、不是本站字段）：结果未知', () => {
+    expect(redeemOutcome(503, '', { raw: '<html><body>503 Service Unavailable</body></html>' })).toBe('unknown')
+    expect(redeemOutcome(503, '', null)).toBe('unknown')
+    expect(redeemOutcome(503, '', undefined)).toBe('unknown')
+    expect(redeemOutcome(503, '', '')).toBe('unknown')
+    expect(redeemOutcome(503, '', { error: 'Service Unavailable' })).toBe('unknown')
+    expect(redeemOutcome(503, '', { ...own, provider_kind: 'upstream' })).toBe('unknown')
+    expect(redeemOutcome(503, '', { ...own, error: '' })).toBe('unknown')
+    expect(redeemOutcome(503, '', { ...own, error: 42 })).toBe('unknown')
+    expect(redeemOutcome(503, '', [own])).toBe('unknown')
+  })
+  it('503 但带 order 字段（不管在哪一层）：可能已建单，结果未知', () => {
+    expect(redeemOutcome(503, '', { ...own, order: { status: 'queued' } })).toBe('unknown')
+    expect(redeemOutcome(503, '', { ...own, order: null })).toBe('unknown')
+    expect(redeemOutcome(503, '', { ...own, data: { order: { status: 'queued' } } })).toBe('unknown')
+  })
+  it('别的 5xx 即使带本站字段也照旧结果未知', () => {
+    for (const s of [500, 502, 504]) expect(redeemOutcome(s, '', own), String(s)).toBe('unknown')
+  })
+  it('200 带 order：照常按单据状态', () => {
+    expect(redeemOutcome(200, 'queued', { ...own, status: 'queued', order: { status: 'queued' } })).toBe('processing')
+    expect(redeemOutcome(200, 'completed', { ...own, order: { status: 'completed' } })).toBe('success')
+  })
+})
+
 describe('结果未知的那一张查到时限还没有结论（F2-03 裁定 1）', () => {
   const since = 1_000_000
   it('时限之内一直查：服务端建单最多 30 秒，留足余量', () => {

@@ -35,7 +35,7 @@ describe('兑换请求结果未知时只查不重发（F2-03）', () => {
   })
   it('回复按 redeemOutcome 归类，5xx 走结果未知', () => {
     const b = body('runPreflightRedeem')
-    expect(b).toContain('redeemOutcome(redeem.r.status, st)')
+    expect(b).toContain('redeemOutcome(redeem.r.status, st, redeem.data)')
     expect(b).toMatch(/outcome === 'unknown'\) \{(\s*\/\/[^\n]*)?\s*markResultUnknown\(/)
     expect(b).not.toContain('redeem.r.status !== 202')
   })

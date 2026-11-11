@@ -39,16 +39,37 @@ export function isFailStatus(st: string): boolean {
 export type RedeemOutcome = 'unknown' | 'rejected' | 'success' | 'failed' | 'processing'
 
 /**
+ * 这个 503 是不是本站后端自己明确拒绝、没有建单（F2-03 裁定 2 补）。三条都满足才算：
+ * - 响应体是本站后端的 JSON：localReply 写出，带 provider_kind 'card_supply' 和非空的 error 字符串；
+ * - 任何一层都没有 order 字段；
+ * - 状态码正好是 503。
+ * 依据：兑换路径上本站后端回 503 的地方都在建单之前，或者是建单事务失败、已回滚（见 fe2-report.md）。
+ * 网关、代理自己回的 503（HTML、空体、别的 JSON）证明不了没建单，不算。
+ */
+export function ownRejectedBeforeOrder(httpStatus: number, body: unknown): boolean {
+  if (httpStatus !== 503) return false
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return false
+  const b = body as Record<string, unknown>
+  if (b.provider_kind !== 'card_supply') return false
+  if (typeof b.error !== 'string' || b.error.trim() === '') return false
+  if ('order' in b) return false
+  const inner = b.data
+  if (inner && typeof inner === 'object' && 'order' in (inner as Record<string, unknown>)) return false
+  return true
+}
+
+/**
  * 兑换请求回来后这一张怎么显示（F2-03）。httpStatus 为 0 表示请求发出后没收到回复（断线、读回复时断开）。
- * - 断线、5xx：服务器可能已经受理（建单不跟随客户端连接），结果未知 → 标「处理中」并只读地查结果，绝不重发；
+ * - 本站后端明确回的 503（ownRejectedBeforeOrder）：没有建单 → 失败；
+ * - 其余 5xx、断线：服务器可能已经受理（建单不跟随客户端连接），结果未知 → 标「处理中」并只读地查结果，绝不重发；
  * - 其余非 2xx：服务器明确拒绝，没有用掉卡密 → 失败；
  * - 2xx：按单据状态。
  *
- * 503 不照单张兑换页（lib/mwredeem.ts 的 redeemRejectedBeforeOrder）当作「被拒、没建单」：那个判断只看状态码，
- * 分不清本站后端自己回的 503（都在建单之前）和前面代理、网关回的 503（请求可能已经到了后端）。
- * 证明不了没建单，就按结果未知只读地查，宁可多等一会儿，也不显示成失败让买家重提（F2-03 裁定 2）。
+ * 不直接用单张兑换页的 redeemRejectedBeforeOrder（lib/mwredeem.ts）：它只看状态码，分不清本站后端的 503
+ * 和网关、代理回的 503（请求可能已经到了后端），所以这里另加了「响应体是本站后端的」这一条。
  */
-export function redeemOutcome(httpStatus: number, orderStatus: string): RedeemOutcome {
+export function redeemOutcome(httpStatus: number, orderStatus: string, body?: unknown): RedeemOutcome {
+  if (ownRejectedBeforeOrder(httpStatus, body)) return 'rejected'
   if (httpStatus < 200 || httpStatus >= 500) return 'unknown'
   if (httpStatus >= 300) return 'rejected'
   if (isSuccessStatus(orderStatus)) return 'success'

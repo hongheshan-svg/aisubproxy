@@ -93,12 +93,12 @@ func (s *Service) CheckMainWallet(ctx context.Context, currency string, cents in
 	return checkAvailable(a, "主钱包", currency, cents)
 }
 
-// dailyFundCount 今天（北京日）已经注资多少笔，口径和 insertPendingFund 一致。
+// dailyFundCount 今天（北京日）已经注资多少笔，口径和 insertPendingFund 一致：只数带金额的转入和开卡。
 func (s *Service) dailyFundCount(ctx context.Context, now time.Time) (int64, error) {
 	day := beijingDayStart(now)
 	var n int64
 	err := db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM mw_card_orders
-		WHERE kind IN (?, ?) AND created_at >= ? AND created_at < ? AND state NOT IN (?, ?)`,
+		WHERE kind IN (?, ?) AND created_at >= ? AND created_at < ? AND state NOT IN (?, ?) AND amount_cents > 0`,
 		KindRecharge, KindApply, day.Unix(), day.AddDate(0, 0, 1).Unix(), StateFailed, StateNotSent).Scan(&n)
 	return n, err
 }

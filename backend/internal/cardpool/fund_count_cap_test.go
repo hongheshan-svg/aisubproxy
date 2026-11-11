@@ -55,6 +55,32 @@ func TestDailyFundCountCap(t *testing.T) {
 	}
 }
 
+// 不带金额的开卡单（默认策略开卡金额 0，自动补卡和手动开卡都是）不占单日注资笔数（C1-01）：
+// 写单时的笔数判断和就绪检查的剩余笔数都只算带金额的。
+func TestZeroAmountApplyDoesNotUseDailyFundCount(t *testing.T) {
+	ctx := context.Background()
+	s, mw, clock, _ := newTestService(t)
+	mw.On("POST", pathRecharge, mwtest.OK(`{"transaction_id":"T1","status":"APPLY"}`))
+	savePolicy(t, func(p *Policy) { p.DailyFundCountCap = 2 })
+	now := clock.Now().Unix()
+	for i, st := range []string{StateSuccess, StateProcessing, StateUnknown, StateNeedsReview, StatePending} {
+		insertFundedOrder(t, KindApply, st, 0, now, "z"+string(rune('0'+i))) // 0 元开卡：不算
+	}
+	if left, err := s.RemainingDailyFundCount(ctx); err != nil || left != 2 {
+		t.Fatalf("0 元开卡不应占笔数，剩余应为 2: %d %v", left, err)
+	}
+	if _, err := s.submitTransfer(ctx, KindRecharge, "c1", 100, "USD", "alice"); err != nil {
+		t.Fatalf("第 1 笔注资应通过: %v", err)
+	}
+	insertFundedOrder(t, KindApply, StateSuccess, 100, now, "") // 带金额的开卡照算
+	if left, err := s.RemainingDailyFundCount(ctx); err != nil || left != 0 {
+		t.Fatalf("1 笔注资 + 1 笔带金额开卡，剩余应为 0: %d %v", left, err)
+	}
+	if _, err := s.submitTransfer(ctx, KindRecharge, "c2", 100, "USD", "alice"); !errors.Is(err, ErrBadRequest) || !strings.Contains(err.Error(), "2 笔") {
+		t.Fatalf("带金额的已满 2 笔，应按笔数上限拒绝: %v", err)
+	}
+}
+
 // 金额没超、笔数超了，提示写笔数；笔数没超、金额超了，提示照旧写金额。
 func TestDailyFundCapMessagesDistinguishCountAndAmount(t *testing.T) {
 	ctx := context.Background()

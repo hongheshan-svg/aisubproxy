@@ -327,7 +327,7 @@
                 </el-form-item>
                 <el-form-item label="单日注资笔数上限（按北京日，笔）">
                   <el-input-number v-model="policy.daily_fund_count_cap" :min="1" :max="100000" :step="10" :precision="0" data-field="daily_count_cap" />
-                  <div class="text-xs text-muted mt-1">充值和带金额的开卡都算一笔，明确失败、没发出的不算。到上限后当天不再注资，发码和兑换也会暂停，北京时间次日 0 点恢复。</div>
+                  <div class="text-xs text-muted mt-1">充值和带金额的开卡都算一笔；不带金额的开卡（开卡金额为 0，例如默认的自动补卡）不算，明确失败、没发出的也不算。到上限后当天不再注资，发码和兑换也会暂停，北京时间次日 0 点恢复。</div>
                 </el-form-item>
                 <el-form-item label="未选用 MarsWallex 时仍自动补卡">
                   <el-switch v-model="policy.replenish_when_unselected" />

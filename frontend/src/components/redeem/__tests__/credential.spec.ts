@@ -39,6 +39,14 @@ const mwCredit = { plan: 'credit250', provider_kind: 'card_supply', requires_sub
 const props = (preview: any, extra: Record<string, unknown> = {}) => ({ preview, busy: false, submitting: false, error: null, ...extra })
 const validSession = () => JSON.stringify({ user: { email: 'bun@example.com' }, sessionToken: 'fake-token', expires: new Date(Date.now() + 86400000).toISOString() })
 
+describe('第 ② 屏：设备说明放在右栏', () => {
+  it('guideInAside 为真时不画设备说明，为假（默认）时画', async () => {
+    expect(await render(CredentialStep, 'zh', props(mwNoSub, { guideInAside: true }))).not.toContain('data-testid="device-guide"')
+    expect(await render(CredentialStep, 'zh', props(mwNoSub, { guideInAside: false }))).toContain('data-testid="device-guide"')
+    expect(await render(CredentialStep, 'zh', props(mwNoSub))).toContain('data-testid="device-guide"')
+  })
+})
+
 describe('第 ② 屏：ChatGPT 码', () => {
   it('没有订阅的条件提醒、三个设备标签、登录信息页链接；没有邮箱密码入口', async () => {
     const html = await render(CredentialStep, 'zh', props(mwNoSub))

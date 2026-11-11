@@ -18,7 +18,11 @@ import SessionPasteBox from './SessionPasteBox.vue'
 
 // busy：核对或自动开通途中；submitting：自动开通已发出兑换请求
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const props = defineProps<{ preview: any; busy: boolean; submitting: boolean; error: FlowError | null }>()
+const props = withDefaults(
+  // guideInAside：电脑布局下设备说明放到页面右栏，本组件不再画
+  defineProps<{ preview: any; busy: boolean; submitting: boolean; error: FlowError | null; guideInAside?: boolean }>(),
+  { guideInAside: false },
+)
 const emit = defineEmits<{
   submit: [payload: { credential: { mode: 'session'; session: string }; grokSession?: string; claudeOrgId?: string; agreeCreditTerms: boolean }]
 }>()
@@ -87,7 +91,7 @@ function submit() {
     <p v-else-if="preview?.requires_subscription" class="u-warn" data-testid="cond-warn">{{ t('redeemUi.cond.subscription') }}</p>
 
     <template v-if="kind === 'chatgpt'">
-      <DeviceGuide :initial="device" />
+      <DeviceGuide v-if="!guideInAside" :initial="device" />
       <SessionPasteBox v-model="raw" />
     </template>
 

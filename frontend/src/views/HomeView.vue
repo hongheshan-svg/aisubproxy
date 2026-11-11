@@ -8,6 +8,9 @@ import CodeEntry from '../components/redeem/CodeEntry.vue'
 import UserFooter from '../components/redeem/UserFooter.vue'
 import CodeStatusCard from '../components/redeem/CodeStatusCard.vue'
 import FaqList from '../components/redeem/FaqList.vue'
+import ProgressTicks from '../components/redeem/ProgressTicks.vue'
+import UserTwoColumn from '../components/redeem/UserTwoColumn.vue'
+import { isDesktop } from '../lib/layoutMode'
 import { useCodeLookup } from '../composables/useCodeLookup'
 import { homeRoute } from '../lib/homeRoute'
 
@@ -36,23 +39,28 @@ function goRedeem(c: string) {
 <template>
   <UserShell>
     <UserPageHeader home :title="t('redeemUi.home.title')" :subtitle="t('redeemUi.home.subtitle')" />
-    <main class="u-page home">
-      <CodeEntry v-model="code" :busy="busy" :error="error" @submit="onSubmit" />
+    <main class="u-page u-page--split home">
+      <!-- 电脑布局：步骤条横跨两栏，首页停在第 1 步 -->
+      <ProgressTicks v-if="isDesktop" :code-label="null" :current="1" :done="false" />
 
-      <CodeStatusCard
-        v-if="result"
-        class="home-gap"
-        :result="result"
-        context="home"
-        @redeem="goRedeem"
-        @reset="onReset"
-      />
-      <section v-else class="u-card home-gap" data-testid="code-where">
-        <h2 class="home-where-title">{{ t('redeemUi.home.whereTitle') }}</h2>
-        <p class="u-help home-where-body">{{ t('redeemUi.home.whereBody') }}</p>
-      </section>
+      <UserTwoColumn>
+        <CodeEntry v-model="code" :busy="busy" :error="error" @submit="onSubmit" />
 
-      <FaqList />
+        <CodeStatusCard
+          v-if="result"
+          class="home-gap"
+          :result="result"
+          context="home"
+          @redeem="goRedeem"
+          @reset="onReset"
+        />
+        <section v-else class="u-card home-gap" data-testid="code-where">
+          <h2 class="home-where-title">{{ t('redeemUi.home.whereTitle') }}</h2>
+          <p class="u-help home-where-body">{{ t('redeemUi.home.whereBody') }}</p>
+        </section>
+
+        <template #aside><FaqList /></template>
+      </UserTwoColumn>
 
       <UserFooter home />
     </main>

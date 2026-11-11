@@ -19,12 +19,17 @@ import CodeEntry from '../../components/redeem/CodeEntry.vue'
 import CodeStatusCard from '../../components/redeem/CodeStatusCard.vue'
 import ConfirmStep from '../../components/redeem/ConfirmStep.vue'
 import CredentialStep from '../../components/redeem/CredentialStep.vue'
+import DeviceGuide from '../../components/redeem/DeviceGuide.vue'
+import FaqList from '../../components/redeem/FaqList.vue'
 import ProgressStep from '../../components/redeem/ProgressStep.vue'
 import ProgressTicks from '../../components/redeem/ProgressTicks.vue'
 import ResultStep from '../../components/redeem/ResultStep.vue'
 import UserShell from '../../components/redeem/UserShell.vue'
+import UserTwoColumn from '../../components/redeem/UserTwoColumn.vue'
 import { useRedeemFlow } from '../../composables/useRedeemFlow'
+import { detectDevice } from '../../lib/device'
 import { dialog } from '../../lib/dialog'
+import { isDesktop } from '../../lib/layoutMode'
 import { isCardSupply, isCreditCode } from '../../lib/mwredeem'
 import { planLabelT } from '../../lib/plan'
 import { targetPlanOf } from '../../lib/redeemAccount'
@@ -49,6 +54,8 @@ const {
 // 登录信息：普通变量，不做成响应式，也不交给模板
 let credential: CredentialPayload | null = null
 const codeInput = ref('')
+// 右栏的设备说明用：和 CredentialStep 里一样在挂载后按浏览器判断
+const device = ref<'ios' | 'android' | 'desktop'>('desktop')
 const recoverTried = ref(false)
 const termsAgreed = ref(false)
 // 「已经等了 10 分钟」用：每 30 秒更新一次当前时间
@@ -147,6 +154,7 @@ function onRecheck() {
 }
 
 onMounted(() => {
+  if (typeof navigator !== 'undefined') device.value = detectDevice(navigator.userAgent, navigator.maxTouchPoints)
   clock = setInterval(() => { now.value = Date.now() }, 30_000)
   const q = queryCode(route.query)
   // 带码进入：没有这张码的进度可恢复，就自动预览（规格 §6.2）
@@ -164,73 +172,82 @@ onUnmounted(() => {
 <template>
   <UserShell>
     <UserPageHeader :title="headerTitle" :subtitle="shown === 'code' ? t('redeemUi.home.subtitle') : ''" back />
-    <main class="u-page recharge">
+    <main class="u-page u-page--split recharge">
       <ProgressTicks :code-label="codeLabel" :current="ticks.current" :done="ticks.done" />
 
-      <template v-if="shown === 'code'">
-        <CodeEntry v-model="codeInput" :busy="busy" :error="lookup ? '' : error?.message || ''" @submit="startOver(codeInput)" />
-        <CodeStatusCard v-if="lookup" class="recharge-gap" :result="lookup" context="home" @redeem="startOver" @reset="startOver()" />
-      </template>
+      <UserTwoColumn>
+        <template v-if="shown === 'code'">
+          <CodeEntry v-model="codeInput" :busy="busy" :error="lookup ? '' : error?.message || ''" @submit="startOver(codeInput)" />
+          <CodeStatusCard v-if="lookup" class="recharge-gap" :result="lookup" context="home" @redeem="startOver" @reset="startOver()" />
+        </template>
 
-      <CredentialStep
-        v-else-if="shown === 'credential'"
-        :preview="previewInfo"
-        :busy="busy || autoSubmitting"
-        :submitting="autoSubmitting && submitState === 'submitting'"
-        :error="error"
-        @submit="onCredential"
-      />
-
-      <template v-else-if="shown === 'confirm'">
-        <ConfirmStep
+        <CredentialStep
+          v-else-if="shown === 'credential'"
           :preview="previewInfo"
-          :account="account"
-          :blocking-code="blockingCode"
-          :blocking-reason="blockingReason"
-          :extra="extra"
-          :submit-state="submitState"
+          :busy="busy || autoSubmitting"
+          :submitting="autoSubmitting && submitState === 'submitting'"
           :error="error"
-          :confirm-view="confirmView"
-          :can-recover="canRecover"
-          :terms-agreed="termsAgreed"
-          @confirm="onConfirm"
-          @change-account="onChangeAccount"
-          @recover="onRecover"
-          @recheck="onRecheck"
-          @check-result="onCheck"
+          :guide-in-aside="isDesktop"
+          @submit="onCredential"
         />
-        <p v-if="gracePending" class="u-warn recharge-gap" role="status" data-testid="grace-pending">{{ t('redeemUi.grace.pending') }}</p>
-      </template>
 
-      <ProgressStep v-else-if="shown === 'progress'" :plan-text="planText" :view="progress" :waited-long="waited" />
+        <template v-else-if="shown === 'confirm'">
+          <ConfirmStep
+            :preview="previewInfo"
+            :account="account"
+            :blocking-code="blockingCode"
+            :blocking-reason="blockingReason"
+            :extra="extra"
+            :submit-state="submitState"
+            :error="error"
+            :confirm-view="confirmView"
+            :can-recover="canRecover"
+            :terms-agreed="termsAgreed"
+            @confirm="onConfirm"
+            @change-account="onChangeAccount"
+            @recover="onRecover"
+            @recheck="onRecheck"
+            @check-result="onCheck"
+          />
+          <p v-if="gracePending" class="u-warn recharge-gap" role="status" data-testid="grace-pending">{{ t('redeemUi.grace.pending') }}</p>
+        </template>
 
-      <ResultStep
-        v-else
-        :code="code"
-        :plan-text="planText"
-        :status="result.status"
-        :kind="kind"
-        :product="product"
-        :masked-email="maskedEmail"
-        :lookup="lookup"
-        :credit-quantity="creditQuantity"
-        :attempts-left="result.attemptsLeft"
-        @retry="onChangeAccount"
-        @reset="startOver()"
-        @use-code="startOver"
-      />
+        <ProgressStep v-else-if="shown === 'progress'" :plan-text="planText" :view="progress" :waited-long="waited" />
 
-      <template v-if="checkButton">
-        <p v-if="error?.message" class="u-error recharge-gap" role="alert" data-testid="page-error">{{ error.message }}</p>
-        <button type="button" class="u-btn-secondary recharge-btn" data-testid="page-check-result" :disabled="busy" @click="onCheck">
-          {{ t('redeemUi.errors.checkResult') }}
+        <ResultStep
+          v-else
+          :code="code"
+          :plan-text="planText"
+          :status="result.status"
+          :kind="kind"
+          :product="product"
+          :masked-email="maskedEmail"
+          :lookup="lookup"
+          :credit-quantity="creditQuantity"
+          :attempts-left="result.attemptsLeft"
+          @retry="onChangeAccount"
+          @reset="startOver()"
+          @use-code="startOver"
+        />
+
+        <template v-if="checkButton">
+          <p v-if="error?.message" class="u-error recharge-gap" role="alert" data-testid="page-error">{{ error.message }}</p>
+          <button type="button" class="u-btn-secondary recharge-btn" data-testid="page-check-result" :disabled="busy" @click="onCheck">
+            {{ t('redeemUi.errors.checkResult') }}
+          </button>
+        </template>
+
+        <button v-if="switchEntry === 'show'" type="button" class="u-link recharge-switch" data-testid="switch-code" @click="startOver()">
+          {{ t('redeemUi.home.another') }}
         </button>
-      </template>
+        <p v-else-if="switchEntry === 'locked'" class="recharge-hint" data-testid="switch-code-locked">{{ t('redeemUi.errors.switchCodeLocked') }}</p>
 
-      <button v-if="switchEntry === 'show'" type="button" class="u-link recharge-switch" data-testid="switch-code" @click="startOver()">
-        {{ t('redeemUi.home.another') }}
-      </button>
-      <p v-else-if="switchEntry === 'locked'" class="recharge-hint" data-testid="switch-code-locked">{{ t('redeemUi.errors.switchCodeLocked') }}</p>
+        <!-- 右栏只在电脑布局出现：粘贴登录信息这屏放设备说明，其余屏放常见问题 -->
+        <template v-if="isDesktop" #aside>
+          <DeviceGuide v-if="shown === 'credential'" :initial="device" />
+          <FaqList v-else />
+        </template>
+      </UserTwoColumn>
     </main>
   </UserShell>
 </template>

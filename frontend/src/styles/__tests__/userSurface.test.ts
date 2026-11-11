@@ -85,3 +85,25 @@ describe('zovo 主按钮在用户端也是纯色', () => {
     expect(ut).toMatch(/html\[data-surface="user"\]\[data-skin="zovo"\]\[data-tone\] \.btn-primary,[\s\S]*?\{[^}]*background: var\(--primary\);[^}]*box-shadow: none;/)
   })
 })
+
+describe('用户端卡片不带皮肤的硬投影和粗描边', () => {
+  const ut = read('../user-theme.css')
+  const sk = read('../skins.css')
+  const block = ut.slice(ut.indexOf('html[data-surface="user"][data-skin][data-tone] {'))
+  const decl = (v: string) => (block.match(new RegExp(`${v}:\\s*([^;]+);`)) || [])[1]
+  it('皮肤里确实有粗描边和硬投影（noir 2px、8px 8px 0）', () => {
+    expect(sk).toMatch(/--card-border: 2px solid/)
+    expect(sk).toMatch(/--card-shadow: 8px 8px 0/)
+  })
+  it('用户端复位：1px 描边（颜色取皮肤）、标准阴影、纯色面、--radius-lg', () => {
+    expect(decl('--card-border')).toBe('1px solid var(--brd)')
+    expect(decl('--card-shadow')).toBe('var(--shadow-sm)')
+    expect(decl('--card-bg')).toBe('var(--surface)')
+    expect(decl('--card-radius')).toBe('var(--radius-lg)')
+  })
+  it('皮肤里定义过的每个 --card-* 变量，复位块都覆盖到', () => {
+    const used = new Set([...sk.matchAll(/(--card-(?:bg|border|radius|shadow)):/g)].map((m) => m[1]))
+    expect(used.size).toBe(4)
+    for (const v of used) expect(block, v).toContain(v + ':')
+  })
+})

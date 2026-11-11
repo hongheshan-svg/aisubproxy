@@ -610,8 +610,14 @@ func AdminCardPoolGetSelection(c *gin.Context) {
 	})(c)
 }
 
+// selectionSaved 是保存选卡规则的返回：选卡字段，加上调低单卡最大使用次数时将不再可用的卡数（见 cardpool.CountUsedUp）。
+type selectionSaved struct {
+	cardpool.Selection
+	UnusableCards int `json:"unusable_cards,omitempty"`
+}
+
 // AdminCardPoolPutSelection PUT /api/v1/admin/cardpool/selection：只改选卡字段，其余策略字段保持当前值。
-// 请求体里没带的选卡字段也保持当前值。
+// 请求体里没带的选卡字段也保持当前值。调低单卡最大使用次数时，返回里带上将不再可用的卡数，由前端提示管理员手动处理。
 func AdminCardPoolPutSelection(c *gin.Context) {
 	poolRoute(func(c *gin.Context, s *cardpool.Service) {
 		// 先读完请求体再加锁、读当前策略（同 PUT /policy）
@@ -638,6 +644,7 @@ func AdminCardPoolPutSelection(c *gin.Context) {
 		if sel.PlanProducts == nil {
 			sel.PlanProducts = cur.PlanProducts
 		}
+		oldMaxUses := cur.MaxUsesPerCard
 		cur.ApplySelection(sel)
 		if err := cardpool.SavePolicy(cur); err != nil {
 			poolFail(c, err)
@@ -649,6 +656,15 @@ func AdminCardPoolPutSelection(c *gin.Context) {
 			detail = []byte("updated")
 		}
 		poolAudit(c, "selection", string(detail))
-		c.JSON(http.StatusOK, sel)
+		out := selectionSaved{Selection: sel}
+		if sel.MaxUsesPerCard < oldMaxUses {
+			// 已经保存成功：统计失败只少一条提示，不影响保存结果
+			if n, err := s.CountUsedUp(c.Request.Context(), sel.MaxUsesPerCard); err != nil {
+				log.Printf("[cardpool] 统计用满的卡失败: %v", err)
+			} else {
+				out.UnusableCards = n
+			}
+		}
+		c.JSON(http.StatusOK, out)
 	})(c)
 }

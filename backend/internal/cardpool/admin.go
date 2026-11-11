@@ -545,6 +545,15 @@ func (s *Service) SweepCard(ctx context.Context, cardID, by string) (*Order, err
 	return s.submitTransfer(ctx, KindWithdraw, cardID, card.AvailableCents, card.Currency, by)
 }
 
+// CountUsedUp 统计已用次数达到 maxUses、却还在可用或回收中的卡：调低「单卡最大使用次数」后，这些卡显示可用但再也选不中
+// （回收中的卡清零后也会回到可用），系统不会自动注销，由管理员手动处理。租用中的卡释放时按新上限自动转已用，不算。
+func (s *Service) CountUsedUp(ctx context.Context, maxUses int) (int, error) {
+	var n int
+	err := db.DB.QueryRowContext(ctx, `SELECT COUNT(*) FROM mw_cards WHERE pool_state IN (?, ?) AND use_count >= ?`,
+		PoolAvailable, PoolReleasing, maxUses).Scan(&n)
+	return n, err
+}
+
 // ---------- 列表 ----------
 
 // CardFilter 为卡列表过滤条件。

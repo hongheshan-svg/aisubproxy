@@ -325,6 +325,21 @@ export interface Selection {
   auto_suspend: boolean
 }
 
+/** 保存选卡规则的返回：选卡字段，加上调低单卡最大使用次数时将不再可用的卡数（没有时不带）。 */
+export type SelectionSaved = Selection & { unusable_cards?: number }
+
+/** 拆出将不再可用的卡数，其余作为选卡字段（plan_products 为空补成空对象）；不改原对象。 */
+export function splitSelectionSaved(raw: SelectionSaved): { selection: Selection; unusable: number } {
+  const { unusable_cards, ...rest } = raw
+  const selection = { ...rest, plan_products: rest.plan_products || {} } as Selection
+  return { selection, unusable: Number(unusable_cards) || 0 }
+}
+
+/** 调低单卡最大使用次数后的提示：这些卡显示可用但选不中，系统不会自动处理，由管理员手动冻结或注销。 */
+export function usedUpNotice(n: number): string {
+  return `有 ${n} 张卡将不再可用：它们的已用次数已达到新的上限，卡池里仍显示为「可用」（回收中的清零后也会回到可用），但不会再被选中。系统不会自动冻结或注销这些卡，请到「MarsWallex 卡池」的卡列表按「已用次数」核对后手动处理。`
+}
+
 /** 去掉选卡字段：卡池页保存策略时不带它们，后端沿用当前值，免得冲掉选卡规则页刚改的内容。 */
 export function withoutSelection<T extends object>(p: T): Omit<T, (typeof SELECTION_KEYS)[number]> {
   const out: Record<string, unknown> = { ...p }

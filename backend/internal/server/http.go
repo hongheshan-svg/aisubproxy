@@ -63,11 +63,7 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 
 	// 不信任任意代理头（X-Forwarded-For 等），保证限流拿到的是真实来源 IP。
 	// 若部署在已知反代后，用 TRUSTED_PROXIES（逗号分隔）显式声明。
-	if tp := strings.TrimSpace(os.Getenv("TRUSTED_PROXIES")); tp != "" {
-		_ = engine.SetTrustedProxies(splitAndTrim(tp))
-	} else {
-		_ = engine.SetTrustedProxies(nil)
-	}
+	applyTrustedProxies(engine, os.Getenv("TRUSTED_PROXIES"), alertSender("system", notify.SendText))
 
 	// Setup middleware
 	engine.Use(SecurityHeadersMiddleware())
@@ -196,17 +192,6 @@ func enforceJWTSecret(mode string, hasUpstream bool) error {
 		log.Printf("⚠️  当前 JWT_SECRET 不安全（默认/过短）。仅可用于本地开发，部署前请设置强随机 JWT_SECRET（release 模式将拒绝启动）。")
 	}
 	return nil
-}
-
-func splitAndTrim(s string) []string {
-	parts := strings.Split(s, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if v := strings.TrimSpace(p); v != "" {
-			out = append(out, v)
-		}
-	}
-	return out
 }
 
 func setupRoutes(r *gin.Engine) {

@@ -107,6 +107,7 @@ import { fmtBeijingAny } from '../../lib/mwwebhook'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { authFetch } from '../../lib/api'
+import { dialog } from '../../lib/dialog'
 import { createUpdateWatcher, type StatusResult, type UpdateState, type UpdateWatchDeps } from '../../lib/updateWatch'
 
 const versionLoading = ref(false)
@@ -222,13 +223,15 @@ function updateDeps(before: string | undefined): UpdateWatchDeps {
 async function oneClickUpdate() {
   if (!canOneClickUpdate.value) return
   const target = versionInfo.value.latest || 'latest'
-  const ok = window.confirm(
+  const ok = await dialog.confirm(
     `确认一键无痕更新到 v${target}？\n\n` +
       '• 在线下载 GitHub 预编译包\n' +
       '• 热替换二进制与前端（不改 app.env / 数据库）\n' +
-      '• 进程 re-exec 亚秒重载\n',
+      '• 进程 re-exec 亚秒重载',
+    { title: '一键无痕更新', okText: '开始更新', danger: true },
   )
-  if (!ok) return
+  // 确认框是异步的：等待期间离开了页面或状态变了（如已在更新）就不提交
+  if (!ok || unmounted || !canOneClickUpdate.value) return
 
   updating.value = true
   updateFailed.value = false

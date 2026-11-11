@@ -31,6 +31,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { agentApi, setAgentUnauthorizedHandler } from '../lib/agentApi'
+import { dialog } from '../lib/dialog'
 import { resetAgentSession } from '../lib/agentSession'
 import { orderRetry } from '../lib/agentViews'
 import { siteBrand, themeLocked } from '../theme'
@@ -91,7 +92,7 @@ async function loadMe() {
 }
 
 async function logout() {
-  if (orderRetry.refresh() && !window.confirm('有一笔订单结果未知，退出后这台电脑上不能再原样重试。确定退出吗？')) return
+  if (orderRetry.refresh() && !(await dialog.confirm('有一笔订单结果未知，退出后这台电脑上不能再原样重试。确定退出吗？', { title: '订单结果未知', okText: '仍然退出', danger: true }))) return
   try {
     await agentApi('/auth/logout', 'POST')
   } catch {

@@ -153,6 +153,20 @@ export class OrderRetry {
     this.refresh()
   }
 
+  /**
+   * 确认框（异步）返回后的放弃（F2-18）：等待期间别的标签页可能已处理完这笔、或放弃后锁定了另一笔。
+   * 重读存储：仍是页面上显示的那笔才清（只清这笔的请求号），返回 go；
+   * 别处已处理完返回 settled；存储里是另一笔返回 locked（改显示它）。这两种都不动存储。
+   */
+  abandonShown(shown: PendingOrder | null): OrderRecheck {
+    const cur = this.owner ? this.lock.current(this.owner) : null
+    if (!cur) { this.refresh(); return { kind: 'settled' } }
+    if (!shown || !samePendingOrder(cur.payload, shown)) { this.refresh(); return { kind: 'locked', pending: cur.payload } }
+    this.lock.done(cur.key)
+    this.refresh()
+    return { kind: 'go' }
+  }
+
   /** 退出登录：清掉记录，忘掉身份。 */
   clear(): void {
     this.lock.clear()

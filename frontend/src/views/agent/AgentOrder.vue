@@ -71,13 +71,14 @@ import { agentApi, agentErrorText } from '../../lib/agentApi'
 import { fmtUsd } from '../../lib/agentMoney'
 import { codesTxt, downloadText } from '../../lib/agentExport'
 import {
-  keepPendingOnRateLimit, orderFailureKind, NOTE_MAX, orderLockState, orderPreview, orderRetry, pickLatestOrder, recentOrderWarning, validQuantity,
+  keepPendingOnRateLimit, orderFailureKind, NOTE_MAX, orderLockState, orderPreview, orderRetry, pickLatestOrder, recentOrderWarning, samePendingOrder, validQuantity,
   type PendingOrder, type RecentOrder,
 } from '../../lib/agentViews'
 import { ORDER_RETRY_KEY } from '../../lib/retryLock'
 import { IdempotencyLockedError } from '../../lib/idempotency'
 import { fmtBeijing } from '../../lib/mwwebhook'
 import { copyToClipboard } from '../../lib/clipboard'
+import { dialog } from '../../lib/dialog'
 import AgentOrderCodes from '../../components/AgentOrderCodes.vue'
 
 const products = ref<any[]>([])
@@ -161,9 +162,21 @@ function askConfirm() {
   confirming.value = true
 }
 
-function abandon() {
-  if (!window.confirm('放弃后将用新请求号重新下单；如果上一笔其实已成功，会被重复扣款。确定放弃吗？')) return
-  orderRetry.abandon(); pending.value = null; err.value = ''
+async function abandon() {
+  if (busy.value) return
+  const shown = pending.value
+  if (!shown) return
+  const ok = await dialog.confirm('放弃后将用新请求号重新下单；如果上一笔其实已成功，会被重复扣款。确定放弃吗？', {
+    title: '放弃结果未知的订单', okText: '放弃并重新下单', danger: true,
+  })
+  if (!ok) return
+  // 确认框是异步的，等待期间状态可能变了：这页发起了原样重试（请求在路上），或页面上显示的已不是这笔，都不放弃
+  if (busy.value || !samePendingOrder(pending.value, shown)) return
+  // 再重读存储：别处已处理完、或别的标签页放弃后锁定了另一笔，都不清（只清显示的这笔的请求号）
+  const rc = orderRetry.abandonShown(shown)
+  if (rc.kind === 'locked') { showPending(rc.pending); notice.value = ''; err.value = LOCKED_ELSEWHERE; return }
+  if (rc.kind === 'settled') { showPending(null); err.value = ''; notice.value = SETTLED_ELSEWHERE; loadLatest(); return }
+  pending.value = null; err.value = ''
   loadLatest()
 }
 

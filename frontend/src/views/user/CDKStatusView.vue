@@ -1,115 +1,122 @@
 <template>
   <UserShell>
-    <UserPageHeader :title="t('cdkLookup.title')" :subtitle="t('cdkLookup.subtitle')" :max-width="mode === 'batch' && batchResults.length ? 960 : 0" back />
-    <main class="u-page lk" :class="{ 'lk-wide': mode === 'batch' && batchResults.length }">
-      <div class="u-card lk-stack">
-        <div class="lk-modes">
-          <button type="button" class="u-btn-secondary lk-mode" :class="{ 'is-on': mode === 'single' }" :aria-pressed="mode === 'single'" @click="setMode('single')">
-            {{ t('cdkLookup.modeSingle') }}
-          </button>
-          <button type="button" class="u-btn-secondary lk-mode" :class="{ 'is-on': mode === 'batch' }" :aria-pressed="mode === 'batch'" @click="setMode('batch')">
-            {{ t('cdkLookup.modeBatch') }}
-          </button>
-        </div>
-
-        <template v-if="mode === 'single'">
-          <h2 class="lk-h">{{ t('cdkLookup.queryTitle') }}</h2>
-          <p class="u-help lk-note">{{ t('cdkLookup.queryHint') }}</p>
-          <label class="lk-label">
-            {{ t('cdkLookup.cdkLabel') }}
-            <input
-              v-model="cdkCode"
-              type="text"
-              :placeholder="t('cdkLookup.cdkPlaceholder')"
-              class="u-input u-mono"
-              @keyup.enter="query"
-            />
-          </label>
-          <button type="button" class="u-btn-primary lk-submit" :disabled="!cdkCode.trim() || querying" @click="query">
-            {{ querying ? t('common.querying') : t('cdkLookup.queryBtn') }}
-          </button>
-        </template>
-
-        <template v-else>
-          <h2 class="lk-h">{{ t('cdkLookup.modeBatch') }}</h2>
-          <p class="u-help lk-note">{{ t('cdkLookup.batchHint', { max: LOOKUP_BATCH_MAX }) }}</p>
-          <label class="lk-label">
-            {{ t('cdkLookup.batchLabel') }}
-            <textarea
-              v-model="batchText"
-              rows="8"
-              class="u-input u-mono lk-area"
-              :placeholder="t('cdkLookup.batchPlaceholder')"
-            />
-          </label>
-          <p class="u-help lk-note">
-            {{ t('cdkLookup.batchRecognized', { n: parsedCodes.length }) }}
-            <span v-if="parsedCodes.length > LOOKUP_BATCH_MAX">· {{ t('cdkLookup.batchTruncated', { max: LOOKUP_BATCH_MAX }) }}</span>
-          </p>
-          <button type="button" class="u-btn-primary lk-submit" :disabled="parsedCodes.length === 0 || querying" @click="queryBatch">
-            {{ querying ? t('common.querying') : t('cdkLookup.batchQueryBtn') }}
-          </button>
-        </template>
-
-        <p v-if="error" class="u-error" role="alert">{{ error }}</p>
-      </div>
-
-      <CodeStatusCard
-        v-if="mode === 'single' && result"
-        class="lk-gap"
-        :result="result"
-        context="home"
-        @redeem="goRedeemCard"
-        @reset="reset"
-      />
-
-      <section v-if="mode === 'batch' && batchResults.length" class="u-card lk-stack lk-gap">
-        <div class="lk-head">
-          <h2 class="lk-h">{{ t('cdkLookup.resultTitle') }}</h2>
-          <div class="lk-tools">
-            <button type="button" class="u-btn-secondary lk-small" @click="copyUsedEmails">{{ t('cdkLookup.copyEmails') }}</button>
-            <button type="button" class="u-btn-secondary lk-small" @click="exportCsv">{{ t('cdkLookup.exportCsv') }}</button>
+    <UserPageHeader :title="t('cdkLookup.title')" :subtitle="t('cdkLookup.subtitle')" :max-width="!isDesktop && mode === 'batch' && batchResults.length ? 960 : 0" back />
+    <main class="u-page u-page--split lk" :class="{ 'lk-wide': mode === 'batch' && batchResults.length }">
+      <UserTwoColumn>
+        <div class="u-card lk-stack">
+          <div class="lk-modes">
+            <button type="button" class="u-btn-secondary lk-mode" :class="{ 'is-on': mode === 'single' }" :aria-pressed="mode === 'single'" @click="setMode('single')">
+              {{ t('cdkLookup.modeSingle') }}
+            </button>
+            <button type="button" class="u-btn-secondary lk-mode" :class="{ 'is-on': mode === 'batch' }" :aria-pressed="mode === 'batch'" @click="setMode('batch')">
+              {{ t('cdkLookup.modeBatch') }}
+            </button>
           </div>
+
+          <template v-if="mode === 'single'">
+            <h2 class="lk-h">{{ t('cdkLookup.queryTitle') }}</h2>
+            <p class="u-help lk-note">{{ t('cdkLookup.queryHint') }}</p>
+            <label class="lk-label">
+              {{ t('cdkLookup.cdkLabel') }}
+              <input
+                v-model="cdkCode"
+                type="text"
+                :placeholder="t('cdkLookup.cdkPlaceholder')"
+                class="u-input u-mono"
+                @keyup.enter="query"
+              />
+            </label>
+            <button type="button" class="u-btn-primary lk-submit" :disabled="!cdkCode.trim() || querying" @click="query">
+              {{ querying ? t('common.querying') : t('cdkLookup.queryBtn') }}
+            </button>
+          </template>
+
+          <template v-else>
+            <h2 class="lk-h">{{ t('cdkLookup.modeBatch') }}</h2>
+            <p class="u-help lk-note">{{ t('cdkLookup.batchHint', { max: LOOKUP_BATCH_MAX }) }}</p>
+            <label class="lk-label">
+              {{ t('cdkLookup.batchLabel') }}
+              <textarea
+                v-model="batchText"
+                rows="8"
+                class="u-input u-mono lk-area"
+                :placeholder="t('cdkLookup.batchPlaceholder')"
+              />
+            </label>
+            <p class="u-help lk-note">
+              {{ t('cdkLookup.batchRecognized', { n: parsedCodes.length }) }}
+              <span v-if="parsedCodes.length > LOOKUP_BATCH_MAX">· {{ t('cdkLookup.batchTruncated', { max: LOOKUP_BATCH_MAX }) }}</span>
+            </p>
+            <button type="button" class="u-btn-primary lk-submit" :disabled="parsedCodes.length === 0 || querying" @click="queryBatch">
+              {{ querying ? t('common.querying') : t('cdkLookup.batchQueryBtn') }}
+            </button>
+          </template>
+
+          <p v-if="error" class="u-error" role="alert">{{ error }}</p>
         </div>
-        <ul class="lk-sum">
-          <li>{{ t('cdkLookup.summaryUsed', { n: batchSummary.used }) }}</li>
-          <li>{{ t('cdkLookup.summaryFailed', { n: batchSummary.failed }) }}</li>
-          <li>{{ t('cdkLookup.summaryUnused', { n: batchSummary.unused }) }}</li>
-          <li>{{ t('cdkLookup.summaryProcessing', { n: batchSummary.processing }) }}</li>
-          <li>{{ t('cdkLookup.summaryUnknown', { n: batchSummary.unknown }) }}</li>
-          <li v-if="batchSummary.replaced">{{ t('cdkLookup.summaryReplaced', { n: batchSummary.replaced }) }}</li>
-          <li v-if="batchSummary.unsupported">{{ t('cdkLookup.summaryUnsupported', { n: batchSummary.unsupported }) }}</li>
-        </ul>
-        <div class="lk-table-wrap">
-          <table class="lk-table">
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>{{ t('cdkLookup.cdkCode') }}</th>
-                <th>{{ t('cdkLookup.useStatus') }}</th>
-                <th>{{ t('cdkLookup.rechargeEmail') }}</th>
-                <th>{{ t('cdkLookup.plan') }}</th>
-                <th>{{ t('cdkLookup.usedAt') }}</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="(row, i) in batchResults" :key="row.cdk_code + i">
-                <td>{{ i + 1 }}</td>
-                <td class="u-mono lk-break">{{ row.cdk_code }}</td>
-                <td class="lk-status" :class="`lk-status--${statusTone(row.status)}`">{{ statusText(row.status) }}</td>
-                <td class="u-mono lk-break">{{ row.account_email || t('cdkLookup.emailEmpty') }}</td>
-                <td>{{ row.plan || t('cdkLookup.emailEmpty') }}</td>
-                <td class="lk-nowrap">{{ fmtLookupTime(row.used_at) || row.used_at || t('cdkLookup.emailEmpty') }}</td>
-                <td class="lk-nowrap">
-                  <button v-if="row.can_resubmit" type="button" class="u-btn-primary lk-small" @click="goRedeem(row.cdk_code)">{{ t('cdkLookup.resubmit') }}</button>
-                  <button v-else-if="row.status === 'unused'" type="button" class="u-btn-secondary lk-small" @click="goRedeem(row.cdk_code)">{{ t('cdkLookup.goRedeem') }}</button>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      </section>
+
+        <CodeStatusCard
+          v-if="mode === 'single' && result"
+          class="lk-gap"
+          :result="result"
+          context="home"
+          @redeem="goRedeemCard"
+          @reset="reset"
+        />
+
+        <template v-if="isDesktop" #aside><FaqList /></template>
+
+        <!-- 批量结果的表格较宽：电脑布局放在两栏之后的整宽区 -->
+        <template #wide>
+        <section v-if="mode === 'batch' && batchResults.length" class="u-card lk-stack lk-gap">
+          <div class="lk-head">
+            <h2 class="lk-h">{{ t('cdkLookup.resultTitle') }}</h2>
+            <div class="lk-tools">
+              <button type="button" class="u-btn-secondary lk-small" @click="copyUsedEmails">{{ t('cdkLookup.copyEmails') }}</button>
+              <button type="button" class="u-btn-secondary lk-small" @click="exportCsv">{{ t('cdkLookup.exportCsv') }}</button>
+            </div>
+          </div>
+          <ul class="lk-sum">
+            <li>{{ t('cdkLookup.summaryUsed', { n: batchSummary.used }) }}</li>
+            <li>{{ t('cdkLookup.summaryFailed', { n: batchSummary.failed }) }}</li>
+            <li>{{ t('cdkLookup.summaryUnused', { n: batchSummary.unused }) }}</li>
+            <li>{{ t('cdkLookup.summaryProcessing', { n: batchSummary.processing }) }}</li>
+            <li>{{ t('cdkLookup.summaryUnknown', { n: batchSummary.unknown }) }}</li>
+            <li v-if="batchSummary.replaced">{{ t('cdkLookup.summaryReplaced', { n: batchSummary.replaced }) }}</li>
+            <li v-if="batchSummary.unsupported">{{ t('cdkLookup.summaryUnsupported', { n: batchSummary.unsupported }) }}</li>
+          </ul>
+          <div class="lk-table-wrap">
+            <table class="lk-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>{{ t('cdkLookup.cdkCode') }}</th>
+                  <th>{{ t('cdkLookup.useStatus') }}</th>
+                  <th>{{ t('cdkLookup.rechargeEmail') }}</th>
+                  <th>{{ t('cdkLookup.plan') }}</th>
+                  <th>{{ t('cdkLookup.usedAt') }}</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="(row, i) in batchResults" :key="row.cdk_code + i">
+                  <td>{{ i + 1 }}</td>
+                  <td class="u-mono lk-break">{{ row.cdk_code }}</td>
+                  <td class="lk-status" :class="`lk-status--${statusTone(row.status)}`">{{ statusText(row.status) }}</td>
+                  <td class="u-mono lk-break">{{ row.account_email || t('cdkLookup.emailEmpty') }}</td>
+                  <td>{{ row.plan || t('cdkLookup.emailEmpty') }}</td>
+                  <td class="lk-nowrap">{{ fmtLookupTime(row.used_at) || row.used_at || t('cdkLookup.emailEmpty') }}</td>
+                  <td class="lk-nowrap">
+                    <button v-if="row.can_resubmit" type="button" class="u-btn-primary lk-small" @click="goRedeem(row.cdk_code)">{{ t('cdkLookup.resubmit') }}</button>
+                    <button v-else-if="row.status === 'unused'" type="button" class="u-btn-secondary lk-small" @click="goRedeem(row.cdk_code)">{{ t('cdkLookup.goRedeem') }}</button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+        </template>
+      </UserTwoColumn>
 
       <UserFooter />
     </main>
@@ -123,6 +130,9 @@ import { useRouter } from 'vue-router'
 import UserPageHeader from '../../components/UserPageHeader.vue'
 import UserShell from '../../components/redeem/UserShell.vue'
 import UserFooter from '../../components/redeem/UserFooter.vue'
+import FaqList from '../../components/redeem/FaqList.vue'
+import UserTwoColumn from '../../components/redeem/UserTwoColumn.vue'
+import { isDesktop } from '../../lib/layoutMode'
 import CodeStatusCard from '../../components/redeem/CodeStatusCard.vue'
 import { parseCdks } from '../../lib/batch-session'
 import { copyToClipboard } from '../../lib/clipboard'
@@ -259,7 +269,10 @@ function reset() {
 </script>
 
 <style scoped>
-.lk-wide { max-width: 960px; }
+/* 960px 限宽只在窄屏；电脑布局交给 .u-page--split 的 1120px */
+@media (max-width: 1023px) {
+  .lk-wide { max-width: 960px; }
+}
 .lk-stack { display: flex; flex-direction: column; gap: 14px; }
 .lk-gap { margin-top: 16px; }
 .lk-modes { display: flex; gap: 8px; }

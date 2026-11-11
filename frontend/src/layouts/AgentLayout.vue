@@ -15,10 +15,7 @@
     </template>
 
     <template #foot="{ rail }">
-      <div v-if="me && !rail" class="sn-me">
-        <div class="sn-me-name">{{ me.display_name || me.username }}</div>
-        <div class="sn-me-bal">余额 {{ fmtUsd(me.balance_cents || 0) }}</div>
-      </div>
+      <AgentSideMe v-if="me" :name="me.display_name || me.username || ''" :balance-cents="me.balance_cents || 0" :rail="rail" />
       <div class="sn-tools"><ThemeToggle /></div>
       <button type="button" class="sn-logout" title="退出登录" @click="logout">
         <el-icon><SwitchButton /></el-icon>
@@ -34,11 +31,11 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { agentApi, setAgentUnauthorizedHandler } from '../lib/agentApi'
-import { fmtUsd } from '../lib/agentMoney'
 import { resetAgentSession } from '../lib/agentSession'
 import { orderRetry } from '../lib/agentViews'
 import { siteBrand } from '../theme'
 import ThemeToggle from '../components/ThemeToggle.vue'
+import AgentSideMe from '../components/shell/AgentSideMe.vue'
 import SideNavShell from '../components/shell/SideNavShell.vue'
 import type { NavGroup } from '../lib/adminNav'
 
@@ -125,9 +122,6 @@ onBeforeUnmount(() => setAgentUnauthorizedHandler(null))
 
 <style scoped>
 /* 侧栏底部（插槽内容，样式在这里）：颜色全用侧栏变量，不用浅色皮肤的变量 */
-.sn-me { padding: 2px 8px 6px; color: var(--side-ink); font-size: 13px; min-width: 0; }
-.sn-me-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sn-me-bal { color: var(--side-muted); font-size: 12px; }
 .sn-tools { display: flex; gap: 6px; }
 .sn-tools :deep(.btn-ghost) { color: var(--side-ink); background: transparent; border-color: transparent; box-shadow: none; }
 .sn-tools :deep(.btn-ghost:hover) { color: var(--side-ink); background: color-mix(in srgb, var(--side-ink) 12%, transparent); border-color: transparent; }

@@ -121,3 +121,26 @@ describe('AgentLayout 侧栏', () => {
     expect(m![1]).toContain('border-color: transparent')
   })
 })
+
+// 无 DOM 环境下 AgentLayout 的 onMounted 不跑，拿不到余额；所以直接渲染侧栏底部的 AgentSideMe，再用源文件断言 AgentLayout 在折叠时也把它放出来
+import AgentSideMe from '../../components/shell/AgentSideMe.vue'
+
+describe('AgentLayout 侧栏折叠后仍能看到余额', () => {
+  const mount = (rail: boolean) => renderToString(createSSRApp(AgentSideMe, { name: '张三', balanceCents: 123456, rail }))
+  it('展开：名称 + 余额', async () => {
+    const html = await mount(false)
+    expect(html).toContain('张三')
+    expect(html).toContain('余额 $1,234.56')
+  })
+  it('折叠：名称不显示，小号金额和 title 都在', async () => {
+    const html = await mount(true)
+    expect(html).not.toContain('张三')
+    expect(html).toContain('$1,234.56')
+    expect(html).toContain('title="余额 $1,234.56"')
+  })
+  it('AgentLayout 不再用 v-if="me && !rail" 把折叠态的余额藏掉', () => {
+    const src = readFileSync(fileURLToPath(new URL('../AgentLayout.vue', import.meta.url)), 'utf8')
+    expect(src).not.toContain('me && !rail')
+    expect(src).toMatch(/<AgentSideMe v-if="me"[^>]*:rail="rail"/)
+  })
+})

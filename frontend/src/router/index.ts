@@ -4,7 +4,7 @@ import { agentGuardDecision } from '../lib/agentSession'
 
 import { setSkinFontsAllowed } from '../theme'
 import { hashScroll, prefersReducedMotion } from './scroll'
-import { OPS_BASE, isAdminPath, routes } from './routes'
+import { OPS_BASE, isAdminPath, routes, surfaceOf } from './routes'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -71,6 +71,9 @@ router.beforeEach(async (to) => {
 })
 
 // Google 字体只在后台页面加载，用户端不拉
-router.afterEach((to) => setSkinFontsAllowed(isAdminPath(to.path)))
+router.afterEach((to) => {
+  setSkinFontsAllowed(isAdminPath(to.path))
+  document.documentElement.setAttribute('data-surface', surfaceOf(to.path))
+})
 
 export default router

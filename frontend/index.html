@@ -60,6 +60,10 @@
           if (tc) tc.setAttribute('content', TC[skin][dark ? 1 : 0])
           document.documentElement.setAttribute('data-tone', dark ? 'dark' : 'light')
           document.documentElement.setAttribute('data-skin', skin)
+          // 页面底纹只画在后台、代理商后台和登录页；用户端纯色。与 router/routes.ts 的 surfaceOf 同一规则
+          var path = location.pathname
+          var consolePage = path === '/ops' || path.indexOf('/ops/') === 0 || path === '/agent' || path.indexOf('/agent/') === 0
+          document.documentElement.setAttribute('data-surface', consolePage ? 'console' : 'user')
         } catch (e) {}
       })()
     </script>

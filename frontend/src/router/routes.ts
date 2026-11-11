@@ -8,6 +8,11 @@ export function isAdminPath(path: string): boolean {
   return path === OPS_BASE || path.startsWith(OPS_BASE + '/')
 }
 
+/** 页面属于用户端（user）还是后台一类（console：后台、登录页、安装页、代理商后台）。皮肤的页面底纹只画在 console。 */
+export function surfaceOf(path: string): 'user' | 'console' {
+  return isAdminPath(path) || path === '/agent' || path.startsWith('/agent/') ? 'console' : 'user'
+}
+
 export const routes: RouteRecordRaw[] = [
   {
     path: '/',

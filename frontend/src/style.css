@@ -210,6 +210,17 @@ html {
   background-image: var(--bg-tint);
 }
 
+/* 皮肤的页面底纹（--bg-tint 的渐变、网格、横线）和 zovo 的固定氛围层，只画在后台、代理商后台和登录页；
+   用户端页面保持纯色背景。data-surface 由 index.html 首屏脚本和路由切换设置（user = 用户端，console = 其余）。
+   body::before/::after 的选择器多带一个 [data-skin]，优先级高于皮肤自己的氛围层规则。 */
+html[data-surface="user"] {
+  background-image: none;
+}
+html[data-surface="user"][data-skin] body::before,
+html[data-surface="user"][data-skin] body::after {
+  display: none;
+}
+
 body {
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;

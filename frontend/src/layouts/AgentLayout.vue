@@ -28,7 +28,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { agentApi, setAgentUnauthorizedHandler } from '../lib/agentApi'
 import { resetAgentSession } from '../lib/agentSession'
@@ -73,9 +73,13 @@ function toLogin() {
   router.replace({ path: '/agent/login', query: { redirect: route.fullPath } })
 }
 
+// 侧栏余额：进入时读一次，之后每次切换页面再读一次（F2-15），下单后切到别的菜单就对得上
+let meSeq = 0
 async function loadMe() {
+  const my = ++meSeq
   try {
     const r = await agentApi('/me')
+    if (my !== meSeq) return // 已有更新的请求，丢弃旧响应
     if (r.ok) {
       me.value = r.data
       // 核对身份：恢复本人结果未知的订单（并拦截刷新、关标签页），别人的丢弃
@@ -117,6 +121,10 @@ onMounted(() => {
   checkEnabled()
   loadMe()
 })
+// 只看路径：同一页面里改查询参数（翻页、筛选）不重读。
+// 离开代理商后台（如退出回登录页）不读：会话已清，/me 回 401 会触发整页跳转
+const layoutRecord = route.matched[0]
+watch(() => route.path, (n, o) => { if (n !== o && route.matched[0] === layoutRecord) loadMe() })
 onBeforeUnmount(() => setAgentUnauthorizedHandler(null))
 </script>
 

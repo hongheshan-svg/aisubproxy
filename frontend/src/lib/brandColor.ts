@@ -101,3 +101,17 @@ export function brandColorVars(
     '--brand-tint-dark': mixHex(dark, DARK_SURFACE, 0.2),
   }
 }
+
+/**
+ * 侧栏颜色：由当前主色推出。side-bg 保持主色的色相和饱和度，亮度每次降 0.02，
+ * 直到白字压在上面不低于 10:1；菜单字、分组标题是白色混入 side-bg。
+ */
+export function sideColorsFrom(primary: string): { bg: string; ink: string; muted: string } {
+  const [h, s, l0] = rgbToHsl(parse(primary))
+  let bg = format(hslToRgb(h, s, l0))
+  for (let l = l0; contrastRatio('#FFFFFF', bg) < 10 && l > 0; ) {
+    l = Math.max(0, l - 0.02)
+    bg = format(hslToRgb(h, s, l))
+  }
+  return { bg, ink: mixHex('#FFFFFF', bg, 0.78), muted: mixHex('#FFFFFF', bg, 0.6) }
+}

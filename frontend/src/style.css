@@ -448,6 +448,50 @@ html.dark .el-scrollbar__thumb { background: rgba(255,255,255,.16); }
 /* ── Multi-skin presets (data-skin on <html>) ── */
 /* Default = terracotta (already in :root). Other skins override primary + surfaces. */
 
+/* teal：深青自助（默认皮肤）。系统字体，不拉 Google 字体；用户端和后台共用 */
+html[data-skin="teal"] {
+  --font-sans: -apple-system, "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --font-display: -apple-system, "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --font-serif: -apple-system, "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --font-mono: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 14px;
+  --bg: #EEF5F3;
+  --bg-tint: none;
+  --surface: #FFFFFF;
+  --surface-solid: #FFFFFF;
+  --surface-2: #E2EDEC;
+  --brd: #DCE5E3;
+  --brd-2: #C9D8D5;
+  --ink: #0E2A26;
+  --ink-2: #4A6560;
+  --ink-3: #4A6560;
+  --primary: #0F6B5F;
+  --primary-hover: #13806F;
+  --primary-active: #0B5249;
+  --primary-soft: #E2EDEC;
+  --primary-on: #FFFFFF;
+  --row-hover: var(--primary-soft);
+}
+html.dark[data-skin="teal"] {
+  --bg: #0C1A18;
+  --bg-tint: none;
+  --surface: #132522;
+  --surface-solid: #132522;
+  --surface-2: #1C423C;
+  --brd: #22403B;
+  --brd-2: #2C524B;
+  --ink: #E6F1EE;
+  --ink-2: #9DB5B0;
+  --ink-3: #9DB5B0;
+  --primary: #3FB8A5;
+  --primary-hover: #5CC7B6;
+  --primary-active: #2FA08F;
+  --primary-soft: #1C423C;
+  --primary-on: #0C1A18;
+}
+
 /* terracotta 显式 dark（避免半套） */
 html.dark[data-skin="terracotta"] {
   --bg: #17120e;

@@ -17,10 +17,10 @@
     <script>
       (function () {
         try {
-          // 默认：曜夜雾金(zovo) + 跟随系统。与 theme.ts、后端 /public/site 的默认值保持一致
+          // 默认：深青自助(teal) + 跟随系统。与 theme.ts、后端 /public/site 的默认值保持一致
           var mode = localStorage.getItem('theme-mode')
           if (mode !== 'light' && mode !== 'dark' && mode !== 'auto') mode = 'auto'
-          var skin = localStorage.getItem('site-skin') || 'zovo'
+          var skin = localStorage.getItem('site-skin') || 'teal'
           var dark =
             mode === 'dark' ||
             (mode === 'auto' &&
@@ -29,6 +29,7 @@
           // preferDark 皮肤默认暗色，减少首屏闪白
           if (skin === 'cyber' || skin === 'ember' || skin === 'noir') dark = true
           if (dark) document.documentElement.classList.add('dark')
+          document.documentElement.setAttribute('data-tone', dark ? 'dark' : 'light')
           document.documentElement.setAttribute('data-skin', skin)
         } catch (e) {}
       })()

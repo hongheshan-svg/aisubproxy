@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { brandColorVars, contrastRatio, darkPrimaryFrom, isUsablePrimary, tintFrom } from '../brandColor'
+import { brandColorVars, contrastRatio, darkPrimaryFrom, isUsablePrimary, sideColorsFrom, tintFrom } from '../brandColor'
 
 describe('brandColor', () => {
   it('对比度', () => { expect(contrastRatio('#FFFFFF', '#0F6B5F')).toBeCloseTo(6.39, 1); expect(contrastRatio('#000000', '#FFFFFF')).toBeCloseTo(21, 0) })
@@ -17,4 +17,15 @@ describe('brandColor', () => {
   })
   it('浅色调', () => { expect(tintFrom('#0F6B5F')).toBe('#E2EDEC') })
   it('变量兜底', () => { expect(brandColorVars('#7FD4C4')['--brand-primary']).toBe('#0F6B5F'); expect(brandColorVars(undefined)['--brand-primary-dark']).toBe('#3FB8A5'); expect(brandColorVars(undefined)['--brand-tint-dark']).toBe('#1C423C') })
+  it('侧栏颜色：深青固定值', () => {
+    expect(sideColorsFrom('#0F6B5F')).toEqual({ bg: '#0A473F', ink: '#C9D7D5', muted: '#9DB5B2' })
+  })
+  it('侧栏颜色：各种主色都达标', () => {
+    for (const p of ['#0F6B5F', '#1E4FA8', '#5B3FA0', '#A3283B', '#2F6B2F', '#36454F', '#767676', '#05080A']) {
+      const s = sideColorsFrom(p)
+      expect(contrastRatio('#FFFFFF', s.bg)).toBeGreaterThanOrEqual(10)
+      expect(contrastRatio(s.ink, s.bg)).toBeGreaterThanOrEqual(4.5)
+      expect(contrastRatio(s.muted, s.bg)).toBeGreaterThanOrEqual(4.5)
+    }
+  })
 })

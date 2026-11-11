@@ -154,7 +154,7 @@ describe('侧栏外壳 SideNavShell', () => {
   it('侧栏底部主题按钮压住皮肤给 .btn-ghost 加的背景和边框', () => {
     const src = readFileSync(fileURLToPath(new URL('../AdminLayout.vue', import.meta.url)), 'utf8')
     for (const sel of ['.sn-tools :deep(.btn-ghost)', '.sn-tools :deep(.btn-ghost:hover)']) {
-      const m = src.match(new RegExp(sel.replace(/[()]/g, '\\$&') + '\\s*\\{([^}]*)\\}'))
+      const m = src.match(new RegExp(sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*\\{([^}]*)\\}'))
       expect(m, sel).toBeTruthy()
       if (sel.endsWith('hover)')) expect(m![1]).toContain('border-color: transparent')
       else {

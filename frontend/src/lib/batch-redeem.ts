@@ -154,6 +154,24 @@ export function pollVerdict(httpStatus: number, polled: Pick<PolledOrder, 'statu
   return unknownPending ? 'pending' : 'processing'
 }
 
+/** 查询目标：unknownSince 是兑换请求结果未知的那一刻，正常受理的、已查到过这次记录的没有这个字段。 */
+export interface PollTargetState {
+  token: string
+  terminal: boolean
+  unknownSince?: number
+}
+
+/**
+ * 一条查询结果归类之后，查询目标怎么变（FE2 审查次要 6）：
+ * - 还没查到：原样保留，结果未知的时限照旧；
+ * - 处理中：查到了这次的记录，去掉 unknownSince，之后不再按时限停（否则正常处理中的条目 90 秒后会被标「结果未知」）；
+ * - 成功、失败：到终态，停查。
+ */
+export function nextPollTarget(target: PollTargetState, verdict: PollVerdict): PollTargetState {
+  if (verdict === 'pending') return target
+  return { token: target.token, terminal: verdict !== 'processing' }
+}
+
 /**
  * 结果未知的那一张最多查多久。到时限还没查到兑换记录（不管这期间是 404、5xx 还是断线），就停止查询，
  * 条目标「结果未知」，提示去卡密查询页核对、不要重复提交；不判失败（判失败容易让买家重提同一张卡密）。

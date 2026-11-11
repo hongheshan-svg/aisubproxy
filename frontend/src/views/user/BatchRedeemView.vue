@@ -359,14 +359,16 @@ import {
   hasUnknownQuerying,
   isSubmittable,
   msUntilUnknownDeadline,
+  nextPollTarget,
+  ownEmailOf,
   pollVerdict,
   readPolledOrder,
   redeemOutcome,
   runSubmitPool,
-  ownEmailOf,
   successRows,
   unknownExpired,
   unknownRows,
+  type PollTargetState,
 } from '../../lib/batch-redeem'
 import SessionHelp from '../../components/SessionHelp.vue'
 import { isGrokCredential } from '../../lib/grok'
@@ -467,11 +469,7 @@ const mailboxFileRef = ref<HTMLInputElement | null>(null)
 const lastFilledItemId = ref<string | null>(null)
 
 /** unknownSince：兑换请求结果未知（发出后断线或 5xx）的那一刻，正常受理的条目没有这个字段（F2-03） */
-interface PollTarget {
-  token: string
-  terminal: boolean
-  unknownSince?: number
-}
+type PollTarget = PollTargetState
 const pollTargets = ref<Record<string, PollTarget>>({})
 // 还有结果未知、正在查询的卡密：查完（查到记录或到时限）之前不能重置（F2-04b 裁定 3）
 const unknownQuerying = computed(() => hasUnknownQuerying(pollTargets.value))
@@ -635,8 +633,6 @@ function applyPollResult(id: string, target: PollTarget, status: number, data: a
   // 单个令牌查不到（404 等）、暂时出错，或结果未知的查到「失败、可以重新提交」（可能是这张卡密以前那次的记录）：
   // 保持原状，下一轮再查；结果未知的到时限由 expireUnknownTargets 收尾（FE2 审查重要 1）
   if (verdict === 'pending') return
-  // 查到了兑换记录：之后不再按「结果未知、到时限就停」处理
-  const seen: PollTarget = { token: target.token, terminal: false }
   const st = polled.status
   const message = polled.message
   const email = polled.email
@@ -646,14 +642,13 @@ function applyPollResult(id: string, target: PollTarget, status: number, data: a
   if (cardLastFour) meta.cardLastFour = cardLastFour
   if (verdict === 'success') {
     updateItem(id, { ...meta, status: 'success', progressMsg: message || '开通完成', error: '' })
-    pollTargets.value[id] = { ...seen, terminal: true }
   } else if (verdict === 'failed') {
     updateItem(id, { ...meta, status: 'failed', progressMsg: message || '兑换失败', error: message || '失败' })
-    pollTargets.value[id] = { ...seen, terminal: true }
   } else {
     updateItem(id, { ...meta, status: 'processing', progressMsg: message || (st ? `处理中 · ${st}` : '处理中…'), error: '' })
-    if (target.unknownSince) pollTargets.value[id] = seen
   }
+  // 查到了这次的兑换记录：成功、失败停查；处理中去掉 unknownSince，之后不再按「结果未知、到时限就停」处理（FE2 审查次要 6）
+  pollTargets.value[id] = nextPollTarget(target, verdict)
 }
 
 async function pollBatch() {

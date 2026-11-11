@@ -1,7 +1,7 @@
 // 批量兑换页只读查询查到记录之后怎么处理（FE2 审查重要 1）。数据都是假的，结构照后端 writeLocalResult 写出的样子
 // （backend/internal/handler/local_cdk.go：localOrderPublic、writeLocalResult）。
 import { describe, expect, it } from 'vitest'
-import { UNKNOWN_QUERY_MS, pollVerdict, readPolledOrder, unknownExpired } from '../batch-redeem'
+import { UNKNOWN_QUERY_MS, hasUnknownQuerying, nextPollTarget, pollVerdict, readPolledOrder, unknownExpired } from '../batch-redeem'
 
 /** 后端按令牌查结果的回包：码最新一张单的公开视图。码还没用掉（干净失败）时带 can_retry、attempts_left。 */
 function result(status: string, extra: Record<string, unknown> = {}) {
@@ -92,5 +92,28 @@ describe('查到 2xx 但认不出状态：结果未知的不当作查到（FE2 �
       expect(unknownExpired(since, t)).toBe(false)
     }
     expect(unknownExpired(since, since + UNKNOWN_QUERY_MS)).toBe(true)
+  })
+})
+
+describe('查到这次的记录之后不再按时限停（FE2 审查次要 6）', () => {
+  const since = 1_000_000
+  const unknownTarget = { token: 'tok', terminal: false, unknownSince: since }
+  it('结果未知的查到处理中：去掉 unknownSince，之后 90 秒也不会被标「结果未知」，也不再锁重置', () => {
+    const next = nextPollTarget(unknownTarget, 'processing')
+    expect(next).toEqual({ token: 'tok', terminal: false })
+    expect(unknownExpired(next.unknownSince ?? 0, since + 10 * UNKNOWN_QUERY_MS)).toBe(false)
+    expect(hasUnknownQuerying({ a: next })).toBe(false)
+  })
+  it('还没查到：原样保留，时限照旧', () => {
+    const next = nextPollTarget(unknownTarget, 'pending')
+    expect(next).toEqual(unknownTarget)
+    expect(unknownExpired(next.unknownSince ?? 0, since + UNKNOWN_QUERY_MS)).toBe(true)
+  })
+  it('查到成功或失败：到终态，停查', () => {
+    expect(nextPollTarget(unknownTarget, 'success')).toEqual({ token: 'tok', terminal: true })
+    expect(nextPollTarget(unknownTarget, 'failed')).toEqual({ token: 'tok', terminal: true })
+  })
+  it('正常受理的查到处理中：照旧在查', () => {
+    expect(nextPollTarget({ token: 'tok', terminal: false }, 'processing')).toEqual({ token: 'tok', terminal: false })
   })
 })

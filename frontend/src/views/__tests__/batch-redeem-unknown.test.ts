@@ -95,6 +95,11 @@ describe('兑换请求结果未知时只查不重发（F2-03）', () => {
     // 不再自己按状态表判成功、失败
     expect(a).not.toMatch(/isFailStatus\(|isSuccessStatus\(/)
   })
+  it('查到记录后查询目标怎么变交给 lib 的 nextPollTarget：查到处理中就去掉 unknownSince（FE2 审查次要 6）', () => {
+    const a = body('applyPollResult')
+    expect(a).toContain('pollTargets.value[id] = nextPollTarget(target, verdict)')
+    expect((a.match(/pollTargets\.value\[id\] =/g) || []).length).toBe(1)
+  })
   it('90 秒时限另排计时器、按墙钟算，不跟着查询的间隔和 429 退避往后拖（FE2 审查次要 1）', () => {
     // 新的结果未知一进来就排时限计时器
     const s = body('startPoll')

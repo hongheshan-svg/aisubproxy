@@ -30,7 +30,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { agentApi, setAgentUnauthorizedHandler } from '../lib/agentApi'
+import { agentApi, agentLogout, setAgentUnauthorizedHandler } from '../lib/agentApi'
 import { dialog } from '../lib/dialog'
 import { resetAgentSession } from '../lib/agentSession'
 import { orderRetry } from '../lib/agentViews'
@@ -93,10 +93,12 @@ async function loadMe() {
 
 async function logout() {
   if (orderRetry.refresh() && !(await dialog.confirm('有一笔订单结果未知，退出后这台电脑上不能再原样重试。确定退出吗？', { title: '订单结果未知', okText: '仍然退出', danger: true }))) return
-  try {
-    await agentApi('/auth/logout', 'POST')
-  } catch {
-    /* 退出失败也回登录页，cookie 过期后自然失效 */
+  // 服务端没确认退出时留在页面：HttpOnly 的会话 cookie 还在，回登录页会让人以为已经退了
+  const out = await agentLogout()
+  if (out !== 'done') {
+    if (out === 'csrf') dialog.toast('退出失败：浏览器里本站的校验 Cookie 丢了，服务器拒绝退出，重试也不会成功。请在浏览器设置里清除本站的 Cookie，清除后这台电脑上就退出了', 'err', 10000)
+    else dialog.toast('退出失败，服务器上的登录状态还在，请重试', 'err')
+    return
   }
   // 退出登录清掉待重试订单（只有请求号和下单内容），换别的代理商登录也拿不到
   orderRetry.clear()

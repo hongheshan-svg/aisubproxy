@@ -49,6 +49,24 @@ export async function agentApi<T = any>(path: string, method = 'GET', body?: unk
 }
 
 /**
+ * 退出登录，按服务端结果返回（照管理员端 serverLogout）：
+ * - done：成功或 401（会话本来就没了），可以清本地状态、回登录页。
+ * - csrf：403，校验 Cookie 丢了，重试也不会成功，只能清除本站 Cookie。
+ * - failed：断网、5xx 等，服务端会话可能还在，留在页面提示重试。
+ */
+export async function agentLogout(): Promise<'done' | 'csrf' | 'failed'> {
+  let r: AgentResult
+  try {
+    r = await agentApi('/auth/logout', 'POST')
+  } catch {
+    return 'failed'
+  }
+  if (r.ok || r.status === 401) return 'done'
+  if (r.status === 403) return 'csrf'
+  return 'failed'
+}
+
+/**
  * 下载文件（如流水 CSV）：用 fetch 拿二进制，带 cookie。
  * 401 和普通 API 一样走统一的会话失效处理；非 2xx 返回 JSON 错误体，不返回 blob。
  */

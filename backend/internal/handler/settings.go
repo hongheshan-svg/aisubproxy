@@ -10,37 +10,33 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 )
 
-// 站点未设置时的默认外观：zovo 皮肤 + 跟随系统，与前端 theme.ts / index.html 一致。
+// 站点未设置时的默认外观：teal（深青自助）皮肤 + 跟随系统，与前端 theme.ts / index.html 一致。
 // 已在后台选过皮肤的站点保持原样（存了 skin 设置项就不走默认）。
 const (
-	defaultSiteSkin  = "zovo"
+	defaultSiteSkin  = "teal"
 	defaultThemeMode = "auto"
-	// 主色默认值（深青）
-	defaultPrimaryColor = "#0F6B5F"
 )
 
 // PublicSiteConfig GET /api/v1/public/site — 用户端拉品牌/皮肤（无鉴权）
 func PublicSiteConfig(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
-		"installed":     db.IsInstalled(),
-		"brand_name":    settingOr("brand_name", "Recharge Portal"),
-		"brand_sub":     settingOr("brand_sub", "Account Upgrade Service"),
-		"skin":          settingOr("skin", defaultSiteSkin),
-		"theme_mode":    settingOr("theme_mode", defaultThemeMode),
-		"primary_color": settingOr("primary_color", defaultPrimaryColor),
-		"logo_version":  currentLogoVersion(),
+		"installed":    db.IsInstalled(),
+		"brand_name":   settingOr("brand_name", "Recharge Portal"),
+		"brand_sub":    settingOr("brand_sub", "Account Upgrade Service"),
+		"skin":         settingOr("skin", defaultSiteSkin),
+		"theme_mode":   settingOr("theme_mode", defaultThemeMode),
+		"logo_version": currentLogoVersion(),
 	})
 }
 
 // AdminGetSettings GET /api/v1/admin/settings
 func AdminGetSettings(c *gin.Context) {
 	out := gin.H{
-		"brand_name":    settingOr("brand_name", "Recharge Portal"),
-		"brand_sub":     settingOr("brand_sub", "Account Upgrade Service"),
-		"skin":          settingOr("skin", defaultSiteSkin),
-		"theme_mode":    settingOr("theme_mode", defaultThemeMode),
-		"primary_color": settingOr("primary_color", defaultPrimaryColor),
-		"logo_version":  currentLogoVersion(),
+		"brand_name":   settingOr("brand_name", "Recharge Portal"),
+		"brand_sub":    settingOr("brand_sub", "Account Upgrade Service"),
+		"skin":         settingOr("skin", defaultSiteSkin),
+		"theme_mode":   settingOr("theme_mode", defaultThemeMode),
+		"logo_version": currentLogoVersion(),
 	}
 	out["agent_swap_password_configured"] = agentSwapPasswordConfigured()
 	out["agent_swap_password_weak"] = agentSwapPasswordWeak()
@@ -49,11 +45,10 @@ func AdminGetSettings(c *gin.Context) {
 }
 
 type adminSettingsBody struct {
-	BrandName    *string `json:"brand_name"`
-	BrandSub     *string `json:"brand_sub"`
-	Skin         *string `json:"skin"`
-	ThemeMode    *string `json:"theme_mode"`
-	PrimaryColor *string `json:"primary_color"`
+	BrandName *string `json:"brand_name"`
+	BrandSub  *string `json:"brand_sub"`
+	Skin      *string `json:"skin"`
+	ThemeMode *string `json:"theme_mode"`
 	// 代理失败换码密码（明文一次写入，存 bcrypt；空=不改）
 	AgentSwapPassword *string `json:"agent_swap_password"`
 	// 同一换码密码每个北京日最多换多少张（默认 20，必须大于 0；不传不改）
@@ -84,7 +79,7 @@ func AdminPutSettings(c *gin.Context) {
 		return
 	}
 	allowedSkins := map[string]bool{
-		"zovo": true, "terracotta": true, "ocean": true, "cyber": true, "forest": true, "violet": true,
+		"teal": true, "zovo": true, "terracotta": true, "ocean": true, "cyber": true, "forest": true, "violet": true,
 		"slate": true, "rose": true, "ember": true, "noir": true, "paper": true,
 	}
 	if body.Skin != nil && !allowedSkins[strings.TrimSpace(*body.Skin)] {
@@ -98,14 +93,6 @@ func AdminPutSettings(c *gin.Context) {
 		}
 	}
 	var writes []struct{ key, val string }
-	if body.PrimaryColor != nil {
-		pc := strings.ToUpper(strings.TrimSpace(*body.PrimaryColor))
-		if err := validPrimaryColor(pc); err != nil {
-			bad(err.Error())
-			return
-		}
-		writes = append(writes, struct{ key, val string }{"primary_color", pc})
-	}
 	for _, it := range []textItem{
 		{"brand_name", body.BrandName, 40, "站点名称"},
 		{"brand_sub", body.BrandSub, 80, "副标题"},

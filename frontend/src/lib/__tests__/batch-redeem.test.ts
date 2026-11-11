@@ -1,6 +1,6 @@
 // 批量兑换页的提交编排（lib/batch-redeem）。数据都是假的。
 import { describe, expect, it } from 'vitest'
-import { UNKNOWN_QUERY_MS, batchStats, isSubmittable, redeemOutcome, runSubmitPool, successRows, unknownExpired, unknownRows } from '../batch-redeem'
+import { UNKNOWN_QUERY_MS, batchStats, hasUnknownQuerying, isSubmittable, redeemOutcome, runSubmitPool, successRows, unknownExpired, unknownRows } from '../batch-redeem'
 
 /** 手动放行的提交：记下谁被提交了、同时在途几个，测试决定什么时候让它返回。 */
 function controlledSubmit() {
@@ -127,5 +127,17 @@ describe('结果未知的卡密不会再被提交（裁定 1）', () => {
     for (const st of ['unknown', 'processing', 'submitting', 'failed', 'success', 'verify_fail', 'pending_verify']) {
       expect(isSubmittable(st), st).toBe(false)
     }
+  })
+})
+
+describe('还有结果未知正在查询时不能重置（裁定 3）', () => {
+  it('有没到终态、带 unknownSince 的查询目标：算正在查', () => {
+    expect(hasUnknownQuerying({ a: { token: 'x', terminal: false, unknownSince: 1 } })).toBe(true)
+    expect(hasUnknownQuerying({ a: { token: 'x', terminal: true }, b: { token: 'y', terminal: false, unknownSince: 5 } })).toBe(true)
+  })
+  it('停查了（终态）、查到过记录（没有 unknownSince）、或者根本没有：不算', () => {
+    expect(hasUnknownQuerying({})).toBe(false)
+    expect(hasUnknownQuerying({ a: { token: 'x', terminal: true, unknownSince: 1 } })).toBe(false)
+    expect(hasUnknownQuerying({ a: { token: 'x', terminal: false } })).toBe(false)
   })
 })

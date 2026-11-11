@@ -327,9 +327,10 @@
             >
               {{ exportLabel }}
             </button>
-            <button type="button" class="u-btn-secondary w-full" :disabled="submitting || autoSubmitting" @click="resetAll">
+            <button type="button" class="u-btn-secondary w-full" :disabled="submitting || autoSubmitting || unknownQuerying" @click="resetAll">
               {{ t('batch.reset') }}
             </button>
+            <p v-if="unknownQuerying" class="text-[11px] text-muted text-center">{{ t('batch.resetWaitUnknown') }}</p>
           </template>
         </div>
 
@@ -354,6 +355,7 @@ import ExcelImportBlock from '../../components/ExcelImportBlock.vue'
 import { chunkTokens, nextPollPlan, parsePollResponse } from '../../lib/batch-poll'
 import {
   batchStats,
+  hasUnknownQuerying,
   isFailStatus,
   isSubmittable,
   isSuccessStatus,
@@ -462,6 +464,8 @@ interface PollTarget {
   unknownSince?: number
 }
 const pollTargets = ref<Record<string, PollTarget>>({})
+// 还有结果未知、正在查询的卡密：查完（查到记录或到时限）之前不能重置（F2-04b 裁定 3）
+const unknownQuerying = computed(() => hasUnknownQuerying(pollTargets.value))
 let pollTimer: ReturnType<typeof setTimeout> | null = null
 let pollInFlight = false
 let pollBackoffMs = 0
@@ -1229,7 +1233,7 @@ async function exportBatchSuccess() {
 }
 
 function resetAll() {
-  if (submitting.value || autoSubmitting.value) return
+  if (submitting.value || autoSubmitting.value || unknownQuerying.value) return
   // 换批次：还在路上的验证、查询回来都对不上，不会写到下一批上
   batchSeq++
   stopAllPolls()

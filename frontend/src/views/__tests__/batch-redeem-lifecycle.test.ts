@@ -38,9 +38,12 @@ describe('离开页面后不再排查询（F2-04a）', () => {
 })
 
 describe('重置、离开页面、换批次（F2-04b）', () => {
-  it('提交中（手动或自动）「重置」按钮禁用，resetAll 自己也拦', () => {
-    expect(src).toMatch(/<button[^>]*:disabled="submitting \|\| autoSubmitting"[^>]*@click="resetAll"/)
-    expect(firstLine('resetAll')).toBe('if (submitting.value || autoSubmitting.value) return')
+  it('提交中（手动或自动）、还有结果未知正在查询时，「重置」按钮禁用，resetAll 自己也拦（裁定 3）', () => {
+    expect(src).toMatch(/<button[^>]*:disabled="submitting \|\| autoSubmitting \|\| unknownQuerying"[^>]*@click="resetAll"/)
+    expect(firstLine('resetAll')).toBe('if (submitting.value || autoSubmitting.value || unknownQuerying.value) return')
+    expect(src).toContain('const unknownQuerying = computed(() => hasUnknownQuerying(pollTargets.value))')
+    // 按钮为什么点不了要说出来
+    expect(src).toMatch(/<p v-if="unknownQuerying"[^>]*>\{\{ t\('batch\.resetWaitUnknown'\) \}\}<\/p>/)
     // 重置不再把 autoSubmitting 硬置回假：自动提交时根本不能重置
     expect(body('resetAll')).not.toContain('autoSubmitting.value = false')
   })

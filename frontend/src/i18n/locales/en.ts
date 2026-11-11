@@ -115,6 +115,7 @@ export default {
     card: 'Card',
     cardPending: 'Last4 after card open',
     reset: 'Back · start over',
+    resetWaitUnknown: 'Some CDKs with unknown results are still being checked — you can start over once that finishes',
     resultUnknown: 'Result unknown — checking…',
     resultUnknownStopped: 'Result unknown — check it on the CDK Status page and do not submit it again',
     status: {

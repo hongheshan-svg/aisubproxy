@@ -119,3 +119,11 @@ export function unknownRows(items: ReadonlyArray<ExportItem>, label: string): st
       label,
     ])
 }
+
+/**
+ * 还有结果未知、正在查询的卡密吗（没到终态、带 unknownSince）。这时不能重置：重置会停掉查询，
+ * 买家就看不到这一张最后有没有开通（F2-04b 裁定 3）。到时限停查或查到记录之后才能重置。
+ */
+export function hasUnknownQuerying(targets: Readonly<Record<string, { terminal: boolean; unknownSince?: number }>>): boolean {
+  return Object.values(targets).some((v) => !v.terminal && (v.unknownSince ?? 0) > 0)
+}

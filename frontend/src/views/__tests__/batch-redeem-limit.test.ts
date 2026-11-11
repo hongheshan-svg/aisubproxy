@@ -51,3 +51,10 @@ describe('结果未知的文案（F2-03 裁定 1）', () => {
     expect(i18n.global.t('batch.exportOkUnknown', { n: 3, m: 2 }, { locale: 'en' })).toBe('Export successful accounts (3), plus 2 with unknown result')
   })
 })
+
+describe('重置按钮锁住时的说明（F2-04b 裁定 3）', () => {
+  it('中英文都有', () => {
+    expect(zh.batch.resetWaitUnknown).toBe('还有结果未知的卡密正在查询，查完才能重新开始')
+    expect(en.batch.resetWaitUnknown).toBe('Some CDKs with unknown results are still being checked — you can start over once that finishes')
+  })
+})

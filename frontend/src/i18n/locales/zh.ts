@@ -115,6 +115,7 @@ export default {
     card: '银行卡',
     cardPending: '开卡后显示尾号',
     reset: '返回 · 重新开始',
+    resetWaitUnknown: '还有结果未知的卡密正在查询，查完才能重新开始',
     resultUnknown: '结果未知，正在查询',
     resultUnknownStopped: '结果未知，请到卡密查询页核对，不要重复提交',
     status: {

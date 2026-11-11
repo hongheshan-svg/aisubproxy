@@ -30,8 +30,9 @@ withDefaults(defineProps<{
 .uh { box-sizing: border-box; width: 100%; max-width: 520px; margin: 0 auto; padding: 16px 16px 0; text-align: left; }
 .uh-hero { padding-top: 16px; }
 .uh-sub { margin: 0; }
-/* 电脑布局：顶部条通栏，标题区放宽到 1120px 并与内容区左右各留 24px */
+/* 电脑布局：顶部条整宽一条（不限宽、不加内边距），标题区放宽到 1120px 并与内容区左右各留 24px */
 @media (min-width: 1024px) {
-  .uh--desktop { max-width: 1120px; padding: 0 24px; }
+  .uh--desktop { max-width: none; padding: 0; }
+  .uh--desktop .uh-hero { box-sizing: border-box; max-width: 1120px; margin: 0 auto; padding: 16px 24px 0; }
 }
 </style>

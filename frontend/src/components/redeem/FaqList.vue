@@ -33,7 +33,8 @@ const faqs = computed(() => ['entry', 'pending', 'session', 'claude', 'used', 'f
 </template>
 
 <style scoped>
-.faq { margin-top: 32px; display: flex; flex-direction: column; gap: 10px; }
+/* 不带上外边距：电脑右栏要和左栏顶端对齐，窄屏的 32px 间距由 .u-col-aside 给 */
+.faq { display: flex; flex-direction: column; gap: 10px; }
 .faq-title { margin: 0 0 4px; font-size: 20px; font-weight: 700; }
 .faq-item { padding: 12px 16px; }
 .faq-q { cursor: pointer; list-style: none; display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 28px; font-size: 16px; font-weight: 600; }

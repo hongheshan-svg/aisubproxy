@@ -86,6 +86,44 @@ describe('FaqList', () => {
   })
 })
 
+describe('UserPageHeader 样式（读源文件）', () => {
+  const src = read('components/UserPageHeader.vue')
+  const rule = (sel: string) => {
+    const i = src.indexOf(sel + ' {')
+    expect(i, `找不到 ${sel}`).toBeGreaterThanOrEqual(0)
+    return src.slice(i, src.indexOf('}', i))
+  }
+  it('电脑布局的 .uh--desktop 不限宽、不加左右内边距，导航条才是整宽一条', () => {
+    const r = rule('.uh--desktop')
+    expect(r).not.toContain('1120')
+    expect(r).not.toContain('24px')
+  })
+  it('电脑布局的标题区 .uh-hero 才是 1120px 居中并留 24px', () => {
+    const r = rule('.uh--desktop .uh-hero')
+    expect(r).toContain('max-width: 1120px')
+    expect(r).toContain('margin: 0 auto')
+    expect(r).toContain('24px')
+  })
+})
+
+describe('FaqList 根元素不带 margin-top（两栏顶端对齐；窄屏间距由 .u-col-aside 给）', () => {
+  it('.faq 没有 margin-top', () => {
+    const src = read('components/redeem/FaqList.vue')
+    const i = src.indexOf('.faq {')
+    expect(src.slice(i, src.indexOf('}', i))).not.toContain('margin-top')
+  })
+  it('FaqList 只用在 UserTwoColumn 的 aside 里（窄屏靠 .u-col-aside 的 32px）', () => {
+    expect(read('components/redeem/UserTwoColumn.vue')).toMatch(/\.u-col-aside \{[^}]*margin-top: 32px/)
+    for (const f of ['views/HomeView.vue', 'views/user/AgentSwapView.vue', 'views/user/BatchRedeemView.vue', 'views/user/BillingCheckView.vue', 'views/user/CDKStatusView.vue', 'views/user/RechargeView.vue']) {
+      for (const m of read(f).matchAll(/<FaqList/g)) {
+        const before = read(f).slice(0, m.index)
+        expect(before.lastIndexOf('#aside'), `${f} 的 FaqList 不在 #aside 里`).toBeGreaterThan(before.lastIndexOf('<UserTwoColumn') - 1)
+        expect(before.lastIndexOf('#aside')).toBeGreaterThan(-1)
+      }
+    }
+  })
+})
+
 describe('UserTwoColumn', () => {
   it('没传 aside 就没有 <aside；wide 在两栏之后', async () => {
     const a = await render(UserTwoColumn, '/', {}, { default: () => 'MAIN' })

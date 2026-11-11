@@ -46,10 +46,9 @@ const (
 
 var swapPasswordFails = newFailLimiter(swapPasswordMaxFailures, swapPasswordLockWindow, 1)
 
-// noteSwapPasswordFailure 记一次口令错误；这一次正好触发锁定时告警。
+// noteSwapPasswordFailure 记一次口令错误；只在这一次刚好触发锁定时告警（并发输错时后续的失败不重复发）。
 func noteSwapPasswordFailure() {
-	swapPasswordFails.failed(swapPasswordFailKey)
-	if ok, _ := swapPasswordFails.allowed(swapPasswordFailKey); !ok {
+	if swapPasswordFails.failed(swapPasswordFailKey) {
 		opsAlert(fmt.Sprintf("代理换码口令 1 小时内输错 %d 次，换码接口已暂停 1 小时。如果不是代理自己输错，可能有人在猜口令：请在后台「CDK 卡密 → 代理换码」重设换码口令（重设后立即恢复）。", swapPasswordMaxFailures))
 	}
 }

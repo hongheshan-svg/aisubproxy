@@ -322,7 +322,7 @@
             >
               {{ t('batch.exportOk', { n: stats.ok }) }}
             </button>
-            <button type="button" class="u-btn-secondary w-full" @click="resetAll">
+            <button type="button" class="u-btn-secondary w-full" :disabled="submitting || autoSubmitting" @click="resetAll">
               {{ t('batch.reset') }}
             </button>
           </template>
@@ -347,6 +347,7 @@ import UserTwoColumn from '../../components/redeem/UserTwoColumn.vue'
 import { isDesktop } from '../../lib/layoutMode'
 import ExcelImportBlock from '../../components/ExcelImportBlock.vue'
 import { chunkTokens, nextPollPlan, parsePollResponse } from '../../lib/batch-poll'
+import { runSubmitPool } from '../../lib/batch-redeem'
 import SessionHelp from '../../components/SessionHelp.vue'
 import { isGrokCredential } from '../../lib/grok'
 import { isClaudePreview } from '../../lib/claude'
@@ -382,7 +383,10 @@ type ItemStatus =
   | 'failed'
 
 interface BatchItem {
+  /** `批次号-序号-卡密`：同一批卡密重置后再验证，新旧条目的 id 也不同 */
   id: string
+  /** 这一条属于哪一批（handleVerifyBatch 时的 batchSeq） */
+  batch: number
   cardKey: string
   planLabel: string
   status: ItemStatus
@@ -440,6 +444,13 @@ let pollBackoffMs = 0
 const pollNotice = ref('')
 // 离开页面后置真：在途请求回来不再排下一轮查询（F2-04a）
 let unmounted = false
+// 批次号：每次开始验证、重置都加一。在途请求回来时批次号对不上就丢掉，不写到新批次上，也不再提交（F2-04b）
+let batchSeq = 0
+
+/** 这一批还算数吗：页面还在、且没有换批次。不算数时不再提交还没开始的卡密，回来的结果也不写。 */
+function live(gen: number) {
+  return !unmounted && gen === batchSeq
+}
 
 const parsedCdks = computed(() => parseCdks(cdkText.value))
 const parsedMailboxes = computed(() => parseMailboxLines(mailboxText.value))
@@ -586,6 +597,7 @@ async function pollBatch() {
     pollBackoffMs = 0
     return
   }
+  const gen = batchSeq
   pollInFlight = true
   let rateLimited = false
   let failed = false
@@ -602,6 +614,8 @@ async function pollBatch() {
       } catch {
         outcome = parsePollResponse(0, null)
       }
+      // 查询途中重置或离开页面：这一轮的结果作废，也不再排下一轮
+      if (!live(gen)) return
       if (outcome.rateLimited) {
         rateLimited = true
         break
@@ -617,7 +631,8 @@ async function pollBatch() {
       }
     }
   } finally {
-    pollInFlight = false
+    // 换了批次时 stopAllPolls 已经复位，新批次可能已有一轮在途，不能替它清
+    if (gen === batchSeq) pollInFlight = false
   }
   const remaining = Object.values(pollTargets.value).filter((v) => !v.terminal).length
   if (!remaining) {
@@ -631,8 +646,9 @@ async function pollBatch() {
   schedulePoll(plan.delayMs)
 }
 
-function startPoll(id: string, token: string) {
+function startPoll(id: string, token: string, gen: number) {
   if (unmounted) return
+  if (gen !== batchSeq) return
   pollTargets.value = { ...pollTargets.value, [id]: { token, terminal: false } }
   if (!pollTimer && !pollInFlight) void pollBatch()
 }
@@ -762,6 +778,7 @@ async function handleVerifyBatch() {
     sessionError.value = `单次最多 ${BATCH_MAX_KEYS} 个卡密`
     return
   }
+  const gen = ++batchSeq
   verifying.value = true
   sessionError.value = ''
   stopAllPolls()
@@ -770,7 +787,8 @@ async function handleVerifyBatch() {
     mailboxPool.value = parsedMailboxes.value
   }
   const list: BatchItem[] = keys.map((k, i) => ({
-    id: `${i}-${k}`,
+    id: `${gen}-${i}-${k}`,
+    batch: gen,
     cardKey: k,
     planLabel: '',
     status: 'pending_verify',
@@ -837,10 +855,14 @@ async function handleVerifyBatch() {
         }
       }
     })
+    // 验证途中重置或离开页面：结果作废
+    if (!live(gen)) return
     items.value = results
   } finally {
-    verifying.value = false
-    lastFilledItemId.value = null
+    if (gen === batchSeq) {
+      verifying.value = false
+      lastFilledItemId.value = null
+    }
   }
 }
 
@@ -958,6 +980,8 @@ async function runPreflightRedeem(
       return 'fail'
     }
     const email = String(body.email || body.account_email || fallbackEmail || '')
+    // 兑换是唯一会用掉卡密的请求：发出前最后看一次，页面已离开或换了批次就不再提交这一张
+    if (!live(item.batch)) return 'fail'
     updateItem(item.id, { email, progressMsg: '预检通过，提交兑换…' })
 
     const client_request_id = `batch-${deviceId.slice(0, 8)}-${Date.now()}-${item.id}`
@@ -1012,7 +1036,7 @@ async function runPreflightRedeem(
         progressMsg: message || '处理中…',
         error: '',
       })
-      startPoll(item.id, redemptionToken)
+      startPoll(item.id, redemptionToken, item.batch)
     }
     return 'ok'
   } catch {
@@ -1072,6 +1096,7 @@ async function handleSubmitSession() {
 
 async function handleAutoSubmitAll() {
   if (autoSubmitting.value || submitting.value || verifying.value) return
+  const gen = batchSeq
   const verifiedSnap = items.value.filter(
     (i) => i.status !== 'pending_verify' && i.status !== 'verify_fail',
   )
@@ -1092,29 +1117,20 @@ async function handleAutoSubmitAll() {
     autoSubmitting.value = true
     sessionError.value = ''
     const verifiedPositions = new Map(verifiedSnap.map((item, index) => [item.id, index]))
-    let cursor = 0
-    const workers = Array.from(
-      { length: Math.min(AUTO_SUBMIT_CONCURRENCY, pendingSnap.length) },
-      async () => {
-        while (true) {
-          const itemIndex = cursor++
-          if (itemIndex >= pendingSnap.length) return
-          const item = pendingSnap[itemIndex]
-          const excelIdx = verifiedPositions.get(item.id) ?? -1
-          const mb = excelIdx >= 0 ? pool[excelIdx] : undefined
-          if (!mb) {
-            updateItem(item.id, {
-              status: 'failed',
-              progressMsg: `邮箱列表只有 ${pool.length} 条，第 ${excelIdx + 1} 张无对应`,
-              error: '邮箱密码不足',
-            })
-            continue
-          }
-          await submitOne(item, { mode: 'mailbox', email: mb.email, password: mb.password })
-        }
-      },
-    )
-    await Promise.all(workers)
+    // 离开页面后不再取下一张（重置在自动提交时是禁用的）；已经在提交的那张照常等它返回
+    await runSubmitPool(pendingSnap, AUTO_SUBMIT_CONCURRENCY, () => live(gen), async (item) => {
+      const excelIdx = verifiedPositions.get(item.id) ?? -1
+      const mb = excelIdx >= 0 ? pool[excelIdx] : undefined
+      if (!mb) {
+        updateItem(item.id, {
+          status: 'failed',
+          progressMsg: `邮箱列表只有 ${pool.length} 条，第 ${excelIdx + 1} 张无对应`,
+          error: '邮箱密码不足',
+        })
+        return
+      }
+      await submitOne(item, { mode: 'mailbox', email: mb.email, password: mb.password })
+    })
     sessionInput.value = ''
     autoSubmitting.value = false
     return
@@ -1128,29 +1144,19 @@ async function handleAutoSubmitAll() {
   autoSubmitting.value = true
   sessionError.value = ''
   const verifiedPositions = new Map(verifiedSnap.map((item, index) => [item.id, index]))
-  let cursor = 0
-  const workers = Array.from(
-    { length: Math.min(AUTO_SUBMIT_CONCURRENCY, pendingSnap.length) },
-    async () => {
-      while (true) {
-        const itemIndex = cursor++
-        if (itemIndex >= pendingSnap.length) return
-        const item = pendingSnap[itemIndex]
-        const excelIdx = verifiedPositions.get(item.id) ?? -1
-        const sess = excelIdx >= 0 ? pool[excelIdx] : undefined
-        if (!sess) {
-          updateItem(item.id, {
-            status: 'failed',
-            progressMsg: `Excel 只有 ${pool.length} 条 Session，第 ${excelIdx + 1} 张无对应`,
-            error: 'Session 不足',
-          })
-          continue
-        }
-        await submitOne(item, { mode: 'session', session: sess.session, imported: sess })
-      }
-    },
-  )
-  await Promise.all(workers)
+  await runSubmitPool(pendingSnap, AUTO_SUBMIT_CONCURRENCY, () => live(gen), async (item) => {
+    const excelIdx = verifiedPositions.get(item.id) ?? -1
+    const sess = excelIdx >= 0 ? pool[excelIdx] : undefined
+    if (!sess) {
+      updateItem(item.id, {
+        status: 'failed',
+        progressMsg: `Excel 只有 ${pool.length} 条 Session，第 ${excelIdx + 1} 张无对应`,
+        error: 'Session 不足',
+      })
+      return
+    }
+    await submitOne(item, { mode: 'session', session: sess.session, imported: sess })
+  })
   sessionInput.value = ''
   autoSubmitting.value = false
 }
@@ -1173,7 +1179,11 @@ async function exportBatchSuccess() {
 }
 
 function resetAll() {
+  if (submitting.value || autoSubmitting.value) return
+  // 换批次：还在路上的验证、查询回来都对不上，不会写到下一批上
+  batchSeq++
   stopAllPolls()
+  verifying.value = false
   phase.value = 'input'
   items.value = []
   cdkText.value = ''
@@ -1183,7 +1193,6 @@ function resetAll() {
   importMsg.value = ''
   sessionInput.value = ''
   sessionError.value = ''
-  autoSubmitting.value = false
   lastFilledItemId.value = null
 }
 

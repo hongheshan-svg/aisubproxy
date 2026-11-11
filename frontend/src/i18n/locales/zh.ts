@@ -198,9 +198,6 @@ export default {
     home: '返回首页',
   },
   aftersale: {
-    title: '售后查询',
-    sub: '输入卡密，查看是否开通成功、充值邮箱，或换发的新码',
-    batchLink: '批量查询',
     newCode: '新码',
     copyNew: '复制新码',
     redeemNew: '去兑换新码',

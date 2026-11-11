@@ -198,9 +198,6 @@ export default {
     home: 'Back to Home',
   },
   aftersale: {
-    title: 'After-sales lookup',
-    sub: 'Enter a code to see whether it was activated, the account email, or the replacement code',
-    batchLink: 'Batch lookup',
     newCode: 'New code',
     copyNew: 'Copy new code',
     redeemNew: 'Redeem new code',

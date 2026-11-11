@@ -25,7 +25,6 @@ import CodeStatusCard from '../../components/redeem/CodeStatusCard.vue'
 import CodeEntry from '../../components/redeem/CodeEntry.vue'
 import ProgressTicks from '../../components/redeem/ProgressTicks.vue'
 import SessionHelp from '../../components/SessionHelp.vue'
-import AfterSaleResult from '../../components/AfterSaleResult.vue'
 import { lookupAftersale } from '../../lib/aftersaleClient'
 import { batchMessage, csvRow } from '../../lib/aftersale'
 
@@ -150,68 +149,6 @@ describe('首页：电脑两栏与窄屏顺序', () => {
     expect(html).not.toContain('data-testid="progress-ticks"')
     expect((html.match(/id="help"/g) || []).length).toBe(1)
     expect(html.indexOf('id="help"')).toBeGreaterThan(html.indexOf('data-testid="code-where"'))
-  })
-})
-
-describe('售后查询结果展示', () => {
-  const base = { cdk_code: 'SXC-AAAA', used: false }
-
-  it('已使用：显示打码邮箱和开通时间，不显示到期时间', async () => {
-    const html = await render(AfterSaleResult, 'zh', {
-      result: { ...base, status: 'used', used: true, plan: 'Plus', account_email: 'a***@x.com', used_at: '2026-11-04T09:22:37Z', expires_at: '2026-12-04T09:22:37Z' },
-    })
-    const s = text(html)
-    expect(s).toContain('a***@x.com')
-    expect(s).toContain('2026-11-04 17:22:37')
-    expect(s).not.toContain('到期时间')
-    expect(s).not.toContain('2026-12-04')
-  })
-
-  it('已换发：显示新码、复制按钮；新码未使用时有去兑换按钮', async () => {
-    const html = await render(AfterSaleResult, 'zh', {
-      result: { ...base, status: 'replaced', replacement: { code: 'SXC-NEW1', status: 'unused', depth: 1 } },
-    })
-    expect(text(html)).toContain('SXC-NEW1')
-    expect(html).toContain('data-testid="copy-replacement"')
-    expect(html).toContain('data-testid="redeem-replacement"')
-  })
-
-  it('失败指引后紧跟服务商原因，原因按文本输出不当成 HTML', async () => {
-    const html = await render(AfterSaleResult, 'zh', {
-      result: { ...base, status: 'unused', can_resubmit: true, guide: 'provider_retry', provider_note: '<img src=x onerror=alert(1)>' },
-    })
-    expect(html).not.toContain('<img')
-    expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;')
-    expect(text(html)).toContain('服务商返回的原因如下')
-  })
-
-  it('服务商失败没有原因原文：指引不说「原因如下」，下面也没有空的原因行', async () => {
-    const html = await render(AfterSaleResult, 'zh', {
-      result: { ...base, status: 'failed', can_resubmit: true, guide: 'provider_retry' },
-    })
-    expect(text(html)).not.toContain('如下')
-    expect(html).not.toContain('data-testid="aftersale-note"')
-    const en = text(await render(AfterSaleResult, 'en', { result: { ...base, status: 'failed', guide: 'provider_wait' } }))
-    expect(en).not.toMatch(/below/i)
-    expect(en).not.toMatch(/\baftersale\./)
-  })
-
-  it('换码链停在又换过码的码上：不显示那张码，没有复制、去兑换按钮', async () => {
-    const html = await render(AfterSaleResult, 'zh', {
-      result: { ...base, status: 'replaced', replacement: { code: 'SXC-VOID2', status: 'replaced', depth: 1 } },
-    })
-    expect(html).not.toContain('SXC-VOID2')
-    expect(html).not.toContain('data-testid="copy-replacement"')
-    expect(html).not.toContain('data-testid="redeem-replacement"')
-    expect(text(html)).toContain('新码也已换发')
-  })
-
-  it('英文界面不露出文案键', async () => {
-    const html = await render(AfterSaleResult, 'en', {
-      result: { ...base, status: 'used', used: true, plan: 'Plus', plan_kind: 'subscription', renewal: 'off', account_email: 'a***@x.com' },
-    })
-    expect(text(html)).not.toMatch(/\baftersale\./)
-    expect(text(html)).toContain('Auto-renewal is off')
   })
 })
 

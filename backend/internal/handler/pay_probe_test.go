@@ -96,6 +96,7 @@ type fakeProbeBrowser struct {
 	cookies int
 	page    paybrowser.ProbePage
 	closed  bool
+	shots   []string // 每次 Shot 的截图名，按调用顺序
 }
 
 func (b *fakeProbeBrowser) ProbeOpen(_ context.Context, u string, c []paybrowser.Cookie, _ time.Duration) error {
@@ -107,6 +108,7 @@ func (b *fakeProbeBrowser) ProbeRead(context.Context) (paybrowser.ProbePage, err
 	return b.page, nil
 }
 func (b *fakeProbeBrowser) Shot(_ context.Context, name string, _ paybrowser.ShotScope) (string, error) {
+	b.shots = append(b.shots, name)
 	return name + ".png", nil
 }
 func (b *fakeProbeBrowser) Close() { b.closed = true }
@@ -546,4 +548,44 @@ func TestProbeSessionNeverStoredInDB(t *testing.T) {
 	var all string
 	_ = db.DB.QueryRow(`SELECT admin || region || checks || results || shot_dir || status || note FROM pay_probes`).Scan(&all)
 	assertNoLeak(t, "pay_probes 表", all)
+}
+
+// H2-02：账单门户页上就有账单邮箱、卡尾号、地址和金额，这一项不截图，只留文字判断；启动浏览器时也不给截图目录。
+// chatgpt.com 那一项照旧截图。只跑门户一项时，探测记录不带截图目录。
+func TestProbePortalTakesNoScreenshot(t *testing.T) {
+	_, br := probeEnv(t, true, paybrowser.ProbePage{Title: "Billing", URL: probePortal, Text: "Payment methods\nAdd payment method\nUpdate plan"})
+	var dirs []string
+	probeLaunch = func(_ context.Context, _ string, dir string) (probeBrowser, error) {
+		dirs = append(dirs, dir)
+		return br, nil
+	}
+	w, res := probePost(t, []string{"customer_portal"}, "")
+	r := res["customer_portal"]
+	if r.Status != probeOK || r.Details["add_payment_entry"] != true || r.Details["plan_change_entry"] != true {
+		t.Fatalf("门户的文字判断应照旧: %+v", r)
+	}
+	if len(br.shots) != 0 || r.Details["screenshot"] != nil || r.Details["screenshot_note"] != nil {
+		t.Fatalf("账单门户不应截图: shots=%v details=%v", br.shots, r.Details)
+	}
+	if len(dirs) != 1 || dirs[0] != "" {
+		t.Fatalf("打开门户时不应给浏览器截图目录: %q", dirs)
+	}
+	var shotDir string
+	if err := db.DB.QueryRow(`SELECT shot_dir FROM pay_probes ORDER BY id DESC LIMIT 1`).Scan(&shotDir); err != nil {
+		t.Fatal(err)
+	}
+	if shotDir != "" || strings.Contains(w.Body.String(), "probe-") {
+		t.Fatalf("只跑门户一项时探测记录不应带截图目录: %q %s", shotDir, w.Body.String())
+	}
+
+	_, res = probePost(t, []string{"customer_portal", "chatgpt_browser"}, "")
+	if len(br.shots) != 1 || br.shots[0] != "chatgpt_browser" {
+		t.Fatalf("只有 chatgpt.com 那一项截图: %v", br.shots)
+	}
+	if shot, _ := res["chatgpt_browser"].Details["screenshot"].(string); !strings.HasPrefix(shot, "probe-") || !strings.HasSuffix(shot, "/chatgpt_browser.png") {
+		t.Fatalf("chatgpt.com 那一项应照旧带截图: %+v", res["chatgpt_browser"])
+	}
+	if res["customer_portal"].Details["screenshot"] != nil {
+		t.Fatalf("同一次探测里门户也不截图: %+v", res["customer_portal"])
+	}
 }

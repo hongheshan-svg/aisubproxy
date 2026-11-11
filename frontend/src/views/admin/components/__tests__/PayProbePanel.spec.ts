@@ -34,6 +34,12 @@ describe('免付款探测面板', () => {
     expect(html).toContain('开始探测')
   })
 
+  it('说明只有打开 ChatGPT 那一项截图，账单门户不截图（H2-02）', async () => {
+    const html = await render()
+    expect(html).not.toContain('只打开、等待、截图、读文字')
+    expect(html).toContain('账单门户不截图')
+  })
+
   it('没有会话时不能开始，并给出原因', async () => {
     const html = await render()
     expect(html).toContain('请先粘贴测试账号的会话')

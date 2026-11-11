@@ -161,7 +161,7 @@ func TestPaySubmitProvider(t *testing.T) {
 			t.Fatalf("%s: %d %s", tc.prov, w.Code, w.Body.String())
 		}
 	}
-	if _, total, _ := payEngine.List(context.Background(), "", 1, 10); total != 0 {
+	if _, total, _ := payEngine.ListBy(context.Background(), payengine.OrderFilter{}, 1, 10); total != 0 {
 		t.Fatalf("拒绝时不应建单: %d", total)
 	}
 	for _, prov := range []string{"", "marswallex"} {

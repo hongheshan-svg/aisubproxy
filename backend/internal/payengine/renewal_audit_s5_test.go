@@ -2,10 +2,13 @@ package payengine
 
 import (
 	"bytes"
+	"context"
 	"log"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/tuzi/cdk-recharge-system/internal/db"
 )
 
 // R10：待人工单的会话最多保留 30 天，超过就清并记一行日志（不含会话、邮箱）。
@@ -59,5 +62,40 @@ func TestS5ResolvedOrderStillUsesSessionKeep(t *testing.T) {
 	h.svc.sweepSessions(ctx)
 	if g := mustOrder(t, o.OrderNo); g.SessionSealed == "" {
 		t.Fatalf("刚定论的单不应被 30 天上限清掉会话: %+v", g)
+	}
+}
+
+// P1-01：清理待人工超期会话时写事件失败，事务要回滚、连接要还回去，不能一直占着写锁；故障消除后下一轮照常清。
+func TestS5ReviewSweepRollsBackWhenEventInsertFails(t *testing.T) {
+	h := newRenewalHarness(t)
+	o := obPresetReview(t, h, "s5-trigger@example.com", -31*24*time.Hour)
+	if _, err := db.DB.Exec(`CREATE TRIGGER s5_fail_review_event BEFORE INSERT ON pay_order_events
+		WHEN NEW.message LIKE '待人工已满%' BEGIN SELECT RAISE(ABORT, 'x'); END`); err != nil {
+		t.Fatal(err)
+	}
+	runCtx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel) // 漏掉的事务要等 ctx 结束才回收：测试失败时也不能卡住后面的清理
+	h.svc.sweepReviewSessions(runCtx)
+	if n := db.DB.Stats().InUse; n != 0 {
+		t.Fatalf("写事件失败后事务应回滚、连接应归还，仍占用 %d 个连接", n)
+	}
+	if g := mustOrder(t, o.OrderNo); g.SessionSealed == "" || g.State != StateNeedsReview {
+		t.Fatalf("写事件失败应整笔回滚，会话不能被清: %+v", g)
+	}
+	wctx, wcancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer wcancel()
+	if _, err := db.DB.ExecContext(wctx, `UPDATE pay_orders SET updated_at = updated_at WHERE order_no = ?`, o.OrderNo); err != nil {
+		t.Fatalf("回滚之后普通写入应立刻成功: %v", err)
+	}
+	if _, err := db.DB.Exec(`DROP TRIGGER s5_fail_review_event`); err != nil {
+		t.Fatal(err)
+	}
+	h.svc.sweepReviewSessions(runCtx)
+	if g := mustOrder(t, o.OrderNo); g.SessionSealed != "" || g.State != StateNeedsReview {
+		t.Fatalf("故障消除后下一轮应清空会话、单据仍待人工: %+v", g)
+	}
+	var n int
+	if err := db.DB.QueryRow(`SELECT COUNT(*) FROM pay_order_events WHERE order_no = ? AND message LIKE '待人工已满%'`, o.OrderNo).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("应写入 1 条清空会话的事件: %d %v", n, err)
 	}
 }

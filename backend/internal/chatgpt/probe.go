@@ -76,13 +76,13 @@ type Probe struct{ c *Client }
 // NewProbe 包装一个 Client。
 func NewProbe(c *Client) *Probe { return &Probe{c: c} }
 
-// accountHeaders 是账号作用域的接口都带的头。前端对账号相关请求附加 `ChatGPT-Account-ID`，
-// 以及一个由常量 _b 指定名字的头；该常量在前端包里解析为 `X-OpenAI-Expected-Account-Id`（见调研保存的前端包）。
+// accountHeaders 是账号作用域的接口都带的头：Bearer，加上前端附带的两个账号头（headerChatGPTAccount、headerExpectedAccount，
+// 和真实下单共用 billing.go 里的常量，名字的来历见那里）。账号为空时只带 Bearer。
 func accountHeaders(s Session, accountID string) map[string]string {
 	h := bearer(s)
 	if accountID != "" {
-		h["ChatGPT-Account-ID"] = accountID
-		h["X-OpenAI-Expected-Account-Id"] = accountID
+		h[headerChatGPTAccount] = accountID
+		h[headerExpectedAccount] = accountID
 	}
 	return h
 }

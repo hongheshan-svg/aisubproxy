@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	fhttp "github.com/bogdanfinn/fhttp"
@@ -37,6 +38,10 @@ func (c *Client) Trace(ctx context.Context) (TraceInfo, error) {
 	return info, nil
 }
 
+// proxyAuthStatus 认带边界的 407 状态码：前面不能是数字、点、冒号，后面不能是数字。
+// 连接错误的文字里带着代理地址和本机临时端口（如 :4070、:54071），裸找「407」会把连不上误报成代理认证失败。
+var proxyAuthStatus = regexp.MustCompile(`(^|[^0-9.:])407([^0-9]|$)`)
+
 func classifyTraceErr(ctx context.Context, err error) error {
 	if errors.Is(err, ErrBlocked) {
 		return ErrBlocked
@@ -54,7 +59,7 @@ func classifyTraceErr(ctx context.Context, err error) error {
 	}
 	msg := strings.ToLower(err.Error())
 	switch {
-	case strings.Contains(msg, "407") || strings.Contains(msg, "proxy authentication"):
+	case proxyAuthStatus.MatchString(msg) || strings.Contains(msg, "proxy authentication"):
 		return ErrTraceProxyAuth
 	case strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline"):
 		return ErrTraceTimeout

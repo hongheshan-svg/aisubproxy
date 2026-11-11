@@ -68,3 +68,26 @@ func TestTraceHTTPErrorOnlyStatus(t *testing.T) {
 		t.Fatalf("应只报状态码，得到 %v", err)
 	}
 }
+
+// P1-03：只有真正的 407 状态码或「Proxy Authentication」才算代理认证失败；地址、端口里碰巧带 407 的连接错误仍是连不上。
+func TestClassifyTraceErrProxyAuthBoundary(t *testing.T) {
+	cases := []struct {
+		msg  string
+		want error
+	}{
+		{"dial tcp 1.2.3.4:4070: connect: connection refused", ErrTraceConnect},
+		{"dial tcp 1.2.3.4:14070: connect: connection refused", ErrTraceConnect},
+		{"dial tcp 1.2.3.4:40700: connect: connection refused", ErrTraceConnect},
+		{"read tcp 10.0.0.2:54071->1.2.3.4:8080: connection reset by peer", ErrTraceConnect},
+		{"dial tcp 10.0.0.407:8080: connect: no route to host", ErrTraceConnect},
+		{"proxy responded with status 407", ErrTraceProxyAuth},
+		{"failed to do request: 407 Proxy Authentication Required", ErrTraceProxyAuth},
+		{"Proxy Authentication Required", ErrTraceProxyAuth},
+		{"proxyconnect tcp: unexpected status 407", ErrTraceProxyAuth},
+	}
+	for _, c := range cases {
+		if got := classifyTraceErr(context.Background(), errors.New(c.msg)); got != c.want {
+			t.Errorf("%q 应归为 %v，得到 %v", c.msg, c.want, got)
+		}
+	}
+}

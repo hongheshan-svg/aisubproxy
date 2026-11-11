@@ -78,3 +78,18 @@ describe('语言包', () => {
     }
   })
 })
+
+// F1-09：整棵没人引用的命名空间不要再回来（zh、en 都检查）
+describe('已删除的无人引用语言包命名空间', () => {
+  it('顶层没有 recharge、dashboard、grace', () => {
+    for (const lang of [zh, en] as Array<Record<string, unknown>>) {
+      for (const ns of ['recharge', 'dashboard', 'grace']) expect(lang, ns).not.toHaveProperty(ns)
+    }
+  })
+  it('仍在用的键还在', () => {
+    for (const k of ['hero.redeemTitle', 'hero.billingSub', 'home.brand', 'home.faq.title', 'home.faq.entry.q', 'redeemTabs.billing', 'common.querying', 'redeemUi.grace.pending']) {
+      expect(get(zh, k), k).toBeTruthy()
+      expect(get(en, k), k).toBeTruthy()
+    }
+  })
+})

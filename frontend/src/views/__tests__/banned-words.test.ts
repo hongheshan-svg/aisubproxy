@@ -41,7 +41,7 @@ function templateOf(src: string): string {
   return src.slice(start, end)
 }
 
-const TREES = ['agentSwap', 'billingCheck', 'redeemUi', 'home', 'batch', 'cdkLookup', 'aftersale', 'sessionHelp', 'claude', 'grok', 'xPremium', 'grace', 'hero', 'redeemTabs']
+const TREES = ['agentSwap', 'billingCheck', 'redeemUi', 'home', 'batch', 'cdkLookup', 'aftersale', 'sessionHelp', 'claude', 'grok', 'xPremium', 'hero', 'redeemTabs']
 
 function flatten(node: unknown, path: string, out: Array<[string, string]>) {
   if (typeof node === 'string') out.push([path, node])

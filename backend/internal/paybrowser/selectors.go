@@ -4,9 +4,12 @@ package paybrowser
 // 查找范围为主页面与各级 iframe（含跨站 iframe），选择器顺序优先于 frame 顺序，只认可见元素。
 // 除 NewCardOption、ManualAddressOption、PayWithoutLinkOption 外都是 CSS 选择器。
 //
-// 真实付款页是哪一种还没有证据，所以同时列两种页面的候选：
-//   - Stripe Checkout（托管页，字段在主文档，前缀 shipping 或 billing）
-//   - Payment Element（字段在 js.stripe.com 的 iframe 里，id 形如 payment-numberInput、billingAddress-*）
+// 两种页面的候选都要列：
+//   - 订阅开通单是 chatgpt.com 内嵌结账页，卡片在 Stripe Payment Element（js.stripe.com 的 iframe）里，
+//     id 形如 payment-numberInput；地址在另一个 iframe（Stripe Address Element）里（2026-11-04 实测，
+//     见 docs/superpowers/specs/2026-11-03-embedded-checkout-design.md §2、§8.1）
+//   - 点数单是 Stripe Checkout 托管页，字段在主文档，前缀 shipping 或 billing（真实点数单页面只导出过 Link 验证框和
+//     同意条款两处，见下）
 //
 // 精确的 id 在前，宽泛的 name（如 number、name）在后：宽泛选择器可能命中优惠码之类的无关输入框。
 //
@@ -17,11 +20,22 @@ package paybrowser
 //   - #email（type=text）、#phoneNumber（type=tel）、#enableStripePass、iframe[name="link-login"] 存在
 //   - .SubmitButton、data-testid=hosted-payment-submit-button；四个金额元素（Amount 的全部候选）
 //
+// 已核实（2026-11-03，真实支付页（ChatGPT 点数单）导出的 DOM）：LinkVerification、TermsConsent、PayWithoutLinkOption 的写法。
+//
+// 已核实（chatgpt.com 内嵌结账页，2026-11-04 实测，设计 §2、§8.1；只开页、填表，没点支付）：
+//   - 卡片字段 #payment-numberInput、#payment-expiryInput、#payment-cvcInput（CardNumber、Expiry、CVC 的首选），
+//     以及 iframe 里的「保存付款信息」勾选框 #payment-savePaymentInput（见 savepay.go，按标签文字认）
+//   - 地址在 Address Element 的 iframe 里：国家、姓名、街道可见，城市、州、邮编折叠；「试运行到填表」时 9 个字段全部填上、
+//     核对一致。但当时没有记下每个地址字段命中的是 Name、Country 等列表里的哪一条，具体的地址选择器仍按未核实看待
+//   - 支付按钮是主页面唯一的 button[type="submit"]（内嵌页按个数认，见 embeddedPayButton，不用 PayButton 列表）
+//   - 页面上没有手动地址入口；这个账号没出现 Link 保存勾选框，也没弹 Link 验证框
+//
 // 没有核实，真实付款前要用「试运行到填表」或测试账号确认：
 //   - #billing*、autocomplete="billing *"：只是推断（同一组件只换前缀），官方演示页是实物商品，只有 shipping
-//   - Payment Element 原生页的全部字段（payment-*、billingAddress-*）：取自原型，没有实物转储；演示页是内嵌 Checkout，不是这种页
+//   - 内嵌页上地址字段具体命中的选择器（见上）；账号邮箱注册过 Link 时 Payment Element 里的验证框（设计 §8.2）
 //   - 手动地址入口的中文、日文文字
-//   - 点击之后的一切：Success、DeclineText 的文字容器（只证实 .FieldError 这个 class 存在）、ChallengeFrame、OTPInput、OTPSubmit
+//   - 点击之后的一切（两种页面都是，设计 §8.2）：Success、DeclineText 的文字容器（只证实 .FieldError 这个 class 存在）、
+//     ChallengeFrame、OTPInput、OTPSubmit
 //   - Success：演示页没有 #payment-success；真实 Stripe Checkout 成功后多半直接跳走，认不出成功时走确认阶段查账号
 //
 // ChallengeFrame 只列有依据的 3DS 候选：Stripe 的 stripe-challenge-frame（名字），和地址里带 three-ds 的 iframe。

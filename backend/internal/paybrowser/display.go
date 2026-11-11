@@ -4,6 +4,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -51,12 +52,6 @@ var xvfb struct {
 	alerted  bool      // 这一轮退回无头模式已经告警过；Xvfb 恢复后清零，下次再退回时再告警
 }
 
-func resetXvfbState() {
-	xvfb.mu.Lock()
-	xvfb.failedAt, xvfb.alerted = time.Time{}, false
-	xvfb.mu.Unlock()
-}
-
 // sharedXvfb 确保共享的 Xvfb（:99）在运行：每次先拨号确认存活，不在就启动一个（包括先前启动的已经退出的情况）。
 // 启动失败时退回无头模式并告警一次；失败后 xvfbRetryAfter 内不再尝试，过后再试，不永久退回无头模式。
 func sharedXvfb() bool {
@@ -80,8 +75,27 @@ func sharedXvfb() bool {
 	return false
 }
 
-func startXvfb() bool {
+// xvfbCmd 是启动共享 Xvfb 的命令。环境变量只给 PATH（P2-05）：服务进程的环境里有主密钥、JWT 密钥、卡平台密钥等，
+// Xvfb 用不到；同 Chrome 只拿白名单变量（见 chromeEnv）。
+func xvfbCmd() *exec.Cmd {
 	cmd := exec.Command("Xvfb", xvfbDisplay, "-screen", "0", "1366x900x24")
+	cmd.Env = xvfbEnv(os.Environ())
+	return cmd
+}
+
+// xvfbEnv 从 environ 里只取第一个 PATH。没有 PATH 时返回空的环境，不是 nil：exec.Cmd 的 Env 为 nil 表示继承全部。
+func xvfbEnv(environ []string) []string {
+	out := []string{}
+	for _, kv := range environ {
+		if strings.HasPrefix(kv, "PATH=") {
+			return append(out, kv)
+		}
+	}
+	return out
+}
+
+func startXvfb() bool {
+	cmd := xvfbCmd()
 	if err := cmd.Start(); err != nil {
 		return false
 	}

@@ -84,6 +84,7 @@ type fakeCheckout struct {
 	successVisits atomic.Int32 // 成功后跳转到 /success 的次数（真实 Stripe Checkout 成功靠跳转）
 	submitClicks  atomic.Int32 // 真实DOM仿造页上点到支付按钮的次数，前端校验拦下、没发 /pay 时也计入
 	linkSMSClicks atomic.Int32 // Link 验证框里「Text a code」按钮被点击的次数（绝不能点）
+	payGate       atomic.Bool  // 真实DOM仿造页 latepay=gate：置为 true 后支付按钮才出现
 }
 
 func newFakeCheckout(t *testing.T) *fakeCheckout {
@@ -142,6 +143,12 @@ func newFakeCheckout(t *testing.T) *fakeCheckout {
 			f.submitClicks.Add(1)
 		case r.URL.Path == "/link-sms" && r.Method == http.MethodPost:
 			f.linkSMSClicks.Add(1)
+		case r.URL.Path == "/paygate":
+			if f.payGate.Load() {
+				w.Write([]byte("open"))
+			} else {
+				w.Write([]byte("closed"))
+			}
 		default:
 			http.NotFound(w, r)
 		}
@@ -621,6 +628,31 @@ func TestNoticeMasked(t *testing.T) {
 	}
 }
 
+// P2-06：判成被拒、校验错误、成功的页面文字同样要脱敏：它们也进时间线和单据的 error_message。
+func TestOutcomeTextMasked(t *testing.T) {
+	const pii = " Contact buyer@example.com, ref 4242 4242 4242 4242."
+	cases := []struct {
+		name, query string
+		want        paybrowser.Outcome
+	}{
+		{"被拒", checkoutQuery("notice", "Your card was declined."+pii, "mode", "none"), paybrowser.OutcomeDeclined},
+		{"校验错误", checkoutQuery("fielderror", "Your postal code is incomplete."+pii), paybrowser.OutcomeFormRejected},
+		{"成功", checkoutQuery("successtext", "Payment successful."+pii), paybrowser.OutcomeSuccess},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			needChrome(t)
+			f := newFakeCheckout(t)
+			b, ctx := openCheckout(t, f, c.query, paybrowser.LaunchOptions{})
+			fillAndSubmit(t, b, ctx)
+			msg := waitOutcome(t, b, ctx, c.want)
+			if strings.Contains(msg, "buyer@") || strings.Contains(msg, "4242") || !strings.Contains(msg, "***@***") {
+				t.Fatalf("%s的页面文字未脱敏: %q", c.name, msg)
+			}
+		})
+	}
+}
+
 func TestMaskPageText(t *testing.T) {
 	cases := map[string]string{
 		"a.b+c@mail.example.com 你好":  "***@*** 你好",
@@ -895,6 +927,24 @@ func TestShotRules(t *testing.T) {
 	}
 }
 
+// P2-01：3DS 验证框铺满整个窗口、背景透明时不截图：截下来就是整页，下面的卡号、有效期、CVC 都在里面。
+// 截图失败引擎只记警告，3DS 照常往下走。
+func TestShotChallengeRefusesFullWindowFrame(t *testing.T) {
+	needChrome(t)
+	f := newFakeCheckout(t)
+	dir := t.TempDir()
+	b, ctx := openCheckout(t, f, "mode=3ds&challenge=full", paybrowser.LaunchOptions{ShotDir: dir})
+	fillAndSubmit(t, b, ctx)
+	waitOutcome(t, b, ctx, paybrowser.OutcomeChallenge)
+
+	if name, err := b.Shot(ctx, "challenge", paybrowser.ShotChallenge); err == nil || !strings.Contains(err.Error(), "一半") {
+		t.Fatalf("Shot(ShotChallenge) = %q, %v，期望因验证框占了窗口一半以上而不截", name, err)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Fatalf("不截图时不应写出文件: %v", entries)
+	}
+}
+
 func TestSavedCardChoosesNew(t *testing.T) {
 	needChrome(t)
 	f := newFakeCheckout(t)
@@ -1010,6 +1060,25 @@ func TestFillRejectsBillingControlChars(t *testing.T) {
 		if strings.Contains(strings.ToLower(err.Error()), "secret") {
 			t.Errorf("错误消息泄露了字段值: %v", err)
 		}
+	}
+}
+
+// P2-07：页面下拉框里没有账单地址的国家时报错放弃，错误消息只带字段名，不带账单地址的值（它会进时间线）。
+func TestFillMissingOptionHidesValue(t *testing.T) {
+	needChrome(t)
+	f := newFakeCheckout(t)
+	b, ctx := openCheckout(t, f, "", paybrowser.LaunchOptions{})
+	bl := testBilling
+	bl.Country = "Secretland"
+	err := b.Fill(ctx, testCard, bl)
+	if err == nil || !strings.Contains(err.Error(), "「国家」下拉框里没有") {
+		t.Fatalf("Fill = %v，期望报「国家」下拉框里没有这一项", err)
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "secret") {
+		t.Fatalf("错误消息泄露了账单地址的值: %v", err)
+	}
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("Fill 失败时仿造页收到 %d 次提交", n)
 	}
 }
 

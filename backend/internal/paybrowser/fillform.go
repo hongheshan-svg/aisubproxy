@@ -566,6 +566,8 @@ func joinNote(s, note string) string {
 }
 
 // checkAbsent 把填表时 DOM 里没有的地址字段再查一遍：页面可能在键入别的字段后才插入它们，这时报错放弃，不静默漏填。
+// 有 frame 读不出也报错放弃（findAnyOnce）：那里可能就有这个字段。填表时一次性判成「页面没有」的字段都会在这里再查，
+// 当时那次误判也由这里兜住。
 func (b *Browser) checkAbsent(ctx context.Context, absent []field) error {
 	if len(absent) == 0 {
 		return nil
@@ -575,7 +577,11 @@ func (b *Browser) checkAbsent(ctx context.Context, absent []field) error {
 		return fmt.Errorf("复查地址字段失败: %w", err)
 	}
 	for _, f := range absent {
-		if b.findAny(ctx, frames, f.sels) != nil {
+		e, err := b.findAnyOnce(ctx, frames, f.sels)
+		if err != nil {
+			return fmt.Errorf("复查地址字段「%s」失败: %w，已放弃", f.label, err)
+		}
+		if e != nil {
 			return fmt.Errorf("地址字段「%s」填表时没找到、之后又出现了，已放弃", f.label)
 		}
 	}
@@ -763,13 +769,18 @@ func (b *Browser) setCheck(ctx context.Context, e *elem, want bool) (st checkSta
 }
 
 // disableLinkSave 取消「Save my information with Link」：勾着就要求手机，还可能弹 Link 验证。
-// 先用鼠标点（内嵌页上落点不对就不点），不生效再用脚本点，还是勾着就报错放弃。页面没有这个勾选框不算错。
+// 先用鼠标点（内嵌页上落点不对就不点），不生效再用脚本点，还是勾着就报错放弃。页面没有这个勾选框不算错；
+// 有 frame 读不出就确认不了页面没有，报错放弃（findAnyOnce）。
 func (b *Browser) disableLinkSave(ctx context.Context) error {
 	frames, err := b.frames(ctx)
 	if err != nil {
 		return fmt.Errorf("读取 Link 保存选项失败: %w", err)
 	}
-	e := b.findAny(ctx, frames, Sel.LinkSave)
+	e, err := b.findAnyOnce(ctx, frames, Sel.LinkSave)
+	if err != nil {
+		b.noteLink("读不出页面，已放弃")
+		return fmt.Errorf("读取 Link 保存选项失败: %w", err)
+	}
 	if e == nil {
 		b.noteLink("页面没有")
 		return nil
@@ -823,12 +834,17 @@ const inputStateJS = `function () {
 }`
 
 // fillEmail 只有邮箱框可见、必填且为空时才填账号自己的邮箱；其余情况不碰。错误与报告都不含邮箱。
+// 有 frame 读不出就确认不了邮箱框没显示，报错放弃（findOnce）。
 func (b *Browser) fillEmail(ctx context.Context, st *fillState, email string) error {
 	frames, err := b.frames(ctx)
 	if err != nil {
 		return fmt.Errorf("读取邮箱框失败: %w", err)
 	}
-	e := b.find(ctx, frames, Sel.Email, false)
+	e, err := b.findOnce(ctx, frames, Sel.Email, false)
+	if err != nil {
+		b.updateReport(func(r *FillReport) { r.Email = "读不出页面，已放弃" })
+		return fmt.Errorf("读取邮箱框失败: %w", err)
+	}
 	if e == nil {
 		b.updateReport(func(r *FillReport) { r.Email = "未显示，未填写" })
 		return nil
@@ -891,13 +907,18 @@ func (b *Browser) checkPhone(ctx context.Context) error {
 
 // acceptTerms 勾上「同意条款」：Stripe 要求同意服务条款时才显示这个勾选框，默认不勾，不勾点支付会被拦下。
 // 用户确认过由系统自动勾上（2026-11-03）。勾不上就报错放弃，不点支付；页面没有或没显示不算错。只点勾选框本身，不点条款链接。
+// 有 frame 读不出就确认不了页面没有，报错放弃（findAnyOnce）：不然没勾就点了支付，被页面拦下，这一单白占一张卡。
 func (b *Browser) acceptTerms(ctx context.Context) error {
 	note := func(s string) { b.updateReport(func(r *FillReport) { r.Terms = s }) }
 	frames, err := b.frames(ctx)
 	if err != nil {
 		return fmt.Errorf("读取「同意条款」失败: %w", err)
 	}
-	e := b.findAny(ctx, frames, Sel.TermsConsent)
+	e, err := b.findAnyOnce(ctx, frames, Sel.TermsConsent)
+	if err != nil {
+		note("读不出页面，已放弃")
+		return fmt.Errorf("读取「同意条款」失败: %w", err)
+	}
 	if e == nil {
 		note("页面没有")
 		return nil
@@ -927,17 +948,26 @@ func (b *Browser) acceptTerms(ctx context.Context) error {
 }
 
 // checkLinkModal 发现 Link 弹出验证就放弃：要验证码，走不下去，也不能让它挡在支付按钮前面。
+// 有 frame 读不出就确认不了没有验证框，同样放弃（findOnce）。
 func (b *Browser) checkLinkModal(ctx context.Context) error {
 	frames, err := b.frames(ctx)
 	if err != nil {
 		return fmt.Errorf("检查 Link 验证框失败: %w", err)
 	}
-	if b.find(ctx, frames, Sel.LinkLoginFrame, false) != nil {
+	modal, err := b.findOnce(ctx, frames, Sel.LinkLoginFrame, false)
+	if err != nil {
+		return fmt.Errorf("检查 Link 验证框失败: %w", err)
+	}
+	if modal != nil {
 		//nolint:staticcheck // ST1005：Stripe Link 是产品名（专有名词），错误文本保持不变
 		return errors.New("Stripe Link 弹出了验证框，已放弃")
 	}
 	// 键入邮箱后才出现的内嵌验证框：此时卡号框已被藏起，不再点「Pay without Link」重来，直接放弃
-	if b.find(ctx, frames, Sel.LinkVerification, false) != nil {
+	verify, err := b.findOnce(ctx, frames, Sel.LinkVerification, false)
+	if err != nil {
+		return fmt.Errorf("检查 Link 验证框失败: %w", err)
+	}
+	if verify != nil {
 		b.noteLinkVerify("填完后又要求验证身份")
 		//nolint:staticcheck // ST1005：Stripe Link 是产品名（专有名词）
 		return errors.New("Stripe Link 要求验证身份，已放弃")

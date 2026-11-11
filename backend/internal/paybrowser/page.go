@@ -443,7 +443,7 @@ func chooseOption(ctx context.Context, e *elem, f field) (changed bool, err erro
 	}
 	switch r {
 	case "missing":
-		return false, fmt.Errorf("「%s」下拉框里没有 %s 这一项", f.label, f.value)
+		return false, fmt.Errorf("「%s」下拉框里没有账单地址的这一项", f.label) // 不带值：错误会进时间线
 	case "rejected":
 		return false, fmt.Errorf("「%s」选择后核对不一致", f.label)
 	case "changed":
@@ -635,7 +635,7 @@ func (b *Browser) settleOutcome(ctx context.Context, out Outcome, msg string) (O
 // 3DS 要先于提示：页面可能同时显示过程提示，提示判成结果就会关掉浏览器，验证走不下去。
 func (b *Browser) outcome(ctx context.Context, frames []frameRef) (Outcome, string) {
 	if e := b.find(ctx, frames, Sel.Success, false); e != nil {
-		return OutcomeSuccess, truncateMessage(innerText(ctx, e))
+		return OutcomeSuccess, pageText(innerText(ctx, e))
 	}
 	if e := b.find(ctx, frames, Sel.ChallengeFrame, false); e != nil {
 		if id, err := contentFrame(ctx, e); err == nil && !b.isAnswered(id) {
@@ -652,7 +652,7 @@ func (b *Browser) outcome(ctx context.Context, frames []frameRef) (Outcome, stri
 		}
 		switch classifyPageError(t) {
 		case OutcomeDeclined:
-			return OutcomeDeclined, truncateMessage(t)
+			return OutcomeDeclined, pageText(t)
 		case OutcomeFormRejected:
 			if formError == "" {
 				formError = t
@@ -662,7 +662,7 @@ func (b *Browser) outcome(ctx context.Context, frames []frameRef) (Outcome, stri
 		}
 	}
 	if formError != "" {
-		return OutcomeFormRejected, truncateMessage(formError)
+		return OutcomeFormRejected, pageText(formError)
 	}
 	return OutcomeUnknown, ""
 }
@@ -685,7 +685,7 @@ func classifyPageError(text string) Outcome {
 
 // noteNotice 记下一条认不出的提示：脱敏、去重、限量。页面文字可能夹带邮箱、卡号，出了这里就要进时间线。
 func (b *Browser) noteNotice(text string) {
-	text = truncateMessage(maskPageText(text))
+	text = pageText(text)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.lastNotice = text
@@ -745,6 +745,10 @@ func (b *Browser) isAnswered(id cdp.FrameID) bool {
 	defer b.mu.Unlock()
 	return b.answered[id]
 }
+
+// pageText 把页面文字脱敏（maskPageText）再截断，凡是要交给引擎、进时间线或单据说明的页面文字都过这一道：
+// 页面文字可能夹带邮箱、卡号、手机号。不改变结果类别的判断：判断用的是脱敏前的原文。
+func pageText(s string) string { return truncateMessage(maskPageText(s)) }
 
 // truncateMessage 去掉首尾空白，最多保留 500 字。
 func truncateMessage(s string) string {
@@ -985,7 +989,7 @@ func (b *Browser) shotPage(ctx context.Context) ([]byte, error) {
 	return buf, nil
 }
 
-// shotChallenge 只截 3DS 验证框所占的区域。
+// shotChallenge 只截 3DS 验证框所占的区域；验证框占了窗口一半以上时不截（checkShotArea）。
 func (b *Browser) shotChallenge(ctx context.Context) ([]byte, error) {
 	var buf []byte
 	err := b.do(ctx, func(ctx context.Context) error {
@@ -1012,6 +1016,9 @@ func (b *Browser) shotChallenge(ctx context.Context) ([]byte, error) {
 		if err != nil {
 			return err
 		}
+		if err := checkShotArea(clip, vp); err != nil {
+			return err
+		}
 		buf, err = page.CaptureScreenshot().WithFormat(page.CaptureScreenshotFormatPng).WithFromSurface(true).WithClip(clip).Do(ctx)
 		return err
 	})
@@ -1019,6 +1026,19 @@ func (b *Browser) shotChallenge(ctx context.Context) ([]byte, error) {
 		return nil, fmt.Errorf("截取 3DS 验证框失败: %w", err)
 	}
 	return buf, nil
+}
+
+// challengeShotMaxShare 是 3DS 截图区域最多能占窗口（可视区域）面积的比例。命中的 iframe 不一定是小验证框，
+// 也可能是铺满窗口、背景半透明的遮罩（真实 3DS 页面没见过，设计 §8.2）：那样截下来就是整页，这时已经点过支付，
+// 下面的卡号框里是完整卡号，有效期、CVC 也在。超过这个比例就不截，引擎那边截图失败只记警告（P2-01）。
+const challengeShotMaxShare = 0.5
+
+// checkShotArea 在裁剪区面积超过窗口面积的 challengeShotMaxShare 时返回错误。浏览器给的窗口大小为 0 时也不截。
+func checkShotArea(clip *page.Viewport, vp *page.VisualViewport) error {
+	if clip.Width*clip.Height > challengeShotMaxShare*vp.ClientWidth*vp.ClientHeight {
+		return errors.New("验证框占了窗口一半以上，可能盖着卡号，不截图")
+	}
+	return nil
 }
 
 // challengeClip 把验证框相对可视区域的坐标换成截图裁剪区要的页面坐标。浏览器没给可视区域（vp 为 nil）时返回错误：

@@ -8,7 +8,7 @@
       </div>
     </div>
 
-    <p v-if="err" class="text-sm text-red-500" role="alert">{{ err }}</p>
+    <p v-if="err" class="text-sm text-err" role="alert">{{ err }}</p>
 
     <!-- 对账总览 -->
     <section class="grid gap-3 sm:grid-cols-3">
@@ -56,7 +56,7 @@
           </el-select>
         </label>
         <label class="block text-sm"><span class="block mb-1">备注（选填）</span><el-input v-model="form.note" maxlength="200" /></label>
-        <p v-if="createErr" class="text-sm text-red-500" role="alert">{{ createErr }}</p>
+        <p v-if="createErr" class="text-sm text-err" role="alert">{{ createErr }}</p>
         <p v-if="!tiers.length" class="text-sm opacity-70">还没有价格等级，请先到「批发商品与价格」建一个。</p>
       </div>
       <template #footer>
@@ -148,5 +148,5 @@ onMounted(load)
 </script>
 
 <style scoped>
-.recon-bad { border-color: #dc2626; background: rgba(220, 38, 38, 0.08); color: #dc2626; }
+.recon-bad { border-color: var(--err); background: var(--err-soft); color: var(--err-ink); }
 </style>

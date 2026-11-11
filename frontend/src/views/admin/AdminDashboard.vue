@@ -37,7 +37,7 @@
         </div>
         <div class="flex justify-between gap-2 text-sm">
           <span class="text-muted">GitHub 最新</span>
-          <span class="mono font-semibold" :style="versionInfo.update_available ? 'color: var(--warn)' : ''">
+          <span class="mono font-semibold" :class="{ 'text-warn': versionInfo.update_available }">
             {{ versionInfo.latest ? `v${versionInfo.latest}` : '—' }}
           </span>
         </div>
@@ -149,7 +149,6 @@ onMounted(async () => {
   background: var(--surface); border: 1px solid var(--brd);
   transition: border-color .15s, transform .15s;
 }
-.stat-card.stat-attn { border-color: var(--warn, #d97706); }
-.text-err { color: #dc2626; }
+.stat-card.stat-attn { border-color: var(--warn); }
 .stat-card:hover { border-color: var(--primary); transform: translateY(-1px); }
 </style>

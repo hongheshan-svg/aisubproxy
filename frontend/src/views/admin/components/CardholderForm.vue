@@ -160,7 +160,6 @@ onBeforeUnmount(() => {
 }
 .field-error {
   font-size: 13px;
-  color: #dc2626;
 }
 .err-list {
   margin: 4px 0 0 16px;

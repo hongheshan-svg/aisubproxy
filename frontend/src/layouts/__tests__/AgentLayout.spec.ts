@@ -109,7 +109,8 @@ describe('AgentLayout 侧栏', () => {
     const src = readFileSync(fileURLToPath(new URL('../AgentLayout.vue', import.meta.url)), 'utf8')
     expect(src).toContain('pref-key="agent-sidenav"')
     expect(src).toContain('nav-id="agent-sidenav"')
-    expect(src).toContain('window.confirm')
+    // 退出前的确认改用统一的危险确认框（F2-18）
+    expect(src).toMatch(/orderRetry\.refresh\(\) && !\(await dialog\.confirm\(/)
   })
 
   it('侧栏底部按钮在深色侧栏上用侧栏变量，压住皮肤的背景和边框', () => {

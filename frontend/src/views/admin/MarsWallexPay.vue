@@ -636,11 +636,14 @@ const fillHits = computed(() => (detail.value?.events || []).filter((e: any) => 
 const resolving = ref(false)
 let pollTimer: ReturnType<typeof setTimeout> | null = null
 let seq = 0 // 切换单据后丢弃旧请求的返回
+// 离开页面后置真：在途请求回来时不再排轮询、不再建定时器（onUnmounted 清不到还没建出来的）
+let unmounted = false
 
 function stopPoll() { if (pollTimer) { clearTimeout(pollTimer); pollTimer = null } }
 
 // 只在抽屉打开且单据非终态时轮询；上一次返回后才排下一次，所以不会重叠。
 function schedulePoll() {
+  if (unmounted) return
   stopPoll()
   if (!detailOpen.value || !detail.value || isTerminal(detail.value.order.state)) return
   pollTimer = setTimeout(async () => {
@@ -744,6 +747,7 @@ async function resolve(result: 'succeeded' | 'failed') {
 onMounted(async () => {
   loadRegistry().then((r) => { registryState.value = r.ok ? 'ok' : 'failed' })
   await loadConfig()
+  if (unmounted) return // /config 返回前已离开页面
   loadBreaker()
   // 刷新后从 ?tab= 直接落在订单或配置标签时，加载该标签的数据
   if (tab.value !== 'test') onTabChange(tab.value)
@@ -751,6 +755,7 @@ onMounted(async () => {
 })
 let breakerTimer: ReturnType<typeof setInterval> | null = null
 onUnmounted(() => {
+  unmounted = true
   if (breakerTimer) clearInterval(breakerTimer)
   stopPoll()
   seq++
@@ -758,10 +763,3 @@ onUnmounted(() => {
   session.value = ''
 })
 </script>
-
-<style scoped>
-.text-warn { color: #d97706; }
-.text-ok { color: #16a34a; }
-.text-err { color: #dc2626; }
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-</style>

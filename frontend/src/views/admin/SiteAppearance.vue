@@ -35,7 +35,7 @@
         </el-form-item>
         <el-form-item>
           <el-button type="primary" data-testid="save-brand" :loading="saving" @click="saveBrand">保存并对所有访客生效</el-button>
-          <span v-if="dirty" class="text-xs ml-3" style="color: var(--warn)">皮肤尚未保存</span>
+          <span v-if="dirty" class="text-xs ml-3 text-warn">皮肤尚未保存</span>
         </el-form-item>
       </el-form>
     </el-card>
@@ -102,6 +102,8 @@ async function saveBrand() {
     }
     savedSkin.value = siteSkin.value
     dialog.toast('已保存，对所有访客生效', 'ok')
+  } catch {
+    dialog.toast('网络错误，不确定是否已保存，请刷新页面核对', 'err', 8000)
   } finally {
     saving.value = false
   }

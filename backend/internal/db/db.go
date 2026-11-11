@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	_ "github.com/mattn/go-sqlite3"
 	"github.com/tuzi/cdk-recharge-system/internal/config"
@@ -726,7 +727,7 @@ var weakPasswordWords = map[string]bool{
 // 同一字符重复、连续数字（升序或降序，可跨 9→0）。只在设置或修改口令时检查，已保存的口令不受影响。
 func IsWeakPassword(p string) bool {
 	p = strings.TrimSpace(p)
-	if len(p) < 12 {
+	if utf8.RuneCountInString(p) < 12 { // 按字符数，和各处「至少 12 位」口径一致
 		return true
 	}
 	lower := strings.ToLower(p)

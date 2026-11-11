@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
@@ -99,7 +100,7 @@ func agentSwapWrongToday() int {
 // noteAgentSwapPasswordUsed 口令验证通过时调用：库里存的是哈希看不出长度，只能这时用明文判断。
 // 短于新规则的老口令继续可用，但打上标记，后台设置页提示尽快更换。
 func noteAgentSwapPasswordUsed(plain string) {
-	if len(strings.TrimSpace(plain)) >= minAgentSwapPasswordLen || agentSwapPasswordWeak() {
+	if utf8.RuneCountInString(strings.TrimSpace(plain)) >= minAgentSwapPasswordLen || agentSwapPasswordWeak() {
 		return
 	}
 	_ = db.SetSetting(agentSwapWeakKey, "1")
@@ -116,7 +117,7 @@ func validateAgentSwapPassword(plain string) error {
 	if plain == "" {
 		return nil
 	}
-	if len(plain) < minAgentSwapPasswordLen {
+	if utf8.RuneCountInString(plain) < minAgentSwapPasswordLen {
 		return errPasswordTooShort
 	}
 	if db.IsWeakPassword(plain) {

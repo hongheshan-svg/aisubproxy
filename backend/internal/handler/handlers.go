@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
@@ -191,7 +192,7 @@ func AdminChangePassword(c *gin.Context) {
 	req.OldPassword = strings.TrimSpace(req.OldPassword)
 	req.NewPassword = strings.TrimSpace(req.NewPassword)
 
-	if len(req.NewPassword) < 12 || db.IsWeakPassword(req.NewPassword) {
+	if utf8.RuneCountInString(req.NewPassword) < 12 || db.IsWeakPassword(req.NewPassword) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "新密码至少 12 位，且不能为常见弱口令"})
 		return
 	}

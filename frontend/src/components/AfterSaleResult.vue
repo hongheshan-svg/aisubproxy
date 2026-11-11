@@ -39,7 +39,7 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { afterSaleView, type LookupResult } from '../lib/aftersale'
 import { copyToClipboard } from '../lib/clipboard'
-import { toast } from '../lib/ui'
+import { dialog } from '../lib/dialog'
 
 const props = defineProps<{ result: LookupResult }>()
 const { t } = useI18n({ useScope: 'global' })
@@ -59,6 +59,6 @@ function goRedeem(code: string) {
 
 async function copyNew(code: string) {
   const ok = await copyToClipboard(code)
-  toast(ok ? t('cdkLookup.copied') : t('cdkLookup.copyFail'), ok ? 'ok' : 'err')
+  dialog.toast(ok ? t('cdkLookup.copied') : t('cdkLookup.copyFail'), ok ? 'ok' : 'err')
 }
 </script>

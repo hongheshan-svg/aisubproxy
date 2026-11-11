@@ -136,7 +136,7 @@ import { isDesktop } from '../../lib/layoutMode'
 import CodeStatusCard from '../../components/redeem/CodeStatusCard.vue'
 import { parseCdks } from '../../lib/batch-session'
 import { copyToClipboard } from '../../lib/clipboard'
-import { toast } from '../../lib/ui'
+import { dialog } from '../../lib/dialog'
 import { batchSummary as summarize, csvRow, fmtLookupTime, type LookupResult } from '../../lib/aftersale'
 
 const { t } = useI18n({ useScope: 'global' })
@@ -237,11 +237,11 @@ async function copyUsedEmails() {
     ),
   )
   if (!emails.length) {
-    toast(t('cdkLookup.emailEmpty'), 'warn')
+    dialog.toast(t('cdkLookup.emailEmpty'), 'warn')
     return
   }
   const ok = await copyToClipboard(emails.join('\n'))
-  toast(ok ? t('cdkLookup.copied') : t('cdkLookup.copyFail'), ok ? 'ok' : 'err')
+  dialog.toast(ok ? t('cdkLookup.copied') : t('cdkLookup.copyFail'), ok ? 'ok' : 'err')
 }
 
 function exportCsv() {

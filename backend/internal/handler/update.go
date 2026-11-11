@@ -375,14 +375,16 @@ func runSeamlessUpdate(target, username string) {
 		return
 	}
 	// 写 VERSION：放在程序之后，容器的启动接管以它为准，程序没换成功就不会有新版本号
-	if err := writeNewVersion(l, verSrc, version); err != nil {
+	if err := writeNewVersionFn(l, verSrc, version); err != nil {
 		log.Printf("[update] 写新 VERSION 失败: %v", err)
-		if l.Container {
-			// 容器的启动接管以 runtime 目录的 VERSION 为准，写不进去就不能重载，否则下次重启可能不接管新程序
-			failUpdate("程序已替换，但写入新版本号失败，已中止重载: " + err.Error())
+		// 程序和前端已经是新版而版本号没写成：先从备份还原旧版，还原成功就按「更新失败」收场，不重载
+		if rerr := restoreFromBackupFn(l, bak); rerr != nil {
+			log.Printf("[update] 还原旧版失败: %v", rerr)
+			failUpdate("写入新版本号失败，且还原旧版也失败，请手动回滚并重启服务。" + manualRollbackHint(l, bak))
 			return
 		}
-		setUpdateState(func(s *updateState) { s.Message = "写入新版本号失败（程序已替换）: " + err.Error() })
+		failUpdate("写入新版本号失败，已还原为更新前的版本，本次更新未生效: " + err.Error())
+		return
 	}
 
 	// 容器：这次 exec 就是一次接管，计一次启动（新版本完成启动后清零）；起不来时容器重启，由启动接管继续计数
@@ -635,7 +637,7 @@ func resolveReleaseBundle(target string) (assetURL, version, shaURL, sigURL stri
 
 	assetURL, shaURL, sigURL, ok := pickReleaseBundle(rel.Assets)
 	if !ok {
-		return "", "", "", "", fmt.Errorf("release v%s 未找到预编译包 cdk-bundle-linux-amd64.tgz。请先用 git tag 触发 CI 发布，或手动上传 bundle 到 Release", version)
+		return "", "", "", "", fmt.Errorf("release v%s 未找到适用于本机架构的预编译包 "+bundlePrimaryName()+"（需同时带 .sha256 和 .sig）。请先用 git tag 触发 CI 发布，或手动上传 bundle 到 Release", version)
 	}
 	return assetURL, version, shaURL, sigURL, nil
 }
@@ -650,6 +652,14 @@ type releaseAsset struct {
 func bundleComplete(assets []releaseAsset) bool {
 	_, sha, sig, ok := pickReleaseBundle(assets)
 	return ok && sha != "" && sig != ""
+}
+
+// bundlePrimaryName 本机架构对应的发布包文件名（报错提示用）。
+func bundlePrimaryName() string {
+	if runtime.GOARCH == "arm64" {
+		return "cdk-bundle-linux-arm64.tgz"
+	}
+	return "cdk-bundle-linux-amd64.tgz"
 }
 
 // pickReleaseBundle 从 Release 附件里挑本机架构的发布包（不认别的架构），并带上同名的 .sha256 和 .sig（可能为空）。
@@ -915,6 +925,75 @@ func backupCurrentFiles(l updateLayout, bak string) error {
 		}
 	}
 	return nil
+}
+
+// 测试可替换。
+var (
+	writeNewVersionFn   = writeNewVersion
+	restoreFromBackupFn = restoreFromBackup
+)
+
+// restoreFromBackup 把备份目录 bak 里的旧程序和旧前端放回现网位置（先备好再换名，换名失败就保持原样）。
+// 备份里没有旧程序时返回错误。版本号文件不动：写新版本号失败时它本来就没被改。
+func restoreFromBackup(l updateLayout, bak string) error {
+	binBak := filepath.Join(bak, "cdk-recharge")
+	if _, err := os.Stat(binBak); err != nil {
+		return fmt.Errorf("备份里没有旧程序: %w", err)
+	}
+	binTmp := l.Bin + ".restore"
+	_ = os.Remove(binTmp)
+	if err := updCopyFile(binBak, binTmp); err != nil {
+		_ = os.Remove(binTmp)
+		return fmt.Errorf("还原程序: %w", err)
+	}
+	if err := os.Chmod(binTmp, 0o755); err != nil {
+		_ = os.Remove(binTmp)
+		return fmt.Errorf("还原程序权限: %w", err)
+	}
+	webBak := filepath.Join(bak, "web")
+	var webTmp, webFailed string
+	if st, err := os.Stat(webBak); err == nil && st.IsDir() {
+		webTmp, webFailed = l.Web+".restore", l.Web+".failed"
+		_ = os.RemoveAll(webTmp)
+		_ = os.RemoveAll(webFailed)
+		if err := copyDir(webBak, webTmp); err != nil {
+			_ = os.RemoveAll(webTmp)
+			_ = os.Remove(binTmp)
+			return fmt.Errorf("还原前端: %w", err)
+		}
+	}
+	if err := updRename(binTmp, l.Bin); err != nil {
+		_ = os.Remove(binTmp)
+		if webTmp != "" {
+			_ = os.RemoveAll(webTmp)
+		}
+		return fmt.Errorf("还原程序: %w", err)
+	}
+	if webTmp != "" {
+		hadWeb := false
+		if _, err := os.Stat(l.Web); err == nil {
+			hadWeb = true
+			if err := updRename(l.Web, webFailed); err != nil {
+				_ = os.RemoveAll(webTmp)
+				return fmt.Errorf("还原前端（程序已还原）: %w", err)
+			}
+		}
+		if err := updRename(webTmp, l.Web); err != nil {
+			if hadWeb {
+				_ = updRename(webFailed, l.Web)
+			}
+			_ = os.RemoveAll(webTmp)
+			return fmt.Errorf("还原前端（程序已还原）: %w", err)
+		}
+		_ = os.RemoveAll(webFailed)
+	}
+	return nil
+}
+
+// manualRollbackHint 自动还原也失败时给管理员的手动回滚步骤：哪几个文件从哪个备份还原。
+func manualRollbackHint(l updateLayout, bak string) string {
+	return fmt.Sprintf("手动回滚：停止服务，把备份目录 %s 里的 cdk-recharge 复制回 %s，web 目录复制回 %s，VERSION 复制回 %s（备份里没有 VERSION 就删掉新写的），再启动服务。",
+		bak, l.Bin, l.Web, l.Ver)
 }
 
 // writeNewVersion 写新版本号：包里带了 VERSION 就复制，否则写 version。

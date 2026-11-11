@@ -198,8 +198,8 @@ func TestSeamlessUpdateStalledDownloadResets(t *testing.T) {
 	t.Cleanup(srv.Close)
 	mux.HandleFunc("/repos/o/r/releases/latest", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"tag_name": "v1.5.1", "assets": []map[string]any{
-			{"name": "cdk-bundle-linux-amd64.tgz", "browser_download_url": srv.URL + "/dl/bundle.tgz", "size": 1000},
-			{"name": "cdk-bundle-linux-amd64.tgz.sha256", "browser_download_url": srv.URL + "/dl/bundle.sha256"},
+			{"name": testBundleName, "browser_download_url": srv.URL + "/dl/bundle.tgz", "size": 1000},
+			{"name": testBundleName + ".sha256", "browser_download_url": srv.URL + "/dl/bundle.sha256"},
 		}})
 	})
 	mux.HandleFunc("/dl/bundle.tgz", func(w http.ResponseWriter, r *http.Request) {

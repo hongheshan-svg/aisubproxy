@@ -622,12 +622,8 @@ func resolveReleaseBundle(target string) (assetURL, version, shaURL, sigURL stri
 		return "", "", "", "", fmt.Errorf("GitHub release HTTP %d: %s", resp.StatusCode, msg)
 	}
 	var rel struct {
-		TagName string `json:"tag_name"`
-		Assets  []struct {
-			Name               string `json:"name"`
-			BrowserDownloadURL string `json:"browser_download_url"`
-			Size               int64  `json:"size"`
-		} `json:"assets"`
+		TagName string         `json:"tag_name"`
+		Assets  []releaseAsset `json:"assets"`
 	}
 	if err := json.Unmarshal(raw, &rel); err != nil {
 		return "", "", "", "", err
@@ -637,7 +633,28 @@ func resolveReleaseBundle(target string) (assetURL, version, shaURL, sigURL stri
 		return "", "", "", "", fmt.Errorf("release 无 tag_name")
 	}
 
-	// 优先架构匹配包
+	assetURL, shaURL, sigURL, ok := pickReleaseBundle(rel.Assets)
+	if !ok {
+		return "", "", "", "", fmt.Errorf("release v%s 未找到预编译包 cdk-bundle-linux-amd64.tgz。请先用 git tag 触发 CI 发布，或手动上传 bundle 到 Release", version)
+	}
+	return assetURL, version, shaURL, sigURL, nil
+}
+
+// releaseAsset 是 Release 里的一个附件（名字和下载地址）。
+type releaseAsset struct {
+	Name string `json:"name"`
+	URL  string `json:"browser_download_url"`
+}
+
+// bundleComplete 发布包、.sha256、.sig 三者齐全。一键更新要求齐全：缺 sha256 或缺签名都会在更新时中止。
+func bundleComplete(assets []releaseAsset) bool {
+	_, sha, sig, ok := pickReleaseBundle(assets)
+	return ok && sha != "" && sig != ""
+}
+
+// pickReleaseBundle 从 Release 附件里挑本机架构的发布包（不认别的架构），并带上同名的 .sha256 和 .sig（可能为空）。
+// 在线更新（resolveReleaseBundle）和版本页的「可一键更新」（fetchGitHubLatest，经 bundleComplete）共用这一套规则。
+func pickReleaseBundle(assets []releaseAsset) (assetURL, shaURL, sigURL string, ok bool) {
 	prefer := []string{
 		"cdk-bundle-linux-amd64.tgz",
 		"cdk-bundle-linux-x86_64.tgz",
@@ -651,48 +668,31 @@ func resolveReleaseBundle(target string) (assetURL, version, shaURL, sigURL stri
 		}
 	}
 	var shaCandidates []string
-	for _, a := range rel.Assets {
-		name := strings.ToLower(a.Name)
-		if strings.HasSuffix(name, ".sha256") {
-			shaCandidates = append(shaCandidates, a.BrowserDownloadURL)
+	for _, a := range assets {
+		if strings.HasSuffix(strings.ToLower(a.Name), ".sha256") {
+			shaCandidates = append(shaCandidates, a.URL)
 		}
 	}
 	for _, want := range prefer {
-		for _, a := range rel.Assets {
-			if strings.EqualFold(a.Name, want) {
-				// 找对应 sha
-				for _, a2 := range rel.Assets {
-					if strings.EqualFold(a2.Name, want+".sha256") {
-						shaURL = a2.BrowserDownloadURL
-					}
-					if strings.EqualFold(a2.Name, want+".sig") {
-						sigURL = a2.BrowserDownloadURL
-					}
-				}
-				if shaURL == "" && len(shaCandidates) == 1 {
-					shaURL = shaCandidates[0]
-				}
-				return a.BrowserDownloadURL, version, shaURL, sigURL, nil
+		for _, a := range assets {
+			if !strings.EqualFold(a.Name, want) {
+				continue
 			}
-		}
-	}
-	// 任意 cdk-bundle*.tgz
-	for _, a := range rel.Assets {
-		n := strings.ToLower(a.Name)
-		if strings.Contains(n, "cdk-bundle") && (strings.HasSuffix(n, ".tgz") || strings.HasSuffix(n, ".tar.gz")) {
-			// 同名的 .sha256 / .sig 一并带上，后续校验仍然强制
-			for _, a2 := range rel.Assets {
-				if strings.EqualFold(a2.Name, a.Name+".sha256") {
-					shaURL = a2.BrowserDownloadURL
+			for _, a2 := range assets {
+				if strings.EqualFold(a2.Name, want+".sha256") {
+					shaURL = a2.URL
 				}
-				if strings.EqualFold(a2.Name, a.Name+".sig") {
-					sigURL = a2.BrowserDownloadURL
+				if strings.EqualFold(a2.Name, want+".sig") {
+					sigURL = a2.URL
 				}
 			}
-			return a.BrowserDownloadURL, version, shaURL, sigURL, nil
+			if shaURL == "" && len(shaCandidates) == 1 {
+				shaURL = shaCandidates[0]
+			}
+			return a.URL, shaURL, sigURL, true
 		}
 	}
-	return "", "", "", "", fmt.Errorf("release v%s 未找到预编译包 cdk-bundle-linux-amd64.tgz。请先用 git tag 触发 CI 发布，或手动上传 bundle 到 Release", version)
+	return "", "", "", false
 }
 
 // 下载发布包的时限（G7）：总共最多 10 分钟，60 秒没有收到新数据就取消。测试可缩短。

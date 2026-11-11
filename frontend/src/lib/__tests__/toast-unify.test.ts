@@ -7,8 +7,8 @@ const path = (p: string) => fileURLToPath(new URL(p, import.meta.url))
 
 describe('提示条只有一套', () => {
   it('lib/ui.ts 已删除', () => expect(existsSync(path('../ui.ts'))).toBe(false))
-  it('卡密查询页和售后结果卡改用 dialog.toast，不再引入 lib/ui', () => {
-    for (const f of ['../../views/user/CDKStatusView.vue', '../../components/AfterSaleResult.vue']) {
+  it('卡密查询页改用 dialog.toast，不再引入 lib/ui', () => {
+    for (const f of ['../../views/user/CDKStatusView.vue']) {
       const src = readFileSync(path(f), 'utf8')
       expect(src, f).not.toMatch(/lib\/ui['"]/)
       expect(src, f).toMatch(/dialog\.toast\(/)

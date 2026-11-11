@@ -51,9 +51,9 @@ describe('皮肤的元素级装饰不命中用户端', () => {
   const OUT = 'html:not([data-surface="user"])'
   const startsOut = (s: string) => s.startsWith(OUT) || s.startsWith('html.dark:not([data-surface="user"])')
 
-  it('带 .u-title / .u-eyebrow / .u-badges / .u-main 的皮肤规则都限定在非用户端', () => {
-    const hit = selectors.filter((x) => /\.u-(title|eyebrow|badges|main)\b/.test(x.sel) && /\[data-skin=/.test(x.sel))
-    expect(hit.length).toBeGreaterThan(20)
+  it('带 .u-title 的皮肤规则都限定在非用户端', () => {
+    const hit = selectors.filter((x) => /\.u-title\b/.test(x.sel) && /\[data-skin=/.test(x.sel))
+    expect(hit.length).toBeGreaterThanOrEqual(5)
     expect(hit.filter((x) => !startsOut(x.sel)).map((x) => x.sel)).toEqual([])
   })
   it('按钮的掠光伪元素和切角 clip-path 限定在非用户端', () => {

@@ -234,17 +234,17 @@ body {
   transition: color 0.25s ease;
 }
 
-h1, h2, h3, h4, .page-title, .stat-value, .brand-title, .brand-text {
+h1, h2, h3, h4 {
   font-family: var(--font-display, var(--font-serif));
   letter-spacing: -0.02em;
 }
 
-.mono, .stat-value, table .cell, .tabular, code {
+.mono, table .cell, code {
   font-family: var(--font-mono);
 }
 
 /* tabular figures for amounts / data */
-.mono, .stat-value, table .cell, .tabular {
+.mono, table .cell {
   font-variant-numeric: tabular-nums;
 }
 
@@ -273,17 +273,14 @@ html[data-skin] .card.card-solid {
   background: var(--el-mask-color, rgba(0, 0, 0, 0.5));
 }
 
-.card-hover:hover,
 a.card:hover,
 button.card:hover {
   border-color: var(--brd-2);
   box-shadow: var(--shadow);
 }
 
-.bg-surface { background: var(--surface); }
 .bg-soft { background: var(--surface-2); }
 .bd { border-color: var(--brd) !important; }
-.bd-2 { border-color: var(--brd-2) !important; }
 
 /* ── Text ── */
 .text-ink { color: var(--ink); }
@@ -393,20 +390,9 @@ textarea.input { resize: vertical; }
   border-right-color: transparent;
 }
 
-.divide-line { border-color: var(--brd); }
-
 ::selection {
   background: var(--primary-soft);
 }
-
-/* ── Animations ── */
-@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-@keyframes slideInUp {
-  from { opacity: 0; transform: translateY(16px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-.animate-fadeIn { animation: fadeIn 0.4s ease-out; }
-.animate-slideInUp { animation: slideInUp 0.45s ease-out; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
@@ -906,10 +892,7 @@ html[data-skin="zovo"] body::after {
 html.dark[data-skin="zovo"] body::after { opacity: 0.07; }
 
 html[data-skin="zovo"] h1,
-html[data-skin="zovo"] h2,
-html[data-skin="zovo"] .page-title,
-html[data-skin="zovo"] .brand-title { letter-spacing: -0.01em; font-weight: 600; }
-html[data-skin="zovo"] .stat-value { font-family: var(--font-mono); letter-spacing: -0.02em; }
+html[data-skin="zovo"] h2 { letter-spacing: -0.01em; font-weight: 600; }
 
 /* 主按钮：日间墨色、夜间金色渐变 + 柔光 */
 html[data-skin="zovo"] .btn-primary {
@@ -952,8 +935,7 @@ html[data-skin="zovo"] .el-button:not(.el-button--primary):not(.el-button--dange
 html[data-skin="zovo"] .card,
 html[data-skin="zovo"] .el-card { background: var(--surface) !important; border-color: var(--brd) !important; box-shadow: var(--shadow-sm); }
 html[data-skin="zovo"] a.card:hover,
-html[data-skin="zovo"] button.card:hover,
-html[data-skin="zovo"] .card-hover:hover {
+html[data-skin="zovo"] button.card:hover {
   border-color: color-mix(in oklab, var(--primary) 34%, transparent) !important;
   box-shadow: 0 20px 36px -28px color-mix(in oklab, var(--primary) 40%, rgba(0, 0, 0, 0.3));
   transform: translateY(-2px);
@@ -1022,22 +1004,6 @@ html[data-nav='underline'] .sn-item { border-radius: 0; }
 .el-card { border-radius: var(--radius-lg) !important; }
 .el-dialog { border-radius: var(--radius-lg) !important; }
 .el-input__wrapper, .el-select__wrapper { border-radius: var(--radius-md) !important; }
-
-/* 结果状态卡片 */
-.result-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-  gap: 10px;
-}
-.result-tile {
-  background: var(--surface-2);
-  border: 1px solid var(--brd);
-  border-radius: var(--radius-md);
-  padding: 12px 14px;
-}
-.result-tile .k { font-size: 11px; color: var(--ink-3); margin-bottom: 4px; }
-.result-tile .v { font-size: 14px; font-weight: 600; color: var(--ink); word-break: break-all; }
-.result-tile .v.mono { font-family: var(--font-mono); font-size: 13px; }
 
 /* 窄屏防横向溢出：分页条允许换行，长文案复选框允许折行 */
 .el-pagination { flex-wrap: wrap; row-gap: 6px; max-width: 100%; }

@@ -40,7 +40,7 @@ export const PROBE_CHECKS: ProbeCheckDef[] = [
   { key: 'credit_checkout', title: '点数结账会话形态', kind: 'create', desc: '仅有订阅账号：按自动付款同样的请求建一次 250 点会话，不付款' },
   { key: 'payment_methods', title: '已存付款方式', kind: 'readonly', desc: '已存卡数量、有没有默认卡、备用付款方式开关' },
   { key: 'upgrade_preview', title: '升级预览', kind: 'readonly', desc: '仅有订阅账号：读更高各档的应付金额、币种、续费日' },
-  { key: 'customer_portal', title: '账单门户', kind: 'browser', desc: '取门户链接，浏览器打开并截图，看有没有「添加付款方式」入口；只看不点' },
+  { key: 'customer_portal', title: '账单门户', kind: 'browser', desc: '取门户链接，浏览器打开读页面文字，看有没有「添加付款方式」入口；不截图（门户页上有账单邮箱和地址），只看不点' },
   { key: 'chatgpt_browser', title: '浏览器打开 ChatGPT', kind: 'browser', desc: '注入会话后打开 chatgpt.com 并截图，判断是否被 Cloudflare 拦截；只看不点' },
   { key: 'credit_balance', title: '点数余额接口', kind: 'readonly', desc: '读 /wham/usage，看返回结构里有哪些字段' },
 ]

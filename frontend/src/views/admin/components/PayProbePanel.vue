@@ -2,7 +2,7 @@
   <div class="space-y-4" data-panel="pay-probe">
     <div class="alert alert-info text-sm" role="note">
       用测试账号的会话，在服务器上确认升级、点数、开通结账页的实际行为。<b>全部不付款</b>：大部分只读，部分只建结账会话；
-      浏览器探测只打开、等待、截图、读文字，不点击、不填表。同一时刻只能运行一个探测。
+      浏览器探测只打开、等待、读文字，不点击、不填表；只有打开 ChatGPT 那一项截图，账单门户不截图。同一时刻只能运行一个探测。
     </div>
 
     <div class="space-y-3 max-w-3xl">

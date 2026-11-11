@@ -20,6 +20,13 @@ describe('payprobe lib', () => {
     expect(probeBlockReason('{"a":1}', ['account'], false)).toBe('')
   })
 
+  it('账单门户不截图，只有打开 ChatGPT 那一项截图（H2-02）', () => {
+    const desc = (k: string) => PROBE_CHECKS.find((c) => c.key === k)?.desc ?? ''
+    expect(desc('customer_portal')).not.toContain('并截图')
+    expect(desc('customer_portal')).toContain('不截图')
+    expect(desc('chatgpt_browser')).toContain('截图')
+  })
+
   it('浏览器探测项识别', () => {
     expect(probeNeedsBrowser(['account'])).toBe(false)
     expect(probeNeedsBrowser(['account', 'customer_portal'])).toBe(true)

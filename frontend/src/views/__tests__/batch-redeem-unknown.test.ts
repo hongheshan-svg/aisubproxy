@@ -73,6 +73,15 @@ describe('兑换请求结果未知时只查不重发（F2-03）', () => {
     const a = body('applyPollResult')
     expect(a).not.toMatch(/resultNotFound|unknownLookupVerdict/)
   })
+  it('查询结果按 lib 的 pollVerdict 归类：结果未知的条目带上 unknownSince，「还没查到」时什么都不改（FE2 审查重要 1）', () => {
+    const a = body('applyPollResult')
+    expect(a).toContain('const polled = readPolledOrder(data)')
+    expect(a).toContain('const verdict = pollVerdict(status, polled, (target.unknownSince ?? 0) > 0)')
+    expect(a).toMatch(/if \(verdict === 'pending'\) return/)
+    expect(a.indexOf("if (verdict === 'pending') return")).toBeLessThan(a.indexOf('updateItem('))
+    // 不再自己按状态表判成功、失败
+    expect(a).not.toMatch(/isFailStatus\(|isSuccessStatus\(/)
+  })
   it('统计和导出用 lib 里的 batchStats、successRows、unknownRows', () => {
     expect(src).toMatch(/const stats = computed\(\(\) => batchStats\(items\.value\)\)/)
     const x = body('exportBatchSuccess')

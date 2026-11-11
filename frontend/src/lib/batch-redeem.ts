@@ -77,6 +77,51 @@ export function redeemOutcome(httpStatus: number, orderStatus: string, body?: un
   return 'processing'
 }
 
+/** 只读查询查到的一张单里页面要用的东西。canRetry：后端说这张卡密此刻仍未使用、可以重新提交（只有 true 才算）。 */
+export interface PolledOrder {
+  status: string
+  message: string
+  email: string
+  canRetry: boolean
+  order: Record<string, any>
+}
+
+/** 从只读查询的回包里读出单据。后端写法见 backend/internal/handler/local_cdk.go 的 writeLocalResult、localOrderPublic。 */
+export function readPolledOrder(data: any): PolledOrder {
+  const order = data?.order || data?.data?.order || data?.data || data || {}
+  return {
+    status: String(order.status || data?.status || data?.data?.status || ''),
+    message: String(order.message || order.user_message || data?.message || data?.user_message || ''),
+    email: String(order.account_email || order.email || '').trim(),
+    canRetry: order.can_retry === true || data?.can_retry === true,
+    order,
+  }
+}
+
+/** pending：还没查到这次的结果，条目保持原状，下一轮再查；结果未知的到时限标「结果未知」。 */
+export type PollVerdict = 'pending' | 'success' | 'failed' | 'processing'
+
+/**
+ * 只读查询的一条结果怎么处理（F2-03、FE2 审查重要 1）。unknownPending：这一张是结果未知、还没查到过这次记录的。
+ *
+ * 后端允许干净失败的卡密重新兑换，这种卡密查结果不回 404，而是回上一次失败的那张单（failed_precharge、can_retry）。
+ * 公开结果里没有建单时间、单号这类能区分「这次」和「上次」的字段（只有 status、stage、message、plan、region、
+ * 打码邮箱、can_retry、attempts_left；attempts_left 只数走到注资的失败，注资前的失败不减），所以结果未知的条目
+ * 查到「失败、可以重新提交」一律当作还没查到，继续查到时限，到时限标「结果未知」，绝不因为旧记录显示「可以重新提交」。
+ * 代价：这次新建的单很快干净失败时，显示成「结果未知」而不是「失败」，方向是安全的。
+ * 别的失败（declined、failed、cancelled）、处理中、成功都说明卡密已被占用或有了定论，照常处理。
+ */
+export function pollVerdict(httpStatus: number, polled: Pick<PolledOrder, 'status' | 'canRetry'>, unknownPending: boolean): PollVerdict {
+  if (httpStatus < 200 || httpStatus >= 300) return 'pending'
+  const st = String(polled.status || '').toLowerCase()
+  if (isSuccessStatus(st)) return 'success'
+  if (isFailStatus(st)) {
+    if (unknownPending && (polled.canRetry || st === 'failed_precharge')) return 'pending'
+    return 'failed'
+  }
+  return 'processing'
+}
+
 /**
  * 结果未知的那一张最多查多久。到时限还没查到兑换记录（不管这期间是 404、5xx 还是断线），就停止查询，
  * 条目标「结果未知」，提示去卡密查询页核对、不要重复提交；不判失败（判失败容易让买家重提同一张卡密）。

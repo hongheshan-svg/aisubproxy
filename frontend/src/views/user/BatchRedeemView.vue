@@ -356,9 +356,9 @@ import { POLL_REQUEST_TIMEOUT_MS, chunkTokens, nextPollPlan, parsePollResponse, 
 import {
   batchStats,
   hasUnknownQuerying,
-  isFailStatus,
   isSubmittable,
-  isSuccessStatus,
+  pollVerdict,
+  readPolledOrder,
   redeemOutcome,
   runSubmitPool,
   successRows,
@@ -591,22 +591,24 @@ function expireUnknownTargets(now: number) {
 }
 
 function applyPollResult(id: string, target: PollTarget, status: number, data: any) {
-  // 单个令牌查不到（404 等）或暂时出错：保持原状，下一轮再查；结果未知的到时限由 expireUnknownTargets 收尾
-  if (status < 200 || status >= 300) return
+  const polled = readPolledOrder(data)
+  const verdict = pollVerdict(status, polled, (target.unknownSince ?? 0) > 0)
+  // 单个令牌查不到（404 等）、暂时出错，或结果未知的查到「失败、可以重新提交」（可能是这张卡密以前那次的记录）：
+  // 保持原状，下一轮再查；结果未知的到时限由 expireUnknownTargets 收尾（FE2 审查重要 1）
+  if (verdict === 'pending') return
   // 查到了兑换记录：之后不再按「结果未知、到时限就停」处理
   const seen: PollTarget = { token: target.token, terminal: false }
-  const order = data?.order || data?.data?.order || data?.data || data || {}
-  const st = String(order.status || data?.status || data?.data?.status || '')
-  const message = String(order.message || order.user_message || data?.message || data?.user_message || '')
-  const email = String(order.account_email || order.email || '').trim()
-  const cardLastFour = extractCardLastFour(order)
+  const st = polled.status
+  const message = polled.message
+  const email = polled.email
+  const cardLastFour = extractCardLastFour(polled.order)
   const meta: Partial<BatchItem> = {}
   if (email) meta.email = email
   if (cardLastFour) meta.cardLastFour = cardLastFour
-  if (isSuccessStatus(st)) {
+  if (verdict === 'success') {
     updateItem(id, { ...meta, status: 'success', progressMsg: message || '开通完成', error: '' })
     pollTargets.value[id] = { ...seen, terminal: true }
-  } else if (isFailStatus(st)) {
+  } else if (verdict === 'failed') {
     updateItem(id, { ...meta, status: 'failed', progressMsg: message || '兑换失败', error: message || '失败' })
     pollTargets.value[id] = { ...seen, terminal: true }
   } else {

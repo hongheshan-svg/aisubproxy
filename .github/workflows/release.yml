@@ -168,6 +168,24 @@ jobs:
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
 
+      - name: Allow Chrome sandbox
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+
+      - name: Build release image (not pushed)
+        # 先构建同一个 release 目标并只加载到本机，试跑通过后才推送：
+        # 与 ci.yml 里 docker 任务的冒烟测试同一份脚本，但这里测的是 release 目标（发布包里的静态程序）
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: release
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: cdk-recharge:release-smoke
+
+      - name: Smoke test
+        run: bash scripts/docker-smoke.sh cdk-recharge:release-smoke
+
       - name: Build and push
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:

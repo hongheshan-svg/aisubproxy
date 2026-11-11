@@ -117,3 +117,58 @@ func TestSeamlessUpdateBackupFailureStopsBeforeSwap(t *testing.T) {
 		t.Fatalf("不完整的备份应被删掉：%v", baks)
 	}
 }
+
+// 审查修复第 2 轮：写新版本号写到一半失败，原 VERSION 不能被截断。
+func TestWriteNewVersionFailureKeepsOldFile(t *testing.T) {
+	root := t.TempDir()
+	l := updateLayout{Ver: filepath.Join(root, "VERSION")}
+	mustWrite(t, l.Ver, "1.0.0\n")
+	old := writeVersionFileFn
+	writeVersionFileFn = func(path string, data []byte) error {
+		_ = os.WriteFile(path, data[:1], 0o644) // 写了一半
+		return errors.New("disk full")
+	}
+	t.Cleanup(func() { writeVersionFileFn = old })
+	if err := writeNewVersion(l, "", "1.2.3"); err == nil {
+		t.Fatal("应返回错误")
+	}
+	if got := readFile(t, l.Ver); got != "1.0.0\n" {
+		t.Fatalf("原 VERSION 被改动：%q", got)
+	}
+	if left, _ := filepath.Glob(filepath.Join(root, "VERSION*.tmp*")); len(left) != 0 {
+		t.Fatalf("临时文件应被删掉：%v", left)
+	}
+}
+
+// 整条流程：写版本号中途失败 -> 提示已还原时，程序、前端、版本号三样都是旧的。
+func TestSeamlessUpdateVersionWriteMidFailureAllOld(t *testing.T) {
+	priv := useTestReleaseKey(t)
+	bundle := buildBundle(t, "1.5.1", `[ "$1" = "--version" ] && echo 1.5.1`)
+	startFakeGitHub(t, fakeRelease{version: "1.5.1", bundle: bundle, sig: signB64(priv, bundle)})
+	root, bin, reexec := setupInstall(t)
+	old := writeVersionFileFn
+	writeVersionFileFn = func(path string, data []byte) error {
+		_ = os.WriteFile(path, data[:1], 0o644)
+		return errors.New("disk full")
+	}
+	t.Cleanup(func() { writeVersionFileFn = old })
+
+	runSeamlessUpdate("latest", "admin")
+
+	assertUpdateFailedUnchanged(t, root, bin, "已还原", reexec)
+	if got := readFile(t, filepath.Join(root, "VERSION")); got != "1.5.0\n" {
+		t.Fatalf("VERSION 应还是旧的：%q", got)
+	}
+}
+
+// 容器里备份的 VERSION 来自镜像目录，不能复制回数据卷 runtime/VERSION。
+func TestManualRollbackHintContainerDoesNotCopyImageVersion(t *testing.T) {
+	l := updateLayout{Container: true, RuntimeDir: "/data/runtime", Bin: "/data/runtime/cdk-recharge", Web: "/data/runtime/web", Ver: "/data/runtime/VERSION"}
+	h := manualRollbackHint(l, "/data/updates/backup-1")
+	if strings.Contains(h, "VERSION 复制回") {
+		t.Fatalf("容器模式不应让人把备份的 VERSION 复制回 runtime：%s", h)
+	}
+	if !strings.Contains(h, "/data/runtime/VERSION") || !strings.Contains(h, "删除") {
+		t.Fatalf("容器模式应说明如何处理 runtime/VERSION：%s", h)
+	}
+}

@@ -64,16 +64,27 @@ func TestIsWeakPasswordCountsRunes(t *testing.T) {
 
 func TestAdminChangePasswordTooLongRejected(t *testing.T) {
 	dbtest.Open(t)
+	const oldPw = "Old-Password-12345"
+	if err := db.CreateAdminUser("chpw_admin", oldPw, "x"); err != nil {
+		t.Fatal(err)
+	}
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.POST("/pw", AdminChangePassword)
+	r.POST("/pw", func(c *gin.Context) { c.Set("username", "chpw_admin"); AdminChangePassword(c) })
 	for _, pw := range []string{strings.Repeat("aB3x", 19), strings.Repeat("强", 25)} {
-		req := httptest.NewRequest(http.MethodPost, "/pw", strings.NewReader(`{"old_password":"old-password-1","new_password":"`+pw+`"}`))
+		req := httptest.NewRequest(http.MethodPost, "/pw", strings.NewReader(`{"old_password":"`+oldPw+`","new_password":"`+pw+`"}`))
 		req.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		r.ServeHTTP(w, req)
 		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "太长") {
 			t.Fatalf("过长应 400 太长：%d %s", w.Code, w.Body.String())
+		}
+		var hash string
+		if err := db.DB.QueryRow(`SELECT password_hash FROM admin_users WHERE username='chpw_admin'`).Scan(&hash); err != nil {
+			t.Fatal(err)
+		}
+		if ok, _ := verifyAdminPassword(hash, oldPw); !ok {
+			t.Fatal("被拒绝后原密码必须仍然有效")
 		}
 	}
 }

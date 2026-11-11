@@ -934,7 +934,7 @@ var (
 )
 
 // restoreFromBackup 把备份目录 bak 里的旧程序和旧前端放回现网位置（先备好再换名，换名失败就保持原样）。
-// 备份里没有旧程序时返回错误。版本号文件不动：写新版本号失败时它本来就没被改。
+// 备份里没有旧程序时返回错误。版本号文件不用还原：writeNewVersion 先写临时文件再改名，失败时原 VERSION 原封不动。
 func restoreFromBackup(l updateLayout, bak string) error {
 	binBak := filepath.Join(bak, "cdk-recharge")
 	if _, err := os.Stat(binBak); err != nil {
@@ -992,17 +992,42 @@ func restoreFromBackup(l updateLayout, bak string) error {
 
 // manualRollbackHint 自动还原也失败时给管理员的手动回滚步骤：哪几个文件从哪个备份还原。
 func manualRollbackHint(l updateLayout, bak string) string {
+	if l.Container {
+		// 容器：备份里的 VERSION 来自镜像目录，不是 runtime/VERSION，不能复制回去。
+		// 启动接管看 runtime/VERSION：删掉它就不再接管、回到镜像自带的版本；要保留上一次升级的版本，就把它改回升级前的版本号。
+		return fmt.Sprintf("手动回滚：停止容器，把备份目录 %s 里的 cdk-recharge 复制回 %s，web 目录复制回 %s；不要复制备份里的 VERSION（那是镜像自带的版本号）。%s 里的版本号如果不是升级前的，请改回升级前的版本号，或者删除它（删除后启动时不再接管，回到镜像自带的版本），再启动容器。",
+			bak, l.Bin, l.Web, l.Ver)
+	}
 	return fmt.Sprintf("手动回滚：停止服务，把备份目录 %s 里的 cdk-recharge 复制回 %s，web 目录复制回 %s，VERSION 复制回 %s（备份里没有 VERSION 就删掉新写的），再启动服务。",
 		bak, l.Bin, l.Web, l.Ver)
 }
 
-// writeNewVersion 写新版本号：包里带了 VERSION 就复制，否则写 version。
+// writeNewVersion 写新版本号：包里带了 VERSION 就用它的内容，否则写 version。
+// 先写同目录的临时文件再改名，写到一半失败（磁盘满等）时原 VERSION 原封不动，临时文件删掉。
 func writeNewVersion(l updateLayout, verSrc, version string) error {
+	data := []byte(version + "\n")
 	if verSrc != "" {
-		return copyFile(verSrc, l.Ver)
+		b, err := os.ReadFile(verSrc)
+		if err != nil {
+			return err
+		}
+		data = b
 	}
-	return os.WriteFile(l.Ver, []byte(version+"\n"), 0o644)
+	tmp := l.Ver + ".tmp"
+	_ = os.Remove(tmp)
+	if err := writeVersionFileFn(tmp, data); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := updRename(tmp, l.Ver); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
 }
+
+// writeVersionFileFn 写版本号文件（测试可替换，用来模拟写到一半失败）。
+var writeVersionFileFn = func(path string, data []byte) error { return os.WriteFile(path, data, 0o644) }
 
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)

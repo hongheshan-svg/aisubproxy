@@ -107,6 +107,7 @@ import { fmtBeijingAny } from '../../lib/mwwebhook'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { authFetch } from '../../lib/api'
+import { createUpdateWatcher, type StatusResult, type UpdateState, type UpdateWatchDeps } from '../../lib/updateWatch'
 
 const versionLoading = ref(false)
 const versionError = ref('')
@@ -120,7 +121,9 @@ const updateMessage = ref('')
 const updateProgress = ref(0)
 const updateFailed = ref(false)
 const updateError = ref('')
-let updatePollTimer: number | null = null
+// 跟踪更新进度（只有一个循环，离开页面就停）；离开页面后置真
+let watcher: ReturnType<typeof createUpdateWatcher> | null = null
+let unmounted = false
 
 const canOneClickUpdate = computed(() => {
   if (updating.value) return false
@@ -150,49 +153,52 @@ function formatChecked(iso: string) {
   return fmtBeijingAny(iso)
 }
 
-function stopUpdatePoll() {
-  if (updatePollTimer != null) {
-    window.clearInterval(updatePollTimer)
-    updatePollTimer = null
+// 状态请求没成功（断网、网关在重载时回 502）算 null，交给跟踪逻辑去等 /health 再问一次
+async function fetchUpdateStatus(): Promise<StatusResult> {
+  try {
+    const r = await authFetch('/api/v1/admin/system/update/status')
+    if (!r.ok) return null
+    const d = await r.json().catch(() => null)
+    if (!d || typeof d !== 'object') return null
+    return { running: !!d.running, state: d.state || {} }
+  } catch {
+    return null
   }
 }
 
-async function pollUpdateStatus() {
+async function checkHealth(): Promise<boolean> {
   try {
-    const r = await authFetch('/api/v1/admin/system/update/status')
-    const d = await r.json().catch(() => ({}))
-    const st = d.state || {}
-    updatePhase.value = st.phase || ''
-    updateMessage.value = st.message || ''
-    updateProgress.value = Number(st.progress) || 0
-    if (st.phase === 'failed') {
+    const h = await fetch('/health', { credentials: 'include' })
+    return h.ok
+  } catch {
+    return false
+  }
+}
+
+function showUpdateState(st: UpdateState) {
+  updatePhase.value = st.phase || ''
+  updateMessage.value = st.message || ''
+  updateProgress.value = Number(st.progress) || 0
+  if (st.phase === 'reloading' || st.phase === 'done') {
+    updateMessage.value = st.message || '重载中，等待服务恢复…'
+    updateProgress.value = Math.max(updateProgress.value, 95)
+  }
+}
+
+// before：开始更新时的版本，恢复后用来判断是否真的换了版本
+function updateDeps(before: string | undefined): UpdateWatchDeps {
+  return {
+    fetchStatus: fetchUpdateStatus,
+    checkHealth,
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    onState: showUpdateState,
+    onFailed: (st) => {
       updateFailed.value = true
       updateError.value = st.error || st.message || '更新失败'
       updating.value = false
-      stopUpdatePoll()
-      return
-    }
-    if (st.phase === 'reloading' || st.phase === 'done') {
-      updateMessage.value = st.message || '重载中，等待服务恢复…'
-      updateProgress.value = Math.max(updateProgress.value, 95)
-      // 轮询 health + 新版本
-      await waitForReload()
-    }
-  } catch {
-    // 进程 re-exec 瞬间可能短暂断连，继续等 health
-    await waitForReload()
-  }
-}
-
-async function waitForReload() {
-  stopUpdatePoll()
-  const before = versionInfo.value.current
-  for (let i = 0; i < 40; i++) {
-    await new Promise((r) => setTimeout(r, 500))
-    try {
-      const h = await fetch('/health', { credentials: 'include' })
-      if (!h.ok) continue
-      // 恢复后刷新版本
+    },
+    onRecovered: async () => {
+      // 服务已恢复、更新已结束：刷新版本
       await loadVersion(true)
       const after = versionInfo.value.current
       updateProgress.value = 100
@@ -202,16 +208,15 @@ async function waitForReload() {
         : `服务已恢复（当前 v${after || before || '—'}）`
       updating.value = false
       updateFailed.value = false
-      return
-    } catch {
-      /* keep waiting */
-    }
+    },
+    onTimeout: () => {
+      updateFailed.value = true
+      updateError.value = isDocker.value
+        ? '重载超时：请手动刷新页面，并用 docker logs cdk-recharge 查看日志'
+        : '重载超时：请手动刷新页面并检查 systemctl status cdk-recharge'
+      updating.value = false
+    },
   }
-  updateFailed.value = true
-  updateError.value = isDocker.value
-    ? '重载超时：请手动刷新页面，并用 docker logs cdk-recharge 查看日志'
-    : '重载超时：请手动刷新页面并检查 systemctl status cdk-recharge'
-  updating.value = false
 }
 
 async function oneClickUpdate() {
@@ -243,11 +248,10 @@ async function oneClickUpdate() {
       updating.value = false
       return
     }
-    stopUpdatePoll()
-    updatePollTimer = window.setInterval(() => {
-      pollUpdateStatus()
-    }, 800)
-    await pollUpdateStatus()
+    if (unmounted) return
+    watcher?.stop()
+    watcher = createUpdateWatcher(updateDeps(versionInfo.value.current))
+    watcher.start()
   } catch (e: any) {
     updateFailed.value = true
     updateError.value = e?.message || '网络错误'
@@ -280,5 +284,8 @@ async function loadVersion(force = false) {
 onMounted(() => {
   loadVersion(false)
 })
-onBeforeUnmount(stopUpdatePoll)
+onBeforeUnmount(() => {
+  unmounted = true
+  watcher?.stop()
+})
 </script>

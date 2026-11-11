@@ -86,8 +86,8 @@ func (s *Service) advanceCardsOnce(ctx context.Context) error {
 	return firstErr
 }
 
-// advanceReleasing：刷新 → 平台已注销则退役、已冻结则停用 → 有可用余额就转出 →
-// 只剩冻结余额就 10 分钟后再查 → 都为 0 回到 available。
+// advanceReleasing：刷新 → 平台已注销则退役、已冻结则停用（本系统冻结的写「管理员冻结」、不告警，见 frozenByUs；
+// 其余写「平台冻结」并按外部冻结告警）→ 有可用余额就转出 → 只剩冻结余额就 10 分钟后再查 → 都为 0 回到 available。
 func (s *Service) advanceReleasing(ctx context.Context, c *Card) error {
 	fresh, err := s.refreshForRecycle(ctx, c)
 	if err != nil || fresh == nil {
@@ -101,6 +101,18 @@ func (s *Service) advanceReleasing(ctx context.Context, c *Card) error {
 		log.Printf("[cardpool] 卡 %s 已在平台注销，退役", c.CardID)
 		return nil
 	case "REVOKED":
+		ours, err := s.frozenByUs(ctx, c.CardID)
+		if err != nil {
+			return err
+		}
+		if ours {
+			// 管理员在回收中冻结了这张卡：和可用卡被管理员冻结一样停用，不当成外部冻结告警
+			if _, err := s.moveCard(ctx, c.CardID, PoolReleasing, PoolDisabled, "管理员冻结"); err != nil {
+				return err
+			}
+			log.Printf("[cardpool] 卡 %s 回收中被本系统冻结，停用", c.CardID)
+			return nil
+		}
 		moved, err := s.moveCard(ctx, c.CardID, PoolReleasing, PoolDisabled, "平台冻结")
 		if err != nil {
 			return err
@@ -125,6 +137,24 @@ func (s *Service) advanceReleasing(ctx context.Context, c *Card) error {
 		return err
 	}
 	return nil
+}
+
+// frozenByUs 判断卡现在的冻结是不是本系统发起的：这张卡最近一张未失败（在途或已成功）的改状态单目标是 REVOKED。
+// 不用 ourStatusOrder 的 600 秒窗口：回收中的卡只剩冻结余额或被限流时 10 分钟后才再查，冻结单成功可能早已超过 600 秒。
+// 之后本系统又解冻过（最近一张是 ACTIVE）就不算，再出现 REVOKED 按外部冻结处理。
+func (s *Service) frozenByUs(ctx context.Context, cardID string) (bool, error) {
+	var target string
+	err := db.DB.QueryRowContext(ctx, `SELECT target_status FROM mw_card_orders
+		WHERE kind = ? AND card_id = ? AND state IN (?, ?, ?, ?, ?)
+		ORDER BY id DESC LIMIT 1`,
+		KindStatus, cardID, StatePending, StateProcessing, StateUnknown, StateNeedsReview, StateSuccess).Scan(&target)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return target == "REVOKED", nil
 }
 
 // 只剩冻结余额的卡（MO-05）：一笔授权长期不结算也不撤销时，卡上的钱冻着，回收每 10 分钟查一次。

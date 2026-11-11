@@ -36,49 +36,6 @@ func issueProduct(explicit, plan string) string {
 	return "gpt"
 }
 
-// AdminGetDefaultProvider GET /api/v1/admin/providers/default
-func AdminGetDefaultProvider(c *gin.Context) {
-	def, err := provider.LoadDefault()
-	if err != nil {
-		log.Printf("[provider] 读取默认服务商失败: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取默认服务商失败"})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"provider": def, "options": provider.Names()})
-}
-
-// AdminPutDefaultProvider PUT /api/v1/admin/providers/default  body: { provider }
-// 切换只影响之后新发的码：已发的码、在途单、已占用的卡都不动。未就绪也允许保存（发码接口会拦），响应里带上原因给界面警告。
-func AdminPutDefaultProvider(c *gin.Context) {
-	var req struct {
-		Provider string `json:"provider"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
-		return
-	}
-	next, err := provider.Parse(req.Provider)
-	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "未知的卡服务商：" + strings.TrimSpace(req.Provider)})
-		return
-	}
-	prev, err := provider.LoadDefault()
-	if err != nil {
-		log.Printf("[provider] 读取默认服务商失败: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "读取默认服务商失败"})
-		return
-	}
-	if err := provider.SaveDefault(next); err != nil {
-		log.Printf("[provider] 保存默认服务商失败: %v", err)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "保存失败"})
-		return
-	}
-	auditAdmin(c, "provider_default_update", fmt.Sprintf("from=%s to=%s", prev, next))
-	p, _ := provider.Get(next)
-	ready := checkProvider(c.Request.Context(), p, "", "").Readiness
-	c.JSON(http.StatusOK, gin.H{"provider": next, "previous": prev, "readiness": ready})
-}
-
 // AdminProviderReadiness GET /api/v1/admin/providers/readiness?plan=&region=
 // 每家已注册服务商的就绪情况（含各自的 extras、warnings，供卡型另有 combos）和能力矩阵。
 // plan、region 可选，都给时供卡型只检查这一个组合。某家的检查本身出错只把这家标为未就绪。

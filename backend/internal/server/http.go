@@ -402,8 +402,6 @@ func setupRoutes(r *gin.Engine) {
 			// 卡服务商：列表与配置、默认发码服务商（旧接口）、就绪检查、本地码
 			admin.GET("/providers", handler.AdminListProviders)
 			admin.PUT("/providers/config", handler.AdminPutProviderConfig)
-			admin.GET("/providers/default", handler.AdminGetDefaultProvider)
-			admin.PUT("/providers/default", handler.AdminPutDefaultProvider)
 			admin.GET("/providers/readiness", handler.AdminProviderReadiness)
 			// 各服务商的卡头：列表、同步、标注、手动维护
 			admin.GET("/providers/:name/card-heads", handler.AdminListCardHeads)

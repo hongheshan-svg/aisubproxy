@@ -62,49 +62,6 @@ func httpRecorderFor(fn func(*gin.Context)) *httptest.ResponseRecorder {
 	return w
 }
 
-func TestDefaultProviderReadWriteAudited(t *testing.T) {
-	e := newLocalEnv(t)
-	m := localJSON(t, e.do("GET", "/admin/providers/default", ""))
-	if m["provider"] != "marswallex" {
-		t.Fatalf("初始值应是出厂默认 marswallex: %v", m)
-	}
-	for _, bad := range []string{`{"provider":"bogus"}`, `{"provider":""}`, `not-json`} {
-		if w := e.do("PUT", "/admin/providers/default", bad); w.Code != http.StatusBadRequest {
-			t.Fatalf("%s: %d", bad, w.Code)
-		}
-	}
-	if n, _ := provider.LoadDefault(); n != provider.MarsWallex {
-		t.Fatal("非法值不能生效")
-	}
-	w := e.do("PUT", "/admin/providers/default", `{"provider":"testup"}`)
-	if w.Code != http.StatusOK || localJSON(t, w)["previous"] != "marswallex" {
-		t.Fatalf("%d %s", w.Code, w.Body.String())
-	}
-	if a := localAudit(t); !strings.Contains(a, "provider_default_update from=marswallex to=testup") {
-		t.Fatalf("切换要写审计: %s", a)
-	}
-
-	// 没过硬门槛也能保存，响应带警告：发码接口另外拦
-	w = e.do("PUT", "/admin/providers/default", `{"provider":"marswallex"}`)
-	if w.Code != http.StatusOK {
-		t.Fatalf("%d %s", w.Code, w.Body.String())
-	}
-	m = localJSON(t, w)
-	if m["provider"] != "marswallex" || m["previous"] != "testup" {
-		t.Fatalf("%v", m)
-	}
-	ready := m["readiness"].(map[string]any)
-	if ready["ok"] != false || !strings.Contains(localBody(t, ready["problems"]), "真实付款") {
-		t.Fatalf("应带上未就绪原因: %v", ready)
-	}
-	if n, _ := provider.LoadDefault(); n != provider.MarsWallex {
-		t.Fatal("应保存")
-	}
-	if a := localAudit(t); !strings.Contains(a, "provider_default_update from=testup to=marswallex") {
-		t.Fatalf("切换要写审计: %s", a)
-	}
-}
-
 // 切换默认服务商只影响新发的码；已发的码、在途单都不动，也绝不自动换服务商重试。
 func TestDefaultProviderOnlyAffectsNewIssues(t *testing.T) {
 	e := newLocalEnv(t)
@@ -124,9 +81,7 @@ func TestDefaultProviderOnlyAffectsNewIssues(t *testing.T) {
 	}
 	mwCode, mwID := e.issueCode("plus", "PH") // 显式指定 MarsWallex，默认还是 testup
 
-	if w := e.do("PUT", "/admin/providers/default", `{"provider":"marswallex"}`); w.Code != http.StatusOK {
-		t.Fatalf("%d %s", w.Code, w.Body.String())
-	}
+	localSet(t, provider.SettingDefault, "marswallex")
 	// 老接口不传 provider：现在走本地发码，上游收不到新发码请求
 	w = e.do("POST", "/admin/cardplatform/cdks", `{"plan":"plus","payment_country":"PH","count":2,"funding_confirmed":true}`)
 	if w.Code != http.StatusOK {
@@ -160,9 +115,7 @@ func TestDefaultProviderOnlyAffectsNewIssues(t *testing.T) {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}
 	before := up.callCount()
-	if w := e.do("PUT", "/admin/providers/default", `{"provider":"testup"}`); w.Code != http.StatusOK {
-		t.Fatalf("%d %s", w.Code, w.Body.String())
-	}
+	localSet(t, provider.SettingDefault, "testup")
 	var state string
 	if err := db.DB.QueryRow(`SELECT state FROM pay_orders WHERE source = 'cdk' AND source_ref = ?`, db.LocalCDKSourceRef(mwID)).Scan(&state); err != nil {
 		t.Fatal(err)

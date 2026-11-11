@@ -440,8 +440,6 @@ func localTestRouter() *gin.Engine {
 	admin.POST("/cdks/:id/enable", AdminEnableLocalCDK)
 	admin.GET("/providers", AdminListProviders)
 	admin.PUT("/providers/config", AdminPutProviderConfig)
-	admin.GET("/providers/default", AdminGetDefaultProvider)
-	admin.PUT("/providers/default", AdminPutDefaultProvider)
 	admin.GET("/providers/readiness", AdminProviderReadiness)
 	return r
 }

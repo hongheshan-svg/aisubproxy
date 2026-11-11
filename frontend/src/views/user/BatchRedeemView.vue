@@ -438,6 +438,8 @@ let pollInFlight = false
 let pollBackoffMs = 0
 // 轮询被限流（429）时显示的提示，恢复后清掉
 const pollNotice = ref('')
+// 离开页面后置真：在途请求回来不再排下一轮查询（F2-04a）
+let unmounted = false
 
 const parsedCdks = computed(() => parseCdks(cdkText.value))
 const parsedMailboxes = computed(() => parseMailboxLines(mailboxText.value))
@@ -548,6 +550,7 @@ function stopAllPolls() {
 
 /** 按在途条目数、是否被限流，决定下一轮什么时候查。全部到终态就停。 */
 function schedulePoll(delayMs: number) {
+  if (unmounted) return
   if (pollTimer) clearTimeout(pollTimer)
   pollTimer = setTimeout(() => void pollBatch(), delayMs)
 }
@@ -576,7 +579,7 @@ function applyPollResult(id: string, target: { token: string; terminal: boolean 
 
 async function pollBatch() {
   pollTimer = null
-  if (pollInFlight) return
+  if (unmounted || pollInFlight) return
   const entries = Object.entries(pollTargets.value).filter(([, v]) => !v.terminal)
   if (!entries.length) {
     pollNotice.value = ''
@@ -629,6 +632,7 @@ async function pollBatch() {
 }
 
 function startPoll(id: string, token: string) {
+  if (unmounted) return
   pollTargets.value = { ...pollTargets.value, [id]: { token, terminal: false } }
   if (!pollTimer && !pollInFlight) void pollBatch()
 }
@@ -1183,7 +1187,10 @@ function resetAll() {
   lastFilledItemId.value = null
 }
 
-onUnmounted(() => stopAllPolls())
+onUnmounted(() => {
+  unmounted = true
+  stopAllPolls()
+})
 </script>
 
 <style scoped>

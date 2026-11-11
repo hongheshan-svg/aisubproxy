@@ -36,3 +36,49 @@ describe('回车不能绕过按钮禁用（F2-14）', () => {
     expect(firstStatement(src, 'handleVerifyBatch')).toBe('if (verifying.value || submitting.value || autoSubmitting.value) return')
   })
 })
+
+/** 取 `async function name(...) {` 的函数体（按花括号配对）。 */
+function fnBody(src: string, name: string): string {
+  const m = new RegExp(`async\\s+function\\s+${name}\\s*\\([^)]*\\)[^{]*\\{`).exec(src)
+  if (!m) throw new Error(`找不到函数 ${name}`)
+  let depth = 1
+  let i = m.index + m[0].length
+  const start = i
+  for (; i < src.length && depth > 0; i++) {
+    if (src[i] === '{') depth++
+    else if (src[i] === '}') depth--
+  }
+  return src.slice(start, i - 1)
+}
+
+describe('批量兑换页的提交不会进两次（FE2 审查重要 3）', () => {
+  const src = read('views/user/BatchRedeemView.vue')
+  it('手动提交：开头先看手动、自动两个在途标志', () => {
+    expect(firstStatement(src, 'handleSubmitSession')).toBe('if (!currentItem.value || submitting.value || autoSubmitting.value) return')
+  })
+  it('一键自动提交：开头先看自动、手动、验证三个在途标志', () => {
+    // 第一次调用只同步取走前几张，剩下的还是「待凭证」；没有这一句，再进一次就会把后面的卡密再排一遍、各提交一次
+    expect(firstStatement(src, 'handleAutoSubmitAll')).toBe('if (autoSubmitting.value || submitting.value || verifying.value) return')
+  })
+  it('置在途标志都在第一个 await 之前：两次调用之间没有空档', () => {
+    const auto = fnBody(src, 'handleAutoSubmitAll')
+    const firstAwait = auto.indexOf('await ')
+    expect(firstAwait).toBeGreaterThan(0)
+    // 邮箱和登录信息两条分支各置一次，都在各自的 runSubmitPool 之前
+    const sets = [...auto.matchAll(/autoSubmitting\.value = true/g)].map((m) => m.index!)
+    const pools = [...auto.matchAll(/await runSubmitPool\(/g)].map((m) => m.index!)
+    expect(sets.length).toBe(2)
+    expect(pools.length).toBe(2)
+    expect(sets[0]).toBeLessThan(pools[0])
+    expect(sets[1]).toBeGreaterThan(pools[0])
+    expect(sets[1]).toBeLessThan(pools[1])
+    const manual = fnBody(src, 'handleSubmitSession')
+    const mSets = [...manual.matchAll(/submitting\.value = true/g)].map((m) => m.index!)
+    const mAwaits = [...manual.matchAll(/await submitOne\(/g)].map((m) => m.index!)
+    expect(mSets.length).toBe(2)
+    expect(mAwaits.length).toBe(2)
+    expect(mSets[0]).toBeLessThan(mAwaits[0])
+    expect(mSets[1]).toBeGreaterThan(mAwaits[0])
+    expect(mSets[1]).toBeLessThan(mAwaits[1])
+  })
+})

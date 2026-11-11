@@ -8,20 +8,30 @@
 2. 打包 `cdk-bundle-linux-amd64.tgz`（内含 `cdk-recharge` + `web/` + `VERSION`）；
 3. 生成 `.sha256`；
 4. 用 ed25519 私钥签名，生成 `.sig`；
-5. 用同一个已签名的发布包构建 Docker 镜像，推送到 `ghcr.io/hongheshan-svg/aisubproxy:X.Y.Z` 和 `:X.Y`（不带 `v`）。
+5. 用同一个已签名的发布包构建 Docker 镜像（`release` 目标），先在本机试跑一遍（容器能起来、健康检查通过、Chrome 沙箱能启动），通过后才推送到 `ghcr.io/hongheshan-svg/aisubproxy:X.Y.Z` 和 `:X.Y`（不带 `v`）。
 
 在这之前，它会先跑一遍完整的 CI（测试、构建、Docker 冒烟），并确认标签指向的提交在 master 上；任何一项不通过都不会发布。发布包和镜像都成功后才创建 Release。
 
+镜像是否同时更新 `latest`：`docker/metadata-action` 对 semver 标签默认会带 `latest`，但工作流里没有显式写出，这一点没法在本地验证，请发版后到 GitHub 的 Packages 页确认实际标签。`docker-compose.yml` 的默认镜像标签就是 `latest`（`CDK_VERSION` 没设时）。
+
 第一次推送镜像后，到 GitHub 仓库的 Packages 页把 `aisubproxy` 包设为 Public，否则服务器拉取镜像需要登录。
 
-发版步骤：
+发版步骤（master 受保护，只能走 PR，不能直接推 master）：
 
-1. 在 `CHANGELOG.md` 最上面加一节 `## v1.5.1 - 日期`，按「新增 / 变更 / 升级注意」写这一版的更新说明。
-2. 改版本号、提交、打标签并推送：
+1. 从 master 拉一个发版分支（例如 `release/v1.5.1`）。在 `CHANGELOG.md` 最上面加一节 `## v1.5.1 - 日期`，并写这一版的更新说明。每一节的顺序固定为：**升级注意**放最前面（分「升级前必须做 / 升级后要确认 / 行为变化」三类），然后是「新增」「变更」。需要在升级前改配置、改环境变量的事项（例如 `TRUSTED_PROXIES` 这类写错了会静默失效的）必须写进「升级前必须做」。
+2. 同一个分支里改版本号并提交，推送分支，开 PR，等必过检查通过后合并：
 
 ```bash
+git switch -c release/v1.5.1
 echo 1.5.1 > VERSION && git commit -am "release: v1.5.1"
-git tag v1.5.1 && git push origin master v1.5.1
+git push -u origin release/v1.5.1   # 然后在 GitHub 上开 PR 并合并
+```
+
+3. PR 合并后，在 master 的合并提交上打标签，**只推标签**：
+
+```bash
+git switch master && git pull
+git tag v1.5.1 && git push origin v1.5.1
 ```
 
 - 版本号以标签为准，`VERSION` 文件同步修改即可。
@@ -71,7 +81,8 @@ curl -fsSL https://raw.githubusercontent.com/hongheshan-svg/aisubproxy/master/de
 ### Docker 部署
 
 - 镜像已内置 `chromium`、`xvfb`、字体和 `cdk-chrome` 用户，`CHROME_PATH=/usr/bin/chromium`。镜像约 1.4GB。
-- 安装和换版本：`deploy/docker-deploy.sh [--domain 域名] [--version X.Y.Z]`。脚本会下载这一版的 `docker-compose.yml` 等部署文件，补齐 `.env` 里缺少的密钥，然后拉取镜像并启动。版本号写进 `.env` 的 `CDK_VERSION`，之后直接 `docker compose up -d` 也是这个版本。
+- 安装和换版本：`deploy/docker-deploy.sh [--domain 域名] [--version X.Y.Z]`。脚本会下载这一版的 `docker-compose.yml` 等部署文件，补齐 `.env` 里缺少的密钥，然后拉取镜像并启动。版本号写进 `.env` 的 `CDK_VERSION`，之后直接 `docker compose up -d` 也是这个版本。需要 Docker Compose V2（`docker compose` 命令），不支持旧的 `docker-compose`。
+- 首次安装的 Setup Token 只在容器首次启动的日志里打印一次：`docker logs cdk-recharge 2>&1 | grep 'Setup Token'`，再打开 `/ops/setup` 创建管理员。
 - 程序在容器里以 root 运行，启动 Chrome 时降权到 `cdk-chrome` 并保留沙箱。
 - Chrome 带沙箱运行需要创建用户命名空间，而 Docker 默认的 seccomp 配置不放行 `clone`、`unshare`，所以 `docker-compose.yml` 给 `cdk` 服务加了 `security_opt: ["seccomp=./deploy/chrome-seccomp.json"]`。自己 `docker run` 的要加 `--security-opt seccomp=deploy/chrome-seccomp.json`。
 - **不要单独 `docker run -p 8080:8080` 直接暴露端口。** 镜像默认 `TRUSTED_PROXIES=127.0.0.1,172.16.0.0/12`，这是为 `docker-compose.yml` 里的 Caddy 准备的。直接发布端口时，Docker userland-proxy 会把来源改写成网桥网关（如 `172.17.0.1`），落在可信网段内，客户端自带的 `X-Forwarded-For` 就能绕过按 IP 的限流并伪造审计 IP。要么像 compose 那样经反代访问，要么运行时加 `-e TRUSTED_PROXIES=127.0.0.1`（或置空）。

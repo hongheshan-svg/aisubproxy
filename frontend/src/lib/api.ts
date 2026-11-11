@@ -62,21 +62,32 @@ export const authFetch = async (input: RequestInfo | URL, init: RequestInit = {}
   return response
 }
 
-// 主动登出：先请求后端清除 HttpOnly cookie，服务端确认后才清本地状态。返回是否已退出。
-// 网络错误、5xx、403（如 CSRF 校验失败）时服务端会话还在：本地状态不动，由调用方提示重试；
-// 401 说明会话本来就没了，照常清本地（F1-02）。
-export const serverLogout = async (): Promise<boolean> => {
-  let status = 0
+/**
+ * 主动登出：先请求后端清除 HttpOnly cookie，服务端确认后才清本地状态（F1-02）。
+ * - done：已退出（2xx；或 401，会话本来就没了），本地状态已清；
+ * - csrf：403 csrf_failed。后端只比 X-CSRF-Token 头和 csrf_token cookie，cookie 只在登录时下发、没有补发接口，
+ *   cookie 丢了重试也不会成功，由调用方提示清除本站 Cookie；
+ * - failed：网络错误、5xx、其他 403，服务端会话可能还在，由调用方提示重试。
+ * 后两种本地状态都不动。
+ */
+export const serverLogout = async (): Promise<'done' | 'csrf' | 'failed'> => {
+  let r: Response
   try {
     const csrf = getCookie('csrf_token')
     const headers = new Headers()
     if (csrf) headers.set('X-CSRF-Token', csrf)
-    const r = await fetch('/api/v1/auth/admin/logout', { method: 'POST', headers, credentials: 'include' })
-    status = r.status
+    r = await fetch('/api/v1/auth/admin/logout', { method: 'POST', headers, credentials: 'include' })
   } catch {
-    status = 0
+    return 'failed'
   }
-  const done = (status >= 200 && status < 300) || status === 401
-  if (done) useAuthStore().logout()
-  return done
+  if ((r.status >= 200 && r.status < 300) || r.status === 401) {
+    useAuthStore().logout()
+    return 'done'
+  }
+  if (r.status === 403) {
+    let body: any = null
+    try { body = await r.json() } catch { body = null }
+    if (body?.error_code === 'csrf_failed') return 'csrf'
+  }
+  return 'failed'
 }

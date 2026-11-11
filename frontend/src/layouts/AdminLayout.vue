@@ -163,8 +163,11 @@ async function onUserCommand(cmd: string) {
     // 从存储判断（别的标签页留下的未决也算），不只看本页内存
     if (adjustHasAnyPending() && !(await dialog.confirm('有调账结果未知，退出后这台电脑上不能再原样重试，请先到代理商的「余额流水」核对。确定退出吗？', { title: '调账结果未知', okText: '仍然退出', danger: true }))) return
     // 服务端没确认退出时留在后台：HttpOnly 的会话 cookie 还在，回登录页会让人以为已经退了
-    if (!(await serverLogout())) {
-      dialog.toast('退出失败，服务器上的登录状态还在，请重试', 'err')
+    const out = await serverLogout()
+    if (out !== 'done') {
+      // csrf_token cookie 丢了：后端没有补发，重试、关标签页都没用（cookie 和会话同一有效期），只能清本站 Cookie
+      if (out === 'csrf') dialog.toast('退出失败：浏览器里本站的校验 Cookie 丢了，服务器拒绝退出，重试也不会成功。请在浏览器设置里清除本站的 Cookie，清除后这台电脑上就退出了', 'err', 10000)
+      else dialog.toast('退出失败，服务器上的登录状态还在，请重试', 'err')
       return
     }
     clearAdjustRetries() // 退出登录清掉调账的待重试记录（只有幂等键、金额和原因）

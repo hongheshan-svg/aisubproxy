@@ -75,6 +75,9 @@ func safeRecovery() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		defer func() {
 			if r := recover(); r != nil {
+				if r == http.ErrAbortHandler {
+					panic(r) // 主动中止连接的约定：net/http 自己静默处理，不当崩溃记日志、不回 500
+				}
 				logger := log.New(gin.DefaultErrorWriter, "", log.LstdFlags)
 				logger.Printf("[Recovery] panic recovered: %s %s %s", c.Request.Method, redactQuery(c.Request.RequestURI), safego.Describe(r))
 				if !c.Writer.Written() {

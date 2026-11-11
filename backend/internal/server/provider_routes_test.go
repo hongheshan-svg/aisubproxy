@@ -246,3 +246,27 @@ func TestZovoCardRoutesGone(t *testing.T) {
 		t.Errorf("GET /api/v1/admin/providers 应照旧 200，实际 %d %s", w.Code, w.Body.String())
 	}
 }
+
+// 审查修复：http.ErrAbortHandler 是处理函数主动中止连接的约定，不当普通崩溃：不打崩溃日志，原样再抛给 net/http。
+func TestSafeRecoveryRepanicsErrAbortHandler(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var errOut bytes.Buffer
+	old := gin.DefaultErrorWriter
+	gin.DefaultErrorWriter = &errOut
+	t.Cleanup(func() { gin.DefaultErrorWriter = old })
+
+	r := gin.New()
+	r.Use(safeRecovery())
+	r.GET("/abort", func(*gin.Context) { panic(http.ErrAbortHandler) })
+	var got any
+	func() {
+		defer func() { got = recover() }()
+		r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/abort", nil))
+	}()
+	if got != http.ErrAbortHandler {
+		t.Fatalf("应原样再抛 ErrAbortHandler，实际 %v", got)
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("不该打崩溃日志: %s", errOut.String())
+	}
+}

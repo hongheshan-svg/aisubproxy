@@ -169,6 +169,14 @@ describe('付款配置：Codex 点数档', () => {
     expect(html).not.toContain('credit250')
   })
 
+  it('订阅表有「允许 0 元开通」列和提示，点数表没有', async () => {
+    const html = await render(PaySubscriptionPlans, { modelValue: [planToForm(plus, REGIONS)] }, '/', true)
+    expect(colLabels(html)).toContain('允许 0 元开通')
+    expect(html).toContain('结账页显示 0 元（首月免费等优惠）时照样开通；不勾则放弃这一单，不注资。')
+    const creditHtml = await render(PayCreditPlans, { modelValue: [planToForm(credit('credit250', 250), REGIONS)] }, '/', true)
+    expect(creditHtml).not.toContain('允许 0 元开通')
+  })
+
   it('没有点数档时不渲染', async () => {
     const html = await render(PayCreditPlans, { modelValue: [planToForm(plus, REGIONS)] })
     expect(html).not.toContain('data-testid="credit-plans"')

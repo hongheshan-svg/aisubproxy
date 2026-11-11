@@ -88,6 +88,13 @@ export function formatMinor(minor: number, currency: string): string {
   return `${neg ? '-' : ''}${text} ${currency}`
 }
 
+/** 订单金额栏：大于 0 显示金额；页面读到 0 元（有原文）标「0 元开通」；没读到金额显示「—」。 */
+export function orderAmountLabel(minor: number, text: string, currency: string): string {
+  if (minor > 0) return formatMinor(minor, currency)
+  if (minor === 0 && text) return formatMinor(0, currency) + '（0 元开通）'
+  return '—'
+}
+
 /** 点数档（kind=credit）：没有 ChatGPT 套餐名，按点数数量下单。 */
 export function isCreditPlan(p: { kind?: string } | null | undefined): boolean {
   return p?.kind === 'credit'
@@ -99,7 +106,7 @@ export type BuiltinPrices = Record<string, Record<string, BuiltinPrice>>
 
 // ---------- 付款配置：套餐表与编辑表单互转 ----------
 
-export interface RegionConf { enabled: boolean; currency: string; expect_minor?: number; floor_minor?: number; cap_minor: number; fund_cents: number }
+export interface RegionConf { enabled: boolean; currency: string; expect_minor?: number; floor_minor?: number; cap_minor: number; fund_cents: number; allow_zero?: boolean }
 export interface PlanConf {
   key: string; label: string; chatgpt_plan_name: string; expect_plan_type: string
   kind?: string; credit_quantity?: number
@@ -109,6 +116,8 @@ export interface PlanConf {
 export interface FormRow {
   region: string; enabled: boolean; initEnabled: boolean; currency: string
   expect: number | null; floor: number | null; cap: number | null; fund: number | null
+  /** 允许 0 元开通：结账页金额正好是 0（首月免费等优惠）时照样开通。点数套餐不用。 */
+  allowZero: boolean
 }
 export interface FormPlan {
   key: string; label: string; chatgpt_plan_name: string; expect_plan_type: string
@@ -123,7 +132,7 @@ export function planToForm(p: PlanConf, regions: readonly string[]): FormPlan {
       const rc = p.regions?.[r] || { enabled: false, currency: '', expect_minor: 0, floor_minor: 0, cap_minor: 0, fund_cents: 0 }
       return {
         region: r, enabled: rc.enabled, initEnabled: rc.enabled, currency: rc.currency,
-        expect: fromMinor(rc.expect_minor || 0, rc.currency), floor: fromMinor(rc.floor_minor || 0, rc.currency), cap: fromMinor(rc.cap_minor, rc.currency), fund: rc.fund_cents / 100,
+        expect: fromMinor(rc.expect_minor || 0, rc.currency), floor: fromMinor(rc.floor_minor || 0, rc.currency), cap: fromMinor(rc.cap_minor, rc.currency), fund: rc.fund_cents / 100, allowZero: rc.allow_zero === true,
       }
     }),
   }
@@ -139,6 +148,7 @@ export function formToPlan(p: FormPlan): PlanConf {
       return [row.region, {
         enabled: row.enabled, currency: cur,
         expect_minor: toMinor(row.expect || 0, cur), floor_minor: toMinor(row.floor || 0, cur), cap_minor: toMinor(row.cap || 0, cur), fund_cents: Math.round((row.fund || 0) * 100),
+        allow_zero: isCreditPlan(p) ? false : row.allowZero,
       }]
     })),
   }
@@ -162,6 +172,7 @@ export function builtinRegions(p: FormPlan, builtin: BuiltinPrices | undefined):
 }
 
 /** 表格下方的说明：内置价覆盖哪些地区。 */
+export const ALLOW_ZERO_NOTE = '结账页显示 0 元（首月免费等优惠）时照样开通；不勾则放弃这一单，不注资。'
 export const BUILTIN_NOTE = '美国、菲律宾的预期金额、最低金额、上限已按官方价格内置（可改）；其他地区要自己填。'
 
 /** 金额上限低于预期金额时的提示（两者都大于 0 才比较），与后端保存时的校验一致。 */

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   applyBuiltinPrice, failureLabel, failureText, floorProblem, formatMinor, formToPlan, fromMinor, isTerminal, pageOutcomeLabel, payBlockReason, planToForm,
-  proxyTestText, regionWithName, stateLabel, toMinor, type PlanConf,
+  orderAmountLabel, proxyTestText, regionWithName, stateLabel, toMinor, type PlanConf,
 } from '../pay'
 
 describe('regionWithName', () => {
@@ -156,5 +156,28 @@ describe('最低金额', () => {
     expect(floorProblem(10000, 10000, 12000)).toBe('')
     expect(floorProblem(0, 10000, 12000)).toBe('')
     expect(floorProblem(5000, 0, 0)).toBe('')
+  })
+})
+
+describe('允许 0 元开通', () => {
+  const plan = (kind: string, allow?: boolean): PlanConf => ({
+    key: 'k', label: 'K', chatgpt_plan_name: 'n', expect_plan_type: 'plus', kind,
+    regions: { US: { enabled: true, currency: 'USD', cap_minor: 2200, fund_cents: 2500, ...(allow === undefined ? {} : { allow_zero: allow }) } },
+  })
+  it('planToForm 读出 allow_zero，缺字段时为 false', () => {
+    expect(planToForm(plan('subscription', true), ['US']).rows[0].allowZero).toBe(true)
+    expect(planToForm(plan('subscription'), ['US']).rows[0].allowZero).toBe(false)
+  })
+  it('formToPlan：订阅写出行上的值，点数一律写 false', () => {
+    const sub = planToForm(plan('subscription', true), ['US'])
+    expect(formToPlan(sub).regions.US.allow_zero).toBe(true)
+    const credit = planToForm(plan('credit', true), ['US'])
+    credit.rows[0].allowZero = true
+    expect(formToPlan(credit).regions.US.allow_zero).toBe(false)
+  })
+  it('orderAmountLabel 区分 0 元开通和没读到金额', () => {
+    expect(orderAmountLabel(112000, '₱1,120.00', 'PHP')).toBe(formatMinor(112000, 'PHP'))
+    expect(orderAmountLabel(0, '$0.00', 'USD')).toBe(formatMinor(0, 'USD') + '（0 元开通）')
+    expect(orderAmountLabel(0, '', 'USD')).toBe('—')
   })
 })

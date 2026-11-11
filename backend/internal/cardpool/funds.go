@@ -177,7 +177,7 @@ func (s *Service) SubmitConversion(ctx context.Context, p ConversionParams) (*Or
 		// 平台不返回状态：受理即处理中
 		v = sendVerdict{state: StateProcessing, txnID: res.TransactionID}
 	}
-	return s.recordFirstSend(context.WithoutCancel(ctx), o.OutOrderNo, v)
+	return s.recordSent(context.WithoutCancel(ctx), o.OutOrderNo, v)
 }
 
 // transferAccount 读取转账一方的本地账户：不存在或已从平台消失时拒绝。
@@ -272,7 +272,7 @@ func (s *Service) SubmitWalletTransfer(ctx context.Context, p WalletTransferPara
 	} else {
 		v = walletTransferVerdict(res)
 	}
-	return s.recordFirstSend(context.WithoutCancel(ctx), o.OutOrderNo, v)
+	return s.recordSent(context.WithoutCancel(ctx), o.OutOrderNo, v)
 }
 
 // walletTransferVerdict 为钱包转账成功响应的初判：PROCESSING / SUCCESS / FAIL 之外按未知处理；

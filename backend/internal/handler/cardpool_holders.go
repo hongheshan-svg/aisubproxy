@@ -89,6 +89,10 @@ func AdminCardPoolCreateCardholder(c *gin.Context) {
 			poolAudit(c, "holder_create", fmt.Sprintf("out_card_holder_id=%s card_holder_id=%s", sub.OutCardHolderID, sub.CardHolderID))
 		}
 		if err != nil {
+			if sub == nil {
+				// 只记结果摘要，不带资料和平台错误原文
+				poolAuditFailed(c, "holder_create", "country="+strings.TrimSpace(p.CountryCode), err)
+			}
 			holderFail(c, err)
 			return
 		}
@@ -125,6 +129,7 @@ func AdminCardPoolUpdateCardholder(c *gin.Context) {
 		}
 		h, err := s.UpdateCardholder(c.Request.Context(), c.Param("id"), p, adminName(c))
 		if err != nil {
+			poolAuditFailed(c, "holder_update", "card_holder_id="+strings.TrimSpace(c.Param("id")), err)
 			holderFail(c, err)
 			return
 		}
@@ -144,6 +149,8 @@ func AdminCardPoolCardholderStatus(c *gin.Context) {
 		}
 		h, err := s.SetCardholderStatus(c.Request.Context(), c.Param("id"), req.Status, adminName(c))
 		if err != nil {
+			poolAuditFailed(c, "holder_status", fmt.Sprintf("card_holder_id=%s status=%s",
+				strings.TrimSpace(c.Param("id")), strings.ToUpper(strings.TrimSpace(req.Status))), err)
 			poolFail(c, err)
 			return
 		}

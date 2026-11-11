@@ -26,8 +26,8 @@ func AdminCardPoolSetCardLimit(c *gin.Context) {
 		l, err := s.SetCardLimit(c.Request.Context(), id, marswallex.CardLimit{
 			SingleLimit: req.SingleLimit, DailyLimit: req.DailyLimit, MonthlyLimit: req.MonthlyLimit})
 		if err != nil {
-			// 结果不明（超时、5xx）时平台可能已改，也要留审计，方便事后核对
-			poolAudit(c, "set_card_limit_failed", fmt.Sprintf("card_id=%s single=%q daily=%q monthly=%q", id, l.SingleLimit, l.DailyLimit, l.MonthlyLimit))
+			// 结果不明（超时、5xx）时平台可能已改，留失败审计方便事后核对；参数错、卡不存在、平台明确拒绝的不记
+			poolAuditFailed(c, "set_card_limit", fmt.Sprintf("card_id=%s single=%q daily=%q monthly=%q", id, l.SingleLimit, l.DailyLimit, l.MonthlyLimit), err)
 			poolFail(c, err)
 			return
 		}

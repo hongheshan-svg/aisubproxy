@@ -58,6 +58,8 @@ func poolErrorStatus(err error) (int, gin.H) {
 		return http.StatusBadGateway, gin.H{"error": err.Error()}
 	case errors.Is(err, cardpool.ErrHolderAccepted): // 文案不含资料值，原样给前端，免得管理员重复提交
 		return http.StatusInternalServerError, gin.H{"error": err.Error()}
+	case errors.Is(err, cardpool.ErrMaybeApplied): // 只给固定提示，免得管理员重复提交；内部错误另记日志
+		return http.StatusInternalServerError, gin.H{"error": cardpool.ErrMaybeApplied.Error()}
 	}
 	return http.StatusInternalServerError, gin.H{"error": "操作失败"}
 }
@@ -79,6 +81,63 @@ func poolFail(c *gin.Context, err error) {
 
 func poolAudit(c *gin.Context, action, detail string) {
 	db.WriteAudit(adminName(c), "cardpool."+action, detail, c.ClientIP())
+}
+
+// 卡池操作的审计口径：成功记 <action>；出错时只要平台可能已经生效就记 <action>_failed，明确没生效的
+// （参数错、卡不存在、卡正忙、平台明确拒绝、请求没发出）不记。备注进审计统一截到 200 字（同付款侧 payNoteAuditMax）。
+
+// poolMaybeApplied 判断直接调平台的操作出错时，平台那边是否可能已经生效：平台结果不明（超时、5xx 等），
+// 平台已受理但本地写入失败（ErrHolderAccepted），或请求已发出、本地没记下结果（ErrMaybeApplied）。
+func poolMaybeApplied(err error) bool {
+	if errors.Is(err, cardpool.ErrMaybeApplied) || errors.Is(err, cardpool.ErrHolderAccepted) {
+		return true
+	}
+	var me *marswallex.Error
+	return errors.As(err, &me) && me.Outcome == marswallex.OutcomeUnknown
+}
+
+// poolResultText 是失败审计里的结果摘要，不带平台返回的 message（可能回显卡号或持卡人资料）。
+func poolResultText(err error) string {
+	var me *marswallex.Error
+	switch {
+	case errors.Is(err, cardpool.ErrHolderAccepted):
+		return "平台已受理，本地写入失败"
+	case errors.Is(err, cardpool.ErrMaybeApplied):
+		return "已发出，本地没记下结果"
+	case errors.As(err, &me):
+		return fmt.Sprintf("结果不明（%s HTTP %d）", me.Reason, me.HTTPStatus)
+	}
+	return "结果不明"
+}
+
+// poolAuditFailed 用于直接调平台的操作（限额、子账户、持卡人）：平台可能已生效时记 <action>_failed，detail 后附结果摘要。
+func poolAuditFailed(c *gin.Context, action, detail string, err error) {
+	if poolMaybeApplied(err) {
+		poolAudit(c, action+"_failed", detail+" result="+poolResultText(err))
+	}
+}
+
+// poolAuditOrderFailed 用于单据类操作（开卡、注资、冻结、解冻、注销、清零、兑换、钱包转账）：平台的结果记在单据里、
+// 不以错误返回（结果不明时照常返回 unknown 的单据，成功审计里带单据状态），返回的平台错误都来自发单前的查询
+// （刷新卡、同步账户），所以只有 ErrMaybeApplied（已发出、本地没记下）才记 <action>_failed。
+func poolAuditOrderFailed(c *gin.Context, action, detail string, err error) {
+	if errors.Is(err, cardpool.ErrMaybeApplied) {
+		poolAudit(c, action+"_failed", detail+" result="+poolResultText(err))
+	}
+}
+
+// orderAuditSuffix 是单据类操作成功审计的后缀：单号和提交后的单据状态（平台结果不明时为 unknown）。
+func orderAuditSuffix(o *cardpool.Order) string {
+	return fmt.Sprintf(" order=%s state=%s", o.OutOrderNo, o.State)
+}
+
+// poolNote 把进审计的备注去首尾空白并截到 200 字。
+func poolNote(s string) string {
+	r := []rune(strings.TrimSpace(s))
+	if len(r) > payNoteAuditMax {
+		r = r[:payNoteAuditMax]
+	}
+	return string(r)
 }
 
 func nonNil[T any](v []T) []T {
@@ -215,9 +274,16 @@ func AdminCardPoolApplyCards(c *gin.Context) {
 			return
 		}
 		orders, err := s.ApplyCards(c.Request.Context(), req.ProductID, req.CardHolderID, req.Count, adminName(c))
-		if len(orders) > 0 || err == nil {
-			poolAudit(c, "apply_cards", fmt.Sprintf("product_id=%s card_holder_id=%s count=%d created=%d",
-				req.ProductID, req.CardHolderID, req.Count, len(orders)))
+		detail := fmt.Sprintf("product_id=%s card_holder_id=%s count=%d created=%d",
+			req.ProductID, req.CardHolderID, req.Count, len(orders))
+		switch {
+		case len(orders) > 0 || err == nil:
+			if errors.Is(err, cardpool.ErrMaybeApplied) {
+				detail += " last_result=" + poolResultText(err) // 最后一张已发出、本地没记下
+			}
+			poolAudit(c, "apply_cards", detail)
+		default:
+			poolAuditOrderFailed(c, "apply_cards", detail, err)
 		}
 		if err != nil {
 			if len(orders) > 0 {
@@ -291,11 +357,20 @@ func cardAction(action string, fn func(c *gin.Context, s *cardpool.Service, id s
 	})
 }
 
-func orderResult(o *cardpool.Order, err error) (any, error) {
-	if err != nil {
-		return nil, err
-	}
-	return o, nil
+// orderAction 生成「对一张卡提交一张单据」的 POST 处理器（冻结、解冻、注销、清零）：成功审计带单号和单据状态，
+// 出错时按 poolAuditOrderFailed 记失败审计。
+func orderAction(action string, fn func(c *gin.Context, s *cardpool.Service, id string) (*cardpool.Order, error)) gin.HandlerFunc {
+	return poolRoute(func(c *gin.Context, s *cardpool.Service) {
+		id := c.Param("id")
+		o, err := fn(c, s, id)
+		if err != nil {
+			poolAuditOrderFailed(c, action, "card_id="+id, err)
+			poolFail(c, err)
+			return
+		}
+		poolAudit(c, action, "card_id="+id+orderAuditSuffix(o))
+		c.JSON(http.StatusOK, o)
+	})
 }
 
 var (
@@ -309,17 +384,17 @@ var (
 	AdminCardPoolEnableCard = cardAction("enable_card", func(c *gin.Context, s *cardpool.Service, id string) (any, error) {
 		return nil, s.EnableCard(c.Request.Context(), id, adminName(c))
 	})
-	AdminCardPoolFreezeCard = cardAction("freeze_card", func(c *gin.Context, s *cardpool.Service, id string) (any, error) {
-		return orderResult(s.FreezeCard(c.Request.Context(), id, adminName(c)))
+	AdminCardPoolFreezeCard = orderAction("freeze_card", func(c *gin.Context, s *cardpool.Service, id string) (*cardpool.Order, error) {
+		return s.FreezeCard(c.Request.Context(), id, adminName(c))
 	})
-	AdminCardPoolUnfreezeCard = cardAction("unfreeze_card", func(c *gin.Context, s *cardpool.Service, id string) (any, error) {
-		return orderResult(s.UnfreezeCard(c.Request.Context(), id, adminName(c)))
+	AdminCardPoolUnfreezeCard = orderAction("unfreeze_card", func(c *gin.Context, s *cardpool.Service, id string) (*cardpool.Order, error) {
+		return s.UnfreezeCard(c.Request.Context(), id, adminName(c))
 	})
-	AdminCardPoolCancelCard = cardAction("cancel_card", func(c *gin.Context, s *cardpool.Service, id string) (any, error) {
-		return orderResult(s.CancelCard(c.Request.Context(), id, adminName(c)))
+	AdminCardPoolCancelCard = orderAction("cancel_card", func(c *gin.Context, s *cardpool.Service, id string) (*cardpool.Order, error) {
+		return s.CancelCard(c.Request.Context(), id, adminName(c))
 	})
-	AdminCardPoolSweepCard = cardAction("sweep_card", func(c *gin.Context, s *cardpool.Service, id string) (any, error) {
-		return orderResult(s.SweepCard(c.Request.Context(), id, adminName(c)))
+	AdminCardPoolSweepCard = orderAction("sweep_card", func(c *gin.Context, s *cardpool.Service, id string) (*cardpool.Order, error) {
+		return s.SweepCard(c.Request.Context(), id, adminName(c))
 	})
 	AdminCardPoolLeaseCard = cardAction("lease_card", func(c *gin.Context, s *cardpool.Service, id string) (any, error) {
 		l, err := s.AdminLease(c.Request.Context(), id, adminName(c))
@@ -366,10 +441,11 @@ func AdminCardPoolFundCard(c *gin.Context) {
 		id := c.Param("id")
 		o, err := s.AdminFund(c.Request.Context(), id, cents, adminName(c))
 		if err != nil {
+			poolAuditOrderFailed(c, "fund_card", fmt.Sprintf("card_id=%s amount_cents=%d", id, cents), err)
 			poolFail(c, err)
 			return
 		}
-		poolAudit(c, "fund_card", fmt.Sprintf("card_id=%s order=%s amount_cents=%d", id, o.OutOrderNo, cents))
+		poolAudit(c, "fund_card", fmt.Sprintf("card_id=%s order=%s amount_cents=%d state=%s", id, o.OutOrderNo, cents, o.State))
 		c.JSON(http.StatusOK, o)
 	})(c)
 }
@@ -465,7 +541,7 @@ func AdminCardPoolConfirmFailed(c *gin.Context) {
 			poolFail(c, err)
 			return
 		}
-		poolAudit(c, "confirm_failed", fmt.Sprintf("order=%s note=%s", no, note))
+		poolAudit(c, "confirm_failed", fmt.Sprintf("order=%s note=%s", no, poolNote(note)))
 		c.JSON(http.StatusOK, o)
 	})(c)
 }

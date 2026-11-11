@@ -176,7 +176,7 @@ func (s *Service) CreateSubAccount(ctx context.Context, name, by string) (*Accou
 		ON CONFLICT(account_no) DO UPDATE SET out_account_no = excluded.out_account_no, account_name = excluded.account_name,
 		status = excluded.status, gone = 0`,
 		out.AccountNo, out.OutAccountNo, acctName, accountTypeSub, purpose, status, now.Unix(), created); err != nil {
-		return nil, err
+		return nil, maybeApplied(err)
 	}
 	log.Printf("[cardpool] %s 创建子账户 %s", by, out.AccountNo)
 	return getAccount(ctx, out.AccountNo)
@@ -218,7 +218,7 @@ func (s *Service) SetSubAccountStatus(ctx context.Context, accountNo, status, re
 	}
 	// 同步可能共享了更早开始、数据发生在变更之前的那一轮，所以接口成功后无条件写入新状态
 	if _, err := db.DB.ExecContext(context.WithoutCancel(ctx), `UPDATE mw_accounts SET status = ? WHERE account_no = ?`, status, accountNo); err != nil {
-		return nil, err
+		return nil, maybeApplied(err)
 	}
 	if syncErr != nil {
 		log.Printf("[cardpool] 子账户 %s 状态已变更，同步账户失败: %v", accountNo, syncErr)

@@ -215,6 +215,7 @@ import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { authFetch } from '../../lib/api'
 import { dialog } from '../../lib/dialog'
+import { copyToClipboard } from '../../lib/clipboard'
 import { WEBHOOK_HINT, lastWebhookText, showWebhookHint } from '../../lib/mwwebhook'
 import {
   WEBHOOK_UNREACHABLE_HINT, accountTypeLabel, envProxyWarning, outcomeLabel, showTestReason, toOneLineBase64, webhookUnreachable,
@@ -328,12 +329,8 @@ function fmtTime(s: string) {
 }
 
 async function copyText(t: string) {
-  try {
-    await navigator.clipboard.writeText(t)
-    dialog.toast('已复制', 'ok')
-  } catch {
-    dialog.toast('复制失败', 'err')
-  }
+  if (await copyToClipboard(t)) dialog.toast('已复制', 'ok')
+  else dialog.toast('复制失败', 'err')
 }
 
 function applyConfig(d: Config) {

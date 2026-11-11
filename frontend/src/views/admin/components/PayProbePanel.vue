@@ -95,6 +95,7 @@ import { computed, defineComponent, h, onMounted, onUnmounted, ref } from 'vue'
 import { ElTag } from 'element-plus/es/components/tag/index.mjs'
 import { authFetch } from '../../../lib/api'
 import { dialog } from '../../../lib/dialog'
+import { copyToClipboard } from '../../../lib/clipboard'
 import { fmtTs } from '../../../lib/cardpool'
 import { payApi } from '../../../lib/pay'
 import {
@@ -201,12 +202,8 @@ async function loadHistory() {
 
 async function copyText(rec: ProbeRecord) {
   const text = probeToText(rec)
-  try {
-    await navigator.clipboard.writeText(text)
-    dialog.toast('已复制', 'ok')
-  } catch {
-    dialog.toast('复制失败，请手动选中文字复制', 'warn')
-  }
+  if (await copyToClipboard(text)) dialog.toast('已复制', 'ok')
+  else dialog.toast('复制失败，请手动选中文字复制', 'warn')
 }
 
 // ---------- 截图 ----------

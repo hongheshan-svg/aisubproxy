@@ -3,6 +3,7 @@ package cardpool
 import (
 	"context"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -48,11 +49,11 @@ func (s *Service) PreviewCard(ctx context.Context, cardID string) (*CardPreview,
 	}
 	avail, err := parseBalance(d.AvailableBalance)
 	if err != nil {
-		return nil, errors.New("解析可用余额失败")
+		return nil, previewBalanceErr("可用余额", err)
 	}
 	frozen, err := parseBalance(d.FreezeBalance)
 	if err != nil {
-		return nil, errors.New("解析冻结余额失败")
+		return nil, previewBalanceErr("冻结余额", err)
 	}
 	inPool := true
 	if _, err := getCard(ctx, cardID); errors.Is(err, ErrNotFound) {
@@ -67,6 +68,14 @@ func (s *Service) PreviewCard(ctx context.Context, cardID string) (*CardPreview,
 		Status: normStatus(d.Status), AvailableCents: avail, FrozenCents: frozen, Expiry: d.ExpiryDate,
 		First6: first6, Last4: last4, AlreadyInPool: inPool, SuggestedProductID: suggested, Candidates: cands,
 	}, nil
+}
+
+// previewBalanceErr 是预览里余额解析失败的错误：负数单独写明；都不带平台原文。
+func previewBalanceErr(field string, err error) error {
+	if errors.Is(err, ErrNegativeBalance) {
+		return fmt.Errorf("平台返回的%s为负数: %w", field, ErrNegativeBalance)
+	}
+	return errors.New("解析" + field + "失败")
 }
 
 var longDigits = regexp.MustCompile(`\d(?:[ -]?\d){11,}`)

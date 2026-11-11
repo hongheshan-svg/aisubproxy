@@ -147,12 +147,46 @@ func (s *Service) ListProducts(ctx context.Context) ([]marswallex.CardProduct, e
 
 // ---------- 卡：导入与刷新 ----------
 
-// parseBalance 把平台余额字符串转成分；空串按 0，格式错误返回错误。
+// ErrNegativeBalance：平台返回的卡余额是负数（例如结算金额大于授权金额的透支）。和格式错误分开，调用方据此告警。
+var ErrNegativeBalance = errors.New("平台返回的卡余额为负数")
+
+// parseBalance 把平台卡余额字符串转成分，规则和钱包余额相同（见 parseBalanceCents）：先去首尾空白，空串按 0，
+// 多余小数向下取整（转出金额只会不超过实际余额）。带负号且向下取整后不为 0 的返回包了 ErrNegativeBalance 的错误；
+// 其余格式错误（千分位、正号、非数字等）照旧报错，不算负数。
 func parseBalance(s string) (int64, error) {
-	if strings.TrimSpace(s) == "" {
+	t := strings.TrimSpace(s)
+	if t == "" {
 		return 0, nil
 	}
-	return marswallex.ParseAmount(s)
+	if abs, ok := strings.CutPrefix(t, "-"); ok && balanceRe.MatchString(abs) {
+		cents, err := parseBalanceCents(abs)
+		if err != nil {
+			return 0, err
+		}
+		if cents == 0 {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("%w：%s", ErrNegativeBalance, truncate(t, 20))
+	}
+	return parseBalanceCents(t)
+}
+
+// balanceErr 包装卡余额 field（「可用余额」「冻结余额」）的解析错误：负数单独写明，其余是格式错误。
+func balanceErr(field, raw string, err error) error {
+	if errors.Is(err, ErrNegativeBalance) {
+		return fmt.Errorf("%s为负数（%s）: %w", field, truncate(raw, 20), ErrNegativeBalance)
+	}
+	return fmt.Errorf("解析%s失败: %w", field, err)
+}
+
+// cardBalanceErr 同 balanceErr；负数时另外告警（key negbalance:<卡>，每卡每个北京日一条，src 是告警来源）。
+// 格式错误不告警：刷新失败的卡由回收的持续失败告警兜底。
+func (s *Service) cardBalanceErr(cardID, field, raw string, err error, src alertSource) error {
+	if errors.Is(err, ErrNegativeBalance) {
+		s.alert("negbalance:"+cardID, fmt.Sprintf("MarsWallex 卡 %s 在平台上的%s为负数（%s），本地余额没有更新，这张卡的刷新和回收会一直失败，请到 MarsWallex 后台核查（多半是结算金额大于授权金额）",
+			cardID, field, truncate(raw, 20))+src.suffix())
+	}
+	return balanceErr(field, raw, err)
 }
 
 // lastDigits4 取 cardNo 中数字的最后 4 位；少于 4 位返回空。
@@ -226,11 +260,11 @@ func (s *Service) ImportCard(ctx context.Context, cardID, productID, holderID, b
 	}
 	avail, err := parseBalance(d.AvailableBalance)
 	if err != nil {
-		return nil, fmt.Errorf("解析可用余额失败: %w", err)
+		return nil, balanceErr("可用余额", d.AvailableBalance, err)
 	}
 	frozen, err := parseBalance(d.FreezeBalance)
 	if err != nil {
-		return nil, fmt.Errorf("解析冻结余额失败: %w", err)
+		return nil, balanceErr("冻结余额", d.FreezeBalance, err)
 	}
 	now := s.now().Unix()
 	_, err = db.DB.ExecContext(ctx, `INSERT INTO mw_cards (card_id, card_holder_id, product_id, card_label, card_country, currency,
@@ -272,11 +306,11 @@ func (s *Service) refreshCard(ctx context.Context, cardID string, src alertSourc
 	}
 	avail, err := parseBalance(d.AvailableBalance)
 	if err != nil {
-		return nil, fmt.Errorf("解析可用余额失败: %w", err)
+		return nil, s.cardBalanceErr(cardID, "可用余额", d.AvailableBalance, err, src)
 	}
 	frozen, err := parseBalance(d.FreezeBalance)
 	if err != nil {
-		return nil, fmt.Errorf("解析冻结余额失败: %w", err)
+		return nil, s.cardBalanceErr(cardID, "冻结余额", d.FreezeBalance, err, src)
 	}
 	status := normStatus(d.Status)
 	external, err := s.externalStatusChange(ctx, old, status)

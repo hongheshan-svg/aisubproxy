@@ -19,10 +19,12 @@ async function ensureSetupStatus(): Promise<boolean> {
   if (setupChecked) return setupInstalled
   try {
     const r = await fetch('/api/v1/setup/status')
+    if (!r.ok) throw new Error('status')
     const d = await r.json()
     setupInstalled = !!d.installed
   } catch {
-    setupInstalled = true // 后端不可达时不阻断登录页
+    // 后端不可达或回了错误：这次放行，不记结果，下次跳转再问（不把管理员误送去安装向导）
+    return true
   }
   setupChecked = true
   return setupInstalled
@@ -35,6 +37,8 @@ router.beforeEach(async (to) => {
     return (await agentGuardDecision(true, to.fullPath, () => fetch('/api/v1/agent/me', { credentials: 'include' }))) ?? undefined
   }
   if (to.path === '/agent/login') return
+  // 安装状态只有后台页面用得上；用户端页面不等这次请求
+  if (!isAdminPath(to.path)) return
   const authStore = useAuthStore()
   const installed = await ensureSetupStatus()
 

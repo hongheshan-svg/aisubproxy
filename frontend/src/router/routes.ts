@@ -17,7 +17,14 @@ export const routes: RouteRecordRaw[] = [
   // 旧登录路径 → 隐蔽入口
   { path: '/auth/login', redirect: `${OPS_BASE}/login` },
   { path: '/admin', redirect: OPS_BASE },
-  { path: '/admin/:pathMatch(.*)*', redirect: (to) => `${OPS_BASE}/${to.params.pathMatch || ''}` },
+  {
+    path: '/admin/:pathMatch(.*)*',
+    redirect: (to) => {
+      // 多段地址时 pathMatch 是数组，直接拼进模板字符串会变成逗号
+      const p = to.params.pathMatch
+      return `${OPS_BASE}/${Array.isArray(p) ? p.join('/') : p || ''}`
+    },
+  },
   {
     path: `${OPS_BASE}/login`,
     name: 'Login',

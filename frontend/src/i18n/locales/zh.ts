@@ -113,6 +113,8 @@ export default {
     card: '银行卡',
     cardPending: '开卡后显示尾号',
     reset: '返回 · 重新开始',
+    resultUnknown: '结果未知，正在查询',
+    resultNotFound: '没有查到这张卡密的兑换记录，卡密应该还没被用掉。请先到「卡密查询」页核对，确认未使用再重新兑换',
     status: {
       pending_verify: '待验证',
       verify_ok: '卡密有效',

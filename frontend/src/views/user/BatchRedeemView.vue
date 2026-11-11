@@ -347,7 +347,15 @@ import UserTwoColumn from '../../components/redeem/UserTwoColumn.vue'
 import { isDesktop } from '../../lib/layoutMode'
 import ExcelImportBlock from '../../components/ExcelImportBlock.vue'
 import { chunkTokens, nextPollPlan, parsePollResponse } from '../../lib/batch-poll'
-import { runSubmitPool } from '../../lib/batch-redeem'
+import {
+  batchStats,
+  isFailStatus,
+  isSuccessStatus,
+  redeemOutcome,
+  runSubmitPool,
+  successRows,
+  unknownLookupVerdict,
+} from '../../lib/batch-redeem'
 import SessionHelp from '../../components/SessionHelp.vue'
 import { isGrokCredential } from '../../lib/grok'
 import { isClaudePreview } from '../../lib/claude'
@@ -436,7 +444,13 @@ const sessionBoxRef = ref<HTMLTextAreaElement | null>(null)
 const mailboxFileRef = ref<HTMLInputElement | null>(null)
 const lastFilledItemId = ref<string | null>(null)
 
-const pollTargets = ref<Record<string, { token: string; terminal: boolean }>>({})
+/** unknownSince：兑换请求结果未知（发出后断线或 5xx）的那一刻，正常受理的条目没有这个字段（F2-03） */
+interface PollTarget {
+  token: string
+  terminal: boolean
+  unknownSince?: number
+}
+const pollTargets = ref<Record<string, PollTarget>>({})
 let pollTimer: ReturnType<typeof setTimeout> | null = null
 let pollInFlight = false
 let pollBackoffMs = 0
@@ -479,16 +493,7 @@ const currentOrdinal = computed(() =>
   currentExcelIdx.value >= 0 ? currentExcelIdx.value + 1 : sessionsDone.value,
 )
 
-const stats = computed(() => {
-  const s = { total: items.value.length, ok: 0, fail: 0, run: 0, wait: 0 }
-  for (const i of items.value) {
-    if (i.status === 'success') s.ok++
-    else if (i.status === 'failed' || i.status === 'verify_fail') s.fail++
-    else if (i.status === 'processing' || i.status === 'submitting') s.run++
-    else if (i.status === 'waiting_session' || i.status === 'verify_ok') s.wait++
-  }
-  return s
-})
+const stats = computed(() => batchStats(items.value))
 
 const allSessionsCollected = computed(
   () =>
@@ -531,21 +536,6 @@ async function api(path: string, init: RequestInit = {}) {
   return { r, data }
 }
 
-const TERMINAL = new Set(['completed', 'declined', 'failed_precharge', 'cancelled', 'failed'])
-
-function isTerminal(st: string) {
-  return TERMINAL.has(String(st || '').toLowerCase())
-}
-
-function isSuccessStatus(st: string) {
-  return String(st || '').toLowerCase() === 'completed'
-}
-
-function isFailStatus(st: string) {
-  const s = String(st || '').toLowerCase()
-  return ['declined', 'failed_precharge', 'cancelled', 'failed'].includes(s)
-}
-
 function planLabelOf(data: any): string {
   return String(data?.plan || data?.plan_type || data?.plan_label || data?.data?.plan || '')
 }
@@ -566,9 +556,19 @@ function schedulePoll(delayMs: number) {
   pollTimer = setTimeout(() => void pollBatch(), delayMs)
 }
 
-function applyPollResult(id: string, target: { token: string; terminal: boolean }, status: number, data: any) {
-  // 单个令牌查不到（404 等）或上游暂时出错：保持原状，下一轮再查
-  if (status < 200 || status >= 300) return
+function applyPollResult(id: string, target: PollTarget, status: number, data: any) {
+  if (status < 200 || status >= 300) {
+    // 结果未知的那一张等够时间仍查不到兑换记录：卡密没被用掉。停下来提示去核对，不自动重新提交（F2-03）
+    if (target.unknownSince && unknownLookupVerdict(status, target.unknownSince, Date.now()) === 'not_found') {
+      const msg = t('batch.resultNotFound')
+      updateItem(id, { status: 'failed', progressMsg: msg, error: msg })
+      pollTargets.value[id] = { ...target, terminal: true }
+    }
+    // 其余（单个令牌暂时查不到、暂时出错）：保持原状，下一轮再查
+    return
+  }
+  // 查到了兑换记录：之后不再按「结果未知、查不到就停」处理
+  const seen: PollTarget = { token: target.token, terminal: false }
   const order = data?.order || data?.data?.order || data?.data || data || {}
   const st = String(order.status || data?.status || data?.data?.status || '')
   const message = String(order.message || order.user_message || data?.message || data?.user_message || '')
@@ -579,12 +579,13 @@ function applyPollResult(id: string, target: { token: string; terminal: boolean 
   if (cardLastFour) meta.cardLastFour = cardLastFour
   if (isSuccessStatus(st)) {
     updateItem(id, { ...meta, status: 'success', progressMsg: message || '开通完成', error: '' })
-    pollTargets.value[id] = { ...target, terminal: true }
+    pollTargets.value[id] = { ...seen, terminal: true }
   } else if (isFailStatus(st)) {
     updateItem(id, { ...meta, status: 'failed', progressMsg: message || '兑换失败', error: message || '失败' })
-    pollTargets.value[id] = { ...target, terminal: true }
+    pollTargets.value[id] = { ...seen, terminal: true }
   } else {
     updateItem(id, { ...meta, status: 'processing', progressMsg: message || (st ? `处理中 · ${st}` : '处理中…'), error: '' })
+    if (target.unknownSince) pollTargets.value[id] = seen
   }
 }
 
@@ -646,11 +647,24 @@ async function pollBatch() {
   schedulePoll(plan.delayMs)
 }
 
-function startPoll(id: string, token: string, gen: number) {
+function startPoll(id: string, token: string, gen: number, unknownSince = 0) {
   if (unmounted) return
   if (gen !== batchSeq) return
-  pollTargets.value = { ...pollTargets.value, [id]: { token, terminal: false } }
+  const target: PollTarget = { token, terminal: false }
+  if (unknownSince > 0) target.unknownSince = unknownSince
+  pollTargets.value = { ...pollTargets.value, [id]: target }
   if (!pollTimer && !pollInFlight) void pollBatch()
+}
+
+/**
+ * 兑换请求发出后断线或 5xx：不知道服务器收没收到。标「处理中」，用只读的批量结果接口查真实结果；
+ * 查询只带兑换令牌，不会再提交卡密，也不会重发兑换（F2-03）。
+ */
+function markResultUnknown(item: BatchItem, token: string, email: string) {
+  const patch: Partial<BatchItem> = { status: 'processing', progressMsg: t('batch.resultUnknown'), error: '' }
+  if (email) patch.email = email
+  updateItem(item.id, patch)
+  startPoll(item.id, token, item.batch, Date.now())
 }
 
 function fillCredentialFromPool(excelIdx: number) {
@@ -924,6 +938,8 @@ async function runPreflightRedeem(
   fallbackEmail: string,
 ): Promise<'ok' | 'fail'> {
   let redemptionToken = item.redemptionToken
+  // 兑换请求已经发出：之后断线或出错都不知道服务器收没收到，只能查结果，绝不重发（F2-03）
+  let redeemSent = false
   try {
     if (!redemptionToken) {
       const preview = await api('/api/v1/public/cdk/preview', {
@@ -985,6 +1001,7 @@ async function runPreflightRedeem(
     updateItem(item.id, { email, progressMsg: '预检通过，提交兑换…' })
 
     const client_request_id = `batch-${deviceId.slice(0, 8)}-${Date.now()}-${item.id}`
+    redeemSent = true
     const redeem = await api('/api/v1/public/cdk/redeem', {
       method: 'POST',
       body: JSON.stringify(grok
@@ -999,8 +1016,14 @@ async function runPreflightRedeem(
     )
     const cardLastFour = extractCardLastFour(order)
     const orderEmail = String(order.account_email || order.email || email).trim()
+    const outcome = redeemOutcome(redeem.r.status, st)
 
-    if (!redeem.r.ok && redeem.r.status !== 202) {
+    if (outcome === 'unknown') {
+      // 5xx：服务器可能已经建单（建单不跟随连接），按结果未知去查，不当失败
+      markResultUnknown(item, redemptionToken, orderEmail || email)
+      return 'ok'
+    }
+    if (outcome === 'rejected') {
       updateItem(item.id, {
         status: 'failed',
         email: orderEmail || email,
@@ -1011,7 +1034,7 @@ async function runPreflightRedeem(
       return 'fail'
     }
 
-    if (isSuccessStatus(st)) {
+    if (outcome === 'success') {
       updateItem(item.id, {
         status: 'success',
         email: orderEmail || email,
@@ -1019,7 +1042,7 @@ async function runPreflightRedeem(
         progressMsg: message || '开通完成',
         error: '',
       })
-    } else if (isFailStatus(st)) {
+    } else if (outcome === 'failed') {
       updateItem(item.id, {
         status: 'failed',
         email: orderEmail || email,
@@ -1040,6 +1063,11 @@ async function runPreflightRedeem(
     }
     return 'ok'
   } catch {
+    if (redeemSent) {
+      markResultUnknown(item, redemptionToken, '')
+      return 'ok'
+    }
+    // 兑换请求还没发出（预览、核对账号时断线）：卡密没有用掉，仍算失败
     updateItem(item.id, {
       status: 'failed',
       progressMsg: '网络异常，请稍后重试或联系客服确认是否已受理',
@@ -1168,11 +1196,8 @@ async function exportBatchSuccess() {
     return
   }
   sessionError.value = ''
-  const part = (value: string) => String(value || '').replace(/[\r\n]+/g, ' ').trim()
   try {
-    await exportSuccessWorkbook(
-      ok.map((i) => [part(i.email), part(i.gptPassword), part(i.emailPassword), part(i.accessToken)]),
-    )
+    await exportSuccessWorkbook(successRows(items.value))
   } catch {
     sessionError.value = '导出失败，请重试'
   }

@@ -113,6 +113,8 @@ export default {
     card: 'Card',
     cardPending: 'Last4 after card open',
     reset: 'Back · start over',
+    resultUnknown: 'Result unknown — checking…',
+    resultNotFound: 'No redemption record found for this CDK, so it should still be unused. Check it on the CDK Status page first, and redeem it again only if it is unused',
     status: {
       pending_verify: 'Pending',
       verify_ok: 'Valid',

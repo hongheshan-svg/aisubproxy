@@ -200,8 +200,13 @@ function fmtCdkTime(v: unknown) {
   return typeof v === 'number' ? fmtBeijing(v) : v ? String(v) : '—'
 }
 
+// 路由参数换了（组件复用）时，上一个代理商在途的请求回来不能写到新页面；同一列表连续翻页只认最新一次
+let agentSeq = 0
 async function loadAgent() {
-  const r = await adminApi<any>(`/agents/${id.value}`)
+  const my = ++agentSeq
+  const cur = id.value
+  const r = await adminApi<any>(`/agents/${cur}`)
+  if (my !== agentSeq || cur !== id.value) return // 已换到别的代理商，或已有更新的请求
   if (!r.ok) { err.value = '读取失败：' + adminErrorText(r.data, r.status); return }
   err.value = ''
   agent.value = r.data.agent
@@ -225,10 +230,14 @@ function searchLedger() {
   ledgerPage.value = 1
   loadLedger()
 }
+let ledgerSeq = 0
 async function loadLedger() {
   const rg = snapRange.value
   if (!rg) { ledgerErr.value = '日期范围不正确'; return }
-  const r = await adminApi<any>(`/agents/${id.value}/ledger?${ledgerQuery(rg.from, rg.to)}&page=${ledgerPage.value}&page_size=${PAGE}`)
+  const my = ++ledgerSeq
+  const cur = id.value
+  const r = await adminApi<any>(`/agents/${cur}/ledger?${ledgerQuery(rg.from, rg.to)}&page=${ledgerPage.value}&page_size=${PAGE}`)
+  if (my !== ledgerSeq || cur !== id.value) return // 已换到别的代理商，或已有更新的请求
   if (!r.ok) { ledgerErr.value = adminErrorText(r.data, r.status); return }
   ledgerErr.value = ''
   ledger.value = r.data.items || []
@@ -255,8 +264,12 @@ const orders = ref<any[]>([])
 const ordersTotal = ref(0)
 const ordersPage = ref(1)
 const ordersErr = ref('')
+let ordersSeq = 0
 async function loadOrders() {
-  const r = await adminApi<any>(`/agents/${id.value}/orders?page=${ordersPage.value}&page_size=${PAGE}`)
+  const my = ++ordersSeq
+  const cur = id.value
+  const r = await adminApi<any>(`/agents/${cur}/orders?page=${ordersPage.value}&page_size=${PAGE}`)
+  if (my !== ordersSeq || cur !== id.value) return // 已换到别的代理商，或已有更新的请求
   if (!r.ok) { ordersErr.value = adminErrorText(r.data, r.status); return }
   ordersErr.value = ''
   orders.value = r.data.items || []
@@ -273,8 +286,12 @@ function fillOverrides(items: any[]) {
   for (const k of Object.keys(overrideEdit)) delete overrideEdit[k]
   for (const o of items) overrideEdit[String(o.product_id)] = o.override_price_cents ? centsToUsd(o.override_price_cents) : ''
 }
+let overridesSeq = 0
 async function loadOverrides() {
-  const r = await adminApi<any>(`/agents/${id.value}/overrides`)
+  const my = ++overridesSeq
+  const cur = id.value
+  const r = await adminApi<any>(`/agents/${cur}/overrides`)
+  if (my !== overridesSeq || cur !== id.value) return // 已换到别的代理商，或已有更新的请求
   if (!r.ok) { overridesErr.value = adminErrorText(r.data, r.status); return }
   overridesErr.value = ''
   fillOverrides(r.data.items || [])
@@ -298,8 +315,12 @@ const codes = ref<any[]>([])
 const codesTotal = ref(0)
 const codesPage = ref(1)
 const codesErr = ref('')
+let codesSeq = 0
 async function loadCodes() {
-  const r = await adminApi<any>(`/cdks?agent_id=${id.value}&page=${codesPage.value}&page_size=${PAGE}`)
+  const my = ++codesSeq
+  const cur = id.value
+  const r = await adminApi<any>(`/cdks?agent_id=${cur}&page=${codesPage.value}&page_size=${PAGE}`)
+  if (my !== codesSeq || cur !== id.value) return // 已换到别的代理商，或已有更新的请求
   if (!r.ok) { codesErr.value = adminErrorText(r.data, r.status); return }
   codesErr.value = ''
   codes.value = r.data.list || []

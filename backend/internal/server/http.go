@@ -350,7 +350,6 @@ func setupRoutes(r *gin.Engine) {
 			admin.POST("/cardpool/cards/:id/lease", handler.AdminCardPoolLeaseCard)
 			admin.POST("/cardpool/cards/:id/release", handler.AdminCardPoolReleaseCard)
 			admin.POST("/cardpool/cards/:id/fund", handler.AdminCardPoolFundCard)
-			admin.POST("/cardpool/cards/:id/sensitive", handler.AdminCardPoolSensitive)
 			admin.POST("/cardpool/cards/:id/otp", handler.AdminCardPoolOTP)
 			admin.GET("/cardpool/orders", handler.AdminCardPoolOrders)
 			admin.POST("/cardpool/orders/:no/recheck", handler.AdminCardPoolRecheck)

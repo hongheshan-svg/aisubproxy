@@ -92,7 +92,6 @@ func TestCardPoolRoutesRequireService(t *testing.T) {
 	}{
 		{AdminCardPoolOverview, "GET", "/x"},
 		{AdminCardPoolCards, "GET", "/x"},
-		{AdminCardPoolSensitive, "POST", "/x"},
 		{AdminCardPoolPutPolicy, "PUT", "/x"},
 		{AdminCardPoolPreviewCard, "POST", "/x"},
 		{AdminCardPoolGetSelection, "GET", "/x"},
@@ -107,33 +106,17 @@ func TestCardPoolRoutesRequireService(t *testing.T) {
 	}
 }
 
-func TestSensitiveEndpointAuditsWithoutSecrets(t *testing.T) {
-	c, mw, _ := cpEnv(t, false)
+// 后台租用卡：响应里不带租约令牌（「查看卡号」已下线，H2-03）。
+func TestLeaseEndpointDoesNotLeakToken(t *testing.T) {
+	c, _, _ := cpEnv(t, false)
 	cpInsertCard(t, c, "c1", cardpool.PoolAvailable, "")
-	mw.On("GET", "/v1/card/sensitive/c1", mwtest.OK(`{"card_id":"c1","card_no":"`+cpFullPAN+`","cvv2":"987","expiry_date":"1228"}`))
 
-	if w := cpDo(AdminCardPoolLeaseCard, "POST", "/c/:id", "/c/c1", ``); w.Code != 200 {
-		t.Fatalf("lease %d %s", w.Code, w.Body.String())
-	} else if strings.Contains(w.Body.String(), "token") {
-		t.Errorf("lease leaked token: %s", w.Body.String())
-	}
-	w := cpDo(AdminCardPoolSensitive, "POST", "/c/:id", "/c/c1", ``)
+	w := cpDo(AdminCardPoolLeaseCard, "POST", "/c/:id", "/c/c1", ``)
 	if w.Code != 200 {
-		t.Fatalf("sensitive %d %s", w.Code, w.Body.String())
+		t.Fatalf("lease %d %s", w.Code, w.Body.String())
 	}
-	if w.Header().Get("Cache-Control") != "no-store" {
-		t.Errorf("Cache-Control=%q", w.Header().Get("Cache-Control"))
-	}
-	m := mwJSON(t, w)
-	if len(m) != 1 || m["card_no_masked"] != "411111******1234" {
-		t.Errorf("body %v", m)
-	}
-	audit := cpAudit(t, c)
-	if !strings.Contains(audit, "cardpool.view_sensitive card_id=c1") {
-		t.Errorf("audit missing: %q", audit)
-	}
-	if strings.Contains(audit, cpFullPAN) || strings.Contains(audit, "987") {
-		t.Errorf("audit leaked secrets: %q", audit)
+	if strings.Contains(w.Body.String(), "token") {
+		t.Errorf("lease leaked token: %s", w.Body.String())
 	}
 }
 

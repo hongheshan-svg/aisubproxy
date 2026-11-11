@@ -131,3 +131,24 @@ func TestPayRoutesRequireAdminAuth(t *testing.T) {
 		}
 	}
 }
+
+// 「查看卡号」下线（H2-03）：它只多给前 6 位，却要向平台取一次完整卡号和 CVV、把卡记成用过一次。
+// 路由不再注册；查看验证码等其他卡操作照旧。
+func TestCardPoolSensitiveRouteRemoved(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Setenv("WEB_DIR", "")
+	r := gin.New()
+	setupRoutes(r)
+	for _, rt := range r.Routes() {
+		if rt.Path == "/api/v1/admin/cardpool/cards/:id/sensitive" {
+			t.Fatalf("查看卡号的路由应已删除: %s %s", rt.Method, rt.Path)
+		}
+	}
+	have := map[string]bool{}
+	for _, rt := range r.Routes() {
+		have[rt.Method+" "+rt.Path] = true
+	}
+	if !have["POST /api/v1/admin/cardpool/cards/:id/otp"] {
+		t.Fatal("查看验证码的路由应仍在")
+	}
+}

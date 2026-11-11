@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  canFreeze, canUnfreeze, importProductOptions, previewMatchesInput, cancelWhen, importSweepWarning, releaseConfirmText, releaseDoneText, releaseWillBeUsedUp, sensitiveNote, usedStateNote,
+  canFreeze, canUnfreeze, importProductOptions, previewMatchesInput, cancelWhen, importSweepWarning, releaseConfirmText, releaseDoneText, releaseWillBeUsedUp, usedStateNote,
 } from '../mwcardtext'
 
 const policy = { max_uses_per_card: 3, cancel_after_days: 7 }
@@ -51,16 +51,6 @@ describe('mwcardtext lib', () => {
     expect(releaseDoneText({ use_count: 0, lease_sensitive: true }, policy)).toBe('已释放，卡会清零后回到可用')
     expect(releaseDoneText({ use_count: 2, lease_sensitive: true }, policy)).toBe('已释放，卡已用满，将清零、冻结，并在 7 天后注销')
     expect(releaseDoneText({ use_count: 2, lease_sensitive: true }, null)).toBe('已释放')
-  })
-
-  it('sensitiveNote: 租用中的卡写明用满后的后果', () => {
-    expect(sensitiveNote('leased', policy)).toBe('本次租用将计为已取卡号（使用次数 +1）。用满 3 次后，释放时这张卡会被清零、冻结，7 天后注销。')
-    expect(sensitiveNote('leased', { max_uses_per_card: 1, cancel_after_days: 0 }))
-      .toBe('本次租用将计为已取卡号（使用次数 +1）。用满 1 次后，释放时这张卡会被清零、冻结，立即注销。')
-  })
-  it('sensitiveNote: 策略没加载时保持原句；非租用保持原句', () => {
-    expect(sensitiveNote('leased', null)).toBe('本次租用将计为已取卡号（使用次数 +1）。')
-    expect(sensitiveNote('used', policy)).toBe('仅供排查，不改变卡的状态。')
   })
 
   it('usedStateNote: used 且有 cancel_after 显示北京时间注销时间', () => {

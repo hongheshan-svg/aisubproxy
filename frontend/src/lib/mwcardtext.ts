@@ -1,4 +1,4 @@
-// 卡池页的文案与显示规则（纯函数）：查看卡号、释放、用后注销时间、导入清零提醒、冻结按钮。
+// 卡池页的文案与显示规则（纯函数）：释放、用后注销时间、导入清零提醒、冻结按钮。
 import { fmtBeijing } from './mwwebhook'
 import { money } from './cardpool'
 
@@ -47,14 +47,6 @@ export function releaseDoneText(c: LeaseLike, p: UsePolicy | null | undefined): 
   const used = releaseWillBeUsedUp(c, p)
   if (used === null) return '已释放'
   return used ? `已释放，卡${usedUpFate(c, p)}` : '已释放，卡会清零后回到可用'
-}
-
-/** 「查看卡号」确认框里的说明。租用中的卡写明用满后的后果。 */
-export function sensitiveNote(poolState: string, p: UsePolicy | null | undefined): string {
-  if (poolState !== 'leased') return '仅供排查，不改变卡的状态。'
-  const base = '本次租用将计为已取卡号（使用次数 +1）。'
-  if (!p) return base
-  return `${base}用满 ${p.max_uses_per_card} 次后，释放时这张卡会被清零、冻结，${cancelWhen(p.cancel_after_days)}。`
 }
 
 /** 卡列表状态列标签下面的小字：已用且有注销时间显示北京时间 MM-DD HH:mm，已用但还没冻结显示等待。其他状态为空。 */

@@ -105,7 +105,7 @@ func AdminCardPoolCreateCardholder(c *gin.Context) {
 }
 
 // AdminCardPoolCardholderProfile 实时返回平台上的完整持卡人资料（修改时预填），不缓存、不落地。
-// 成功返回时写审计，只记持卡人 ID（同 view_sensitive）。
+// 成功返回时写审计，只记持卡人 ID，不记证件、电话等原文。
 func AdminCardPoolCardholderProfile(c *gin.Context) {
 	poolRoute(func(c *gin.Context, s *cardpool.Service) {
 		c.Header("Cache-Control", "no-store")

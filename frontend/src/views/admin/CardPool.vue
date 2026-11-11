@@ -104,7 +104,6 @@
                     <el-button size="small" type="primary" plain @click="fundCard(row)">注资</el-button>
                     <el-button size="small" plain @click="releaseCard(row)">释放</el-button>
                   </template>
-                  <el-button v-if="canViewSensitive(row)" size="small" type="primary" plain @click="viewSensitive(row)">查看卡号</el-button>
                   <el-button v-if="row.pool_state !== 'retired'" size="small" type="primary" plain @click="viewOtp(row)">查看验证码</el-button>
                   <el-button v-if="row.pool_state === 'disabled'" size="small" type="success" plain @click="enableCard(row)">启用</el-button>
                   <el-button v-if="canFreeze(row.platform_status)" size="small" plain @click="runOrderAction(row, 'freeze', '冻结')">冻结</el-button>
@@ -528,15 +527,6 @@
         @submitted="submitHolder" @cancel="holderFormOpen = false" />
     </el-dialog>
 
-    <!-- 卡号弹窗：关闭即清空 -->
-    <el-dialog v-model="sensitiveOpen" title="卡号（已打码）" width="440px" destroy-on-close :close-on-click-modal="false" @closed="clearSensitive">
-      <el-descriptions v-if="sensitive" :column="1" border size="small">
-        <el-descriptions-item label="卡号"><span class="mono">{{ sensitive.cardNoMasked }}</span></el-descriptions-item>
-      </el-descriptions>
-      <p class="text-xs text-subtle mt-2">只显示前 6 位和后 4 位；完整卡号和 CVV2 不在后台显示。</p>
-      <template #footer><el-button type="primary" @click="sensitiveOpen = false">关闭</el-button></template>
-    </el-dialog>
-
     <!-- 验证码弹窗：关闭即清空 -->
     <el-dialog v-model="otpOpen" title="3DS 验证码" width="440px" destroy-on-close :close-on-click-modal="false" @closed="clearOtp">
       <el-descriptions v-if="otp" :column="1" border size="small">
@@ -564,9 +554,8 @@ import {
   orderStateText, orderToast, withoutSelection, type CardholderFormValue,
 } from '../../lib/cardpool'
 import {
-  canFreeze, canUnfreeze, importProductOptions, importSweepWarning, previewMatchesInput, releaseConfirmText, releaseDoneText, sensitiveNote, usedStateNote,
+  canFreeze, canUnfreeze, importProductOptions, importSweepWarning, previewMatchesInput, releaseConfirmText, releaseDoneText, usedStateNote,
 } from '../../lib/mwcardtext'
-import { toSensitiveView, type SensitiveView } from '../../lib/cardpool-sensitive'
 import { dialog } from '../../lib/dialog'
 import { useAuthStore } from '../../stores/auth'
 
@@ -672,12 +661,6 @@ function productLabel(id: string) {
 
 function isMine(c: Card) {
   return c.pool_state === 'leased' && c.lease_owner === 'admin:' + auth.username
-}
-
-// 查看卡号：本人租用中的卡（计为本次租约已取卡号）；已用、停用、清零中的卡仅供排查，只查看、不改状态。
-// 可用的卡要先租用；别人租用中的卡不提供（会算到对方的租约上）。
-function canViewSensitive(c: Card) {
-  return isMine(c) || ['used', 'disabled', 'releasing'].includes(c.pool_state)
 }
 
 // ---------- 概览 ----------
@@ -823,30 +806,12 @@ async function fundCard(row: Card) {
   await runOrderAction(row, 'fund', '注资', { amount })
 }
 
-// 敏感信息：只存在内存里，关闭弹窗即清空；不写日志、不进存储。
-const sensitive = ref<SensitiveView | null>(null)
-const sensitiveOpen = ref(false)
+// 验证码：只存在内存里，关闭弹窗即清空；不写日志、不进存储。
 const otp = ref<{ otp: string; merchant_name: string; amount: string; currency: string; received_at: string } | null>(null)
 const otpOpen = ref(false)
 
-function clearSensitive() {
-  sensitive.value = null
-}
 function clearOtp() {
   otp.value = null
-}
-
-async function viewSensitive(row: Card) {
-  const note = sensitiveNote(row.pool_state, policy.value)
-  const ok = await dialog.confirm(`将显示卡 ${row.card_id}（后四位 ${row.last4}）的打码卡号（前 6 后 4），此操作会被记录。${note}继续？`, {
-    title: '查看卡号', okText: '查看',
-  })
-  if (!ok) return
-  const r = await api(`/cards/${encodeURIComponent(row.card_id)}/sensitive`, 'POST')
-  if (!r.ok) return dialog.toast(errText(r, '获取卡号失败'), 'err')
-  sensitive.value = toSensitiveView(r.data)
-  sensitiveOpen.value = true
-  loadCards()
 }
 
 async function viewOtp(row: Card) {
@@ -1443,14 +1408,13 @@ watch(tab, onTab)
 
 onMounted(() => {
   loadProducts()
-  loadPolicy(true) // 查看卡号、释放的确认文字要读使用次数上限和注销天数
+  loadPolicy(true) // 释放的确认文字要读使用次数上限和注销天数
   // 刷新后从 ?tab= 直接落在非概览标签时，加载该标签的数据
   if (tab.value === 'overview') loadOverview()
   else { loadOverview(); onTab(tab.value) }
 })
 
 onBeforeUnmount(() => {
-  clearSensitive()
   clearOtp()
 })
 </script>

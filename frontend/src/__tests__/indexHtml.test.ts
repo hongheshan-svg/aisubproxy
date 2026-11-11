@@ -25,8 +25,10 @@ describe('index.html 首屏', () => {
     expect(lc(html)).toContain(`<meta name="theme-color" content="${lc(resolveHex(dark, '--bg'))}"`)
   })
   it('首屏脚本在 teal 且非暗色时把 theme-color 设成深青亮色 --bg', () => {
-    expect(lc(html)).toContain(lc(resolveHex(light, '--bg')))
-    expect(html).toMatch(/skin === 'teal' && !dark/)
-    expect(html).toContain("meta[name=\"theme-color\"]")
+    // 绑在同一个 if 块里：条件、取 meta、setAttribute 写入亮色 --bg
+    const m = html.match(/if \(skin === 'teal' && !dark\) \{([^}]*)\}/)
+    expect(m).not.toBeNull()
+    expect(m![1]).toContain('meta[name="theme-color"]')
+    expect(lc(m![1])).toContain(`setattribute('content', '${lc(resolveHex(light, '--bg'))}')`)
   })
 })

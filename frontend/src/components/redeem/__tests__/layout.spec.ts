@@ -112,15 +112,33 @@ describe('FaqList 根元素不带 margin-top（两栏顶端对齐；窄屏间距
     const i = src.indexOf('.faq {')
     expect(src.slice(i, src.indexOf('}', i))).not.toContain('margin-top')
   })
+  // idx 处是否还在 UserTwoColumn 的 <template #aside> 里：最近的 #aside 在最近的 <UserTwoColumn 之后，且这段里 </template> 没有多于 <template（aside 没被关掉）
+  const inAside = (src: string, idx: number) => {
+    const before = src.slice(0, idx)
+    const a = before.lastIndexOf('#aside')
+    if (a < 0 || a < before.lastIndexOf('<UserTwoColumn')) return false
+    const seg = before.slice(a)
+    return (seg.match(/<\/template>/g) || []).length <= (seg.match(/<template\b/g) || []).length
+  }
+  it('inAside 能认出已关掉的 aside', () => {
+    const ok = '<UserTwoColumn><template #aside><div><FaqList /></div></template></UserTwoColumn>'
+    const bad = '<UserTwoColumn><template #aside><div /></template><FaqList /></UserTwoColumn>'
+    const none = '<UserTwoColumn><FaqList /></UserTwoColumn>'
+    expect(inAside(ok, ok.indexOf('<FaqList'))).toBe(true)
+    expect(inAside(bad, bad.indexOf('<FaqList'))).toBe(false)
+    expect(inAside(none, none.indexOf('<FaqList'))).toBe(false)
+  })
   it('FaqList 只用在 UserTwoColumn 的 aside 里（窄屏靠 .u-col-aside 的 32px）', () => {
     expect(read('components/redeem/UserTwoColumn.vue')).toMatch(/\.u-col-aside \{[^}]*margin-top: 32px/)
+    let n = 0
     for (const f of ['views/HomeView.vue', 'views/user/AgentSwapView.vue', 'views/user/BatchRedeemView.vue', 'views/user/BillingCheckView.vue', 'views/user/CDKStatusView.vue', 'views/user/RechargeView.vue']) {
-      for (const m of read(f).matchAll(/<FaqList/g)) {
-        const before = read(f).slice(0, m.index)
-        expect(before.lastIndexOf('#aside'), `${f} 的 FaqList 不在 #aside 里`).toBeGreaterThan(before.lastIndexOf('<UserTwoColumn') - 1)
-        expect(before.lastIndexOf('#aside')).toBeGreaterThan(-1)
+      const src = read(f)
+      for (const m of src.matchAll(/<FaqList/g)) {
+        n++
+        expect(inAside(src, m.index!), `${f} 的 FaqList 不在 #aside 里`).toBe(true)
       }
     }
+    expect(n).toBeGreaterThan(0)
   })
 })
 

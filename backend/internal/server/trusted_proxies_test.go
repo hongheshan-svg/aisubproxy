@@ -1,6 +1,8 @@
 package server
 
 import (
+	"bytes"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -47,5 +49,22 @@ func TestTrustedProxiesSkipsBadEntries(t *testing.T) {
 	alerts = nil
 	if got := clientIPVia(t, "", "172.16.0.5", alert); got != "172.16.0.5" || len(alerts) != 0 {
 		t.Fatalf("没配时不信任任何代理: %q %v", got, alerts)
+	}
+}
+
+// 审查修复：坏项里带账号口令或协议时，日志和告警都不能出现原文。
+func TestTrustedProxiesMasksBadEntries(t *testing.T) {
+	var buf bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(old)
+	var alerts []string
+	clientIPVia(t, "user:S3cretPass@proxy.example.com,http://u:S3cretPass@10.0.0.1:3128,"+strings.Repeat("x", 200)+",172.16.0.0/12", "172.16.0.5", func(s string) { alerts = append(alerts, s) })
+	all := buf.String() + strings.Join(alerts, "\n")
+	if strings.Contains(all, "S3cretPass") || strings.Contains(all, "proxy.example.com") || strings.Contains(all, strings.Repeat("x", 65)) {
+		t.Fatalf("日志或告警泄露坏项原文: %s", all)
+	}
+	if len(alerts) != 1 || !strings.Contains(alerts[0], "已隐去") {
+		t.Fatalf("应有一条告警并说明已隐去: %v", alerts)
 	}
 }

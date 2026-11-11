@@ -385,7 +385,7 @@ func setupRoutes(r *gin.Engine) {
 			admin.POST("/pay/breaker/resume", handler.AdminPayBreakerResume)
 			handler.RegisterPayProbeRoutes(admin)
 
-			// 卡服务商：列表与配置、默认发码服务商（旧接口）、就绪检查、本地码
+			// 卡服务商：列表与配置、就绪检查、本地码
 			admin.GET("/providers", handler.AdminListProviders)
 			admin.PUT("/providers/config", handler.AdminPutProviderConfig)
 			admin.GET("/providers/readiness", handler.AdminProviderReadiness)

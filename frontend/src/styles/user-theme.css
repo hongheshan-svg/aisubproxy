@@ -56,7 +56,7 @@ html[data-tone="dark"] .user-ui {
   .user-ui .u-page--split { max-width: 1120px; padding-left: 24px; padding-right: 24px; }
 }
 
-.user-ui .u-title { font-size: 28px; font-weight: 700; line-height: 1.3; margin: 0 0 12px; }
+.user-ui .u-title { font-size: 28px; font-weight: 700; font-style: normal; letter-spacing: -0.03em; line-height: 1.3; margin: 0 0 12px; }
 @media (max-width: 480px) {
   .user-ui .u-title { font-size: 24px; }
 }

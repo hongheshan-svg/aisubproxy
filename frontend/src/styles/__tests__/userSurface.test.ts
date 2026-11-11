@@ -107,3 +107,19 @@ describe('用户端卡片不带皮肤的硬投影和粗描边', () => {
     for (const v of used) expect(block, v).toContain(v + ':')
   })
 })
+
+describe('样式：用户端标题不吃皮肤的标题装饰（终审前端重要 2）', () => {
+  const userTheme = read('../user-theme.css')
+  const skins = read('../skins.css')
+  it('.user-ui .u-title 自己定死斜体和字距', () => {
+    const rule = /\.user-ui \.u-title\s*\{([^}]*)\}/.exec(userTheme)?.[1] || ''
+    expect(rule).toContain('font-style: normal')
+    expect(rule).toContain('letter-spacing: -0.03em')
+  })
+  it('皮肤里直接选 h1/h2/h3 的规则都排除用户端', () => {
+    for (const [name, text] of [['skins.css', skins], ['style.css', css]] as const) {
+      const bad = text.split('\n').filter((l) => /\[data-skin/.test(l) && /(^|[\s,>])h[1-3]\b/.test(l) && !l.includes(':not([data-surface="user"])'))
+      expect(bad, name).toEqual([])
+    }
+  })
+})

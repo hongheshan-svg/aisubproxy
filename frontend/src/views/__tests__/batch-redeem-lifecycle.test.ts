@@ -74,7 +74,7 @@ describe('重置、离开页面、换批次（F2-04b）', () => {
     expect(body('startPoll')).toContain('if (gen !== batchSeq) return')
     const p = body('pollBatch')
     expect(p).toContain('const gen = batchSeq')
-    expect(p).toMatch(/await api\([\s\S]*?if \(!live\(gen\)\) return/)
+    expect(p).toMatch(/await withAbortTimeout\([\s\S]*?if \(!live\(gen\)\) return/)
     expect(p).toContain('if (gen === batchSeq) pollInFlight = false')
   })
   it('live() 同时看页面还在、批次没换', () => {

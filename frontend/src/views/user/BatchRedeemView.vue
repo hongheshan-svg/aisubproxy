@@ -352,7 +352,7 @@ import FaqList from '../../components/redeem/FaqList.vue'
 import UserTwoColumn from '../../components/redeem/UserTwoColumn.vue'
 import { isDesktop } from '../../lib/layoutMode'
 import ExcelImportBlock from '../../components/ExcelImportBlock.vue'
-import { chunkTokens, nextPollPlan, parsePollResponse } from '../../lib/batch-poll'
+import { POLL_REQUEST_TIMEOUT_MS, chunkTokens, nextPollPlan, parsePollResponse, withAbortTimeout } from '../../lib/batch-poll'
 import {
   batchStats,
   hasUnknownQuerying,
@@ -633,10 +633,14 @@ async function pollBatch() {
     for (const group of chunkTokens(entries)) {
       let outcome
       try {
-        const { r, data } = await api('/api/v1/lookup/cdk/results', {
-          method: 'POST',
-          body: JSON.stringify({ tokens: group.map(([, v]) => v.token) }),
-        })
+        // 15 秒没回就中止：落到下面的 catch，算这一轮失败，下一轮再查
+        const { r, data } = await withAbortTimeout(POLL_REQUEST_TIMEOUT_MS, (signal) =>
+          api('/api/v1/lookup/cdk/results', {
+            method: 'POST',
+            body: JSON.stringify({ tokens: group.map(([, v]) => v.token) }),
+            signal,
+          }),
+        )
         outcome = parsePollResponse(r.status, data)
       } catch {
         outcome = parsePollResponse(0, null)

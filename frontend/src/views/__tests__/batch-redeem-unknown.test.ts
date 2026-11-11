@@ -51,6 +51,14 @@ describe('兑换请求结果未知时只查不重发（F2-03）', () => {
     expect(b).toContain("'/api/v1/lookup/cdk/results'")
     expect(b).not.toMatch(/cdk\/redeem|cdk\/preflight/)
   })
+  it('只读查询带 15 秒超时，超时按这一次查询失败处理；兑换请求不加超时（F2-03 裁定）', () => {
+    const b = body('pollBatch')
+    expect(b).toMatch(/await withAbortTimeout\(POLL_REQUEST_TIMEOUT_MS, \(signal\) =>\s*api\('\/api\/v1\/lookup\/cdk\/results', \{[\s\S]*?signal,\s*\}\)/)
+    // 超时抛错落到原来的 catch：算整轮失败，下一轮再查，之后照常检查 90 秒时限
+    expect(b).toMatch(/\} catch \{\s*outcome = parsePollResponse\(0, null\)/)
+    const r = body('runPreflightRedeem')
+    expect(r).not.toMatch(/withAbortTimeout|signal/)
+  })
   it('到时限还没查到兑换记录：停止查询，标「结果未知」（不是失败），提示去卡密查询页核对、不要重复提交（裁定 1）', () => {
     const e = body('expireUnknownTargets')
     expect(e).toContain('unknownExpired(target.unknownSince ?? 0, now)')

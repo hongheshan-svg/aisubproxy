@@ -187,7 +187,7 @@
                   class="text-xs text-muted"
                 >
                   {{ t('batch.willUseAccount') }}
-                  <span class="font-mono ml-1 text-ink">{{ sessionPool[currentExcelIdx].email }}</span>
+                  <span class="font-mono ml-1 text-ink">{{ maskEmail(sessionPool[currentExcelIdx].email) }}</span>
                 </p>
                 <textarea
                   ref="sessionBoxRef"
@@ -205,7 +205,7 @@
                   class="text-xs text-muted"
                 >
                   {{ t('batch.willUseAccount') }}
-                  <span class="font-mono ml-1 text-ink">{{ mailboxPool[currentExcelIdx].email }}</span>
+                  <span class="font-mono ml-1 text-ink">{{ maskEmail(mailboxPool[currentExcelIdx].email) }}</span>
                 </p>
                 <textarea
                   ref="sessionBoxRef"
@@ -293,7 +293,7 @@
                     v-if="it.progressMsg || it.verifyMsg || it.email || it.cardLastFour || it.redemptionToken"
                     class="pl-7 text-[11px] text-muted space-y-0.5"
                   >
-                    <div v-if="it.email">{{ t('batch.account') }}：{{ it.email }}</div>
+                    <div v-if="it.email">{{ t('batch.account') }}：{{ maskEmail(it.email) }}</div>
                     <div v-if="it.cardLastFour">{{ t('batch.card') }}：•••• {{ it.cardLastFour }}</div>
                     <div v-else-if="it.status === 'processing' || it.status === 'success'">
                       {{ t('batch.card') }}：{{ t('batch.cardPending') }}
@@ -359,6 +359,8 @@ import {
 import SessionHelp from '../../components/SessionHelp.vue'
 import { isGrokCredential } from '../../lib/grok'
 import { isClaudePreview } from '../../lib/claude'
+// 屏幕上的邮箱只显示打码后的（和单张兑换页同一个函数）；导出表格仍用原值（F2-21）
+import { maskEmail } from '../../lib/sessionCheck'
 import {
   AUTO_SUBMIT_CONCURRENCY,
   BATCH_MAX_KEYS,
@@ -722,7 +724,7 @@ async function onPickFile(file: File | null) {
     importMsg.value =
       `已从「${file.name}」识别 ${sessions.length} 条 Session（${mode}）` +
       (skippedDup > 0 ? `，已去重跳过 ${skippedDup} 条` : '') +
-      (sessions[0]?.email ? `，如 ${sessions[0].email}` : '')
+      (sessions[0]?.email ? `，如 ${maskEmail(sessions[0].email)}` : '')
     lastFilledItemId.value = null
     if (phase.value === 'run' && currentExcelIdx.value >= 0) {
       fillCredentialFromPool(currentExcelIdx.value)

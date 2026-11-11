@@ -88,11 +88,15 @@ export function formatMinor(minor: number, currency: string): string {
   return `${neg ? '-' : ''}${text} ${currency}`
 }
 
-/** 订单金额栏：大于 0 显示金额；页面读到 0 元（有原文）标「0 元开通」；没读到金额显示「—」。 */
-export function orderAmountLabel(minor: number, text: string, currency: string): string {
+/**
+ * 订单金额栏：大于 0 显示金额；页面金额是 0（原文有数字且没有非零数字）时，成功的单标「0 元开通」，其他状态标「页面显示 0 元」；
+ * 没读到、读不出（如「Free」）、币种不符（如「US$20.00」）都显示「—」。后端在判错之前就记下页面原文，所以不能只看原文非空。
+ */
+export function orderAmountLabel(minor: number, text: string, currency: string, state: string): string {
   if (minor > 0) return formatMinor(minor, currency)
-  if (minor === 0 && text) return formatMinor(0, currency) + '（0 元开通）'
-  return '—'
+  const pageZero = minor === 0 && /\d/.test(text) && !/[1-9]/.test(text)
+  if (!pageZero) return '—'
+  return formatMinor(0, currency) + (state === 'succeeded' ? '（0 元开通）' : '（页面显示 0 元）')
 }
 
 /** 点数档（kind=credit）：没有 ChatGPT 套餐名，按点数数量下单。 */
@@ -171,8 +175,9 @@ export function builtinRegions(p: FormPlan, builtin: BuiltinPrices | undefined):
   return p.rows.map((r) => r.region).filter((r) => !!builtin?.[p.key]?.[r])
 }
 
-/** 表格下方的说明：内置价覆盖哪些地区。 */
+/** 订阅套餐表上方的说明：允许 0 元开通。 */
 export const ALLOW_ZERO_NOTE = '结账页显示 0 元（首月免费等优惠）时照样开通；不勾则放弃这一单，不注资。'
+/** 表格下方的说明：内置价覆盖哪些地区。 */
 export const BUILTIN_NOTE = '美国、菲律宾的预期金额、最低金额、上限已按官方价格内置（可改）；其他地区要自己填。'
 
 /** 金额上限低于预期金额时的提示（两者都大于 0 才比较），与后端保存时的校验一致。 */

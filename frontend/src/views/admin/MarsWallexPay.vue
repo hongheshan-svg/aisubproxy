@@ -106,7 +106,7 @@
               <template #default="{ row }">{{ sourceLabel(row.source, row.source_ref) }}</template>
             </el-table-column>
             <el-table-column label="金额" min-width="130">
-              <template #default="{ row }">{{ orderAmountLabel(row.amount_minor, row.amount_text, row.currency) }}</template>
+              <template #default="{ row }">{{ orderAmountLabel(row.amount_minor, row.amount_text, row.currency, row.state) }}</template>
             </el-table-column>
             <el-table-column label="卡尾号" width="80">
               <template #default="{ row }">{{ row.card_last4 || '—' }}</template>
@@ -221,7 +221,7 @@
               <el-descriptions-item label="付款前点数">{{ detail.order.credit_balance_before || '没有读到' }}</el-descriptions-item>
             </template>
             <el-descriptions-item label="金额">
-              {{ orderAmountLabel(detail.order.amount_minor, detail.order.amount_text, detail.order.currency) }}
+              {{ orderAmountLabel(detail.order.amount_minor, detail.order.amount_text, detail.order.currency, detail.order.state) }}
               （上限 {{ formatMinor(detail.order.cap_minor, detail.order.currency) }}，注资 {{ usd(detail.order.fund_cents) }} 美元）
             </el-descriptions-item>
             <el-descriptions-item label="账号">{{ detail.order.account_email || '—' }}</el-descriptions-item>

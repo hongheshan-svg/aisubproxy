@@ -16,7 +16,7 @@
     <template v-if="readiness">
       <div v-if="firstPaymentMissing" class="alert alert-warning text-sm first-pay" role="alert" data-testid="first-pay">
         <b>还差一笔系统自动确认成功的真实付款。</b>
-        试运行单和人工定论的单都不算。在跑通这一笔之前，不能把 {{ info.display_name || info.name }} 的码卖给用户。
+        试运行单、人工定论的单和 0 元开通的单都不算。在跑通这一笔之前，不能把 {{ info.display_name || info.name }} 的码卖给用户。
         <router-link :to="{ path: '/ops/marswallex-pay', query: { provider: info.name } }" class="underline" data-testid="first-pay-link">去自动付款做真实付款</router-link>
       </div>
 

@@ -103,6 +103,9 @@ type Service struct {
 
 	alertMu   sync.Mutex
 	alertSent map[string]int64 // key → 最后发送时所在的北京日起点（Unix 秒）
+
+	refreshFailMu    sync.Mutex
+	refreshFailSince map[string]int64 // 回收中刷新卡详情连续失败的卡 → 第一次失败的时间（Unix 秒），刷新成功即删除
 }
 
 // New 创建服务。
@@ -114,10 +117,11 @@ func New(opts Options) *Service {
 		opts.Alert = func(text string) { log.Printf("[cardpool] 告警: %s", text) }
 	}
 	return &Service{
-		opts:            opts,
-		kickEvents:      make(chan struct{}, 1),
-		kickReplenishCh: make(chan struct{}, 1),
-		alertSent:       map[string]int64{},
+		opts:             opts,
+		kickEvents:       make(chan struct{}, 1),
+		kickReplenishCh:  make(chan struct{}, 1),
+		alertSent:        map[string]int64{},
+		refreshFailSince: map[string]int64{},
 	}
 }
 

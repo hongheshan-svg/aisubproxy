@@ -251,8 +251,8 @@ func (s *Service) advanceFrozen(ctx context.Context, c *Card) error {
 	return s.recycleStatus(ctx, fresh, "CANCELED")
 }
 
-// refreshForRecycle 刷新卡详情。出错时 next_action_at = now + 60 并返回错误；
-// 刷新期间卡的池状态已经变化时返回 (nil, nil)，留给下一轮按新状态处理。
+// refreshForRecycle 刷新卡详情。出错时 next_action_at = now + 60 并返回错误，连续失败满 30 分钟告警（见 noteRefreshFailure）；
+// 刷新成功就清掉失败计时。刷新期间卡的池状态已经变化时返回 (nil, nil)，留给下一轮按新状态处理。
 func (s *Service) refreshForRecycle(ctx context.Context, c *Card) (*Card, error) {
 	fresh, err := s.refreshCard(ctx, c.CardID, sourceRecycle)
 	if err != nil {
@@ -260,12 +260,39 @@ func (s *Service) refreshForRecycle(ctx context.Context, c *Card) (*Card, error)
 		if uerr := s.setNextAction(ctx, c.CardID, c.PoolState, &at); uerr != nil {
 			return nil, uerr
 		}
+		s.noteRefreshFailure(c, err)
 		return nil, fmt.Errorf("刷新卡详情失败，1 分钟后重试: %w", err)
 	}
+	s.refreshFailMu.Lock()
+	delete(s.refreshFailSince, c.CardID)
+	s.refreshFailMu.Unlock()
 	if fresh.PoolState != c.PoolState {
 		return nil, nil
 	}
 	return fresh, nil
+}
+
+// refreshFailAlertAfter：回收中刷新卡详情连续失败多久才告警。平台偶尔抖一下不告警，卡一直卡住才提醒。
+const refreshFailAlertAfter = 30 * time.Minute
+
+// noteRefreshFailure 记下卡 c 回收时刷新卡详情失败：第一次失败记时间（只在内存里，进程重启从头计时），
+// 连续失败满 refreshFailAlertAfter 告警（key recycle-refresh:<卡>，每卡每个北京日一条；不和 recycle:<卡> 共用，免得互相压掉）。
+// 告警文字只带 safeErr 摘要，不带平台返回的 message。
+func (s *Service) noteRefreshFailure(c *Card, err error) {
+	now := s.now().Unix()
+	s.refreshFailMu.Lock()
+	since, ok := s.refreshFailSince[c.CardID]
+	if !ok {
+		since = now
+		s.refreshFailSince[c.CardID] = now
+	}
+	s.refreshFailMu.Unlock()
+	age := time.Duration(now-since) * time.Second
+	if age < refreshFailAlertAfter {
+		return
+	}
+	s.alert("recycle-refresh:"+c.CardID, fmt.Sprintf("卡 %s 回收（%s）时刷新卡详情已连续失败 %d 分钟，卡停在 %s，每分钟重试一次；请到 MarsWallex 后台核查这张卡。最后错误：%s",
+		c.CardID, poolStateNames[c.PoolState], int(age/time.Minute), c.PoolState, truncate(safeErr(err), 200)))
 }
 
 // recycleWithdraw 把卡上的可用余额全部转出。

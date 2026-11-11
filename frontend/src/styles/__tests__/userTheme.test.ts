@@ -36,6 +36,9 @@ describe('user-theme.css', () => {
     expect(dark).toContain('--u-warn-bg: #2E2410')
     expect(light).toContain('--u-warn-bg: #FBF3E4')
   })
+  it('用户端标题一律继承系统字体，不跟皮肤的展示字体（规格 §3.5）', () => {
+    expect(css).toMatch(/\.user-ui :is\(h1, h2, h3, h4, h5, h6\) \{ font-family: inherit; \}/)
+  })
   it('不再有 prefers-color-scheme、[data-theme、自带底色', () => {
     expect(css).not.toContain('prefers-color-scheme')
     expect(css).not.toContain('[data-theme')

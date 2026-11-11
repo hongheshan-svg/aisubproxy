@@ -35,6 +35,9 @@ html[data-tone="dark"] .user-ui {
   --u-disabled-ink: #9DB5B0;
 }
 
+/* 标题不跟皮肤的展示字体：全局 h1–h4 用 var(--font-display)，这里压回用户端的系统字体 */
+.user-ui :is(h1, h2, h3, h4, h5, h6) { font-family: inherit; }
+
 /* 居中一栏，最宽 520px，内容左对齐 */
 .user-ui input[type='checkbox'],
 .user-ui input[type='radio'] { accent-color: var(--u-primary); }

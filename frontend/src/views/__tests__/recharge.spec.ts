@@ -18,6 +18,9 @@ vi.mock('../../i18n', () => ({ i18n: { global: { t: (k: string) => k } } }))
 vi.mock('../../composables/useRedeemFlow', () => ({ useRedeemFlow: () => hoisted.flow }))
 
 import RechargeView from '../user/RechargeView.vue'
+import { isDesktop } from '../../lib/layoutMode'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
 const noop = () => undefined
 function fakeFlow(o: Record<string, unknown> = {}) {
@@ -149,5 +152,55 @@ describe('兑换页：五屏切换', () => {
       expect(t).not.toMatch(/[一-鿿]/)
       for (const w of BANNED) expect(t.toLowerCase()).not.toContain(w.toLowerCase())
     }
+  })
+})
+
+describe('兑换页：电脑两栏', () => {
+  const aside = (html: string) => html.slice(html.indexOf('<aside'), html.indexOf('</aside>'))
+  const count = (html: string, s: string) => html.split(s).length - 1
+  const cred = { screen: 'credential', code: 'SXC-AAAA', previewInfo: plus }
+
+  async function withDesktop(v: boolean, o: Record<string, unknown>) {
+    isDesktop.value = v
+    try { return await render(o) } finally { isDesktop.value = false }
+  }
+
+  it('第 ② 屏电脑布局：设备说明在右栏里，且只出现一次', async () => {
+    const html = await withDesktop(true, cred)
+    expect(count(html, 'data-testid="device-guide"')).toBe(1)
+    expect(aside(html)).toContain('data-testid="device-guide"')
+    expect(html).toContain('data-testid="credential-next"')
+  })
+  it('第 ② 屏电脑布局 Claude 码：右栏是常见问题，没有 ChatGPT 设备说明', async () => {
+    const claude = { plan: 'claude_pro', product: 'claude', provider_kind: 'card_supply', kind: 'subscription' }
+    const html = await withDesktop(true, { screen: 'credential', code: 'SXC-AAAA', previewInfo: claude })
+    expect(html).not.toContain('data-testid="device-guide"')
+    expect(aside(html)).toContain('id="help"')
+  })
+  it('第 ② 屏窄屏：设备说明在主栏，不在 aside 里，也没有 aside', async () => {
+    const html = await withDesktop(false, cred)
+    expect(count(html, 'data-testid="device-guide"')).toBe(1)
+    expect(html).not.toContain('<aside')
+  })
+  it('其他屏电脑布局右栏有常见问题，窄屏没有 id="help"', async () => {
+    const confirm = { screen: 'confirm', code: 'SXC-AAAA', previewInfo: plus, account }
+    for (const o of [{}, confirm]) {
+      const d = await withDesktop(true, o)
+      expect(count(d, 'id="help"')).toBe(1)
+      expect(aside(d)).toContain('id="help"')
+      expect(await withDesktop(false, o)).not.toContain('id="help"')
+    }
+  })
+  it('结构：CredentialStep 不带随 isDesktop 变的 key，也不在以 isDesktop 为条件的 v-if 分支里（跨 1024px 不丢已粘贴内容）', () => {
+    const src = readFileSync(fileURLToPath(new URL('../user/RechargeView.vue', import.meta.url)), 'utf8')
+    const tpl = src.slice(src.indexOf('<template>\n  <UserShell>'))
+    const tag = tpl.match(/<CredentialStep[^>]*>/)![0]
+    expect(tag).not.toMatch(/:key/)
+    expect(tag).toContain(':guide-in-aside="isDesktop"')
+    const before = tpl.slice(0, tpl.indexOf('<CredentialStep'))
+    // 离 CredentialStep 最近的打开标签（含 v-if/v-else-if/v-else）不能带 isDesktop
+    const opens = [...before.matchAll(/<(template|div|section)[^>]*(v-if|v-else-if|v-else)[^>]*>/g)]
+    for (const m of opens) expect(m[0]).not.toContain('isDesktop')
+    expect(tpl.slice(0, tpl.indexOf('</UserTwoColumn>'))).toContain('<CredentialStep')
   })
 })

@@ -1,47 +1,72 @@
 <template>
-  <div class="min-h-screen agent-shell">
-    <header class="flex flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3 border-b">
-      <router-link to="/agent" class="font-semibold">代理商后台</router-link>
-      <nav class="flex flex-wrap gap-4 text-sm" aria-label="代理商导航">
-        <router-link v-for="n in nav" :key="n.to" :to="n.to" :class="{ 'font-semibold underline': isActive(n) }">{{ n.label }}</router-link>
-      </nav>
-      <div class="ml-auto flex items-center gap-3 text-sm">
-        <span v-if="me">{{ me.display_name || me.username }} · 余额 {{ fmtUsd(me.balance_cents || 0) }}</span>
-        <button type="button" class="btn-ghost" @click="logout">退出登录</button>
-      </div>
-    </header>
-    <main class="p-4 max-w-6xl mx-auto">
-      <router-view />
-    </main>
-  </div>
+  <SideNavShell
+    :groups="groups"
+    :is-active="isActive"
+    :brand-name="brand.name || '代理商后台'"
+    :logo-src="logoSrc"
+    sub-label="代理商后台"
+    nav-label="代理商导航"
+    nav-id="agent-sidenav"
+    pref-key="agent-sidenav"
+    home-path="/agent"
+  >
+    <template #topbar>
+      <span class="agent-topbar-title">{{ currentTitle }}</span>
+    </template>
+
+    <template #foot="{ rail }">
+      <AgentSideMe v-if="me" :name="me.display_name || me.username || ''" :balance-cents="me.balance_cents || 0" :rail="rail" />
+      <div class="sn-tools"><ThemeToggle /></div>
+      <button type="button" class="sn-logout" title="退出登录" @click="logout">
+        <el-icon><SwitchButton /></el-icon>
+        <span v-if="!rail">退出登录</span>
+      </button>
+    </template>
+
+    <router-view />
+  </SideNavShell>
 </template>
 
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { agentApi, setAgentUnauthorizedHandler } from '../lib/agentApi'
-import { fmtUsd } from '../lib/agentMoney'
 import { resetAgentSession } from '../lib/agentSession'
 import { orderRetry } from '../lib/agentViews'
+import { siteBrand } from '../theme'
+import ThemeToggle from '../components/ThemeToggle.vue'
+import AgentSideMe from '../components/shell/AgentSideMe.vue'
+import SideNavShell from '../components/shell/SideNavShell.vue'
+import type { NavGroup } from '../lib/adminNav'
 
-type Nav = { to: string; label: string; exact?: boolean }
-const nav: Nav[] = [
-  { to: '/agent', label: '概览', exact: true },
-  { to: '/agent/order', label: '下单' },
-  { to: '/agent/codes', label: '我的码' },
-  { to: '/agent/orders', label: '订单' },
-  { to: '/agent/ledger', label: '流水' },
-  { to: '/agent/integration', label: '对接异次元' },
-  { to: '/agent/account', label: '账号' },
+// 菜单：一个无名分组（不显示分组标题），顺序、路径、文字不变
+const nav = [
+  { path: '/agent', title: '概览', icon: 'Odometer' },
+  { path: '/agent/order', title: '下单', icon: 'ShoppingCart' },
+  { path: '/agent/codes', title: '我的码', icon: 'Tickets' },
+  { path: '/agent/orders', title: '订单', icon: 'List' },
+  { path: '/agent/ledger', title: '流水', icon: 'Wallet' },
+  { path: '/agent/integration', title: '对接异次元', icon: 'Connection' },
+  { path: '/agent/account', title: '账号', icon: 'User' },
 ]
+const groups: NavGroup[] = [
+  { name: '', items: nav.map((n) => ({ ...n, fullTitle: n.title, group: '', feature: '' })) },
+]
+
+const brand = siteBrand
+const logoSrc = computed(() => {
+  const v = brand.value.logoVersion
+  return v ? `/api/v1/public/site/logo?v=${encodeURIComponent(v)}` : ''
+})
 
 const route = useRoute()
 const router = useRouter()
 const me = ref<{ username?: string; display_name?: string; balance_cents?: number } | null>(null)
 
-function isActive(n: Nav) {
-  return n.exact ? route.path === n.to : route.path === n.to || route.path.startsWith(n.to + '/')
+function isActive(p: string) {
+  return p === '/agent' ? route.path === p : route.path === p || route.path.startsWith(p + '/')
 }
+const currentTitle = computed(() => nav.find((n) => isActive(n.path))?.title || '')
 
 function toLogin() {
   resetAgentSession()
@@ -94,3 +119,21 @@ onMounted(() => {
 })
 onBeforeUnmount(() => setAgentUnauthorizedHandler(null))
 </script>
+
+<style scoped>
+/* 侧栏底部（插槽内容，样式在这里）：颜色全用侧栏变量，不用浅色皮肤的变量 */
+.sn-tools { display: flex; gap: 6px; }
+.sn-tools :deep(.btn-ghost) { color: var(--side-ink); background: transparent; border-color: transparent; box-shadow: none; }
+.sn-tools :deep(.btn-ghost:hover) { color: var(--side-ink); background: color-mix(in srgb, var(--side-ink) 12%, transparent); border-color: transparent; }
+.sn-tools :deep(.btn-ghost:focus-visible),
+.sn-logout:focus-visible { outline: 2px solid var(--side-ink); outline-offset: -2px; }
+.is-collapsed .sn-tools { justify-content: center; }
+.sn-logout {
+  width: 100%; display: flex; align-items: center; gap: 8px; font-size: 13px;
+  padding: 6px 8px; border-radius: var(--radius-md);
+  background: transparent; border: 1px solid transparent; color: var(--side-ink); cursor: pointer;
+}
+.is-collapsed .sn-logout { justify-content: center; padding: 6px 0; }
+.sn-logout:hover { background: color-mix(in srgb, var(--side-ink) 12%, transparent); }
+.agent-topbar-title { font-size: 14px; font-weight: 600; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+</style>

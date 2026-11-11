@@ -1,31 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { applySettings, checkLogoFile, checkPrimary, LOGO_EMPTY, LOGO_MAX_BYTES, PRESET_COLORS } from '../siteAppearance'
-
-describe('checkPrimary 是否可保存', () => {
-  it('深青可保存，并给出两位小数的对比度', () => {
-    const r = checkPrimary('#0F6B5F')
-    expect(r.canSave).toBe(true)
-    expect(r.ratio!).toBeGreaterThanOrEqual(4.5)
-    expect(r.ratioText).toMatch(/^白字对比度 \d+\.\d{2}:1$/)
-    expect(r.message).toBe('')
-  })
-  it('6 个预设色都可保存', () => {
-    expect(PRESET_COLORS).toHaveLength(6)
-    for (const p of PRESET_COLORS) expect(checkPrimary(p.hex).canSave).toBe(true)
-  })
-  it('太浅的颜色不可保存，提示逐字照抄', () => {
-    const r = checkPrimary('#7FD4C4')
-    expect(r.canSave).toBe(false)
-    expect(r.message).toBe('这个颜色太浅，按钮上的白字看不清，请选深一点的颜色')
-  })
-  it('格式不对不可保存，提示格式要求', () => {
-    for (const v of ['', '#FFF', '0F6B5F', '#GGGGGG', '#0F6B5F0']) {
-      const r = checkPrimary(v)
-      expect(r.canSave).toBe(false)
-      expect(r.message).toContain('#RRGGBB')
-    }
-  })
-})
+import { applySettings, buildSavePayload, checkLogoFile, LOGO_EMPTY, LOGO_MAX_BYTES } from '../siteAppearance'
 
 describe('checkLogoFile 文件检查', () => {
   it('PNG、JPEG、WebP 且不超过 256 KB 通过', () => {
@@ -47,18 +21,15 @@ describe('checkLogoFile 文件检查', () => {
 })
 
 describe('applySettings 设置转表单状态', () => {
-  const cur = { brand_name: 'A', brand_sub: 'B', primary_color: '#0F6B5F', logoVersion: 'old' }
+  const cur = { brand_name: 'A', brand_sub: 'B', logoVersion: 'old' }
   it('缺 theme_mode 时不改主题', () => {
     expect(applySettings({}, cur).theme).toBeUndefined()
     expect(applySettings({ theme_mode: 'dark' }, cur).theme).toBe('dark')
   })
-  it('缺 primary_color 时主色保持当前值，也不写进品牌', () => {
-    const r = applySettings({}, cur)
-    expect(r.primary_color).toBe('#0F6B5F')
-    expect(r.serverPrimary).toBeUndefined()
-    const r2 = applySettings({ primary_color: '#1E4FA8' }, cur)
-    expect(r2.primary_color).toBe('#1E4FA8')
-    expect(r2.serverPrimary).toBe('#1E4FA8')
+  it('服务端返回 primary_color 时，表单状态里没有这个键', () => {
+    const r = applySettings({ primary_color: '#1E4FA8' }, cur)
+    expect(Object.keys(r)).not.toContain('primary_color')
+    expect(Object.keys(r)).not.toContain('serverPrimary')
   })
   it('logo_version 为空和不为空', () => {
     expect(applySettings({ logo_version: '' }, cur).logoVersion).toBe('')
@@ -71,5 +42,13 @@ describe('applySettings 设置转表单状态', () => {
     expect(r.brand_sub).toBe('B')
     expect(r.skin).toBe('ink')
     expect(applySettings({}, cur).skin).toBeUndefined()
+  })
+})
+
+describe('buildSavePayload 保存内容', () => {
+  it('键正好是 brand_name、brand_sub、skin、theme_mode', () => {
+    const p = buildSavePayload({ brand_name: 'A', brand_sub: 'B', logoVersion: 'x' }, 'ink' as any, 'dark')
+    expect(Object.keys(p).sort()).toEqual(['brand_name', 'brand_sub', 'skin', 'theme_mode'])
+    expect(p).toEqual({ brand_name: 'A', brand_sub: 'B', skin: 'ink', theme_mode: 'dark' })
   })
 })

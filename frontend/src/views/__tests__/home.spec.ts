@@ -20,6 +20,7 @@ vi.mock('../../components/ThemeToggle.vue', () => ({ default: defineComponent({ 
 vi.mock('../../i18n', () => ({ i18n: { global: { t: (k: string) => k } } }))
 
 import HomeView from '../HomeView.vue'
+import { isDesktop } from '../../lib/layoutMode'
 import CodeStatusCard from '../../components/redeem/CodeStatusCard.vue'
 import CodeEntry from '../../components/redeem/CodeEntry.vue'
 import ProgressTicks from '../../components/redeem/ProgressTicks.vue'
@@ -116,6 +117,32 @@ describe('首页', () => {
     expect(s).toContain('Organization ID')
     expect(s).toContain('chatgpt.com/api/auth/session')
     expect(s).not.toMatch(/[一-鿿]/)
+  })
+})
+
+describe('首页：电脑两栏与窄屏顺序', () => {
+  const aside = (html: string) => html.slice(html.indexOf('<aside'), html.indexOf('</aside>'))
+
+  it('电脑布局：有步骤条且第 1 格是当前步；常见问题只出现一次且在 aside 里', async () => {
+    isDesktop.value = true
+    try {
+      const html = await render(HomeView)
+      expect(html).toContain('data-testid="progress-ticks"')
+      expect(html).toMatch(/<li[^>]*aria-current="step"/)
+      expect(html.match(/<li[^>]*aria-current="step"/g)!.length).toBe(1)
+      expect(html.indexOf('aria-current="step"')).toBeLessThan(html.indexOf('data-testid="progress-ticks"') + 400)
+      expect((html.match(/id="help"/g) || []).length).toBe(1)
+      expect(html).toContain('<aside')
+      expect(aside(html)).toContain('id="help"')
+    } finally { isDesktop.value = false }
+  })
+
+  it('窄屏：没有步骤条；常见问题只出现一次，排在「卡密在哪」之后', async () => {
+    isDesktop.value = false
+    const html = await render(HomeView)
+    expect(html).not.toContain('data-testid="progress-ticks"')
+    expect((html.match(/id="help"/g) || []).length).toBe(1)
+    expect(html.indexOf('id="help"')).toBeGreaterThan(html.indexOf('data-testid="code-where"'))
   })
 })
 

@@ -371,13 +371,13 @@ html[data-skin='ocean'] {
   --ink: #1d1d1f;
   --ink-2: #515154;
   --ink-3: #86868b;
-  --primary: #0a84ff;
-  --primary-hover: #2b95ff;
-  --primary-active: #0066d6;
+  --primary: #0070e1;
+  --primary-hover: #0381ff;
+  --primary-active: #0053ae;
   --primary-soft: rgba(10, 132, 255, 0.12);
-  --el-color-primary: #0a84ff;
+  --el-color-primary: #0070e1;
   --btn-radius: 999px;
-  --btn-img: linear-gradient(135deg, #3aa0ff 0%, #0a84ff 45%, #0058d6 100%);
+  --btn-img: linear-gradient(135deg, #3aa0ff 0%, #0070e1 45%, #0058d6 100%);
   --btn-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.45), 0 10px 24px -10px rgba(10, 132, 255, 0.7);
   --btn-shadow-hover: inset 0 1px 1px rgba(255, 255, 255, 0.45), 0 16px 32px -12px rgba(10, 132, 255, 0.75);
   --btn2-bg: rgba(255, 255, 255, 0.75);
@@ -422,7 +422,7 @@ html.dark[data-skin='ocean'] {
   --ink-2: #c7c7cc;
   --ink-3: #8e8e93;
   --primary: #0a84ff;
-  --primary-on: #ffffff;
+  --primary-on: #0b1220;
   --btn2-bg: rgba(255, 255, 255, 0.08);
   --btn2-border: 1px solid rgba(255, 255, 255, 0.1);
   --card-border: 1px solid rgba(255, 255, 255, 0.08);
@@ -513,7 +513,7 @@ html[data-skin='forest'] {
   --input-border: 1px solid #cfe9dc;
   --tabs-bg: rgba(255, 255, 255, 0.7);
   --tab-radius: 10px;
-  --tab-active-bg: #059669;
+  --tab-active-bg: #05825b;
   --tab-active-fg: #ffffff;
   --tab-active-shadow: 0 6px 14px -6px rgba(5, 150, 105, 0.6);
   --title-fg: #065f46;

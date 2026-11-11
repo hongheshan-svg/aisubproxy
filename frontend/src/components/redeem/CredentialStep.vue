@@ -5,33 +5,30 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { FlowError } from '../../composables/useRedeemFlow'
-import { claudeCredential, claudeOrgCheck, isClaudePlan, normalizeOrgId } from '../../lib/claude'
+import { claudeCredential, claudeOrgCheck, normalizeOrgId } from '../../lib/claude'
 import { detectDevice } from '../../lib/device'
-import { grokCredential, isGrokPlan } from '../../lib/grok'
+import { grokCredential } from '../../lib/grok'
 import { isCreditCode } from '../../lib/mwredeem'
-import { targetPlanOf } from '../../lib/redeemAccount'
+import { credentialKindOf } from '../../lib/redeemAccount'
 import { checkPastedSession } from '../../lib/sessionCheck'
-import { isXPremiumPlan, xPremiumCredential } from '../../lib/x-premium'
+import { xPremiumCredential } from '../../lib/x-premium'
 import CreditTermsBox from './CreditTermsBox.vue'
 import DeviceGuide from './DeviceGuide.vue'
 import SessionPasteBox from './SessionPasteBox.vue'
 
 // busy：核对或自动开通途中；submitting：自动开通已发出兑换请求
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const props = defineProps<{ preview: any; busy: boolean; submitting: boolean; error: FlowError | null }>()
+const props = withDefaults(
+  // guideInAside：电脑布局下设备说明放到页面右栏，本组件不再画
+  defineProps<{ preview: any; busy: boolean; submitting: boolean; error: FlowError | null; guideInAside?: boolean }>(),
+  { guideInAside: false },
+)
 const emit = defineEmits<{
   submit: [payload: { credential: { mode: 'session'; session: string }; grokSession?: string; claudeOrgId?: string; agreeCreditTerms: boolean }]
 }>()
 const { t } = useI18n({ useScope: 'global' })
 
-type Kind = 'claude' | 'grok' | 'x' | 'chatgpt'
-const kind = computed<Kind>(() => {
-  const p = targetPlanOf(props.preview)
-  if (isClaudePlan(p)) return 'claude'
-  if (isXPremiumPlan(p)) return 'x'
-  if (isGrokPlan(p)) return 'grok'
-  return 'chatgpt'
-})
+const kind = computed(() => credentialKindOf(props.preview))
 
 // 没有 navigator（渲染测试、服务端）时默认电脑；挂载后再按设备改
 const device = ref<'ios' | 'android' | 'desktop'>('desktop')
@@ -87,7 +84,7 @@ function submit() {
     <p v-else-if="preview?.requires_subscription" class="u-warn" data-testid="cond-warn">{{ t('redeemUi.cond.subscription') }}</p>
 
     <template v-if="kind === 'chatgpt'">
-      <DeviceGuide :initial="device" />
+      <DeviceGuide v-if="!guideInAside" :initial="device" />
       <SessionPasteBox v-model="raw" />
     </template>
 

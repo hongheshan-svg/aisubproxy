@@ -1,81 +1,86 @@
 <template>
   <UserShell>
     <UserPageHeader :title="t('redeemTabs.billing')" :subtitle="t('hero.billingSub')" back />
-    <main class="u-page bill">
-      <div class="u-card bill-stack">
-        <div class="bill-modes">
-          <button type="button" class="u-btn-secondary bill-mode" :class="{ 'is-on': mode === 'cdk' }" :aria-pressed="mode === 'cdk'" @click="mode = 'cdk'">{{ t('billingCheck.modeCdk') }}</button>
-          <button type="button" class="u-btn-secondary bill-mode" :class="{ 'is-on': mode === 'session' }" :aria-pressed="mode === 'session'" @click="mode = 'session'">{{ t('billingCheck.modeLogin') }}</button>
+    <main class="u-page u-page--split bill">
+      <UserTwoColumn>
+
+        <div class="u-card bill-stack">
+          <div class="bill-modes">
+            <button type="button" class="u-btn-secondary bill-mode" :class="{ 'is-on': mode === 'cdk' }" :aria-pressed="mode === 'cdk'" @click="mode = 'cdk'">{{ t('billingCheck.modeCdk') }}</button>
+            <button type="button" class="u-btn-secondary bill-mode" :class="{ 'is-on': mode === 'session' }" :aria-pressed="mode === 'session'" @click="mode = 'session'">{{ t('billingCheck.modeLogin') }}</button>
+          </div>
+
+          <template v-if="mode === 'cdk'">
+            <p class="u-help bill-note">
+              {{ t('billingCheck.cdkHint') }}
+            </p>
+            <label class="bill-label">
+              {{ t('billingCheck.cdkLabel') }}
+              <input
+                v-model="cdkCode"
+                class="u-input u-mono"
+                placeholder="SXC-XXXX-XXXX-XXXX-XXXX"
+                @keyup.enter="query"
+              />
+            </label>
+          </template>
+
+          <template v-else>
+            <p class="u-help bill-note">
+              <SessionHelp />
+              <span class="bill-block">{{ t('sessionHelp.tokenRule') }}</span>
+            </p>
+            <label class="bill-label">
+              {{ t('billingCheck.loginLabel') }}
+              <textarea
+                v-model="tokenInput"
+                class="u-input u-mono bill-area"
+                :placeholder="t('billingCheck.loginPlaceholder')"
+              />
+            </label>
+          </template>
+
+          <p v-if="error" class="u-error" role="alert">{{ error }}</p>
+          <button class="u-btn-primary bill-submit" :disabled="loading || !canSubmit" @click="query">
+            {{ loading ? t('billingCheck.loading') : t('billingCheck.submit') }}
+          </button>
         </div>
 
-        <template v-if="mode === 'cdk'">
-          <p class="u-help bill-note">
-            {{ t('billingCheck.cdkHint') }}
-          </p>
-          <label class="bill-label">
-            {{ t('billingCheck.cdkLabel') }}
-            <input
-              v-model="cdkCode"
-              class="u-input u-mono"
-              placeholder="SXC-XXXX-XXXX-XXXX-XXXX"
-              @keyup.enter="query"
-            />
-          </label>
-        </template>
+        <section v-if="record" class="u-card bill-stack bill-gap">
+          <div class="bill-row-head">
+            <h2 class="bill-h">{{ t('billingCheck.recordTitle') }}</h2>
+            <span class="u-help bill-src">{{ t('billingCheck.sourceCdk') }}</span>
+          </div>
+          <p v-if="billingNote" class="u-help bill-note">{{ billingNote }}</p>
+          <dl class="bill-list">
+            <div v-for="row in billingRecordRows(record, t, locale)" :key="row.key" class="bill-item"><dt>{{ row.label }}</dt><dd :class="{ 'u-mono': row.key !== 'plan' }">{{ row.value }}</dd></div>
+          </dl>
+        </section>
 
-        <template v-else>
-          <p class="u-help bill-note">
-            <SessionHelp />
-            <span class="bill-block">{{ t('sessionHelp.tokenRule') }}</span>
-          </p>
-          <label class="bill-label">
-            {{ t('billingCheck.loginLabel') }}
-            <textarea
-              v-model="tokenInput"
-              class="u-input u-mono bill-area"
-              :placeholder="t('billingCheck.loginPlaceholder')"
-            />
-          </label>
-        </template>
+        <section v-if="summary" class="u-card bill-stack bill-gap">
+          <div class="bill-row-head">
+            <h2 class="bill-h">{{ t('billingCheck.summaryTitle') }}</h2>
+            <span v-if="authSource" class="u-help bill-src">{{ authSource === 'cdk' ? t('billingCheck.sourceCdk') : t('billingCheck.sourceLogin') }}</span>
+          </div>
+          <dl class="bill-list">
+            <div class="bill-item"><dt>{{ t('billingCheck.plan') }}</dt><dd>{{ planLabel }}</dd></div>
+            <div class="bill-item"><dt>{{ t('billingCheck.activeSub') }}</dt><dd>{{ summary.has_active_subscription ? t('billingCheck.yes') : t('billingCheck.no') }}</dd></div>
+            <div class="bill-item"><dt>{{ t('billingCheck.autoRenew') }}</dt><dd>{{ summary.will_renew == null ? '—' : (summary.will_renew ? t('billingCheck.renewOn') : t('billingCheck.renewOff')) }}</dd></div>
+            <div class="bill-item"><dt>{{ t('billingCheck.billing') }}</dt><dd class="u-mono">{{ summary.billing_period || '—' }}</dd></div>
+            <div class="bill-item"><dt>{{ t('billingCheck.expires') }}</dt><dd class="u-mono">{{ summary.expires_at || summary.renews_at || '—' }}</dd></div>
+          </dl>
+        </section>
 
-        <p v-if="error" class="u-error" role="alert">{{ error }}</p>
-        <button class="u-btn-primary bill-submit" :disabled="loading || !canSubmit" @click="query">
-          {{ loading ? t('billingCheck.loading') : t('billingCheck.submit') }}
-        </button>
-      </div>
+        <section v-if="invoices" class="u-card bill-stack bill-gap">
+          <h2 class="bill-h">{{ t('billingCheck.invoicesTitle', { n: invoices.length }) }}</h2>
+          <p v-if="!invoices.length" class="u-help bill-note">{{ t('billingCheck.noInvoices') }}</p>
+          <dl v-else class="bill-list">
+            <div v-for="row in invoiceRows(invoices, t, locale)" :key="row.key" class="bill-item"><dt class="u-mono">{{ row.date }}</dt><dd>{{ row.status }}</dd></div>
+          </dl>
+        </section>
 
-      <section v-if="record" class="u-card bill-stack bill-gap">
-        <div class="bill-row-head">
-          <h2 class="bill-h">{{ t('billingCheck.recordTitle') }}</h2>
-          <span class="u-help bill-src">{{ t('billingCheck.sourceCdk') }}</span>
-        </div>
-        <p v-if="billingNote" class="u-help bill-note">{{ billingNote }}</p>
-        <dl class="bill-list">
-          <div v-for="row in billingRecordRows(record, t, locale)" :key="row.key" class="bill-item"><dt>{{ row.label }}</dt><dd :class="{ 'u-mono': row.key !== 'plan' }">{{ row.value }}</dd></div>
-        </dl>
-      </section>
-
-      <section v-if="summary" class="u-card bill-stack bill-gap">
-        <div class="bill-row-head">
-          <h2 class="bill-h">{{ t('billingCheck.summaryTitle') }}</h2>
-          <span v-if="authSource" class="u-help bill-src">{{ authSource === 'cdk' ? t('billingCheck.sourceCdk') : t('billingCheck.sourceLogin') }}</span>
-        </div>
-        <dl class="bill-list">
-          <div class="bill-item"><dt>{{ t('billingCheck.plan') }}</dt><dd>{{ planLabel }}</dd></div>
-          <div class="bill-item"><dt>{{ t('billingCheck.activeSub') }}</dt><dd>{{ summary.has_active_subscription ? t('billingCheck.yes') : t('billingCheck.no') }}</dd></div>
-          <div class="bill-item"><dt>{{ t('billingCheck.autoRenew') }}</dt><dd>{{ summary.will_renew == null ? '—' : (summary.will_renew ? t('billingCheck.renewOn') : t('billingCheck.renewOff')) }}</dd></div>
-          <div class="bill-item"><dt>{{ t('billingCheck.billing') }}</dt><dd class="u-mono">{{ summary.billing_period || '—' }}</dd></div>
-          <div class="bill-item"><dt>{{ t('billingCheck.expires') }}</dt><dd class="u-mono">{{ summary.expires_at || summary.renews_at || '—' }}</dd></div>
-        </dl>
-      </section>
-
-      <section v-if="invoices" class="u-card bill-stack bill-gap">
-        <h2 class="bill-h">{{ t('billingCheck.invoicesTitle', { n: invoices.length }) }}</h2>
-        <p v-if="!invoices.length" class="u-help bill-note">{{ t('billingCheck.noInvoices') }}</p>
-        <dl v-else class="bill-list">
-          <div v-for="row in invoiceRows(invoices, t, locale)" :key="row.key" class="bill-item"><dt class="u-mono">{{ row.date }}</dt><dd>{{ row.status }}</dd></div>
-        </dl>
-      </section>
+        <template v-if="isDesktop" #aside><FaqList /></template>
+      </UserTwoColumn>
 
       <UserFooter />
     </main>
@@ -89,6 +94,9 @@ import { useI18n } from 'vue-i18n'
 import UserPageHeader from '../../components/UserPageHeader.vue'
 import UserShell from '../../components/redeem/UserShell.vue'
 import UserFooter from '../../components/redeem/UserFooter.vue'
+import FaqList from '../../components/redeem/FaqList.vue'
+import UserTwoColumn from '../../components/redeem/UserTwoColumn.vue'
+import { isDesktop } from '../../lib/layoutMode'
 import SessionHelp from '../../components/SessionHelp.vue'
 import { pickBillingNote } from '../../lib/billingNote'
 import { billingRecordRows, invoiceRows, pickBillingResult, type BillingRecord } from '../../lib/billingRecord'

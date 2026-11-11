@@ -1,101 +1,91 @@
 <template>
-  <div class="relative min-h-screen flex items-center justify-center px-6 py-10">
-    <div class="w-full max-w-lg animate-slideInUp">
-      <div class="card space-y-5 !p-7">
-        <div class="text-center">
-          <h1 class="text-2xl font-bold text-ink">首次安装</h1>
-          <p class="mt-2 text-sm text-muted">
-            仅可执行一次。生成管理员后会自动登录，并请你保存密码。
-          </p>
-        </div>
-
-        <div v-if="installed && !done" class="alert alert-success">
-          已安装完成。请前往登录。
-          <div class="mt-3">
-            <router-link class="btn-primary" to="/ops/login">去登录</router-link>
-          </div>
-        </div>
-
-        <template v-else-if="!done">
-          <div class="form-group">
-            <label>Setup Token（安装钥匙，不是登录密码）</label>
-            <input
-              v-model="setupToken"
-              class="input font-mono"
-              type="text"
-              autocomplete="off"
-              spellcheck="false"
-              placeholder="服务器启动日志 / SETUP_TOKEN.once 里的一串"
-            />
-          </div>
-
-          <div class="form-group">
-            <label>管理员用户名</label>
-            <input v-model="username" class="input" maxlength="32" autocomplete="username" />
-          </div>
-
-          <div class="flex gap-2">
-            <button class="btn-primary flex-1" :disabled="loading" @click="bootstrap('generate')">
-              {{ loading && mode === 'generate' ? '生成中…' : '一键生成并进入后台' }}
-            </button>
-            <button class="btn-secondary" :disabled="loading" type="button" @click="showManual = !showManual">
-              自设密码
-            </button>
-          </div>
-
-          <div v-if="showManual" class="space-y-3 border-t bd pt-4">
-            <div class="form-group">
-              <label>密码（≥12，字母+数字）</label>
-              <input v-model="password" class="input" type="password" autocomplete="new-password" />
-            </div>
-            <div class="form-group">
-              <label>确认密码</label>
-              <input v-model="confirm" class="input" type="password" autocomplete="new-password" />
-            </div>
-            <button class="btn-primary w-full" :disabled="loading" type="button" @click="bootstrap('manual')">
-              创建并进入后台
-            </button>
-          </div>
-
-          <div v-if="error" class="alert alert-error">{{ error }}</div>
-        </template>
-
-        <template v-else>
-          <div class="alert alert-success">
-            安装成功，已自动登录。请立刻复制保存下面的密码（只显示一次）。
-          </div>
-          <div class="form-group">
-            <label>用户名</label>
-            <input class="input font-mono text-lg" :value="resultUser" readonly @focus="($event.target as HTMLInputElement).select()" />
-          </div>
-          <div class="form-group">
-            <label>登录密码（请复制）</label>
-            <input class="input font-mono text-lg tracking-wide" :value="resultPass" readonly @focus="($event.target as HTMLInputElement).select()" />
-          </div>
-          <button class="btn-secondary w-full" type="button" @click="copyCreds">
-            {{ copied ? '已复制' : '复制账号密码' }}
-          </button>
-          <label class="flex items-center gap-2 text-sm text-muted">
-            <input v-model="saved" type="checkbox" /> 我已安全保存密码
-          </label>
-          <button
-            class="btn-primary w-full"
-            type="button"
-            :disabled="!saved"
-            @click="enterOps"
-          >
-            进入运营后台
-          </button>
-        </template>
+  <AuthCard title="首次安装" subtitle="仅可执行一次。生成管理员后会自动登录，并请你保存密码。" wide>
+    <div v-if="installed && !done" class="alert alert-success">
+      已安装完成。请前往登录。
+      <div class="mt-3">
+        <router-link class="btn-primary" to="/ops/login">去登录</router-link>
       </div>
     </div>
-  </div>
+
+    <template v-else-if="!done">
+      <div class="form-group">
+        <label>Setup Token（安装钥匙，不是登录密码）</label>
+        <input
+          v-model="setupToken"
+          class="input font-mono"
+          type="text"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="服务器启动日志 / SETUP_TOKEN.once 里的一串"
+        />
+      </div>
+
+      <div class="form-group">
+        <label>管理员用户名</label>
+        <input v-model="username" class="input" maxlength="32" autocomplete="username" />
+      </div>
+
+      <div class="flex gap-2">
+        <button class="btn-primary flex-1" :disabled="loading" @click="bootstrap('generate')">
+          {{ loading && mode === 'generate' ? '生成中…' : '一键生成并进入后台' }}
+        </button>
+        <button class="btn-secondary" :disabled="loading" type="button" @click="showManual = !showManual">
+          自设密码
+        </button>
+      </div>
+
+      <div v-if="showManual" class="space-y-3 border-t bd pt-4">
+        <div class="form-group">
+          <label>密码（≥12，字母+数字）</label>
+          <input v-model="password" class="input" type="password" autocomplete="new-password" />
+        </div>
+        <div class="form-group">
+          <label>确认密码</label>
+          <input v-model="confirm" class="input" type="password" autocomplete="new-password" />
+        </div>
+        <button class="btn-primary w-full" :disabled="loading" type="button" @click="bootstrap('manual')">
+          创建并进入后台
+        </button>
+      </div>
+
+      <div v-if="error" class="alert alert-error">{{ error }}</div>
+    </template>
+
+    <template v-else>
+      <div class="alert alert-success">
+        安装成功，已自动登录。请立刻复制保存下面的密码（只显示一次）。
+      </div>
+      <div class="form-group">
+        <label>用户名</label>
+        <input class="input font-mono text-lg" :value="resultUser" readonly @focus="($event.target as HTMLInputElement).select()" />
+      </div>
+      <div class="form-group">
+        <label>登录密码（请复制）</label>
+        <input class="input font-mono text-lg tracking-wide" :value="resultPass" readonly @focus="($event.target as HTMLInputElement).select()" />
+      </div>
+      <button class="btn-secondary w-full" type="button" @click="copyCreds">
+        {{ copied ? '已复制' : '复制账号密码' }}
+      </button>
+      <label class="flex items-center gap-2 text-sm text-muted">
+        <input v-model="saved" type="checkbox" /> 我已安全保存密码
+      </label>
+      <button
+        class="btn-primary w-full"
+        type="button"
+        :disabled="!saved"
+        @click="enterOps"
+      >
+        进入运营后台
+      </button>
+    </template>
+  </AuthCard>
 </template>
 
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { useAuthStore } from '../../stores/auth'
 import { clearSetupLeftovers } from '../../lib/session'
+import AuthCard from '../../components/AuthCard.vue'
 
 const authStore = useAuthStore()
 // 页面加载时清掉旧版本残留在 sessionStorage 里的安装令牌和口令

@@ -13,7 +13,9 @@ import AdminLayout from '../AdminLayout.vue'
 import {
   buildNavItems, groupNavItems, isCollapsed, NAV_STORE_KEY, pageTitle, readNavPref, writeNavPref,
 } from '../../lib/adminNav'
-import { SKINS } from '../../theme'
+import { SKINS, siteBrand } from '../../theme'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
 // theme.ts 在模块顶层读 localStorage，所以必须在 import 之前就位
 const store = vi.hoisted(() => {
@@ -114,6 +116,66 @@ describe('AdminLayout 左侧菜单', () => {
   })
 })
 
+const shellSrc = readFileSync(fileURLToPath(new URL('../../components/shell/SideNavShell.vue', import.meta.url)), 'utf8')
+
+describe('侧栏外壳 SideNavShell', () => {
+  it('选中项带 active 类，侧栏用侧栏变量', async () => {
+    const html = await render('/ops/cardpool')
+    expect((html.match(/class="[^"]*\bsn-item\b[^"]*\bactive\b/g) || []).length).toBe(1)
+    expect(shellSrc).toContain('var(--side-bg)')
+    expect(shellSrc).toContain('var(--side-ink)')
+    expect(shellSrc).toContain('var(--side-muted)')
+    expect(shellSrc).toContain('var(--side-active)')
+    expect(shellSrc).toContain('var(--side-active-on)')
+    expect(shellSrc).toContain('inset 3px 0 0 #FFFFFF')
+    expect(shellSrc).toContain('font-weight: 700')
+  })
+
+  it('有 Logo：白底小块里显示图片，带加载失败处理', async () => {
+    siteBrand.value = { ...siteBrand.value, logoVersion: 'abc' }
+    try {
+      const html = await render('/ops/cardpool')
+      expect(html).toContain('sn-logo-tile')
+      expect(html).toContain('/api/v1/public/site/logo?v=abc')
+      expect(shellSrc).toMatch(/<img[^>]*@error/)
+    } finally {
+      siteBrand.value = { ...siteBrand.value, logoVersion: undefined }
+    }
+  })
+
+  it('没 Logo：不显示菱形图标，只显示站名', async () => {
+    siteBrand.value = { ...siteBrand.value, logoVersion: undefined }
+    const html = await render('/ops/cardpool')
+    expect(html).not.toContain('sn-logo-tile')
+    expect(html).not.toContain('class="sn-logo"')
+    expect(html).toContain('sn-brand-name')
+  })
+
+  it('侧栏底部主题按钮压住皮肤给 .btn-ghost 加的背景和边框', () => {
+    const src = readFileSync(fileURLToPath(new URL('../AdminLayout.vue', import.meta.url)), 'utf8')
+    for (const sel of ['.sn-tools :deep(.btn-ghost)', '.sn-tools :deep(.btn-ghost:hover)']) {
+      const m = src.match(new RegExp(sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*\\{([^}]*)\\}'))
+      expect(m, sel).toBeTruthy()
+      if (sel.endsWith('hover)')) expect(m![1]).toContain('border-color: transparent')
+      else {
+        expect(m![1]).toContain('background: transparent')
+        expect(m![1]).toContain('border-color: transparent')
+      }
+    }
+  })
+
+  it('侧栏分隔线只由侧栏变量推出（不回落到浅色的 --brd）', () => {
+    expect(shellSrc).not.toContain('--side-brd')
+    // 仅顶栏下边线（规格指定）可以用 --brd
+    expect((shellSrc.match(/var\(--brd\)/g) || []).length).toBe(1)
+    expect(shellSrc).toMatch(/\.topbar \{[^}]*var\(--brd\)/)
+  })
+
+  it('分组名为空串时不渲染分组标题', () => {
+    expect(shellSrc).toMatch(/v-if="g\.name && !railMode"/)
+  })
+})
+
 describe('菜单数据与折叠状态', () => {
   beforeEach(() => {
     for (const k of Object.keys(store)) delete store[k]
@@ -142,6 +204,16 @@ describe('菜单数据与折叠状态', () => {
     expect(readNavPref()).toBe('collapsed')
   })
 
+  it('readNavPref/writeNavPref 可以换键，不传键时仍用 ops-sidenav', () => {
+    writeNavPref('collapsed', 'agent-sidenav')
+    expect(localStorage.getItem('agent-sidenav')).toBe('collapsed')
+    expect(localStorage.getItem(NAV_STORE_KEY)).toBeNull()
+    expect(readNavPref('agent-sidenav')).toBe('collapsed')
+    expect(readNavPref()).toBe('')
+    writeNavPref('expanded')
+    expect(localStorage.getItem('ops-sidenav')).toBe('expanded')
+  })
+
   it('无偏好时 ≤1200 默认折叠，>1200 展开；有偏好以偏好为准', () => {
     expect(isCollapsed('', 1440)).toBe(false)
     expect(isCollapsed('', 1200)).toBe(true)
@@ -153,5 +225,12 @@ describe('菜单数据与折叠状态', () => {
 describe('皮肤元数据', () => {
   it('不再有 layout 字段（壳只有一种）', () => {
     for (const s of SKINS) expect('layout' in s).toBe(false)
+  })
+
+  it('账号菜单下拉用 .sn-user-menu 限定整宽，不泄漏到其他后台下拉', () => {
+    const src = readFileSync(fileURLToPath(new URL('../AdminLayout.vue', import.meta.url)), 'utf8')
+    expect(src).not.toContain(':deep(.el-dropdown)')
+    expect(src).toContain('class="sn-user-menu"')
+    expect(src).toMatch(/\.sn-user-menu \{ width: 100%; \}/)
   })
 })

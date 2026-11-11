@@ -13,8 +13,8 @@ describe('禁用按钮不靠透明度', () => {
     expect(rule).toContain('--u-disabled-ink')
     expect(rule).toContain('--u-disabled-bg')
   })
-  it('亮色、暗色、跟随系统三处都定义了这两个变量', () => {
-    expect((css.match(/--u-disabled-bg:/g) || []).length).toBe(3)
-    expect((css.match(/--u-disabled-ink:/g) || []).length).toBe(3)
+  it('亮色、暗色（data-tone）两处都定义了这两个变量', () => {
+    expect((css.match(/--u-disabled-bg:/g) || []).length).toBe(2)
+    expect((css.match(/--u-disabled-ink:/g) || []).length).toBe(2)
   })
 })

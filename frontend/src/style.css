@@ -35,8 +35,6 @@ html {
   --side-w: 232px;
   --side-w-collapsed: 64px;
   --topbar-h: 56px;
-  --side-bg: var(--surface-solid);
-  --side-brd: var(--brd);
   --content-max: 1500px;
 
   --bg: #f2ede4;
@@ -51,9 +49,9 @@ html {
   --ink-2: #6f6657;
   --ink-3: #9a9183;
 
-  --primary: #c0563a;
-  --primary-hover: #cb6a4f;
-  --primary-active: #9c4530;
+  --primary: #b85238;
+  --primary-hover: #c96347;
+  --primary-active: #94422e;
   --primary-soft: rgba(192, 86, 58, 0.1);
   --primary-on: #ffffff;
 
@@ -448,6 +446,50 @@ html.dark .el-scrollbar__thumb { background: rgba(255,255,255,.16); }
 /* ── Multi-skin presets (data-skin on <html>) ── */
 /* Default = terracotta (already in :root). Other skins override primary + surfaces. */
 
+/* teal：深青自助（默认皮肤）。系统字体，不拉 Google 字体；用户端和后台共用 */
+html[data-skin="teal"] {
+  --font-sans: -apple-system, "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --font-display: -apple-system, "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --font-serif: -apple-system, "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --font-mono: "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 14px;
+  --bg: #EEF5F3;
+  --bg-tint: none;
+  --surface: #FFFFFF;
+  --surface-solid: #FFFFFF;
+  --surface-2: #E2EDEC;
+  --brd: #DCE5E3;
+  --brd-2: #C9D8D5;
+  --ink: #0E2A26;
+  --ink-2: #4A6560;
+  --ink-3: #4A6560;
+  --primary: #0F6B5F;
+  --primary-hover: #13806F;
+  --primary-active: #0B5249;
+  --primary-soft: #E2EDEC;
+  --primary-on: #FFFFFF;
+  --row-hover: var(--primary-soft);
+}
+html.dark[data-skin="teal"] {
+  --bg: #0C1A18;
+  --bg-tint: none;
+  --surface: #132522;
+  --surface-solid: #132522;
+  --surface-2: #1C423C;
+  --brd: #22403B;
+  --brd-2: #2C524B;
+  --ink: #E6F1EE;
+  --ink-2: #9DB5B0;
+  --ink-3: #9DB5B0;
+  --primary: #3FB8A5;
+  --primary-hover: #5CC7B6;
+  --primary-active: #2FA08F;
+  --primary-soft: #1C423C;
+  --primary-on: #0C1A18;
+}
+
 /* terracotta 显式 dark（避免半套） */
 html.dark[data-skin="terracotta"] {
   --bg: #17120e;
@@ -576,12 +618,12 @@ html[data-skin="forest"] {
   --ink: #14241c;
   --ink-2: #3d5c4a;
   --ink-3: #7a9a88;
-  --primary: #059669;
-  --primary-hover: #10b981;
-  --primary-active: #047857;
+  --primary: #05825b;
+  --primary-hover: #0ea774;
+  --primary-active: #036549;
   --primary-soft: rgba(5,150,105,.12);
   --primary-on: #fff;
-  --el-color-primary: #059669;
+  --el-color-primary: #05825b;
   --el-color-primary-light-3: #34d399;
   --el-color-primary-dark-2: #047857;
   --font-serif: var(--font-sans);
@@ -658,12 +700,12 @@ html[data-skin="rose"] {
   --ink: #2a1218;
   --ink-2: #7a3b4a;
   --ink-3: #b07a88;
-  --primary: #e11d48;
-  --primary-hover: #f43f5e;
-  --primary-active: #be123c;
+  --primary: #d81c45;
+  --primary-hover: #f33656;
+  --primary-active: #b51139;
   --primary-soft: rgba(225,29,72,.12);
   --primary-on: #fff;
-  --el-color-primary: #e11d48;
+  --el-color-primary: #d81c45;
   --el-color-primary-light-3: #fb7185;
   --el-color-primary-dark-2: #be123c;
   --font-display: 'Instrument Serif', 'Source Serif 4', 'Noto Serif SC', serif;
@@ -771,9 +813,9 @@ html[data-skin="zovo"] {
   --ink-2: #403a2d;
   --ink-3: #7a7261;
 
-  --primary: #9c7c3c;
-  --primary-hover: #b08e4a;
-  --primary-active: #8a6c30;
+  --primary: #8e7036;
+  --primary-hover: #a28344;
+  --primary-active: #7b602b;
   --primary-soft: rgba(196, 160, 92, 0.14);
   --primary-on: #fffdf7;
   --row-hover: rgba(196, 160, 92, 0.1);
@@ -959,20 +1001,10 @@ html.dark[data-skin="zovo"] ::-webkit-scrollbar { width: 10px; height: 10px; }
 html.dark[data-skin="zovo"] ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.12); border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; }
 html.dark[data-skin="zovo"] ::-webkit-scrollbar-track { background: transparent; }
 
-/* cyber 侧栏霓虹：只覆盖侧栏变量与当前项发光 */
-html[data-skin='cyber'] {
-  --side-bg: linear-gradient(180deg, #0d1524 0%, #0a101c 100%);
-  --side-brd: rgba(34, 211, 238, 0.22);
-}
-html[data-skin='cyber'] .app-shell .sn-item.active {
-  box-shadow: inset 3px 0 0 var(--primary), 0 0 0 1px rgba(34, 211, 238, 0.35), 0 0 20px rgba(34, 211, 238, 0.08);
-}
-
 /* 导航形态：由 data-nav 驱动，作用于侧栏项 */
 html[data-nav='pill'] .sn-item { border-radius: 999px; }
 html[data-nav='block'] .sn-item { border-radius: 6px; }
 html[data-nav='underline'] .sn-item { border-radius: 0; }
-html[data-nav='underline'] .sn-item.active { background: transparent; }
 
 /* Element 按钮圆角跟随主题 */
 .el-button { border-radius: var(--radius-md) !important; }

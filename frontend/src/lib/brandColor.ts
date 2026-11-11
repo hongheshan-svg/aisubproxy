@@ -1,10 +1,4 @@
-// 用户端主色推导：后台只存一个 #RRGGBB，暗色主色、浅色调都由它算出。
-// 输出的色号一律大写 #RRGGBB。
-
-const HEX6 = /^#[0-9A-Fa-f]{6}$/
-const DEFAULT_PRIMARY = '#0F6B5F'
-const DEFAULT_DARK_PRIMARY = '#3FB8A5'
-const DARK_SURFACE = '#132522'
+// 颜色工具：对比度、侧栏颜色推导、混色。输出的色号一律大写 #RRGGBB。
 
 type RGB = [number, number, number]
 
@@ -29,11 +23,6 @@ export function contrastRatio(a: string, b: string): number {
   const la = luminance(a)
   const lb = luminance(b)
   return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05)
-}
-
-/** 必须是 #RRGGBB，且白字压在上面的对比度不低于 4.5。 */
-export function isUsablePrimary(hex: string): boolean {
-  return typeof hex === 'string' && HEX6.test(hex) && contrastRatio('#FFFFFF', hex) >= 4.5
 }
 
 function rgbToHsl([r, g, b]: RGB): [number, number, number] {
@@ -66,18 +55,6 @@ function hslToRgb(h: number, s: number, l: number): RGB {
   return [f(h + 1 / 3) * 255, f(h) * 255, f(h - 1 / 3) * 255]
 }
 
-/** 暗色下的主色：保持色相，逐步提亮直到压在卡片底色 #132522 上不低于 4.5（比页面底色更亮，达标则两处都达标）。 */
-export function darkPrimaryFrom(hex: string): string {
-  if (hex.toUpperCase() === DEFAULT_PRIMARY) return DEFAULT_DARK_PRIMARY
-  const [h, s, l0] = rgbToHsl(parse(hex))
-  for (let i = 0; ; i++) {
-    const l = l0 + 0.02 * i
-    if (l >= 1) return '#FFFFFF'
-    const c = format(hslToRgb(h, s, l))
-    if (contrastRatio(c, DARK_SURFACE) >= 4.5) return c
-  }
-}
-
 /** a 占 weightOfA，b 占其余。 */
 export function mixHex(a: string, b: string, weightOfA: number): string {
   const pa = parse(a)
@@ -85,19 +62,26 @@ export function mixHex(a: string, b: string, weightOfA: number): string {
   return format([0, 1, 2].map((i) => pa[i] * weightOfA + pb[i] * (1 - weightOfA)) as RGB)
 }
 
-export function tintFrom(hex: string): string {
-  return mixHex(hex, '#FFFFFF', 0.12)
-}
-
-export function brandColorVars(
-  hex: string | undefined,
-): Record<'--brand-primary' | '--brand-primary-dark' | '--brand-tint' | '--brand-tint-dark', string> {
-  const primary = hex && isUsablePrimary(hex) ? hex.toUpperCase() : DEFAULT_PRIMARY
-  const dark = darkPrimaryFrom(primary)
-  return {
-    '--brand-primary': primary,
-    '--brand-primary-dark': dark,
-    '--brand-tint': tintFrom(primary),
-    '--brand-tint-dark': mixHex(dark, DARK_SURFACE, 0.2),
+/**
+ * 侧栏颜色：由当前主色推出。side-bg 保持主色的色相和饱和度，亮度每次降 0.02，
+ * 直到白字压在上面不低于 10:1；菜单字、分组标题是白色混入 side-bg（起点 78% / 60%，不达标逐步提高）。
+ */
+export function sideColorsFrom(primary: string): { bg: string; ink: string; muted: string } {
+  const [h, s, l0] = rgbToHsl(parse(primary))
+  let bg = format(hslToRgb(h, s, l0))
+  for (let l = l0; contrastRatio('#FFFFFF', bg) < 10 && l > 0; ) {
+    l = Math.max(0, l - 0.02)
+    bg = format(hslToRgb(h, s, l))
   }
+  // 菜单字、分组标题：白色占比起点 78% / 60%，和 side-bg 的对比度不到 4.5 就每次加 2%，最多到纯白
+  const lift = (start: number): string => {
+    let w = start
+    let c = mixHex('#FFFFFF', bg, w)
+    while (contrastRatio(c, bg) < 4.5 && w < 1) {
+      w = Math.min(1, Math.round((w + 0.02) * 100) / 100)
+      c = mixHex('#FFFFFF', bg, w)
+    }
+    return c
+  }
+  return { bg, ink: lift(0.78), muted: lift(0.6) }
 }

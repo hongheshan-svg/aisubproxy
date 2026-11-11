@@ -45,7 +45,7 @@ const active = ref<Device>(props.initial)
 .guide { display: flex; flex-direction: column; gap: 12px; }
 .guide-tabs { display: flex; gap: 8px; }
 .guide-tab {
-  flex: 1; min-height: 48px; padding: 0 12px; border-radius: 14px;
+  flex: 1; min-height: 48px; padding: 0 12px; border-radius: var(--u-radius);
   border: 1px solid var(--u-line); background: transparent; color: var(--u-ink);
   font: inherit; font-size: 16px; cursor: pointer;
 }

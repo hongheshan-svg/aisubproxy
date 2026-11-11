@@ -1,6 +1,6 @@
 <template>
   <div class="space-y-4">
-    <AdminPageHeader class="!mb-0" title="外观与品牌" description="站点名称、副标题、主色、Logo 和后台皮肤。保存后对所有访客生效；未保存的后台皮肤只是预览，刷新或离开本页会还原。" />
+    <AdminPageHeader class="!mb-0" title="外观与品牌" description="站点名称、副标题、Logo、默认亮暗模式和皮肤。保存后用户端、后台和代理商后台一起生效；没保存的皮肤只是预览，刷新或离开本页会还原。" />
 
     <el-card shadow="never">
       <el-form label-width="120px" class="max-w-4xl">
@@ -9,27 +9,6 @@
         </el-form-item>
         <el-form-item label="副标题">
           <el-input v-model="form.brand_sub" maxlength="80" show-word-limit class="max-w-xl" />
-        </el-form-item>
-        <el-form-item label="主色">
-          <div class="w-full">
-            <div class="flex flex-wrap gap-2">
-              <button
-                v-for="p in PRESET_COLORS"
-                :key="p.hex"
-                type="button"
-                :aria-label="`${p.name} ${p.hex}`"
-                :aria-pressed="primaryUpper === p.hex ? 'true' : 'false'"
-                :title="`${p.name} ${p.hex}`"
-                class="h-8 w-8 rounded-full border-2 cursor-pointer"
-                :style="{ background: p.hex, borderColor: primaryUpper === p.hex ? 'var(--text, #111)' : 'transparent' }"
-                @click="form.primary_color = p.hex"
-              />
-            </div>
-            <el-input v-model="form.primary_color" maxlength="7" placeholder="#0F6B5F" class="max-w-xs mt-2" />
-            <div v-if="primaryCheck.ratioText" class="text-xs text-subtle mt-1">{{ primaryCheck.ratioText }}</div>
-            <div v-if="primaryCheck.message" class="text-xs mt-1" style="color: var(--danger, #c0392b)">{{ primaryCheck.message }}</div>
-            <div class="text-xs text-subtle mt-1">用户端按钮、选中状态用这个颜色，按钮上是白字，所以要选深一点的。</div>
-          </div>
         </el-form-item>
         <el-form-item label="Logo">
           <div class="w-full">
@@ -41,10 +20,9 @@
             <div class="text-xs text-subtle mt-1">PNG、JPG 或 WebP，不超过 256 KB。没有 Logo 时用户端页头只显示站名。</div>
           </div>
         </el-form-item>
-        <el-form-item label="后台皮肤">
+        <el-form-item label="皮肤（用户端和后台一起换）">
           <div class="w-full">
             <SkinPicker compact />
-            <div class="text-xs text-subtle mt-1">只影响后台页面</div>
           </div>
         </el-form-item>
         <el-form-item label="明暗">
@@ -56,8 +34,8 @@
           <div class="text-xs text-subtle w-full mt-1">保存的明暗是访客的默认值；每个人仍可在自己的浏览器里切换。</div>
         </el-form-item>
         <el-form-item>
-          <el-button type="primary" data-testid="save-brand" :loading="saving" :disabled="!primaryCheck.canSave" @click="saveBrand">保存并对所有访客生效</el-button>
-          <span v-if="dirty" class="text-xs ml-3" style="color: var(--warn)">后台皮肤尚未保存</span>
+          <el-button type="primary" data-testid="save-brand" :loading="saving" @click="saveBrand">保存并对所有访客生效</el-button>
+          <span v-if="dirty" class="text-xs ml-3" style="color: var(--warn)">皮肤尚未保存</span>
         </el-form-item>
       </el-form>
     </el-card>
@@ -71,17 +49,14 @@ import { siteBrand, setSiteBrand, setSkin, setTheme, siteSkin, themeMode, applyT
 import SkinPicker from '../../components/SkinPicker.vue'
 import { authFetch } from '../../lib/api'
 import { dialog } from '../../lib/dialog'
-import { applySettings, checkLogoFile, checkPrimary, LOGO_ACCEPT, PRESET_COLORS } from '../../lib/siteAppearance'
+import { applySettings, buildSavePayload, checkLogoFile, LOGO_ACCEPT } from '../../lib/siteAppearance'
 
 const form = reactive({
   brand_name: siteBrand.value.name,
   brand_sub: siteBrand.value.sub,
-  primary_color: siteBrand.value.primary || PRESET_COLORS[0].hex,
 })
 const logoVersion = ref(siteBrand.value.logoVersion || '')
 const logoBusy = ref(false)
-const primaryCheck = computed(() => checkPrimary(form.primary_color))
-const primaryUpper = computed(() => form.primary_color.toUpperCase())
 const saving = ref(false)
 // 服务端已保存的皮肤：离开本页时，未保存的预览要还原
 const savedSkin = ref<SkinId>(siteSkin.value)
@@ -95,10 +70,8 @@ async function load() {
     const next = applySettings(d, { ...form, logoVersion: logoVersion.value })
     form.brand_name = next.brand_name
     form.brand_sub = next.brand_sub
-    form.primary_color = next.primary_color
     logoVersion.value = next.logoVersion
-    // 服务端没存主色时，不把页面上的默认色写进 siteBrand
-    setSiteBrand({ name: form.brand_name, sub: form.brand_sub, logoVersion: next.logoVersion, ...(next.serverPrimary ? { primary: next.serverPrimary } : {}) })
+    setSiteBrand({ name: form.brand_name, sub: form.brand_sub, logoVersion: next.logoVersion })
     if (next.skin) {
       savedSkin.value = next.skin as SkinId
       setSkin(next.skin as SkinId)
@@ -116,18 +89,11 @@ onBeforeUnmount(() => {
 async function saveBrand() {
   saving.value = true
   try {
-    if (!primaryCheck.value.canSave) return
     setSiteBrand({ name: form.brand_name, sub: form.brand_sub })
     applyThemeAll()
     const r = await authFetch('/api/v1/admin/settings', {
       method: 'PUT',
-      body: JSON.stringify({
-        brand_name: form.brand_name,
-        brand_sub: form.brand_sub,
-        primary_color: form.primary_color.toUpperCase(),
-        skin: siteSkin.value,
-        theme_mode: themeMode.value,
-      }),
+      body: JSON.stringify(buildSavePayload({ ...form, logoVersion: logoVersion.value }, siteSkin.value, themeMode.value)),
     })
     if (!r.ok) {
       const d = await r.json().catch(() => ({}))
@@ -135,7 +101,6 @@ async function saveBrand() {
       return
     }
     savedSkin.value = siteSkin.value
-    setSiteBrand({ primary: form.primary_color.toUpperCase() })
     dialog.toast('已保存，对所有访客生效', 'ok')
   } finally {
     saving.value = false

@@ -41,17 +41,17 @@ export function groupNavItems(items: NavItem[]): NavGroup[] {
   return gs
 }
 
-export function readNavPref(): NavPref {
+export function readNavPref(key: string = NAV_STORE_KEY): NavPref {
   try {
-    const v = localStorage.getItem(NAV_STORE_KEY)
+    const v = localStorage.getItem(key)
     return v === 'expanded' || v === 'collapsed' ? v : ''
   } catch {
     return ''
   }
 }
 
-export function writeNavPref(v: 'expanded' | 'collapsed') {
-  try { localStorage.setItem(NAV_STORE_KEY, v) } catch { /* ignore */ }
+export function writeNavPref(v: 'expanded' | 'collapsed', key: string = NAV_STORE_KEY) {
+  try { localStorage.setItem(key, v) } catch { /* ignore */ }
 }
 
 /** 有手动偏好就按偏好；没有则窄屏（≤1200）默认折叠 */

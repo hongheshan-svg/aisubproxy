@@ -1,331 +1,336 @@
 <template>
   <UserShell>
-    <UserPageHeader :title="t('batch.title')" :subtitle="t('batch.subtitle')" :max-width="768" back />
-    <main class="u-page batch-page">
-      <p class="hint-line text-sm text-muted mb-3">{{ t('xPremium.batchHint') }}</p>
-      <p class="hint-line text-sm text-muted mb-3">{{ t('grok.batchHint') }}</p>
-      <p class="hint-line text-sm text-muted mb-3">{{ t('claude.batchHint') }}</p>
+    <UserPageHeader :title="t('batch.title')" :subtitle="t('batch.subtitle')" :max-width="isDesktop ? 0 : 768" back />
+    <main class="u-page u-page--split batch-page">
+      <UserTwoColumn>
+        <p class="hint-line text-sm text-muted mb-3">{{ t('xPremium.batchHint') }}</p>
+        <p class="hint-line text-sm text-muted mb-3">{{ t('grok.batchHint') }}</p>
+        <p class="hint-line text-sm text-muted mb-3">{{ t('claude.batchHint') }}</p>
 
-      <div class="u-card space-y-4">
-        <div class="flex items-start gap-3 pb-3 border-b bd">
-          <div
-            class="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 text-white text-[10px] font-bold leading-tight text-center"
-            style="background: var(--primary)"
-          >
-            批量<br />兑换
-          </div>
-          <div>
-            <h2 class="text-base font-semibold text-ink">{{ t('batch.panelTitle') }}</h2>
-            <p class="text-xs text-muted mt-0.5 leading-relaxed">{{ t('batch.panelHint') }}</p>
-          </div>
-        </div>
-
-        <!-- input phase -->
-        <template v-if="phase === 'input'">
-          <div>
-            <label class="block text-sm font-medium text-ink mb-1.5">
-              {{ t('batch.cdkListLabel', { max: BATCH_MAX_KEYS }) }}
-            </label>
-            <textarea
-              v-model="cdkText"
-              rows="6"
-              class="u-input u-mono text-sm min-h-[120px]"
-              :placeholder="t('batch.cdkPlaceholder')"
-            />
-            <p class="text-xs text-muted mt-1">
-              {{ t('batch.cdkRecognized', { n: parsedCdks.length }) }}
-              <span v-if="parsedCdks.length > 100" class="text-warn">
-                · {{ t('batch.cdkQueueHint') }}
-              </span>
-            </p>
-          </div>
-
-          <div>
-            <label class="block text-sm font-medium text-ink mb-1.5">{{ t('batch.credMode') }}</label>
-            <div class="flex gap-2">
-              <button
-                type="button"
-                class="u-btn-secondary !py-1.5 flex-1"
-                :class="{ 'ring-2': credMode === 'session' }"
-                @click="credMode = 'session'"
-              >
-                {{ t('batch.modeSession') }}
-              </button>
-              <button
-                type="button"
-                class="u-btn-secondary !py-1.5 flex-1"
-                :class="{ 'ring-2': credMode === 'mailbox' }"
-                @click="credMode = 'mailbox'"
-              >
-                {{ t('batch.modeMailbox') }}
-              </button>
-            </div>
-          </div>
-
-          <ExcelImportBlock
-            v-if="credMode === 'session'"
-            :session-pool="sessionPool"
-            :import-msg="importMsg"
-            :importing="importing"
-            @pick="onPickFile"
-            @clear="clearSessionPool"
-          />
-
-          <div v-else class="space-y-1.5">
-            <label class="block text-sm font-medium text-ink">{{ t('batch.mailboxLabel') }}</label>
-            <textarea
-              v-model="mailboxText"
-              rows="6"
-              class="u-input u-mono text-sm min-h-[120px]"
-              :placeholder="t('batch.mailboxPlaceholder')"
-            />
-            <p class="text-xs text-muted">
-              {{ t('batch.mailboxRecognized', { n: parsedMailboxes.length }) }}
-            </p>
-            <input
-              ref="mailboxFileRef"
-              type="file"
-              accept=".xlsx,.xls,.csv,.txt"
-              class="hidden"
-              @change="onPickMailboxFile"
-            />
-            <button
-              type="button"
-              class="w-full min-h-[48px] py-2.5 rounded-xl border border-dashed text-sm font-medium disabled:opacity-40"
-              style="border-color: color-mix(in srgb, var(--primary) 45%, var(--brd)); color: var(--primary)"
-              :disabled="importing"
-              @click="mailboxFileRef?.click()"
+        <div class="u-card space-y-4">
+          <div class="flex items-start gap-3 pb-3 border-b bd">
+            <div
+              class="w-10 h-10 rounded-xl flex items-center justify-center shrink-0 text-white text-[10px] font-bold leading-tight text-center"
+              style="background: var(--primary)"
             >
-              {{ importing ? t('batch.importing') : t('batch.mailboxImportBtn') }}
-            </button>
-            <p v-if="importMsg" class="text-xs text-muted leading-relaxed">{{ importMsg }}</p>
-            <p class="text-[11px] text-subtle">{{ t('batch.mailboxHint') }}</p>
+              批量<br />兑换
+            </div>
+            <div>
+              <h2 class="text-base font-semibold text-ink">{{ t('batch.panelTitle') }}</h2>
+              <p class="text-xs text-muted mt-0.5 leading-relaxed">{{ t('batch.panelHint') }}</p>
+            </div>
           </div>
 
-          <button
-            type="button"
-            class="u-btn-primary w-full"
-            :disabled="verifying || parsedCdks.length === 0"
-            @click="handleVerifyBatch"
-          >
-            {{ verifying ? t('batch.verifying') : t('batch.verifyStart') }}
-          </button>
-          <p v-if="sessionError" class="text-xs text-err">{{ sessionError }}</p>
-        </template>
+          <!-- input phase -->
+          <template v-if="phase === 'input'">
+            <div>
+              <label class="block text-sm font-medium text-ink mb-1.5">
+                {{ t('batch.cdkListLabel', { max: BATCH_MAX_KEYS }) }}
+              </label>
+              <textarea
+                v-model="cdkText"
+                rows="6"
+                class="u-input u-mono text-sm min-h-[120px]"
+                :placeholder="t('batch.cdkPlaceholder')"
+              />
+              <p class="text-xs text-muted mt-1">
+                {{ t('batch.cdkRecognized', { n: parsedCdks.length }) }}
+                <span v-if="parsedCdks.length > 100" class="text-warn">
+                  · {{ t('batch.cdkQueueHint') }}
+                </span>
+              </p>
+            </div>
 
-        <!-- run phase -->
-        <template v-else>
-          <div class="grid grid-cols-4 gap-2 text-center">
-            <div class="rounded-lg bg-soft py-2">
-              <div class="text-lg font-bold tabular-nums text-ink">{{ stats.total }}</div>
-              <div class="text-[10px] text-muted">{{ t('batch.statTotal') }}</div>
-            </div>
-            <div class="rounded-lg py-2" style="background: color-mix(in srgb, var(--warn, #d97706) 12%, transparent)">
-              <div class="text-lg font-bold tabular-nums text-warn">{{ stats.wait }}</div>
-              <div class="text-[10px] text-muted">{{ t('batch.statWait') }}</div>
-            </div>
-            <div class="rounded-lg py-2" style="background: color-mix(in srgb, var(--primary) 12%, transparent)">
-              <div class="text-lg font-bold tabular-nums" style="color: var(--primary)">{{ stats.run }}</div>
-              <div class="text-[10px] text-muted">{{ t('batch.statRun') }}</div>
-            </div>
-            <div class="rounded-lg py-2" style="background: color-mix(in srgb, var(--good, #16a34a) 12%, transparent)">
-              <div class="text-lg font-bold tabular-nums text-good">
-                {{ stats.ok }}<span class="text-muted text-sm font-normal">/{{ stats.fail }}</span>
+            <div>
+              <label class="block text-sm font-medium text-ink mb-1.5">{{ t('batch.credMode') }}</label>
+              <div class="flex gap-2">
+                <button
+                  type="button"
+                  class="u-btn-secondary !py-1.5 flex-1"
+                  :class="{ 'ring-2': credMode === 'session' }"
+                  @click="credMode = 'session'"
+                >
+                  {{ t('batch.modeSession') }}
+                </button>
+                <button
+                  type="button"
+                  class="u-btn-secondary !py-1.5 flex-1"
+                  :class="{ 'ring-2': credMode === 'mailbox' }"
+                  @click="credMode = 'mailbox'"
+                >
+                  {{ t('batch.modeMailbox') }}
+                </button>
               </div>
-              <div class="text-[10px] text-muted">{{ t('batch.statOkFail') }}</div>
             </div>
-          </div>
 
-          <div v-if="!verifying && pendingSessionItems.length > 0 && credMode === 'session'" class="rounded-xl border bd p-3">
             <ExcelImportBlock
+              v-if="credMode === 'session'"
               :session-pool="sessionPool"
               :import-msg="importMsg"
               :importing="importing"
               @pick="onPickFile"
               @clear="clearSessionPool"
             />
-          </div>
-          <div v-else-if="!verifying && pendingSessionItems.length > 0 && credMode === 'mailbox'" class="rounded-xl border bd p-3 space-y-2">
-            <label class="block text-sm font-medium text-ink">{{ t('batch.mailboxLabel') }}</label>
-            <textarea
-              v-model="mailboxText"
-              rows="4"
-              class="u-input u-mono text-sm"
-              :placeholder="t('batch.mailboxPlaceholder')"
-            />
-            <p class="text-xs text-muted">{{ t('batch.mailboxRecognized', { n: parsedMailboxes.length }) }}</p>
-          </div>
 
-          <p v-if="pollNotice" class="text-xs text-err" role="alert">{{ pollNotice }}</p>
-
-          <div v-if="verifying" class="text-sm text-muted text-center py-4">
-            {{ t('batch.verifyingKeys') }}
-          </div>
-
-          <div
-            v-else-if="currentItem"
-            class="rounded-xl border p-4 space-y-3"
-            style="border-color: color-mix(in srgb, var(--primary) 35%, var(--brd)); background: color-mix(in srgb, var(--primary) 6%, transparent)"
-          >
-            <div class="flex items-center justify-between gap-2 flex-wrap">
-              <div class="text-sm font-medium text-ink">
-                {{ t('batch.currentOrdinal', { n: currentOrdinal, total: totalVerified }) }}
-                <span class="text-xs font-normal text-muted ml-1">
-                  · {{ t('batch.remaining', { n: pendingSessionItems.length }) }}
-                </span>
-              </div>
-              <div class="text-xs font-mono" style="color: var(--primary)">
-                {{ currentItem.cardKey }}
-                <span v-if="currentItem.planLabel" class="ml-1.5 text-muted">({{ currentItem.planLabel }})</span>
-              </div>
+            <div v-else class="space-y-1.5">
+              <label class="block text-sm font-medium text-ink">{{ t('batch.mailboxLabel') }}</label>
+              <textarea
+                v-model="mailboxText"
+                rows="6"
+                class="u-input u-mono text-sm min-h-[120px]"
+                :placeholder="t('batch.mailboxPlaceholder')"
+              />
+              <p class="text-xs text-muted">
+                {{ t('batch.mailboxRecognized', { n: parsedMailboxes.length }) }}
+              </p>
+              <input
+                ref="mailboxFileRef"
+                type="file"
+                accept=".xlsx,.xls,.csv,.txt"
+                class="hidden"
+                @change="onPickMailboxFile"
+              />
+              <button
+                type="button"
+                class="w-full min-h-[48px] py-2.5 rounded-xl border border-dashed text-sm font-medium disabled:opacity-40"
+                style="border-color: color-mix(in srgb, var(--primary) 45%, var(--brd)); color: var(--primary)"
+                :disabled="importing"
+                @click="mailboxFileRef?.click()"
+              >
+                {{ importing ? t('batch.importing') : t('batch.mailboxImportBtn') }}
+              </button>
+              <p v-if="importMsg" class="text-xs text-muted leading-relaxed">{{ importMsg }}</p>
+              <p class="text-[11px] text-subtle">{{ t('batch.mailboxHint') }}</p>
             </div>
-            <template v-if="credMode === 'session'">
-              <p class="text-xs text-muted leading-relaxed"><SessionHelp /></p>
-              <p
-                v-if="currentExcelIdx >= 0 && sessionPool[currentExcelIdx]?.email"
-                class="text-xs text-muted"
-              >
-                {{ t('batch.willUseAccount') }}
-                <span class="font-mono ml-1 text-ink">{{ sessionPool[currentExcelIdx].email }}</span>
-              </p>
-              <textarea
-                ref="sessionBoxRef"
-                v-model="sessionInput"
-                rows="5"
-                class="u-input u-mono text-xs min-h-[100px]"
-                :placeholder="t('batch.sessionPlaceholder')"
-                :disabled="submitting || autoSubmitting"
-                @input="sessionError = ''"
-              />
-            </template>
-            <template v-else>
-              <p
-                v-if="currentExcelIdx >= 0 && mailboxPool[currentExcelIdx]?.email"
-                class="text-xs text-muted"
-              >
-                {{ t('batch.willUseAccount') }}
-                <span class="font-mono ml-1 text-ink">{{ mailboxPool[currentExcelIdx].email }}</span>
-              </p>
-              <textarea
-                ref="sessionBoxRef"
-                v-model="sessionInput"
-                rows="3"
-                class="u-input u-mono text-xs min-h-[72px]"
-                :placeholder="t('batch.mailboxLinePlaceholder')"
-                :disabled="submitting || autoSubmitting"
-                @input="sessionError = ''"
-              />
-            </template>
+
+            <button
+              type="button"
+              class="u-btn-primary w-full"
+              :disabled="verifying || parsedCdks.length === 0"
+              @click="handleVerifyBatch"
+            >
+              {{ verifying ? t('batch.verifying') : t('batch.verifyStart') }}
+            </button>
             <p v-if="sessionError" class="text-xs text-err">{{ sessionError }}</p>
-            <div class="flex flex-col gap-2">
+          </template>
+
+          <!-- run phase -->
+          <template v-else>
+            <div class="grid grid-cols-4 gap-2 text-center">
+              <div class="rounded-lg bg-soft py-2">
+                <div class="text-lg font-bold tabular-nums text-ink">{{ stats.total }}</div>
+                <div class="text-[10px] text-muted">{{ t('batch.statTotal') }}</div>
+              </div>
+              <div class="rounded-lg py-2" style="background: color-mix(in srgb, var(--warn, #d97706) 12%, transparent)">
+                <div class="text-lg font-bold tabular-nums text-warn">{{ stats.wait }}</div>
+                <div class="text-[10px] text-muted">{{ t('batch.statWait') }}</div>
+              </div>
+              <div class="rounded-lg py-2" style="background: color-mix(in srgb, var(--primary) 12%, transparent)">
+                <div class="text-lg font-bold tabular-nums" style="color: var(--primary)">{{ stats.run }}</div>
+                <div class="text-[10px] text-muted">{{ t('batch.statRun') }}</div>
+              </div>
+              <div class="rounded-lg py-2" style="background: color-mix(in srgb, var(--good, #16a34a) 12%, transparent)">
+                <div class="text-lg font-bold tabular-nums text-good">
+                  {{ stats.ok }}<span class="text-muted text-sm font-normal">/{{ stats.fail }}</span>
+                </div>
+                <div class="text-[10px] text-muted">{{ t('batch.statOkFail') }}</div>
+              </div>
+            </div>
+
+            <div v-if="!verifying && pendingSessionItems.length > 0 && credMode === 'session'" class="rounded-xl border bd p-3">
+              <ExcelImportBlock
+                :session-pool="sessionPool"
+                :import-msg="importMsg"
+                :importing="importing"
+                @pick="onPickFile"
+                @clear="clearSessionPool"
+              />
+            </div>
+            <div v-else-if="!verifying && pendingSessionItems.length > 0 && credMode === 'mailbox'" class="rounded-xl border bd p-3 space-y-2">
+              <label class="block text-sm font-medium text-ink">{{ t('batch.mailboxLabel') }}</label>
+              <textarea
+                v-model="mailboxText"
+                rows="4"
+                class="u-input u-mono text-sm"
+                :placeholder="t('batch.mailboxPlaceholder')"
+              />
+              <p class="text-xs text-muted">{{ t('batch.mailboxRecognized', { n: parsedMailboxes.length }) }}</p>
+            </div>
+
+            <p v-if="pollNotice" class="text-xs text-err" role="alert">{{ pollNotice }}</p>
+
+            <div v-if="verifying" class="text-sm text-muted text-center py-4">
+              {{ t('batch.verifyingKeys') }}
+            </div>
+
+            <div
+              v-else-if="currentItem"
+              class="rounded-xl border p-4 space-y-3"
+              style="border-color: color-mix(in srgb, var(--primary) 35%, var(--brd)); background: color-mix(in srgb, var(--primary) 6%, transparent)"
+            >
+              <div class="flex items-center justify-between gap-2 flex-wrap">
+                <div class="text-sm font-medium text-ink">
+                  {{ t('batch.currentOrdinal', { n: currentOrdinal, total: totalVerified }) }}
+                  <span class="text-xs font-normal text-muted ml-1">
+                    · {{ t('batch.remaining', { n: pendingSessionItems.length }) }}
+                  </span>
+                </div>
+                <div class="text-xs font-mono" style="color: var(--primary)">
+                  {{ currentItem.cardKey }}
+                  <span v-if="currentItem.planLabel" class="ml-1.5 text-muted">({{ currentItem.planLabel }})</span>
+                </div>
+              </div>
+              <template v-if="credMode === 'session'">
+                <p class="text-xs text-muted leading-relaxed"><SessionHelp /></p>
+                <p
+                  v-if="currentExcelIdx >= 0 && sessionPool[currentExcelIdx]?.email"
+                  class="text-xs text-muted"
+                >
+                  {{ t('batch.willUseAccount') }}
+                  <span class="font-mono ml-1 text-ink">{{ sessionPool[currentExcelIdx].email }}</span>
+                </p>
+                <textarea
+                  ref="sessionBoxRef"
+                  v-model="sessionInput"
+                  rows="5"
+                  class="u-input u-mono text-xs min-h-[100px]"
+                  :placeholder="t('batch.sessionPlaceholder')"
+                  :disabled="submitting || autoSubmitting"
+                  @input="sessionError = ''"
+                />
+              </template>
+              <template v-else>
+                <p
+                  v-if="currentExcelIdx >= 0 && mailboxPool[currentExcelIdx]?.email"
+                  class="text-xs text-muted"
+                >
+                  {{ t('batch.willUseAccount') }}
+                  <span class="font-mono ml-1 text-ink">{{ mailboxPool[currentExcelIdx].email }}</span>
+                </p>
+                <textarea
+                  ref="sessionBoxRef"
+                  v-model="sessionInput"
+                  rows="3"
+                  class="u-input u-mono text-xs min-h-[72px]"
+                  :placeholder="t('batch.mailboxLinePlaceholder')"
+                  :disabled="submitting || autoSubmitting"
+                  @input="sessionError = ''"
+                />
+              </template>
+              <p v-if="sessionError" class="text-xs text-err">{{ sessionError }}</p>
+              <div class="flex flex-col gap-2">
+                <button
+                  type="button"
+                  class="u-btn-primary w-full"
+                  :disabled="!sessionInput.trim() || submitting || autoSubmitting"
+                  @click="handleSubmitSession"
+                >
+                  {{ submitting ? t('batch.submitting') : t('batch.submitNext') }}
+                </button>
+                <button
+                  v-if="credMode === 'session' ? sessionPool.length > 0 : mailboxPool.length > 0"
+                  type="button"
+                  class="u-btn-primary w-full"
+                  :disabled="submitting || autoSubmitting"
+                  @click="handleAutoSubmitAll"
+                >
+                  {{
+                    autoSubmitting
+                      ? t('batch.autoSubmitting')
+                      : t('batch.autoSubmit', {
+                          n: credMode === 'session' ? sessionPool.length : mailboxPool.length,
+                        })
+                  }}
+                </button>
+              </div>
+              <p class="text-[11px] text-muted text-center">
+                {{ credMode === 'session' ? t('batch.pairHint') : t('batch.mailboxPairHint') }}
+              </p>
+            </div>
+
+            <div
+              v-else-if="allSessionsCollected"
+              class="rounded-xl border p-4 text-center space-y-2"
+              style="border-color: color-mix(in srgb, var(--good, #16a34a) 35%, var(--brd)); background: color-mix(in srgb, var(--good, #16a34a) 8%, transparent)"
+            >
+              <p class="text-sm font-medium text-good">
+                {{ t('batch.allSubmitted', { n: sessionsDone }) }}
+              </p>
+              <p class="text-xs text-muted">{{ t('batch.watchProgress') }}</p>
               <button
+                v-if="stats.ok > 0"
                 type="button"
-                class="u-btn-primary w-full"
-                :disabled="!sessionInput.trim() || submitting || autoSubmitting"
-                @click="handleSubmitSession"
+                class="text-xs px-3 py-1.5 rounded-lg text-white"
+                style="background: var(--good, #16a34a)"
+                @click="exportBatchSuccess"
               >
-                {{ submitting ? t('batch.submitting') : t('batch.submitNext') }}
-              </button>
-              <button
-                v-if="credMode === 'session' ? sessionPool.length > 0 : mailboxPool.length > 0"
-                type="button"
-                class="u-btn-primary w-full"
-                :disabled="submitting || autoSubmitting"
-                @click="handleAutoSubmitAll"
-              >
-                {{
-                  autoSubmitting
-                    ? t('batch.autoSubmitting')
-                    : t('batch.autoSubmit', {
-                        n: credMode === 'session' ? sessionPool.length : mailboxPool.length,
-                      })
-                }}
+                {{ t('batch.exportOk', { n: stats.ok }) }}
               </button>
             </div>
-            <p class="text-[11px] text-muted text-center">
-              {{ credMode === 'session' ? t('batch.pairHint') : t('batch.mailboxPairHint') }}
-            </p>
-          </div>
 
-          <div
-            v-else-if="allSessionsCollected"
-            class="rounded-xl border p-4 text-center space-y-2"
-            style="border-color: color-mix(in srgb, var(--good, #16a34a) 35%, var(--brd)); background: color-mix(in srgb, var(--good, #16a34a) 8%, transparent)"
-          >
-            <p class="text-sm font-medium text-good">
-              {{ t('batch.allSubmitted', { n: sessionsDone }) }}
-            </p>
-            <p class="text-xs text-muted">{{ t('batch.watchProgress') }}</p>
+            <div v-else class="text-sm text-muted text-center py-3">
+              {{ t('batch.noValidKeys') }}
+            </div>
+
+            <div class="rounded-xl border bd overflow-hidden">
+              <div class="px-3 py-2 bg-soft text-xs font-medium text-muted">{{ t('batch.liveProgress') }}</div>
+              <ul class="divide-y max-h-80 overflow-y-auto" style="border-color: var(--brd)">
+                <li
+                  v-for="(it, idx) in items"
+                  :key="it.id"
+                  class="px-3 py-2.5 text-xs space-y-1"
+                  style="border-color: var(--brd)"
+                >
+                  <div class="flex items-center gap-2 flex-wrap">
+                    <span class="text-subtle tabular-nums w-5">{{ idx + 1 }}</span>
+                    <span class="font-mono text-ink break-all">{{ it.cardKey }}</span>
+                    <span v-if="it.planLabel" class="text-[10px] text-muted">{{ it.planLabel }}</span>
+                    <span class="ml-auto px-1.5 py-0.5 rounded font-medium status-pill" :data-st="it.status">
+                      {{ statusLabel(it.status) }}
+                    </span>
+                  </div>
+                  <div
+                    v-if="it.progressMsg || it.verifyMsg || it.email || it.cardLastFour || it.redemptionToken"
+                    class="pl-7 text-[11px] text-muted space-y-0.5"
+                  >
+                    <div v-if="it.email">{{ t('batch.account') }}：{{ it.email }}</div>
+                    <div v-if="it.cardLastFour">{{ t('batch.card') }}：•••• {{ it.cardLastFour }}</div>
+                    <div v-else-if="it.status === 'processing' || it.status === 'success'">
+                      {{ t('batch.card') }}：{{ t('batch.cardPending') }}
+                    </div>
+                    <div v-if="it.redemptionToken" class="font-mono truncate">
+                      token：{{ it.redemptionToken.slice(0, 18) }}…
+                    </div>
+                    <div>
+                      {{
+                        it.status === 'verify_fail' || it.status === 'failed'
+                          ? it.error || it.progressMsg || it.verifyMsg
+                          : it.progressMsg || it.verifyMsg
+                      }}
+                    </div>
+                  </div>
+                </li>
+              </ul>
+            </div>
+
             <button
               v-if="stats.ok > 0"
               type="button"
-              class="text-xs px-3 py-1.5 rounded-lg text-white"
-              style="background: var(--good, #16a34a)"
+              class="u-btn-secondary w-full"
+              style="color: var(--good, #16a34a); border-color: color-mix(in srgb, var(--good, #16a34a) 40%, var(--brd))"
               @click="exportBatchSuccess"
             >
               {{ t('batch.exportOk', { n: stats.ok }) }}
             </button>
-          </div>
+            <button type="button" class="u-btn-secondary w-full" @click="resetAll">
+              {{ t('batch.reset') }}
+            </button>
+          </template>
+        </div>
 
-          <div v-else class="text-sm text-muted text-center py-3">
-            {{ t('batch.noValidKeys') }}
-          </div>
+        <template v-if="isDesktop" #aside><FaqList /></template>
+      </UserTwoColumn>
 
-          <div class="rounded-xl border bd overflow-hidden">
-            <div class="px-3 py-2 bg-soft text-xs font-medium text-muted">{{ t('batch.liveProgress') }}</div>
-            <ul class="divide-y max-h-80 overflow-y-auto" style="border-color: var(--brd)">
-              <li
-                v-for="(it, idx) in items"
-                :key="it.id"
-                class="px-3 py-2.5 text-xs space-y-1"
-                style="border-color: var(--brd)"
-              >
-                <div class="flex items-center gap-2 flex-wrap">
-                  <span class="text-subtle tabular-nums w-5">{{ idx + 1 }}</span>
-                  <span class="font-mono text-ink break-all">{{ it.cardKey }}</span>
-                  <span v-if="it.planLabel" class="text-[10px] text-muted">{{ it.planLabel }}</span>
-                  <span class="ml-auto px-1.5 py-0.5 rounded font-medium status-pill" :data-st="it.status">
-                    {{ statusLabel(it.status) }}
-                  </span>
-                </div>
-                <div
-                  v-if="it.progressMsg || it.verifyMsg || it.email || it.cardLastFour || it.redemptionToken"
-                  class="pl-7 text-[11px] text-muted space-y-0.5"
-                >
-                  <div v-if="it.email">{{ t('batch.account') }}：{{ it.email }}</div>
-                  <div v-if="it.cardLastFour">{{ t('batch.card') }}：•••• {{ it.cardLastFour }}</div>
-                  <div v-else-if="it.status === 'processing' || it.status === 'success'">
-                    {{ t('batch.card') }}：{{ t('batch.cardPending') }}
-                  </div>
-                  <div v-if="it.redemptionToken" class="font-mono truncate">
-                    token：{{ it.redemptionToken.slice(0, 18) }}…
-                  </div>
-                  <div>
-                    {{
-                      it.status === 'verify_fail' || it.status === 'failed'
-                        ? it.error || it.progressMsg || it.verifyMsg
-                        : it.progressMsg || it.verifyMsg
-                    }}
-                  </div>
-                </div>
-              </li>
-            </ul>
-          </div>
-
-          <button
-            v-if="stats.ok > 0"
-            type="button"
-            class="u-btn-secondary w-full"
-            style="color: var(--good, #16a34a); border-color: color-mix(in srgb, var(--good, #16a34a) 40%, var(--brd))"
-            @click="exportBatchSuccess"
-          >
-            {{ t('batch.exportOk', { n: stats.ok }) }}
-          </button>
-          <button type="button" class="u-btn-secondary w-full" @click="resetAll">
-            {{ t('batch.reset') }}
-          </button>
-        </template>
-      </div>
       <UserFooter />
     </main>
   </UserShell>
@@ -337,6 +342,9 @@ import { useI18n } from 'vue-i18n'
 import UserPageHeader from '../../components/UserPageHeader.vue'
 import UserShell from '../../components/redeem/UserShell.vue'
 import UserFooter from '../../components/redeem/UserFooter.vue'
+import FaqList from '../../components/redeem/FaqList.vue'
+import UserTwoColumn from '../../components/redeem/UserTwoColumn.vue'
+import { isDesktop } from '../../lib/layoutMode'
 import ExcelImportBlock from '../../components/ExcelImportBlock.vue'
 import { chunkTokens, nextPollPlan, parsePollResponse } from '../../lib/batch-poll'
 import SessionHelp from '../../components/SessionHelp.vue'
@@ -1178,8 +1186,11 @@ onUnmounted(() => stopAllPolls())
 </script>
 
 <style scoped>
-.user-ui .batch-page { max-width: 768px; }
-/* 本页还在用旧变量名：这里把它们接到用户端配色，不再随后台皮肤变 */
+/* 768px 限宽只在窄屏；电脑布局交给 .u-page--split 的 1120px */
+@media (max-width: 1023px) {
+  .user-ui .batch-page { max-width: 768px; }
+}
+/* 本页还在用旧变量名：这里把它们接到用户端配色（--u-*，颜色取自当前皮肤） */
 .user-ui .batch-page {
   --primary: var(--u-primary); --soft: var(--u-tint); --muted: var(--u-muted); --ink: var(--u-ink); --ink-2: var(--u-muted);
   --brd: var(--u-line); --err: var(--u-error-ink); --warn: var(--u-warn-ink); --good: var(--u-primary);

@@ -1,62 +1,67 @@
 <template>
   <UserShell>
     <UserPageHeader :title="t('agentSwap.title')" :subtitle="t('agentSwap.subtitle')" back />
-    <main class="u-page swap">
-      <div class="u-card swap-stack">
-        <label class="swap-label">
-          {{ t('agentSwap.passwordLabel') }}
-          <span class="swap-pw">
-            <input
-              v-model="password"
-              :type="showPw ? 'text' : 'password'"
-              class="u-input"
-              :placeholder="t('agentSwap.passwordPlaceholder')"
-              autocomplete="off"
-            />
-            <button type="button" class="u-link swap-pw-toggle" :aria-pressed="showPw" @click="showPw = !showPw">
-              {{ showPw ? t('redeemUi.hidePassword') : t('redeemUi.showPassword') }}
-            </button>
-          </span>
-        </label>
-        <label class="swap-label">
-          {{ t('agentSwap.codeLabel') }}
-          <textarea
-            v-model="code"
-            rows="3"
-            class="u-input u-mono swap-area"
-            :placeholder="t('agentSwap.codePlaceholder')"
-          />
-        </label>
-        <button
-          type="button"
-          class="u-btn-primary swap-submit"
-          :disabled="busy || locked || !password.trim() || !code.trim()"
-          @click="doExchange"
-        >
-          {{ busy ? t('agentSwap.busy') : locked ? t('agentSwap.lockedButton') : t('agentSwap.submit') }}
-        </button>
-        <p v-if="error" class="u-error" role="alert">{{ error }}</p>
-        <p v-if="locked" class="u-warn swap-strong" role="alert">
-          {{ t('agentSwap.lockedNotice') }}
-        </p>
-      </div>
+    <main class="u-page u-page--split swap">
+      <UserTwoColumn>
 
-      <section v-if="result" class="u-card swap-stack swap-gap">
-        <p class="u-help swap-ok">{{ result.message ? t('agentSwap.resultMessage') : t('agentSwap.resultFallback') }}</p>
-        <div>
-          <div class="u-help swap-cap">{{ t('agentSwap.newCodeCaption') }}</div>
-          <div class="u-mono swap-code">{{ result.new_code }}</div>
+        <div class="u-card swap-stack">
+          <label class="swap-label">
+            {{ t('agentSwap.passwordLabel') }}
+            <span class="swap-pw">
+              <input
+                v-model="password"
+                :type="showPw ? 'text' : 'password'"
+                class="u-input"
+                :placeholder="t('agentSwap.passwordPlaceholder')"
+                autocomplete="off"
+              />
+              <button type="button" class="u-link swap-pw-toggle" :aria-pressed="showPw" @click="showPw = !showPw">
+                {{ showPw ? t('redeemUi.hidePassword') : t('redeemUi.showPassword') }}
+              </button>
+            </span>
+          </label>
+          <label class="swap-label">
+            {{ t('agentSwap.codeLabel') }}
+            <textarea
+              v-model="code"
+              rows="3"
+              class="u-input u-mono swap-area"
+              :placeholder="t('agentSwap.codePlaceholder')"
+            />
+          </label>
+          <button
+            type="button"
+            class="u-btn-primary swap-submit"
+            :disabled="busy || locked || !password.trim() || !code.trim()"
+            @click="doExchange"
+          >
+            {{ busy ? t('agentSwap.busy') : locked ? t('agentSwap.lockedButton') : t('agentSwap.submit') }}
+          </button>
+          <p v-if="error" class="u-error" role="alert">{{ error }}</p>
+          <p v-if="locked" class="u-warn swap-strong" role="alert">
+            {{ t('agentSwap.lockedNotice') }}
+          </p>
         </div>
-        <div class="swap-actions">
-          <button type="button" class="u-btn-primary" @click="copyNew">{{ t('agentSwap.copy') }}</button>
-          <button type="button" class="u-btn-secondary" @click="reset">{{ t('agentSwap.again') }}</button>
-        </div>
-        <div class="u-help swap-meta">
-          <div>{{ t('agentSwap.metaPlan', { v: result.plan || '—' }) }}</div>
-          <div>{{ t('agentSwap.metaOldStatus', { v: result.order_status || '—' }) }}</div>
-          <div>{{ t('agentSwap.metaOldPrefix', { v: result.old_code_prefix || '—' }) }}</div>
-        </div>
-      </section>
+
+        <section v-if="result" class="u-card swap-stack swap-gap">
+          <p class="u-help swap-ok">{{ result.message ? t('agentSwap.resultMessage') : t('agentSwap.resultFallback') }}</p>
+          <div>
+            <div class="u-help swap-cap">{{ t('agentSwap.newCodeCaption') }}</div>
+            <div class="u-mono swap-code">{{ result.new_code }}</div>
+          </div>
+          <div class="swap-actions">
+            <button type="button" class="u-btn-primary" @click="copyNew">{{ t('agentSwap.copy') }}</button>
+            <button type="button" class="u-btn-secondary" @click="reset">{{ t('agentSwap.again') }}</button>
+          </div>
+          <div class="u-help swap-meta">
+            <div>{{ t('agentSwap.metaPlan', { v: result.plan || '—' }) }}</div>
+            <div>{{ t('agentSwap.metaOldStatus', { v: result.order_status || '—' }) }}</div>
+            <div>{{ t('agentSwap.metaOldPrefix', { v: result.old_code_prefix || '—' }) }}</div>
+          </div>
+        </section>
+
+        <template v-if="isDesktop" #aside><FaqList /></template>
+      </UserTwoColumn>
 
       <UserFooter />
     </main>
@@ -72,6 +77,9 @@ import { swapFailureT } from '../../lib/apiError'
 import UserPageHeader from '../../components/UserPageHeader.vue'
 import UserShell from '../../components/redeem/UserShell.vue'
 import UserFooter from '../../components/redeem/UserFooter.vue'
+import FaqList from '../../components/redeem/FaqList.vue'
+import UserTwoColumn from '../../components/redeem/UserTwoColumn.vue'
+import { isDesktop } from '../../lib/layoutMode'
 
 const { t, te } = useI18n({ useScope: 'global' })
 const password = ref('')
@@ -143,7 +151,7 @@ function reset() {
 .swap-strong { margin: 0; font-weight: 600; }
 .swap-ok { margin: 0; color: var(--u-ink); font-size: 15px; font-weight: 600; }
 .swap-cap { margin: 0 0 6px; }
-.swap-code { word-break: break-all; font-size: 15px; padding: 12px 14px; background: var(--u-tint); border: 1px solid var(--u-line); border-radius: 14px; }
+.swap-code { word-break: break-all; font-size: 15px; padding: 12px 14px; background: var(--u-tint); border: 1px solid var(--u-line); border-radius: var(--u-radius); }
 .swap-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 .swap-meta { margin: 0; display: flex; flex-direction: column; gap: 2px; }
 </style>

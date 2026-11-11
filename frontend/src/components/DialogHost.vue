@@ -14,7 +14,7 @@
 
   <!-- 弹窗 -->
   <!-- 用户端页面（不在 UserShell 里）的弹窗：外面套一层 user-ui 取 --u-* 配色，display: contents 不影响布局 -->
-  <div v-if="d" class="dlg-wrap" :class="{ 'user-ui': userSide }" :data-theme="userSide ? themeMode : undefined" :style="userSide ? brandColorVars(siteBrand.primary) : undefined">
+  <div v-if="d" class="dlg-wrap" :class="{ 'user-ui': userSide }">
   <div class="modal-mask fixed inset-0 z-[9998] flex items-center justify-center p-4" @click.self="onCancel">
     <div :class="userSide ? 'u-card dlg-user w-full max-w-md' : 'card card-solid w-full max-w-md'" role="dialog" aria-modal="true" @keydown.enter="onEnter" @keydown.esc="onCancel">
       <h3 :class="userSide ? 'dlg-title' : 'text-lg font-semibold text-ink mb-2'">{{ d.title }}</h3>
@@ -46,9 +46,7 @@
 import { computed, ref, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { dialogState, resolveActive } from '../lib/dialog'
-import { brandColorVars } from '../lib/brandColor'
 import { isAdminPath } from '../router/routes'
-import { siteBrand, themeMode } from '../theme'
 
 const route = useRoute()
 const userSide = computed(() => !isAdminPath(route.path) && !route.path.startsWith('/agent'))

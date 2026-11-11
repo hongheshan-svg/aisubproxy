@@ -168,6 +168,7 @@ async function onUserCommand(cmd: string) {
   }
 }
 async function submitPwd() {
+  if (pwdLoading.value) return
   pwdError.value = ''
   if (pwdForm.new_password !== pwdForm.confirm) {
     pwdError.value = '两次新密码不一致'

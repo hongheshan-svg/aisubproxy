@@ -31,6 +31,11 @@ describe('回车不能绕过按钮禁用（F2-14）', () => {
     expect(firstStatement(src, 'query')).toBe('if (querying.value) return')
     expect(firstStatement(src, 'queryBatch')).toBe('if (querying.value) return')
   })
+  it('后台改密码弹窗：回车提交开头判断 pwdLoading（FE2 审查次要 9）', () => {
+    const src = read('layouts/AdminLayout.vue')
+    expect(src).toContain('@keyup.enter="submitPwd"')
+    expect(firstStatement(src, 'submitPwd')).toBe('if (pwdLoading.value) return')
+  })
   it('批量兑换页：开始验证在验证中、提交中都不动作', () => {
     const src = read('views/user/BatchRedeemView.vue')
     expect(firstStatement(src, 'handleVerifyBatch')).toBe('if (verifying.value || submitting.value || autoSubmitting.value) return')

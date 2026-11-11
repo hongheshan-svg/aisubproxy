@@ -44,7 +44,7 @@
           每张码兑换时给卡注资 <b>{{ centsToUsd(combo.fund_cents) }} 美元</b>，应付金额上限 <b>{{ formatMinor(combo.cap_minor, combo.currency) }}</b>；
           当前可用卡 {{ combo.cards }} 张
         </div>
-        <div v-if="noteOf(combo)" class="font-semibold" style="color: var(--warn)">{{ noteOf(combo) }}</div>
+        <div v-if="noteOf(combo)" class="font-semibold text-warn">{{ noteOf(combo) }}</div>
         <div v-if="!combo.ok" class="text-err">不可发：{{ (combo.problems || []).join('；') }}</div>
       </div>
 
@@ -474,8 +474,3 @@ onMounted(() => { loadReadiness(); load(); loadAgentOptions() })
 // 仅服务端渲染（单元测试）会触发：让测试里渲染出的面板带上就绪数据。浏览器里不会执行。
 onServerPrefetch(loadReadiness)
 </script>
-
-<style scoped>
-.text-err { color: #dc2626; }
-.text-ok { color: #16a34a; }
-</style>

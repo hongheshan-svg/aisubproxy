@@ -763,10 +763,3 @@ onUnmounted(() => {
   session.value = ''
 })
 </script>
-
-<style scoped>
-.text-warn { color: #d97706; }
-.text-ok { color: #16a34a; }
-.text-err { color: #dc2626; }
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
-</style>

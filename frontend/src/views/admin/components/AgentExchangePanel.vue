@@ -150,8 +150,3 @@ async function submitResolve() {
 
 onMounted(load)
 </script>
-
-<style scoped>
-.text-err { color: #dc2626; }
-.text-warn { color: #d97706; }
-</style>

@@ -63,6 +63,13 @@ html {
   --err-soft: rgba(192, 57, 43, 0.12);
   --info: #2f6f9f;
   --info-soft: rgba(47, 111, 159, 0.12);
+  /* 状态色当文字用（.text-warn、提示框、状态标签）：往正文色方向混，亮色下更深、暗色下更浅。
+     各皮肤改了 --good、--ink 等变量后跟着变。比例取 12 套皮肤亮暗、在页面底、面板底、次级底、浅色状态底上
+     都不低于 4.5:1 的最大值（红、蓝卡在深青暗色的次级底上），见 styles/__tests__/statusColors.test.ts。 */
+  --good-ink: color-mix(in srgb, var(--good) 60%, var(--ink));
+  --warn-ink: color-mix(in srgb, var(--warn) 60%, var(--ink));
+  --err-ink: color-mix(in srgb, var(--err) 45%, var(--ink));
+  --info-ink: color-mix(in srgb, var(--info) 50%, var(--ink));
 
   --shadow: 0 18px 48px rgba(120, 72, 40, 0.1);
   --shadow-sm: 0 2px 12px rgba(120, 72, 40, 0.08);
@@ -289,6 +296,15 @@ button.card:hover {
 .text-ink { color: var(--ink); }
 .text-muted { color: var(--ink-2); }
 .text-subtle { color: var(--ink-3); }
+/* 状态文字：后台各页共用，不再各自写死一份 */
+.text-ok { color: var(--good-ink); }
+.text-warn { color: var(--warn-ink); }
+.text-err,
+.field-error { color: var(--err-ink); }
+
+/* 分步配置页（MarsWallex 对接、Telegram 告警）的步骤标题和序号 */
+.ops-step-title { display: flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 600; color: var(--ink); }
+.ops-step-no { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; background: var(--primary-soft); color: var(--primary); font-size: 12px; font-weight: 700; }
 
 .app-link {
   color: var(--primary);
@@ -360,17 +376,17 @@ textarea.input { resize: vertical; }
   color: var(--ink-2);
   border: 1px solid var(--brd);
 }
-.pill-good { background: var(--good-soft); color: var(--good); border-color: transparent; }
-.pill-warn { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
-.pill-err  { background: var(--err-soft);  color: var(--err);  border-color: transparent; }
-.pill-info { background: var(--info-soft); color: var(--info); border-color: transparent; }
+.pill-good { background: var(--good-soft); color: var(--good-ink); border-color: transparent; }
+.pill-warn { background: var(--warn-soft); color: var(--warn-ink); border-color: transparent; }
+.pill-err  { background: var(--err-soft);  color: var(--err-ink);  border-color: transparent; }
+.pill-info { background: var(--info-soft); color: var(--info-ink); border-color: transparent; }
 
 /* ── Alert boxes ── */
 .alert { @apply rounded-xl p-4 text-sm; border: 1px solid transparent; }
-.alert-error   { background: var(--err-soft);  color: var(--err);  border-color: var(--err); }
-.alert-success { background: var(--good-soft); color: var(--good); border-color: var(--good); }
-.alert-info    { background: var(--info-soft); color: var(--info); border-color: var(--info); }
-.alert-warning { background: var(--warn-soft); color: var(--warn); border-color: var(--warn); }
+.alert-error   { background: var(--err-soft);  color: var(--err-ink);  border-color: var(--err); }
+.alert-success { background: var(--good-soft); color: var(--good-ink); border-color: var(--good); }
+.alert-info    { background: var(--info-soft); color: var(--info-ink); border-color: var(--info); }
+.alert-warning { background: var(--warn-soft); color: var(--warn-ink); border-color: var(--warn); }
 
 /* ── Data tables ── */
 .data-table { @apply min-w-full text-sm; border-collapse: collapse; }

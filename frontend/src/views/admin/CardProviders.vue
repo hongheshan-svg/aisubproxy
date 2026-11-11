@@ -159,7 +159,3 @@ onMounted(load)
 // 仅服务端渲染（单元测试）会触发：让测试里渲染出的页面带上数据。浏览器里不会执行。
 onServerPrefetch(load)
 </script>
-
-<style scoped>
-.text-ok { color: #16a34a; }
-</style>

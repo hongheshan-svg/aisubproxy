@@ -593,8 +593,6 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.text-warn { color: #d97706; }
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .date-input {
   height: 32px;
   padding: 0 8px;

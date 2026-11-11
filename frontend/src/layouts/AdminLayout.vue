@@ -234,9 +234,9 @@ async function submitPwd() {
   font-size: 12px; line-height: 1; padding: 5px 8px; border-radius: 999px; white-space: nowrap;
   border: 1px solid var(--brd); color: var(--ink-2); background: var(--surface); cursor: default;
 }
-.env-badge.env-prod { color: var(--good, #16a34a); border-color: currentColor; }
-.env-badge.env-test { color: var(--warn, #d97706); border-color: currentColor; }
-.env-badge.env-custom, .env-badge.env-unknown { color: var(--err, #dc2626); border-color: currentColor; }
+.env-badge.env-prod { color: var(--good-ink); border-color: currentColor; }
+.env-badge.env-test { color: var(--warn-ink); border-color: currentColor; }
+.env-badge.env-custom, .env-badge.env-unknown { color: var(--err-ink); border-color: currentColor; }
 .env-badge.env-unconfigured { color: var(--ink-3); }
 .is-mobile .crumb-group, .is-mobile .crumb-group + .crumb-sep { display: none; }
 /* 手机上不显示分组，页面名换成带服务商名的完整页名 */

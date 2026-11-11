@@ -1466,17 +1466,13 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.text-warn {
-  color: #d97706;
-}
 :deep(.mismatch-row td) {
-  background: rgba(220, 38, 38, 0.12) !important;
-  color: #dc2626;
+  background: var(--err-soft) !important;
+  color: var(--err-ink);
 }
 .field-error {
   margin-bottom: 8px;
   font-size: 13px;
-  color: #dc2626;
 }
 .pending-chip {
   padding: 8px 14px;
@@ -1491,7 +1487,7 @@ onBeforeUnmount(() => {
   font-size: 16px;
 }
 .pending-chip:hover {
-  border-color: #3b82f6;
+  border-color: var(--primary);
 }
 .grid-form {
   display: grid;

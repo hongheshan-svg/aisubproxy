@@ -18,7 +18,7 @@
           留空保存=不修改；
           <el-tag size="small" :type="configured ? 'success' : 'info'" effect="plain">{{ configured ? '已设置' : '未设置' }}</el-tag>
         </p>
-        <p v-if="weak" class="w-full text-xs mt-1" style="color: var(--err)" data-testid="swap-password-weak">
+        <p v-if="weak" class="w-full text-xs mt-1 text-err" data-testid="swap-password-weak">
           当前密码不足 12 位，仍可使用，但请尽快换成至少 12 位的新密码。
         </p>
       </el-form-item>

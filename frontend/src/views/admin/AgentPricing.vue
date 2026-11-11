@@ -4,7 +4,7 @@
       <h1 class="text-xl font-semibold">批发商品与价格</h1>
       <el-button :loading="loading" @click="loadAll">刷新</el-button>
     </div>
-    <p v-if="err" class="text-sm text-red-500" role="alert">{{ err }}</p>
+    <p v-if="err" class="text-sm text-err" role="alert">{{ err }}</p>
 
     <!-- 等级 -->
     <section class="card p-4 space-y-3">
@@ -51,7 +51,7 @@
           </tbody>
         </table>
       </div>
-      <p v-if="matrixErr" class="text-sm text-red-500" role="alert">{{ matrixErr }}</p>
+      <p v-if="matrixErr" class="text-sm text-err" role="alert">{{ matrixErr }}</p>
       <el-button type="primary" :loading="savingMatrix" :disabled="!products.length || !matrixTiers.length" @click="saveMatrix">保存价格</el-button>
     </section>
 
@@ -60,7 +60,7 @@
       <div class="space-y-3">
         <label class="block text-sm"><span class="block mb-1">名称</span><el-input v-model="tierForm.name" maxlength="50" /></label>
         <label class="block text-sm"><span class="block mb-1">备注</span><el-input v-model="tierForm.note" maxlength="200" /></label>
-        <p v-if="tierErr" class="text-sm text-red-500" role="alert">{{ tierErr }}</p>
+        <p v-if="tierErr" class="text-sm text-err" role="alert">{{ tierErr }}</p>
       </div>
       <template #footer><el-button @click="tierOpen = false">取消</el-button><el-button type="primary" :loading="tierBusy" @click="saveTier">保存</el-button></template>
     </el-dialog>
@@ -80,7 +80,7 @@
         <label class="block text-sm"><span class="block mb-1">名称</span><el-input v-model="prodForm.name" maxlength="100" /></label>
         <label class="block text-sm"><span class="block mb-1">排序（小的在前）</span><el-input-number v-model="prodForm.sort" :min="0" :max="9999" class="!w-full" /></label>
         <label v-if="prodForm.id" class="flex items-center gap-2 text-sm"><el-switch v-model="prodForm.enabled" />上架（下架后代理商看不到，也不能下单）</label>
-        <p v-if="prodErr" class="text-sm text-red-500" role="alert">{{ prodErr }}</p>
+        <p v-if="prodErr" class="text-sm text-err" role="alert">{{ prodErr }}</p>
       </div>
       <template #footer><el-button @click="prodOpen = false">取消</el-button><el-button type="primary" :loading="prodBusy" @click="saveProduct">保存</el-button></template>
     </el-dialog>

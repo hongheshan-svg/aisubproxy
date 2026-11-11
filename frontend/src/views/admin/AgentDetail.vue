@@ -5,7 +5,7 @@
       <h1 class="text-xl font-semibold">{{ agent ? agent.username : '代理商详情' }}</h1>
       <el-tag v-if="agent" size="small" :type="agent.status === 'active' ? 'success' : 'info'">{{ agent.status === 'active' ? '启用' : '已停用' }}</el-tag>
     </div>
-    <p v-if="err" class="text-sm text-red-500" role="alert">{{ err }}</p>
+    <p v-if="err" class="text-sm text-err" role="alert">{{ err }}</p>
 
     <section v-if="agent" class="card p-4 space-y-3">
       <div class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4 text-sm">
@@ -42,7 +42,7 @@
           <button class="btn-primary" type="button" @click="searchLedger">查询</button>
           <button class="btn-ghost" type="button" :disabled="!snapRange" @click="exportLedger">导出 CSV（上次查询的范围）</button>
         </div>
-        <p v-if="ledgerErr" class="text-sm text-red-500" role="alert">{{ ledgerErr }}</p>
+        <p v-if="ledgerErr" class="text-sm text-err" role="alert">{{ ledgerErr }}</p>
         <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 text-sm">
           <div class="card p-3"><div class="opacity-70">期初</div><b>{{ fmtUsd(summary.opening_cents) }}</b></div>
           <div class="card p-3"><div class="opacity-70">收入</div><b>{{ fmtUsd(summary.income_cents) }}</b></div>
@@ -65,7 +65,7 @@
 
       <!-- 订单 -->
       <div v-if="tab === 'orders'" class="space-y-3">
-        <p v-if="ordersErr" class="text-sm text-red-500" role="alert">{{ ordersErr }}</p>
+        <p v-if="ordersErr" class="text-sm text-err" role="alert">{{ ordersErr }}</p>
         <el-table :data="orders" size="small" stripe empty-text="没有订单">
           <el-table-column prop="id" label="订单" width="80" />
           <el-table-column label="时间" width="160"><template #default="{ row }">{{ fmtBeijing(row.created_at) }}</template></el-table-column>
@@ -83,7 +83,7 @@
       <!-- 覆盖价 -->
       <div v-if="tab === 'overrides'" class="space-y-3">
         <p class="text-sm opacity-70">给这个代理商单独定价，优先于所属等级的价格；留空或填 0 表示取消覆盖，回到等级价。</p>
-        <p v-if="overridesErr" class="text-sm text-red-500" role="alert">{{ overridesErr }}</p>
+        <p v-if="overridesErr" class="text-sm text-err" role="alert">{{ overridesErr }}</p>
         <el-table :data="overrides" size="small" stripe empty-text="没有商品">
           <el-table-column prop="name" label="商品" min-width="160" show-overflow-tooltip />
           <el-table-column prop="product_code" label="编码" min-width="140" class-name="mono" />
@@ -100,7 +100,7 @@
 
       <!-- 本站码 -->
       <div v-if="tab === 'codes'" class="space-y-3">
-        <p v-if="codesErr" class="text-sm text-red-500" role="alert">{{ codesErr }}</p>
+        <p v-if="codesErr" class="text-sm text-err" role="alert">{{ codesErr }}</p>
         <el-table :data="codes" size="small" stripe empty-text="没有码">
           <el-table-column prop="id" label="ID" width="70" />
           <el-table-column label="码前缀" min-width="130"><template #default="{ row }"><span class="mono">{{ row.code_prefix }}…</span></template></el-table-column>
@@ -121,7 +121,7 @@
           <el-select v-model="editForm.tier_id" class="w-full"><el-option v-for="t in tiers" :key="t.id" :label="t.name" :value="t.id" /></el-select>
         </label>
         <label class="block text-sm"><span class="block mb-1">备注</span><el-input v-model="editForm.note" maxlength="200" /></label>
-        <p v-if="editErr" class="text-sm text-red-500" role="alert">{{ editErr }}</p>
+        <p v-if="editErr" class="text-sm text-err" role="alert">{{ editErr }}</p>
       </div>
       <template #footer>
         <el-button @click="editOpen = false">取消</el-button>
@@ -140,7 +140,7 @@
           <div>{{ preview.afterText }}</div>
           <div v-if="preview.warning" class="font-semibold" role="alert">{{ preview.warning }}</div>
         </div>
-        <p v-if="adjMsg" class="text-sm" :class="adjLocked ? 'text-amber-600' : 'text-red-500'" role="alert">{{ adjLocked ? `代理商 ${agent?.username}：` : '' }}{{ adjMsg }}</p>
+        <p v-if="adjMsg" class="text-sm" :class="adjLocked ? 'text-warn' : 'text-err'" role="alert">{{ adjLocked ? `代理商 ${agent?.username}：` : '' }}{{ adjMsg }}</p>
       </div>
       <template #footer>
         <el-button v-if="adjLocked" type="danger" plain :disabled="adjBusy" @click="abandonAdjust">放弃这次调账</el-button>
@@ -528,6 +528,6 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.adj-credit { background: rgba(22, 163, 74, 0.1); color: #15803d; }
-.adj-debit { background: rgba(220, 38, 38, 0.1); color: #b91c1c; }
+.adj-credit { background: var(--good-soft); color: var(--good-ink); }
+.adj-debit { background: var(--err-soft); color: var(--err-ink); }
 </style>

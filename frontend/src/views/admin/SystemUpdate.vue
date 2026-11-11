@@ -5,8 +5,8 @@
       <div class="flex justify-end">
         <el-button :loading="versionLoading" @click="loadVersion(true)">检查更新</el-button>
       </div>
-      <div v-if="versionError" class="text-sm" style="color: var(--err)">{{ versionError }}</div>
-      <div v-if="versionInfo.update_hint" class="text-xs" style="color: var(--warn)">{{ versionInfo.update_hint }}</div>
+      <div v-if="versionError" class="text-sm text-err">{{ versionError }}</div>
+      <div v-if="versionInfo.update_hint" class="text-xs text-warn">{{ versionInfo.update_hint }}</div>
       <div class="space-y-2 text-sm">
         <div class="flex justify-between gap-2">
           <span class="text-muted">当前版本</span>
@@ -14,7 +14,7 @@
         </div>
         <div class="flex justify-between gap-2">
           <span class="text-muted">GitHub 最新</span>
-          <span class="mono font-semibold" :style="versionInfo.update_available ? 'color: var(--warn)' : 'color: var(--good)'">
+          <span class="mono font-semibold" :class="versionInfo.update_available ? 'text-warn' : 'text-ok'">
             {{ versionInfo.latest ? `v${versionInfo.latest}` : '—' }}
           </span>
         </div>
@@ -62,7 +62,7 @@
             :style="{ width: `${updateProgress}%`, background: updateFailed ? 'var(--err)' : 'var(--primary)' }"
           />
         </div>
-        <div v-if="updateFailed" class="text-xs" style="color: var(--err)">{{ updateError }}</div>
+        <div v-if="updateFailed" class="text-xs text-err">{{ updateError }}</div>
       </div>
 
       <div class="flex flex-wrap gap-2 pt-1">

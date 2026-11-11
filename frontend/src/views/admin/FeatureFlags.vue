@@ -30,8 +30,8 @@
         </ul>
         <p class="text-subtle">不受影响：老的代理换码页（/partner/swap）、首页售后查询、兑换流程。关闭不会删除任何数据，重新打开即恢复。</p>
       </div>
-      <p v-if="loadError" class="text-sm" style="color: var(--warn)" role="alert">{{ loadError }}</p>
-      <p v-if="saveError" class="text-sm text-red-500" role="alert">{{ saveError }}</p>
+      <p v-if="loadError" class="text-sm text-warn" role="alert">{{ loadError }}</p>
+      <p v-if="saveError" class="text-sm text-err" role="alert">{{ saveError }}</p>
     </div>
   </div>
 </template>

@@ -95,6 +95,7 @@ export default {
     statWait: 'Awaiting credential',
     statRun: 'Running',
     statOkFail: 'OK / Fail',
+    statUnknown: 'Unknown',
     currentOrdinal: '{n} / {total}',
     remaining: '{n} left',
     willUseAccount: 'Using account:',
@@ -107,6 +108,7 @@ export default {
     allSubmitted: 'All credentials submitted ({n})',
     watchProgress: 'Keep watching progress below',
     exportOk: 'Export successful accounts ({n})',
+    exportOkUnknown: 'Export successful accounts ({n}), plus {m} with unknown result',
     noValidKeys: 'No valid CDKs to redeem',
     liveProgress: 'Live progress',
     account: 'Account',
@@ -114,7 +116,7 @@ export default {
     cardPending: 'Last4 after card open',
     reset: 'Back · start over',
     resultUnknown: 'Result unknown — checking…',
-    resultNotFound: 'No redemption record found for this CDK, so it should still be unused. Check it on the CDK Status page first, and redeem it again only if it is unused',
+    resultUnknownStopped: 'Result unknown — check it on the CDK Status page and do not submit it again',
     status: {
       pending_verify: 'Pending',
       verify_ok: 'Valid',
@@ -124,6 +126,7 @@ export default {
       processing: 'Processing',
       success: 'Success',
       failed: 'Failed',
+      unknown: 'Result unknown',
     },
   },
   cdkLookup: {

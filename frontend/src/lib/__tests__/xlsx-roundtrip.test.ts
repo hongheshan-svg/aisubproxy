@@ -35,6 +35,28 @@ describe('xlsx 往返', () => {
     expect(got.slice(1)).toEqual(rows)
   })
 
+  it('有结果未知的卡密时另起一页「结果未知」，带卡密和说明；成功页不变（F2-03 裁定 1）', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'xlsx-rt-'))
+    process.chdir(tmp)
+    const ok: Array<[string, string, string, string]> = [['a@example.com', 'gpt-pass-1', 'mail-pass-1', 'token-aaa']]
+    const unknown = [['SXC-AAAA-BBBB', 'b@example.com', 'gpt-pass-2', 'mail-pass-2', 'token-bbb', '结果未知，请到卡密查询页核对，不要重复提交']]
+    await exportSuccessWorkbook(ok, 'rt', unknown)
+    const files = readdirSync(tmp).filter((f) => f.startsWith('rt_') && f.endsWith('.xlsx'))
+    const wb = XLSX.read(readFileSync(join(tmp, files[0])))
+    expect(wb.SheetNames).toEqual(['账号', '结果未知'])
+    const rowsOf = (name: string) => XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: '' })
+    expect(rowsOf('账号')).toEqual([['邮箱', 'GPT密码', '邮箱密码', 'at'], ...ok])
+    expect(rowsOf('结果未知')).toEqual([['卡密', '邮箱', 'GPT密码', '邮箱密码', 'at', '状态'], ...unknown])
+  })
+
+  it('没有结果未知的卡密时只有「账号」一页', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'xlsx-rt-'))
+    process.chdir(tmp)
+    await exportSuccessWorkbook([['a@example.com', '', '', '']], 'rt')
+    const files = readdirSync(tmp).filter((f) => f.startsWith('rt_') && f.endsWith('.xlsx'))
+    expect(XLSX.read(readFileSync(join(tmp, files[0]))).SheetNames).toEqual(['账号'])
+  })
+
   it('XLSX.write 生成的工作簿（含「账号」页名）可读回', async () => {
     const sheet = XLSX.utils.aoa_to_sheet([
       ['邮箱', 'x'],

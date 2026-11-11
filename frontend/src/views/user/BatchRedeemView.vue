@@ -116,7 +116,7 @@
 
           <!-- run phase -->
           <template v-else>
-            <div class="grid grid-cols-4 gap-2 text-center">
+            <div class="grid gap-2 text-center" :class="stats.unknown > 0 ? 'grid-cols-5' : 'grid-cols-4'">
               <div class="rounded-lg bg-soft py-2">
                 <div class="text-lg font-bold tabular-nums text-ink">{{ stats.total }}</div>
                 <div class="text-[10px] text-muted">{{ t('batch.statTotal') }}</div>
@@ -134,6 +134,11 @@
                   {{ stats.ok }}<span class="text-muted text-sm font-normal">/{{ stats.fail }}</span>
                 </div>
                 <div class="text-[10px] text-muted">{{ t('batch.statOkFail') }}</div>
+              </div>
+              <!-- 到时限还没查到结果的单独计：不是失败，不能重提，要买家去卡密查询页核对（F2-03 裁定 1） -->
+              <div v-if="stats.unknown > 0" class="rounded-lg py-2" style="background: color-mix(in srgb, var(--warn, #d97706) 12%, transparent)">
+                <div class="text-lg font-bold tabular-nums text-warn">{{ stats.unknown }}</div>
+                <div class="text-[10px] text-muted">{{ t('batch.statUnknown') }}</div>
               </div>
             </div>
 
@@ -258,13 +263,13 @@
               </p>
               <p class="text-xs text-muted">{{ t('batch.watchProgress') }}</p>
               <button
-                v-if="stats.ok > 0"
+                v-if="canExport"
                 type="button"
                 class="text-xs px-3 py-1.5 rounded-lg text-white"
                 style="background: var(--good, #16a34a)"
                 @click="exportBatchSuccess"
               >
-                {{ t('batch.exportOk', { n: stats.ok }) }}
+                {{ exportLabel }}
               </button>
             </div>
 
@@ -314,13 +319,13 @@
             </div>
 
             <button
-              v-if="stats.ok > 0"
+              v-if="canExport"
               type="button"
               class="u-btn-secondary w-full"
               style="color: var(--good, #16a34a); border-color: color-mix(in srgb, var(--good, #16a34a) 40%, var(--brd))"
               @click="exportBatchSuccess"
             >
-              {{ t('batch.exportOk', { n: stats.ok }) }}
+              {{ exportLabel }}
             </button>
             <button type="button" class="u-btn-secondary w-full" :disabled="submitting || autoSubmitting" @click="resetAll">
               {{ t('batch.reset') }}
@@ -350,11 +355,13 @@ import { chunkTokens, nextPollPlan, parsePollResponse } from '../../lib/batch-po
 import {
   batchStats,
   isFailStatus,
+  isSubmittable,
   isSuccessStatus,
   redeemOutcome,
   runSubmitPool,
   successRows,
-  unknownLookupVerdict,
+  unknownExpired,
+  unknownRows,
 } from '../../lib/batch-redeem'
 import SessionHelp from '../../components/SessionHelp.vue'
 import { isGrokCredential } from '../../lib/grok'
@@ -391,6 +398,8 @@ type ItemStatus =
   | 'processing'
   | 'success'
   | 'failed'
+  // 结果未知且到时限还没查到兑换记录：停止查询，提示去卡密查询页核对；不算失败，也绝不再提交（F2-03 裁定 1）
+  | 'unknown'
 
 interface BatchItem {
   /** `批次号-序号-卡密`：同一批卡密重置后再验证，新旧条目的 id 也不同 */
@@ -479,16 +488,15 @@ watch(parsedMailboxes, (rows) => {
 const verifiedQueue = computed(() =>
   items.value.filter((i) => i.status !== 'pending_verify' && i.status !== 'verify_fail'),
 )
-const pendingSessionItems = computed(() =>
-  items.value.filter((i) => i.status === 'waiting_session' || i.status === 'verify_ok'),
-)
+// 能提交的只有 isSubmittable 认的那几种状态：结果未知、处理中、成功、失败的都不会再被提交
+const pendingSessionItems = computed(() => items.value.filter((i) => isSubmittable(i.status)))
 const currentItem = computed(() => pendingSessionItems.value[0] ?? null)
 const currentExcelIdx = computed(() => {
   if (!currentItem.value) return -1
   return verifiedQueue.value.findIndex((i) => i.id === currentItem.value!.id)
 })
 const sessionsDone = computed(() =>
-  items.value.filter((i) => ['submitting', 'processing', 'success', 'failed'].includes(i.status)).length,
+  items.value.filter((i) => ['submitting', 'processing', 'success', 'failed', 'unknown'].includes(i.status)).length,
 )
 const totalVerified = computed(() => verifiedQueue.value.length)
 const currentOrdinal = computed(() =>
@@ -496,6 +504,13 @@ const currentOrdinal = computed(() =>
 )
 
 const stats = computed(() => batchStats(items.value))
+// 有成功的或结果未知的就能导出；结果未知的另起一页，不混进成功页
+const canExport = computed(() => stats.value.ok > 0 || stats.value.unknown > 0)
+const exportLabel = computed(() =>
+  stats.value.unknown > 0
+    ? t('batch.exportOkUnknown', { n: stats.value.ok, m: stats.value.unknown })
+    : t('batch.exportOk', { n: stats.value.ok }),
+)
 
 const allSessionsCollected = computed(
   () =>
@@ -515,6 +530,7 @@ function statusLabel(st: ItemStatus) {
     processing: t('batch.status.processing'),
     success: t('batch.status.success'),
     failed: t('batch.status.failed'),
+    unknown: t('batch.status.unknown'),
   }
   return map[st] || st
 }
@@ -558,18 +574,22 @@ function schedulePoll(delayMs: number) {
   pollTimer = setTimeout(() => void pollBatch(), delayMs)
 }
 
-function applyPollResult(id: string, target: PollTarget, status: number, data: any) {
-  if (status < 200 || status >= 300) {
-    // 结果未知的那一张等够时间仍查不到兑换记录：卡密没被用掉。停下来提示去核对，不自动重新提交（F2-03）
-    if (target.unknownSince && unknownLookupVerdict(status, target.unknownSince, Date.now()) === 'not_found') {
-      const msg = t('batch.resultNotFound')
-      updateItem(id, { status: 'failed', progressMsg: msg, error: msg })
-      pollTargets.value[id] = { ...target, terminal: true }
-    }
-    // 其余（单个令牌暂时查不到、暂时出错）：保持原状，下一轮再查
-    return
+/**
+ * 结果未知、到时限还没查到兑换记录的：停止查询，条目标「结果未知」，提示去卡密查询页核对、不要重复提交。
+ * 不判失败：判失败容易让买家重提同一张卡密。这一张也不会回到待提交队列（F2-03 裁定 1）。
+ */
+function expireUnknownTargets(now: number) {
+  for (const [id, target] of Object.entries(pollTargets.value)) {
+    if (target.terminal || !unknownExpired(target.unknownSince ?? 0, now)) continue
+    updateItem(id, { status: 'unknown', progressMsg: t('batch.resultUnknownStopped'), error: '' })
+    pollTargets.value[id] = { ...target, terminal: true }
   }
-  // 查到了兑换记录：之后不再按「结果未知、查不到就停」处理
+}
+
+function applyPollResult(id: string, target: PollTarget, status: number, data: any) {
+  // 单个令牌查不到（404 等）或暂时出错：保持原状，下一轮再查；结果未知的到时限由 expireUnknownTargets 收尾
+  if (status < 200 || status >= 300) return
+  // 查到了兑换记录：之后不再按「结果未知、到时限就停」处理
   const seen: PollTarget = { token: target.token, terminal: false }
   const order = data?.order || data?.data?.order || data?.data || data || {}
   const st = String(order.status || data?.status || data?.data?.status || '')
@@ -637,6 +657,8 @@ async function pollBatch() {
     // 换了批次时 stopAllPolls 已经复位，新批次可能已有一轮在途，不能替它清
     if (gen === batchSeq) pollInFlight = false
   }
+  // 不管这一轮查到 404、5xx 还是整体失败，结果未知的到时限都停下
+  expireUnknownTargets(Date.now())
   const remaining = Object.values(pollTargets.value).filter((v) => !v.terminal).length
   if (!remaining) {
     pollNotice.value = ''
@@ -1130,9 +1152,7 @@ async function handleAutoSubmitAll() {
   const verifiedSnap = items.value.filter(
     (i) => i.status !== 'pending_verify' && i.status !== 'verify_fail',
   )
-  const pendingSnap = items.value.filter(
-    (i) => i.status === 'verify_ok' || i.status === 'waiting_session',
-  )
+  const pendingSnap = items.value.filter((i) => isSubmittable(i.status))
   if (!pendingSnap.length) {
     sessionError.value = '没有待提交的卡密'
     return
@@ -1192,14 +1212,17 @@ async function handleAutoSubmitAll() {
 }
 
 async function exportBatchSuccess() {
-  const ok = items.value.filter((i) => i.status === 'success')
-  if (!ok.length) {
+  if (!canExport.value) {
     sessionError.value = '本批尚无成功记录'
     return
   }
   sessionError.value = ''
   try {
-    await exportSuccessWorkbook(successRows(items.value))
+    await exportSuccessWorkbook(
+      successRows(items.value),
+      'batch_success',
+      unknownRows(items.value, t('batch.resultUnknownStopped')),
+    )
   } catch {
     sessionError.value = '导出失败，请重试'
   }
@@ -1253,7 +1276,8 @@ onUnmounted(() => {
   background: color-mix(in srgb, var(--err, #dc2626) 14%, transparent);
   color: var(--err, #dc2626);
 }
-.status-pill[data-st='waiting_session'] {
+.status-pill[data-st='waiting_session'],
+.status-pill[data-st='unknown'] {
   background: color-mix(in srgb, var(--warn, #d97706) 14%, transparent);
   color: var(--warn, #d97706);
 }

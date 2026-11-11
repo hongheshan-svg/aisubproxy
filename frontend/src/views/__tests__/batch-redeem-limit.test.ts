@@ -32,3 +32,22 @@ describe('超出张数上限的提示（F2-05）', () => {
     expect(verify).not.toContain('单次最多')
   })
 })
+
+describe('结果未知的文案（F2-03 裁定 1）', () => {
+  it('停查后的说明、状态标签、统计名，中英文都有', () => {
+    expect(zh.batch.resultUnknownStopped).toBe('结果未知，请到卡密查询页核对，不要重复提交')
+    expect(en.batch.resultUnknownStopped).toBe('Result unknown — check it on the CDK Status page and do not submit it again')
+    expect(zh.batch.status.unknown).toBe('结果未知')
+    expect(en.batch.status.unknown).toBe('Result unknown')
+    expect(zh.batch.statUnknown).toBe('结果未知')
+    expect(en.batch.statUnknown).toBe('Unknown')
+  })
+  it('不再有「查不到记录就判失败」的旧文案', () => {
+    expect(JSON.stringify(zh.batch)).not.toContain('resultNotFound')
+    expect(JSON.stringify(en.batch)).not.toContain('resultNotFound')
+  })
+  it('导出按钮有结果未知时说明另含几张', () => {
+    expect(i18n.global.t('batch.exportOkUnknown', { n: 3, m: 2 }, { locale: 'zh' })).toBe('导出本批成功号（3），另含结果未知 2 张')
+    expect(i18n.global.t('batch.exportOkUnknown', { n: 3, m: 2 }, { locale: 'en' })).toBe('Export successful accounts (3), plus 2 with unknown result')
+  })
+})

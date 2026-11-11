@@ -95,6 +95,7 @@ export default {
     statWait: '待凭证',
     statRun: '处理中',
     statOkFail: '成功/失败',
+    statUnknown: '结果未知',
     currentOrdinal: '第 {n} / {total} 张',
     remaining: '剩余 {n} 待贴',
     willUseAccount: '将使用账号：',
@@ -107,6 +108,7 @@ export default {
     allSubmitted: '全部凭证已提交（{n} 笔）',
     watchProgress: '下方可继续查看处理进度',
     exportOk: '导出本批成功号（{n}）',
+    exportOkUnknown: '导出本批成功号（{n}），另含结果未知 {m} 张',
     noValidKeys: '没有可兑换的有效卡密',
     liveProgress: '实时进度',
     account: '账号',
@@ -114,7 +116,7 @@ export default {
     cardPending: '开卡后显示尾号',
     reset: '返回 · 重新开始',
     resultUnknown: '结果未知，正在查询',
-    resultNotFound: '没有查到这张卡密的兑换记录，卡密应该还没被用掉。请先到「卡密查询」页核对，确认未使用再重新兑换',
+    resultUnknownStopped: '结果未知，请到卡密查询页核对，不要重复提交',
     status: {
       pending_verify: '待验证',
       verify_ok: '卡密有效',
@@ -124,6 +126,7 @@ export default {
       processing: '处理中',
       success: '成功',
       failed: '失败',
+      unknown: '结果未知',
     },
   },
   cdkLookup: {

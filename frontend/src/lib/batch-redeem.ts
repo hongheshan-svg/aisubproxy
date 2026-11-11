@@ -53,46 +53,69 @@ export function redeemOutcome(httpStatus: number, orderStatus: string): RedeemOu
 }
 
 /**
- * 结果未知的那一张，查询一直回 404（没有兑换记录）要等多久才下结论。
+ * 结果未知的那一张最多查多久。到时限还没查到兑换记录（不管这期间是 404、5xx 还是断线），就停止查询，
+ * 条目标「结果未知」，提示去卡密查询页核对、不要重复提交；不判失败（判失败容易让买家重提同一张卡密）。
  * 服务端建单不跟随客户端连接、最多 30 秒（后端 localSubmitLimit），这里留足余量。
  */
-export const UNKNOWN_NOT_FOUND_MS = 90_000
+export const UNKNOWN_QUERY_MS = 90_000
 
-/**
- * 结果未知的一张，这次查询回来不是 2xx 时怎么办：
- * - 'not_found'：从结果未知起已过 UNKNOWN_NOT_FOUND_MS 仍查不到兑换记录（404）→ 卡密没被用掉，停止查询、提示去卡密查询页核对；
- * - 'keep'：还在等服务端建单、暂时出错（5xx、429 等），保持原状下一轮再查。
- * unknownSince 为 0 表示不是结果未知的条目（正常受理的），一律 'keep'。
- */
-export function unknownLookupVerdict(httpStatus: number, unknownSince: number, now: number): 'not_found' | 'keep' {
-  if (!(unknownSince > 0) || httpStatus !== 404) return 'keep'
-  return now - unknownSince >= UNKNOWN_NOT_FOUND_MS ? 'not_found' : 'keep'
+/** 结果未知的一张是否已到时限。unknownSince 为 0 表示不是结果未知的条目（正常受理的、已查到过记录的），永远不按时限停。 */
+export function unknownExpired(unknownSince: number, now: number): boolean {
+  return unknownSince > 0 && now - unknownSince >= UNKNOWN_QUERY_MS
 }
 
-/** 页面顶部的四格统计。结果未知的那一张是「处理中」，算在处理中，不算失败。 */
+/**
+ * 页面顶部的统计。查询中的结果未知是「处理中」，算在处理中；
+ * 到时限停查的结果未知（status 'unknown'）单独计，不算失败也不算处理中。
+ */
 export function batchStats(items: ReadonlyArray<{ status: string }>) {
-  const s = { total: items.length, ok: 0, fail: 0, run: 0, wait: 0 }
+  const s = { total: items.length, ok: 0, fail: 0, run: 0, wait: 0, unknown: 0 }
   for (const i of items) {
     if (i.status === 'success') s.ok++
     else if (i.status === 'failed' || i.status === 'verify_fail') s.fail++
+    else if (i.status === 'unknown') s.unknown++
     else if (i.status === 'processing' || i.status === 'submitting') s.run++
     else if (i.status === 'waiting_session' || i.status === 'verify_ok') s.wait++
   }
   return s
 }
 
+/**
+ * 这一张还能提交吗：只有「待凭证」「卡密有效」能进手动提交和一键自动提交。
+ * 结果未知、处理中、提交中、成功、失败一律不能，同一张卡密绝不提交第二次。
+ */
+export function isSubmittable(status: string): boolean {
+  return status === 'waiting_session' || status === 'verify_ok'
+}
+
 interface ExportItem {
   status: string
+  cardKey: string
   email: string
   gptPassword: string
   emailPassword: string
   accessToken: string
 }
 
+const exportPart = (value: string) => String(value || '').replace(/[\r\n]+/g, ' ').trim()
+
 /** 导出本批成功号的表格行：只要开通成功的，值保持原样（不打码），只把换行压成空格。 */
-export function successRows(items: ReadonlyArray<ExportItem>): string[][] {
-  const part = (value: string) => String(value || '').replace(/[\r\n]+/g, ' ').trim()
+export function successRows(items: ReadonlyArray<ExportItem>): Array<[string, string, string, string]> {
   return items
     .filter((i) => i.status === 'success')
-    .map((i) => [part(i.email), part(i.gptPassword), part(i.emailPassword), part(i.accessToken)])
+    .map((i) => [exportPart(i.email), exportPart(i.gptPassword), exportPart(i.emailPassword), exportPart(i.accessToken)])
+}
+
+/** 导出表里「结果未知」那一页的行：带卡密（拿去卡密查询页核对），最后一列写明结果未知；值保持原样。 */
+export function unknownRows(items: ReadonlyArray<ExportItem>, label: string): string[][] {
+  return items
+    .filter((i) => i.status === 'unknown')
+    .map((i) => [
+      exportPart(i.cardKey),
+      exportPart(i.email),
+      exportPart(i.gptPassword),
+      exportPart(i.emailPassword),
+      exportPart(i.accessToken),
+      label,
+    ])
 }

@@ -264,7 +264,7 @@ func (s *Service) refreshForRecycle(ctx context.Context, c *Card) (*Card, error)
 		return nil, fmt.Errorf("刷新卡详情失败，1 分钟后重试: %w", err)
 	}
 	s.refreshFailMu.Lock()
-	delete(s.refreshFailSince, c.CardID)
+	delete(s.refreshFails, c.CardID)
 	s.refreshFailMu.Unlock()
 	if fresh.PoolState != c.PoolState {
 		return nil, nil
@@ -272,22 +272,32 @@ func (s *Service) refreshForRecycle(ctx context.Context, c *Card) (*Card, error)
 	return fresh, nil
 }
 
-// refreshFailAlertAfter：回收中刷新卡详情连续失败多久才告警。平台偶尔抖一下不告警，卡一直卡住才提醒。
-const refreshFailAlertAfter = 30 * time.Minute
+const (
+	// refreshFailAlertAfter：回收中刷新卡详情连续失败多久才告警。平台偶尔抖一下不告警，卡一直卡住才提醒。
+	refreshFailAlertAfter = 30 * time.Minute
+	// refreshFailGap：两次刷新失败隔得比这还久，就不算连续失败，从头计时。正常每分钟重试一次，一轮回收再慢
+	// （50 张卡 × 30 秒超时 ≈ 25 分钟）也不会隔这么久；隔得更久说明这张卡中间没在回收里重试（离开过回收，
+	// 或被未定论的单据挡住整张跳过），之前的失败不能算进「已连续失败 N 分钟」。
+	refreshFailGap = 30 * time.Minute
+)
 
-// noteRefreshFailure 记下卡 c 回收时刷新卡详情失败：第一次失败记时间（只在内存里，进程重启从头计时），
-// 连续失败满 refreshFailAlertAfter 告警（key recycle-refresh:<卡>，每卡每个北京日一条；不和 recycle:<卡> 共用，免得互相压掉）。
-// 告警文字只带 safeErr 摘要，不带平台返回的 message。
+// refreshFail 是一张卡回收时刷新卡详情的失败计时（Unix 秒）：since 是这一段连续失败的开始，last 是最近一次失败。
+type refreshFail struct{ since, last int64 }
+
+// noteRefreshFailure 记下卡 c 回收时刷新卡详情失败：第一次失败、或离上次失败超过 refreshFailGap 时从头计时
+// （只在内存里，进程重启从头计时），连续失败满 refreshFailAlertAfter 告警（key recycle-refresh:<卡>，每卡每个北京日一条；
+// 不和 recycle:<卡> 共用，免得互相压掉）。告警文字只带 safeErr 摘要，不带平台返回的 message。
 func (s *Service) noteRefreshFailure(c *Card, err error) {
 	now := s.now().Unix()
 	s.refreshFailMu.Lock()
-	since, ok := s.refreshFailSince[c.CardID]
-	if !ok {
-		since = now
-		s.refreshFailSince[c.CardID] = now
+	f, ok := s.refreshFails[c.CardID]
+	if !ok || time.Duration(now-f.last)*time.Second > refreshFailGap {
+		f.since = now
 	}
+	f.last = now
+	s.refreshFails[c.CardID] = f
 	s.refreshFailMu.Unlock()
-	age := time.Duration(now-since) * time.Second
+	age := time.Duration(now-f.since) * time.Second
 	if age < refreshFailAlertAfter {
 		return
 	}

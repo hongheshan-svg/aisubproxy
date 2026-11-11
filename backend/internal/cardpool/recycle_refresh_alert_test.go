@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tuzi/cdk-recharge-system/internal/db"
 	"github.com/tuzi/cdk-recharge-system/internal/marswallex/mwtest"
 )
 
@@ -78,11 +79,77 @@ func TestRecycleRefreshFailureAlertsAfter30Minutes(t *testing.T) {
 	}
 }
 
+// 失败计时不跨越「离开回收」（C1-02 审查修复）：刷新失败后卡离开回收，几天后回到回收、第一次刷新失败，
+// 不能马上告警「已连续失败几千分钟」，要从头计时。
+func TestRecycleRefreshFailTimerResetsAfterLeavingRecycle(t *testing.T) {
+	ctx := context.Background()
+	s, mw, clock, al := newTestService(t)
+	insertCard(t, Card{CardID: "c1", ProductID: "p1", PoolState: PoolReleasing})
+	mw.On("GET", detailPath("c1"), mwtest.Rejected(400, "E_CARD"))
+	_ = s.advanceCardsOnce(ctx)
+
+	// 离开回收（例如被外部冻结推送转成停用），3 天后启用、再用、再释放，回到回收
+	if _, err := db.DB.Exec(`UPDATE mw_cards SET pool_state = ?, next_action_at = NULL WHERE card_id = 'c1'`, PoolDisabled); err != nil {
+		t.Fatal(err)
+	}
+	clock.Advance(3 * 24 * time.Hour)
+	_ = s.advanceCardsOnce(ctx)
+	if _, err := db.DB.Exec(`UPDATE mw_cards SET pool_state = ?, next_action_at = NULL WHERE card_id = 'c1'`, PoolReleasing); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.advanceCardsOnce(ctx)
+	if al.Count() != 0 {
+		t.Fatalf("回到回收后只失败了一次，不应告警: %v", al.Texts())
+	}
+	for i := 0; i < 29; i++ {
+		clock.Advance(time.Minute)
+		_ = s.advanceCardsOnce(ctx)
+	}
+	if al.Count() != 0 {
+		t.Fatalf("回到回收后失败不满 30 分钟不应告警: %v", al.Texts())
+	}
+	clock.Advance(time.Minute)
+	_ = s.advanceCardsOnce(ctx)
+	if got := al.Texts(); len(got) != 1 || !strings.Contains(got[0], "已连续失败 30 分钟") {
+		t.Fatalf("回到回收后满 30 分钟应告警一次，按回到回收后的时间算: %v", got)
+	}
+}
+
+// 失败计时不跨越长时间没刷新：卡上的单据进了待人工、整张卡被跳过几小时，单据定论后第一次刷新失败也要从头计时。
+func TestRecycleRefreshFailTimerResetsAfterLongSkip(t *testing.T) {
+	ctx := context.Background()
+	s, mw, clock, al := newTestService(t)
+	insertCard(t, Card{CardID: "c1", ProductID: "p1", PoolState: PoolReleasing})
+	mw.On("GET", detailPath("c1"), mwtest.Rejected(400, "E_CARD"))
+	_ = s.advanceCardsOnce(ctx)
+
+	o := insertOrder(t, Order{Kind: KindWithdraw, CardID: "c1", AmountCents: 100, Currency: "USD", State: StateNeedsReview})
+	for i := 0; i < 6; i++ {
+		clock.Advance(time.Hour)
+		_ = s.advanceCardsOnce(ctx) // 有未定论单据，整张卡跳过
+	}
+	if n := len(mw.Requests("GET", detailPath("c1"))); n != 1 {
+		t.Fatalf("待人工期间不应刷新: %d", n)
+	}
+	if _, err := db.DB.Exec(`UPDATE mw_card_orders SET state = ? WHERE out_order_no = ?`, StateFailed, o.OutOrderNo); err != nil {
+		t.Fatal(err)
+	}
+	_ = s.advanceCardsOnce(ctx)
+	if n := len(mw.Requests("GET", detailPath("c1"))); n != 2 {
+		t.Fatalf("单据定论后应再刷新: %d", n)
+	}
+	if al.Count() != 0 {
+		t.Fatalf("隔了 6 小时只失败了一次，不应告警: %v", al.Texts())
+	}
+}
+
 // 刷新失败告警和回收提交失败告警用不同的 key，互不压掉。
 func TestRecycleRefreshAlertKeySeparateFromRecycle(t *testing.T) {
 	s, _, _, al := newTestService(t)
 	s.alert("recycle:c1", "回收提交失败")
 	c := &Card{CardID: "c1", PoolState: PoolReleasing}
+	s.noteRefreshFailure(c, errText("x"))
+	s.opts.Now = func() time.Time { return testNow().Add(15 * time.Minute) }
 	s.noteRefreshFailure(c, errText("x"))
 	s.opts.Now = func() time.Time { return testNow().Add(31 * time.Minute) }
 	s.noteRefreshFailure(c, errText("x"))

@@ -37,15 +37,22 @@
     </style>
     <script>
       (function () {
+        var root = document.documentElement
+        // 读本机存储：被禁用或读失败就当没有，不影响后面的默认值
+        function read(k) { try { return localStorage.getItem(k) } catch (e) { return null } }
+        // 页面底纹只画在后台、代理商后台和登录页；用户端纯色。与 router/routes.ts 的 surfaceOf 同一规则（不依赖存储，先设）
+        var path = location.pathname
+        var consolePage = path === '/ops' || path.indexOf('/ops/') === 0 || path === '/agent' || path.indexOf('/agent/') === 0
+        root.setAttribute('data-surface', consolePage ? 'console' : 'user')
         try {
           // 默认：深青自助(teal) + 跟随系统。与 theme.ts、后端 /public/site 的默认值保持一致
           // 访客自己的选择 > 上次记下的站点默认（site-theme-mode）> 跟随系统
           var ok = function (v) { return v === 'light' || v === 'dark' || v === 'auto' }
-          var mode = localStorage.getItem('theme-mode')
-          if (!ok(mode)) mode = localStorage.getItem('site-theme-mode')
+          var mode = read('theme-mode')
+          if (!ok(mode)) mode = read('site-theme-mode')
           if (!ok(mode)) mode = 'auto'
           var TC = {teal: ['#EEF5F3', '#0C1A18'], zovo: ['#F3EEE3', '#0C0C11'], terracotta: ['#F2EDE4', '#17120E'], cyber: ['#070B14', '#070B14'], ocean: ['#F5F5F7', '#000000'], ember: ['#0F0806', '#0F0806'], forest: ['#EFFAF4', '#0C1612'], violet: ['#F4F0FB', '#120E1C'], slate: ['#F7F7F4', '#0B0B0B'], rose: ['#FDF2F4', '#180A0E'], noir: ['#000000', '#000000'], paper: ['#F7F3EA', '#1C1812']}
-          var skin = localStorage.getItem('site-skin')
+          var skin = read('site-skin')
           if (!Object.prototype.hasOwnProperty.call(TC, skin)) skin = 'teal'
           var dark =
             mode === 'dark' ||
@@ -54,16 +61,12 @@
               window.matchMedia('(prefers-color-scheme: dark)').matches)
           // 只有暗色的皮肤（赛博、余烬、黑白）一律按暗色
           if (skin === 'cyber' || skin === 'ember' || skin === 'noir') dark = true
-          if (dark) document.documentElement.classList.add('dark')
+          if (dark) root.classList.add('dark')
           // 浏览器地址栏颜色：meta 默认是深青暗色底，按皮肤和明暗改成对应的底色
           var tc = document.querySelector('meta[name="theme-color"]')
           if (tc) tc.setAttribute('content', TC[skin][dark ? 1 : 0])
-          document.documentElement.setAttribute('data-tone', dark ? 'dark' : 'light')
-          document.documentElement.setAttribute('data-skin', skin)
-          // 页面底纹只画在后台、代理商后台和登录页；用户端纯色。与 router/routes.ts 的 surfaceOf 同一规则
-          var path = location.pathname
-          var consolePage = path === '/ops' || path.indexOf('/ops/') === 0 || path === '/agent' || path.indexOf('/agent/') === 0
-          document.documentElement.setAttribute('data-surface', consolePage ? 'console' : 'user')
+          root.setAttribute('data-tone', dark ? 'dark' : 'light')
+          root.setAttribute('data-skin', skin)
         } catch (e) {}
       })()
     </script>

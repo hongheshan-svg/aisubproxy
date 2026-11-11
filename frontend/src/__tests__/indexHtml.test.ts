@@ -63,3 +63,52 @@ describe('index.html 首屏', () => {
     expect(DEFAULT_BRAND_NAME).toBe('Recharge Portal')
   })
 })
+
+// 真的跑一遍首屏脚本（vm），覆盖有记录 / 无记录 / 存储抛错三种情形
+import { runInNewContext } from 'node:vm'
+describe('index.html 首屏脚本行为', () => {
+  const script = html.match(/<script>([\s\S]*?)<\/script>/)![1]
+  function run(opts: { store?: Record<string, string> | 'throw'; path?: string; systemDark?: boolean }) {
+    const attrs: Record<string, string> = {}
+    const classes = new Set<string>()
+    const meta = { content: '#0C1A18', setAttribute(k: string, v: string) { if (k === 'content') this.content = v } }
+    const store = opts.store ?? {}
+    runInNewContext(script, {
+      location: { pathname: opts.path ?? '/' },
+      window: { matchMedia: () => ({ matches: !!opts.systemDark }) },
+      localStorage: store === 'throw' ? { getItem() { throw new Error('denied') } } : { getItem: (k: string) => (k in store ? store[k] : null) },
+      document: {
+        documentElement: { setAttribute: (k: string, v: string) => { attrs[k] = v }, classList: { add: (c: string) => classes.add(c) } },
+        querySelector: () => meta,
+      },
+    })
+    return { attrs, dark: classes.has('dark'), themeColor: meta.content }
+  }
+  it('无记录：teal + 跟随系统（系统亮）', () => {
+    const r = run({})
+    expect(r.attrs).toMatchObject({ 'data-skin': 'teal', 'data-tone': 'light', 'data-surface': 'user' })
+    expect(r.dark).toBe(false)
+  })
+  it('有记录：访客的明暗优先于站点默认，皮肤按记录', () => {
+    const r = run({ store: { 'theme-mode': 'dark', 'site-theme-mode': 'light', 'site-skin': 'forest' } })
+    expect(r.attrs).toMatchObject({ 'data-skin': 'forest', 'data-tone': 'dark' })
+    expect(r.dark).toBe(true)
+    expect(lc(r.themeColor)).toBe(lc(resolveHex(tokens('forest', 'dark'), '--bg')))
+  })
+  it('没有访客选择时用站点默认；非法值回退', () => {
+    expect(run({ store: { 'site-theme-mode': 'dark' } }).dark).toBe(true)
+    expect(run({ store: { 'theme-mode': 'bogus', 'site-theme-mode': 'dark' } }).dark).toBe(true)
+    expect(run({ store: { 'site-skin': 'toString' } }).attrs['data-skin']).toBe('teal')
+  })
+  it('只有暗色的皮肤即使选亮色也是暗', () => {
+    expect(run({ store: { 'theme-mode': 'light', 'site-skin': 'cyber' } }).dark).toBe(true)
+  })
+  it('存储抛错：照样设好默认皮肤、色调和 data-surface', () => {
+    const r = run({ store: 'throw', path: '/ops/login' })
+    expect(r.attrs).toMatchObject({ 'data-skin': 'teal', 'data-tone': 'light', 'data-surface': 'console' })
+  })
+  it('data-surface 按路径', () => {
+    expect(run({ path: '/recharge' }).attrs['data-surface']).toBe('user')
+    expect(run({ path: '/agent/orders' }).attrs['data-surface']).toBe('console')
+  })
+})

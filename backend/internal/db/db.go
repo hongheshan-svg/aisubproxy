@@ -723,6 +723,12 @@ var weakPasswordWords = map[string]bool{
 	"root": true, "test": true, "default": true,
 }
 
+// MaxPasswordBytes bcrypt 只取口令的前 72 字节，超过的哈希函数直接报错。
+const MaxPasswordBytes = 72
+
+// PasswordTooLong 口令超过 bcrypt 的 72 字节上限（英文数字每个 1 字节，汉字每个 3 字节）。
+func PasswordTooLong(p string) bool { return len(strings.TrimSpace(p)) > MaxPasswordBytes }
+
 // IsWeakPassword 拦截常见弱口令与历史默认口令：名单原文、常见词加首尾数字或符号、
 // 同一字符重复、连续数字（升序或降序，可跨 9→0）。只在设置或修改口令时检查，已保存的口令不受影响。
 func IsWeakPassword(p string) bool {

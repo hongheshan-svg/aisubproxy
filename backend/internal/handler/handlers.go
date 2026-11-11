@@ -192,6 +192,10 @@ func AdminChangePassword(c *gin.Context) {
 	req.OldPassword = strings.TrimSpace(req.OldPassword)
 	req.NewPassword = strings.TrimSpace(req.NewPassword)
 
+	if db.PasswordTooLong(req.NewPassword) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "新密码太长：最多 72 字节（英文、数字每个占 1 字节，中文每个占 3 字节）"})
+		return
+	}
 	if utf8.RuneCountInString(req.NewPassword) < 12 || db.IsWeakPassword(req.NewPassword) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "新密码至少 12 位，且不能为常见弱口令"})
 		return

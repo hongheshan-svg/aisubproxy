@@ -120,6 +120,9 @@ func validateAgentSwapPassword(plain string) error {
 	if utf8.RuneCountInString(plain) < minAgentSwapPasswordLen {
 		return errPasswordTooShort
 	}
+	if db.PasswordTooLong(plain) {
+		return errPasswordTooLong
+	}
 	if db.IsWeakPassword(plain) {
 		return errPasswordWeak
 	}
@@ -152,6 +155,7 @@ func setAgentSwapPassword(plain string) error {
 
 var (
 	errPasswordTooShort = &simpleError{"代理换码密码至少 12 位"}
+	errPasswordTooLong  = &simpleError{"代理换码密码太长：最多 72 字节（英文、数字每个占 1 字节，中文每个占 3 字节）"}
 	errPasswordWeak     = &simpleError{"代理换码密码太简单：不能用常见口令、同一字符重复或连续数字，请换一个"}
 )
 

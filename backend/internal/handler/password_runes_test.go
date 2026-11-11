@@ -61,3 +61,19 @@ func TestIsWeakPasswordCountsRunes(t *testing.T) {
 		t.Fatal("12 个字符不应算太短")
 	}
 }
+
+func TestAdminChangePasswordTooLongRejected(t *testing.T) {
+	dbtest.Open(t)
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.POST("/pw", AdminChangePassword)
+	for _, pw := range []string{strings.Repeat("aB3x", 19), strings.Repeat("强", 25)} {
+		req := httptest.NewRequest(http.MethodPost, "/pw", strings.NewReader(`{"old_password":"old-password-1","new_password":"`+pw+`"}`))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "太长") {
+			t.Fatalf("过长应 400 太长：%d %s", w.Code, w.Body.String())
+		}
+	}
+}

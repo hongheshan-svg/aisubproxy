@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/tuzi/cdk-recharge-system/internal/db"
@@ -37,5 +38,26 @@ func TestSettingsSwapPasswordDBErrorIs500NoLeak(t *testing.T) {
 	w := s1Put(`{"agent_swap_password":"a-good-password-9"}`)
 	if w.Code != 500 {
 		t.Fatalf("写库失败应 500: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// 审查修复：超过 bcrypt 的 72 字节上限先被拒（400），其他设置不能先存进去。
+func TestSettingsSwapPasswordTooLongSavesNothing(t *testing.T) {
+	dbtest.Open(t)
+	dbtest.SetMasterKey(t)
+	if w := s1Put(`{"brand_name":"旧名"}`); w.Code != 200 {
+		t.Fatalf("准备失败: %d", w.Code)
+	}
+	for name, pw := range map[string]string{
+		"76个英文": strings.Repeat("aB3x", 19),
+		"25个汉字": strings.Repeat("强", 25),
+	} {
+		w := s1Put(`{"brand_name":"新名","agent_swap_password":"` + pw + `"}`)
+		if w.Code != 400 || !strings.Contains(w.Body.String(), "太长") {
+			t.Fatalf("%s 应 400 且提示太长: %d %s", name, w.Code, w.Body.String())
+		}
+	}
+	if v, _ := db.GetSetting("brand_name"); v != "旧名" {
+		t.Fatalf("站点名不应被改: %q", v)
 	}
 }

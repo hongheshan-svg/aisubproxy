@@ -103,6 +103,10 @@ func SetupBootstrap(c *gin.Context) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "passwords do not match"})
 			return
 		}
+		if db.PasswordTooLong(password) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "password too long (max 72 bytes)"})
+			return
+		}
 		if db.IsWeakPassword(password) || strings.EqualFold(password, username) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "password too weak (min 12, not common, not equal to username)"})
 			return
@@ -130,11 +134,16 @@ func SetupBootstrap(c *gin.Context) {
 	// 管理员已建好：下面任何一步失败都回滚这次创建（保留安装令牌，可直接重试），
 	// 否则站点已算「已安装」，而自动生成的密码没人知道。
 	var userID int64
-	rollback := func(step string) {
+	// 回滚成功返回「可重试」；回滚本身失败要让前端知道（rollback_failed），不能再让人以为可以重试
+	rollback := func(step string, retryMsg string) {
 		if err := db.RollbackAdminBootstrap(userID, username, token); err != nil {
 			log.Printf("setup bootstrap: rollback failed (%s): %v", step, err)
+			db.WriteAudit(username, "install_rollback_failed", step, ip)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "setup failed, rollback failed", "rollback_failed": true})
+			return
 		}
 		db.WriteAudit(username, "install_rollback", step, ip)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": retryMsg})
 	}
 
 	// 读回 user id，安装成功后立刻签发登录态，避免用户手抄密码再登录失败
@@ -143,8 +152,7 @@ func SetupBootstrap(c *gin.Context) {
 	}
 	if userID == 0 {
 		log.Printf("setup bootstrap: admin created but id lookup failed for %s", username)
-		rollback("id lookup failed")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "setup failed, please retry"})
+		rollback("id lookup failed", "setup failed, please retry")
 		return
 	}
 
@@ -156,14 +164,12 @@ func SetupBootstrap(c *gin.Context) {
 	}
 	if err != nil {
 		log.Printf("setup bootstrap: hash lookup failed: %v", err)
-		rollback("password hash read failed")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "setup failed, please retry"})
+		rollback("password hash read failed", "setup failed, please retry")
 		return
 	}
 	if ok, _ := verifyAdminPassword(storedHash, password); !ok {
 		log.Printf("setup bootstrap: password self-check failed for %s", username)
-		rollback("password self-check failed")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "password self-check failed, please retry"})
+		rollback("password self-check failed", "password self-check failed, please retry")
 		return
 	}
 
@@ -174,8 +180,7 @@ func SetupBootstrap(c *gin.Context) {
 	}
 	if err != nil {
 		log.Printf("setup bootstrap session error: %v", err)
-		rollback("session issue failed")
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "setup failed, please retry"})
+		rollback("session issue failed", "setup failed, please retry")
 		return
 	}
 

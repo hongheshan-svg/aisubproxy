@@ -3,6 +3,7 @@ package handler
 import (
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/tuzi/cdk-recharge-system/internal/db"
@@ -89,5 +90,40 @@ func TestValidAdminUsernameASCIIOnly(t *testing.T) {
 		if got := validAdminUsername(u); got != want {
 			t.Errorf("%q: got %v want %v", u, got, want)
 		}
+	}
+}
+
+// 审查修复：回滚本身失败时，返回 rollback_failed，前端据此提示人工处理而不是「可重试」。
+func TestSetupBootstrapRollbackFailureIsDistinguishable(t *testing.T) {
+	setupEnv(t)
+	r := oaHEngine(t)
+	if _, _, err := db.EnsureSetupToken(); err != nil {
+		t.Fatal(err)
+	}
+	setupStepHook = func(s string) error {
+		if s == "read_hash" {
+			// 注入失败的同时，让库里多出一个管理员，使回滚被拒绝
+			_, _ = db.DB.Exec(`INSERT INTO admin_users (username, password_hash, display_name, is_active) VALUES ('other_admin', 'x', 'x', 1)`)
+			return errors.New("injected")
+		}
+		return nil
+	}
+	t.Cleanup(func() { setupStepHook = nil })
+	w := oaHPost(r, "/bootstrap", `{"mode":"generate","username":"rb_admin2"}`, map[string]string{"X-Setup-Token": oaHSetupToken})
+	if w.Code != http.StatusInternalServerError || !strings.Contains(w.Body.String(), `"rollback_failed":true`) {
+		t.Fatalf("回滚失败应带 rollback_failed：%d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestSetupManualPasswordTooLongRejected(t *testing.T) {
+	setupEnv(t)
+	r := oaHEngine(t)
+	if _, _, err := db.EnsureSetupToken(); err != nil {
+		t.Fatal(err)
+	}
+	pw := strings.Repeat("Ab1", 26) // 78 字节
+	w := oaHPost(r, "/bootstrap", `{"mode":"manual","username":"long_pw","password":"`+pw+`","confirm_password":"`+pw+`"}`, map[string]string{"X-Setup-Token": oaHSetupToken})
+	if w.Code != http.StatusBadRequest || adminCount(t) != 0 {
+		t.Fatalf("过长口令应 400 且不建号：%d %s", w.Code, w.Body.String())
 	}
 }

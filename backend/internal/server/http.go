@@ -34,11 +34,11 @@ type Server struct {
 
 func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	// Initialize database
-	if err := db.Init(&cfg.Database); err != nil {
+	if err := db.Init(); err != nil {
 		return nil, err
 	}
 	// 拒绝启动的检查（ADMIN_PASSWORD、明文旧版卡台密钥要有主密钥、JWT_SECRET、服务商适配器）：只读，
-	// 在改数据之前做；命令行 --check 跑的是同一个函数（在线更新换版本前的预检）
+	// 在 db.Init（建表和库内迁移）之后、旧版密钥迁移和 webhook 清洗之前做；命令行 --check 跑的是同一个函数（在线更新换版本前的预检）
 	if err := startupChecks(cfg.Server.Mode, false); err != nil {
 		return nil, err
 	}
@@ -58,16 +58,16 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	notify.SetSettingsSource(handler.TelegramSettings)
 	// 后台协程 panic 被兜住后的告警、没有自己告警通道的模块（如付款浏览器）的告警，都走这里发到 Telegram
 	safego.SetAlert(alertSender("system", notify.SendText))
+	// 启动时按环境变量建了管理员：告警器就绪后补发（db.Init 里那时还没法发）
+	if notice := db.TakeBootstrapNotice(); notice != "" {
+		alertSender("system", notify.SendText)(notice)
+	}
 
 	engine := newEngine()
 
 	// 不信任任意代理头（X-Forwarded-For 等），保证限流拿到的是真实来源 IP。
 	// 若部署在已知反代后，用 TRUSTED_PROXIES（逗号分隔）显式声明。
-	if tp := strings.TrimSpace(os.Getenv("TRUSTED_PROXIES")); tp != "" {
-		_ = engine.SetTrustedProxies(splitAndTrim(tp))
-	} else {
-		_ = engine.SetTrustedProxies(nil)
-	}
+	applyTrustedProxies(engine, os.Getenv("TRUSTED_PROXIES"), alertSender("system", notify.SendText))
 
 	// Setup middleware
 	engine.Use(SecurityHeadersMiddleware())
@@ -169,9 +169,6 @@ func upstreamKeysConfigured() (bool, error) {
 // deploy/app.env.example 的占位值，以及带 change-me / changeme / example 字样的值，不区分大小写。
 func isExampleJWTSecret(secret string) bool {
 	lower := strings.ToLower(secret)
-	if lower == "change-me-to-random-32chars-min" {
-		return true
-	}
 	for _, marker := range []string{"change-me", "changeme", "example"} {
 		if strings.Contains(lower, marker) {
 			return true
@@ -199,17 +196,6 @@ func enforceJWTSecret(mode string, hasUpstream bool) error {
 		log.Printf("⚠️  当前 JWT_SECRET 不安全（默认/过短）。仅可用于本地开发，部署前请设置强随机 JWT_SECRET（release 模式将拒绝启动）。")
 	}
 	return nil
-}
-
-func splitAndTrim(s string) []string {
-	parts := strings.Split(s, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if v := strings.TrimSpace(p); v != "" {
-			out = append(out, v)
-		}
-	}
-	return out
 }
 
 func setupRoutes(r *gin.Engine) {
@@ -399,11 +385,9 @@ func setupRoutes(r *gin.Engine) {
 			admin.POST("/pay/breaker/resume", handler.AdminPayBreakerResume)
 			handler.RegisterPayProbeRoutes(admin)
 
-			// 卡服务商：列表与配置、默认发码服务商（旧接口）、就绪检查、本地码
+			// 卡服务商：列表与配置、就绪检查、本地码
 			admin.GET("/providers", handler.AdminListProviders)
 			admin.PUT("/providers/config", handler.AdminPutProviderConfig)
-			admin.GET("/providers/default", handler.AdminGetDefaultProvider)
-			admin.PUT("/providers/default", handler.AdminPutDefaultProvider)
 			admin.GET("/providers/readiness", handler.AdminProviderReadiness)
 			// 各服务商的卡头：列表、同步、标注、手动维护
 			admin.GET("/providers/:name/card-heads", handler.AdminListCardHeads)
@@ -468,8 +452,4 @@ func setupRoutes(r *gin.Engine) {
 			c.File(indexFile)
 		})
 	}
-}
-
-func (s *Server) Run(addr string) error {
-	return s.engine.Run(addr)
 }

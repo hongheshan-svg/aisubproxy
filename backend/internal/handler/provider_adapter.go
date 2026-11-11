@@ -1,5 +1,8 @@
 package handler
 
+// 目前没有上游型服务商：下面的上游分派、宽限期恢复接口等都是为以后接外部发码上游留的扩展点，
+// 生产里 upstreamAdapters 是空的，只有测试用假上游走它（审计 H2-07/P1-13/H2-06 的决定：留着）。
+
 import (
 	"context"
 	"fmt"

@@ -2,11 +2,14 @@ package server
 
 import (
 	"fmt"
+	"log"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tuzi/cdk-recharge-system/internal/safego"
 )
 
 // 公开接口的 GET 把卡密和兑换令牌放在查询串里（/public/cdk/result?token=、/lookup/cdk?code=），
@@ -16,10 +19,10 @@ import (
 // setup_token：安装接口只认请求头，旧脚本可能仍放在查询串里，日志照样遮掉。
 var sensitiveQueryParams = map[string]bool{"code": true, "cdk_code": true, "token": true, "setup_token": true}
 
-// newEngine 等同于 gin.Default，只是访问日志和崩溃日志不带卡密和令牌。
+// newEngine 等同于 gin.Default，只是访问日志不带卡密和令牌，崩溃日志不带 panic 的值和请求头（见 safeRecovery）。
 func newEngine() *gin.Engine {
 	engine := gin.New()
-	engine.Use(gin.LoggerWithFormatter(accessLogFormatter), gin.Recovery(), scrubQueryOnPanic())
+	engine.Use(gin.LoggerWithFormatter(accessLogFormatter), safeRecovery())
 	return engine
 }
 
@@ -64,14 +67,24 @@ func accessLogFormatter(p gin.LogFormatterParams) string {
 	)
 }
 
-// scrubQueryOnPanic 放在 gin.Recovery 里面：gin 的崩溃日志会打印请求行，崩溃时先把查询串里的敏感参数遮掉再往外抛。
-func scrubQueryOnPanic() gin.HandlerFunc {
+// safeRecovery 兜住处理函数的 panic，替换 gin.Recovery 和之前的查询串遮蔽（B1-03）。
+// gin 自带的崩溃日志会写 panic 的值，调试模式下还把请求头（Cookie、X-Setup-Token、X-CSRF-Token）整段写出来；
+// 这里只写一行：方法、过了 redactQuery 的请求行、panic 的类型和位置（safego.Describe），和后台协程的约定一致。
+// Describe 要在 recover 所在的 defer 里直接调用，所以这里不能再往外重新 panic。
+func safeRecovery() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		defer func() {
 			if r := recover(); r != nil {
-				c.Request.RequestURI = redactQuery(c.Request.RequestURI)
-				_, c.Request.URL.RawQuery, _ = strings.Cut(redactQuery("?"+c.Request.URL.RawQuery), "?")
-				panic(r)
+				if r == http.ErrAbortHandler {
+					panic(r) // 主动中止连接的约定：net/http 自己静默处理，不当崩溃记日志、不回 500
+				}
+				logger := log.New(gin.DefaultErrorWriter, "", log.LstdFlags)
+				logger.Printf("[Recovery] panic recovered: %s %s %s", c.Request.Method, redactQuery(c.Request.RequestURI), safego.Describe(r))
+				if !c.Writer.Written() {
+					c.AbortWithStatus(http.StatusInternalServerError)
+				} else {
+					c.Abort()
+				}
 			}
 		}()
 		c.Next()

@@ -17,7 +17,7 @@ func TestObInitUsesSynchronousFull(t *testing.T) {
 		}
 		DB = old
 	})
-	if err := Init(nil); err != nil {
+	if err := Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 	// 连接池里多拿几个连接：DSN 参数对每个连接都要生效，不能只有第一个连接是 FULL

@@ -140,26 +140,6 @@ func rateIPKey(ip string) string {
 	return p.String()
 }
 
-func resetLocalRate() {
-	localRateMu.Lock()
-	localRateHits = map[string]*localRateEntry{}
-	localRateOrder = list.New()
-	localRateMu.Unlock()
-	resetInspectCache() // 测试里每个库的码 ID 都从 1 开始，账号核对的缓存要一起清
-}
-
-func localRateKeys() int {
-	localRateMu.Lock()
-	defer localRateMu.Unlock()
-	return len(localRateHits)
-}
-
-func localRateHas(kind, ip string) bool {
-	localRateMu.Lock()
-	defer localRateMu.Unlock()
-	return localRateHits[kind+"|"+rateIPKey(ip)] != nil
-}
-
 // 同一张码同一时刻只有一个请求能往下走：状态检查和建单之间不能插进别的兑换或换码。
 // 库里的唯一索引是最后一道防线，但它管不到干净失败的次数上限，也管不到换码。
 var (

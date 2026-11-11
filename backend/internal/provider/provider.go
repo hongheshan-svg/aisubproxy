@@ -5,6 +5,8 @@
 //
 // 接入一家新服务商：实现 Provider（再按类型实现 CardSupply 或 Upstream），在 init 里 Register。
 // 注册表只管身份和能力；兑换、发码的具体实现在 handler 包的适配器里。
+//
+// 目前没有上游型服务商（注册表里只有供卡型的 MarsWallex）：Upstream、AsUpstream、forUpstream 等是为以后接外部发码上游留的扩展点。
 package provider
 
 import (

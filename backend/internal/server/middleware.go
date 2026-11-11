@@ -129,7 +129,9 @@ func JWTAuthMiddleware() gin.HandlerFunc {
 				return nil, jwt.ErrSignatureInvalid
 			}
 			return []byte(auth.JWTSecret()), nil
-		})
+		},
+			jwt.WithValidMethods([]string{"HS256"}),
+			jwt.WithExpirationRequired())
 		if err != nil || !token.Valid {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid or expired token", "error_code": authErrUnauthorized})
 			c.Abort()

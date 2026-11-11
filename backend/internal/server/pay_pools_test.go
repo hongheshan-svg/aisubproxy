@@ -31,7 +31,7 @@ func TestPayPoolsCoverEveryCardSupplyProvider(t *testing.T) {
 // 每家注册了的服务商都要接上 handler 层的适配器，漏接就拒绝启动。
 func TestEveryProviderHasHandlerAdapter(t *testing.T) {
 	if err := handler.CheckProviderAdapters(); err != nil {
-		t.Fatalf("内置两家都应接上: %v", err)
+		t.Fatalf("内置服务商都应接上: %v", err)
 	}
 	providertest.Register(t, providertest.NewTestCard())
 	if err := handler.CheckProviderAdapters(); err == nil || !strings.Contains(err.Error(), "testcard") {

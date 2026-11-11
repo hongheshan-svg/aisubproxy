@@ -20,8 +20,6 @@ import (
 var providerAdminRoutes = []struct{ method, path string }{
 	{"GET", "/api/v1/admin/providers"},
 	{"PUT", "/api/v1/admin/providers/config"},
-	{"GET", "/api/v1/admin/providers/default"},
-	{"PUT", "/api/v1/admin/providers/default"},
 	{"GET", "/api/v1/admin/providers/readiness"},
 	{"GET", "/api/v1/admin/providers/:name/card-heads"},
 	{"POST", "/api/v1/admin/providers/:name/card-heads"},
@@ -178,7 +176,7 @@ func TestEngineLogsDoNotLeakCodes(t *testing.T) {
 
 	r := newEngine()
 	r.GET("/ok", func(c *gin.Context) { c.Status(http.StatusNoContent) })
-	r.GET("/boom", func(*gin.Context) { panic("boom") })
+	r.GET("/boom", func(*gin.Context) { panic("带着 SECRET-VALUE 的错误") })
 
 	for _, target := range []string{
 		"/ok?code=" + code + "&page=2",
@@ -200,14 +198,19 @@ func TestEngineLogsDoNotLeakCodes(t *testing.T) {
 	gin.SetMode(gin.DebugMode)
 	t.Cleanup(func() { gin.SetMode(gin.TestMode) })
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("GET", "/boom?code="+code+"&token="+token+"&page=3", nil))
+	req := httptest.NewRequest("GET", "/boom?code="+code+"&token="+token+"&page=3", nil)
+	req.Header.Set("Cookie", "auth_token=SECRET-COOKIE")
+	req.Header.Set("X-Setup-Token", "SECRET-SETUP")
+	r.ServeHTTP(w, req)
 	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("崩溃应由 Recovery 兜住: %d", w.Code)
+		t.Fatalf("崩溃应由恢复中间件兜住: %d", w.Code)
 	}
-	if !strings.Contains(errOut.String(), "boom") || !strings.Contains(errOut.String(), "page=3") {
-		t.Fatalf("崩溃日志要写，且带请求行: %s", errOut.String())
+	// B1-03：日志里有请求行和 panic 的类型、位置；没有 panic 的值，没有请求头
+	if !strings.Contains(errOut.String(), "page=3") || !strings.Contains(errOut.String(), "string") || !strings.Contains(errOut.String(), "provider_routes_test.go:") {
+		t.Fatalf("崩溃日志要写，且带请求行、panic 类型和位置: %s", errOut.String())
 	}
-	if s := errOut.String() + out.String(); strings.Contains(s, code) || strings.Contains(s, token) {
+	if s := errOut.String() + out.String(); strings.Contains(s, code) || strings.Contains(s, token) ||
+		strings.Contains(s, "SECRET-VALUE") || strings.Contains(s, "SECRET-COOKIE") || strings.Contains(s, "SECRET-SETUP") {
 		t.Fatalf("崩溃日志泄露: %s", s)
 	}
 }
@@ -241,5 +244,29 @@ func TestZovoCardRoutesGone(t *testing.T) {
 
 	if w := oaDo(r, oaReq{method: "GET", path: "/api/v1/admin/providers", cookies: cs, ip: ip}); w.Code != http.StatusOK {
 		t.Errorf("GET /api/v1/admin/providers 应照旧 200，实际 %d %s", w.Code, w.Body.String())
+	}
+}
+
+// 审查修复：http.ErrAbortHandler 是处理函数主动中止连接的约定，不当普通崩溃：不打崩溃日志，原样再抛给 net/http。
+func TestSafeRecoveryRepanicsErrAbortHandler(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var errOut bytes.Buffer
+	old := gin.DefaultErrorWriter
+	gin.DefaultErrorWriter = &errOut
+	t.Cleanup(func() { gin.DefaultErrorWriter = old })
+
+	r := gin.New()
+	r.Use(safeRecovery())
+	r.GET("/abort", func(*gin.Context) { panic(http.ErrAbortHandler) })
+	var got any
+	func() {
+		defer func() { got = recover() }()
+		r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/abort", nil))
+	}()
+	if got != http.ErrAbortHandler {
+		t.Fatalf("应原样再抛 ErrAbortHandler，实际 %v", got)
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("不该打崩溃日志: %s", errOut.String())
 	}
 }

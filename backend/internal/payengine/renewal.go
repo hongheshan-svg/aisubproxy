@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/tuzi/cdk-recharge-system/internal/chatgpt"
@@ -39,6 +40,11 @@ var renewalRetryDelays = [renewalAutoRetries]time.Duration{time.Minute, 3 * time
 // wantsRenewalCancel 判断单据成功后要不要关闭续费：只有真实付款的订阅开通单。
 func wantsRenewalCancel(o *Order) bool {
 	return !o.DryRun && (o.Kind == KindSubscription || o.Kind == "")
+}
+
+// zeroAmount 判断是不是 0 元开通的订阅单（设计 2026-11-11 §4.4）：页面金额读到过（amount_text 非空）且正好是 0。
+func (o *Order) zeroAmount() bool {
+	return o.Kind == KindSubscription && o.AmountMinor == 0 && o.AmountText != ""
 }
 
 // renewalLoop 是续费协程：每隔 RenewalTick 处理到期的关闭续费，并清空保留到点的会话。不占浏览器名额，不碰卡池。
@@ -206,6 +212,7 @@ func (s *Service) renewOnce(ctx context.Context, no string, manual bool) (string
 		if err := moveRenewal(ctx, no, o.RenewalState, RenewalCancelled, set, true, "info", "已关闭续费并核实：下期不再自动续费，本期权益不受影响"); err != nil {
 			return "", err
 		}
+		s.noteZeroRecheck(ctx, j) // 0 元单的复查结果：续费照旧记 cancelled，单据仍是成功
 		return RenewalCancelled, nil
 	}
 	detail = truncate(j.scrub(detail), errorMessageLimit)
@@ -259,6 +266,9 @@ func (s *Service) cancelRenewal(ctx context.Context, j *job) (bool, string) {
 	if j.o.RenewalAttempts > 0 || j.o.RenewalState == RenewalFailed {
 		if off, _, until := s.renewalOff(ctx, gpt, j.sess, accountID); off {
 			j.accessUntil = until
+			if j.o.zeroAmount() {
+				s.recheckZero(ctx, gpt, j)
+			}
 			return true, ""
 		}
 	}
@@ -267,12 +277,55 @@ func (s *Service) cancelRenewal(ctx context.Context, j *job) (bool, string) {
 	off, why, until := s.renewalOff(ctx, gpt, j.sess, accountID)
 	if off {
 		j.accessUntil = until
+		if j.o.zeroAmount() {
+			s.recheckZero(ctx, gpt, j)
+		}
 		return true, ""
 	}
 	if cancelErr != nil {
 		return false, "关闭续费请求失败：" + cancelErr.Error()
 	}
 	return false, why
+}
+
+// zeroRecheck 是 0 元单关闭续费核实后复查账号的结果：done 表示查过；查询出错时 err 是脱敏后的出错文字，否则 planType 是账号现在的套餐类型。
+type zeroRecheck struct {
+	done                  bool
+	planType, expect, err string
+}
+
+// recheckZero 在 0 元单关闭续费核实之后、会话清空之前再查一次账号套餐，结果记在 j.zeroCheck 上，由 renewOnce 在续费记 cancelled 之后处理。
+// 首月免费这类优惠，关续费可能让优惠当场结束、账号掉回免费版。期望类型和确认成功时一样，按单据的套餐键从套餐表取。
+func (s *Service) recheckZero(ctx context.Context, gpt ChatGPT, j *job) {
+	j.zeroCheck = zeroRecheck{done: true}
+	expect, err := expectPlanType(j.o.PlanKey)
+	if err != nil {
+		j.zeroCheck.err = j.scrub(err.Error())
+		return
+	}
+	j.zeroCheck.expect = expect
+	acc, err := gpt.Account(ctx, j.sess)
+	if err != nil {
+		j.zeroCheck.err = j.scrub(err.Error())
+		return
+	}
+	j.zeroCheck.planType = strings.TrimSpace(acc.PlanType)
+}
+
+// noteZeroRecheck 把复查结果写进时间线：仍是期望套餐记 info；不是记 warn 并告警一次；查询出错只记 warn。只带单号和套餐类型。
+func (s *Service) noteZeroRecheck(ctx context.Context, j *job) {
+	c := j.zeroCheck
+	switch {
+	case !c.done:
+		return
+	case c.err != "":
+		s.event(ctx, j, "warn", fmt.Sprintf("0 元开通的单关闭续费后，核实不了账号套餐：%s", c.err), "")
+	case strings.EqualFold(strings.TrimSpace(c.planType), strings.TrimSpace(c.expect)):
+		s.event(ctx, j, "info", fmt.Sprintf("0 元开通的单关闭续费后，账号仍是 %s", c.expect), "")
+	default:
+		s.event(ctx, j, "warn", fmt.Sprintf("0 元开通的单关闭续费后，账号已不是 %s（现在是 %s）", c.expect, c.planType), "")
+		s.opts.Alert(fmt.Sprintf("付款单 %s 以 0 元开通，关闭续费后账号已不是 %s（现在是 %s），可能关续费让优惠当场结束了，请人工处理", j.o.OrderNo, c.expect, c.planType))
+	}
 }
 
 // renewalOff 核实账号是否已经不再续费。优先读 GET /subscriptions 的 will_renew；没有这个字段（或查询出错）时读 accounts/check 里的 will_renew。

@@ -84,6 +84,7 @@ type fakeCheckout struct {
 	successVisits atomic.Int32 // 成功后跳转到 /success 的次数（真实 Stripe Checkout 成功靠跳转）
 	submitClicks  atomic.Int32 // 真实DOM仿造页上点到支付按钮的次数，前端校验拦下、没发 /pay 时也计入
 	linkSMSClicks atomic.Int32 // Link 验证框里「Text a code」按钮被点击的次数（绝不能点）
+	payGate       atomic.Bool  // 真实DOM仿造页 latepay=gate：置为 true 后支付按钮才出现
 }
 
 func newFakeCheckout(t *testing.T) *fakeCheckout {
@@ -142,6 +143,12 @@ func newFakeCheckout(t *testing.T) *fakeCheckout {
 			f.submitClicks.Add(1)
 		case r.URL.Path == "/link-sms" && r.Method == http.MethodPost:
 			f.linkSMSClicks.Add(1)
+		case r.URL.Path == "/paygate":
+			if f.payGate.Load() {
+				w.Write([]byte("open"))
+			} else {
+				w.Write([]byte("closed"))
+			}
 		default:
 			http.NotFound(w, r)
 		}

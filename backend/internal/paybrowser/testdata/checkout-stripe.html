@@ -73,6 +73,7 @@
     nocvc=1                   没有 CVC 框
     mangle=1                  模拟地址联想：整段输入城市时被改写
     latepay=1                 支付按钮在邮编填好 1.5 秒后才出现
+    latepay=gate              支付按钮等用例放行才出现：每 50 毫秒问一次本服务的 /paygate，回 open 才显示
     decoy=1                   主页面多一个可见的 input[name="number"]，另有可见 iframe，里面有可见的 submit 按钮（点击会被计数）
     promo=1                   支付按钮前多一个可见的优惠码 submit 按钮 Apply（点击会被计数）
     formcomplete=1            支付按钮一直带 SubmitButton--complete
@@ -370,6 +371,16 @@
     addr('PostalCode').addEventListener('input', function () {
       if (this.value) setTimeout(function () { payButton.style.display = '' }, 1500)
     })
+  }
+  if (q.get('latepay') === 'gate') {
+    payButton.style.display = 'none'
+    var gate = setInterval(function () {
+      fetch('/paygate').then(function (r) { return r.text() }).then(function (s) {
+        if (s !== 'open' || payButton.style.display === '') return
+        clearInterval(gate)
+        payButton.style.display = ''
+      })
+    }, 50)
   }
   if (q.get('mangle') === '1') {
     addr('Locality').addEventListener('input', function (e) {

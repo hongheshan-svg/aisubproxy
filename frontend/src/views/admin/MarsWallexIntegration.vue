@@ -345,13 +345,17 @@ function applyConfig(d: Config) {
 }
 
 async function loadConfig() {
-  const r = await authFetch('/api/v1/admin/marswallex/config')
-  const d = await r.json().catch(() => ({}))
-  if (!r.ok) {
-    dialog.toast(d.error || '加载配置失败', 'err')
-    return
+  try {
+    const r = await authFetch('/api/v1/admin/marswallex/config')
+    const d = await r.json().catch(() => ({}))
+    if (!r.ok) {
+      dialog.toast(d.error || '加载配置失败', 'err')
+      return
+    }
+    applyConfig(d)
+  } catch {
+    dialog.toast('网络错误', 'err')
   }
-  applyConfig(d)
 }
 
 async function save() {
@@ -381,6 +385,8 @@ async function save() {
     result.value = null
     dialog.toast('已保存', 'ok')
     await loadConfig()
+  } catch {
+    dialog.toast('网络错误，不确定是否已保存，请刷新页面核对', 'err')
   } finally {
     saving.value = false
   }
@@ -399,6 +405,8 @@ async function checkEgress() {
       return
     }
     egress.value = d
+  } catch {
+    dialog.toast('网络错误', 'err')
   } finally {
     egressLoading.value = false
   }
@@ -428,6 +436,9 @@ async function generateKeypair() {
     // 密钥已变，旧的测试结果不再代表当前配置。
     result.value = null
     dialog.toast('已生成，请复制下方公钥', 'ok')
+  } catch {
+    // 请求可能已到服务器、只是响应丢了：私钥也许已经换掉
+    dialog.toast('网络错误，不确定密钥是否已更换。请刷新页面核对公钥；公钥变了要到 MarsWallex 平台更新', 'err', 8000)
   } finally {
     generating.value = false
   }
@@ -443,6 +454,8 @@ async function runTest() {
       return
     }
     result.value = d
+  } catch {
+    dialog.toast('网络错误', 'err')
   } finally {
     testing.value = false
   }
@@ -458,6 +471,8 @@ async function loadEvents() {
       return
     }
     events.value = d.events || []
+  } catch {
+    dialog.toast('网络错误', 'err')
   } finally {
     loadingEvents.value = false
   }
@@ -474,6 +489,8 @@ async function reprocess(row: WebhookEvent) {
     }
     dialog.toast('已提交重新处理', 'ok')
     await loadEvents()
+  } catch {
+    dialog.toast('网络错误，不确定是否已保存，请刷新页面核对', 'err')
   } finally {
     reprocessingId.value = null
   }

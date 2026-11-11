@@ -123,6 +123,8 @@ async function save() {
     apply(d)
     testResult.value = null
     dialog.toast('已保存，可以发一条测试消息确认', 'ok')
+  } catch {
+    dialog.toast('网络错误，不确定是否已保存，请刷新页面核对', 'err')
   } finally {
     saving.value = false
   }
@@ -146,6 +148,8 @@ async function clearConfig() {
     apply(d)
     testResult.value = null
     dialog.toast('已清除后台配置', 'ok')
+  } catch {
+    dialog.toast('网络错误，不确定是否已保存，请刷新页面核对', 'err')
   } finally {
     clearing.value = false
   }

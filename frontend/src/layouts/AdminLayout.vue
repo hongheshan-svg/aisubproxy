@@ -189,6 +189,8 @@ async function submitPwd() {
     auth.logout()
     dialog.toast('密码已修改，请用新密码重新登录', 'ok')
     router.push('/ops/login')
+  } catch {
+    pwdError.value = '网络错误，不确定密码是否已修改，请重新登录确认'
   } finally {
     pwdLoading.value = false
   }

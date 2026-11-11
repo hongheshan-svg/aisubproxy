@@ -69,15 +69,20 @@ function apply(d: Record<string, any>) {
 }
 
 async function load() {
-  const r = await authFetch('/api/v1/admin/settings')
-  const d = await r.json().catch(() => ({}))
-  if (!r.ok) {
+  try {
+    const r = await authFetch('/api/v1/admin/settings')
+    const d = await r.json().catch(() => ({}))
+    if (!r.ok) {
+      loaded.value = false
+      dialog.toast(d.error || '读取代理换码设置失败，页面上显示的不是当前值，请刷新后再保存', 'err')
+      return
+    }
+    loaded.value = true
+    apply(d)
+  } catch {
     loaded.value = false
-    dialog.toast(d.error || '读取代理换码设置失败，页面上显示的不是当前值，请刷新后再保存', 'err')
-    return
+    dialog.toast('网络错误，读取代理换码设置失败，页面上显示的不是当前值，请刷新后再保存', 'err')
   }
-  loaded.value = true
-  apply(d)
 }
 
 async function save() {
@@ -111,6 +116,8 @@ async function save() {
     loaded.value = true
     password.value = ''
     dialog.toast('已保存', 'ok')
+  } catch {
+    dialog.toast('网络错误，不确定是否已保存，请刷新页面核对', 'err')
   } finally {
     saving.value = false
   }

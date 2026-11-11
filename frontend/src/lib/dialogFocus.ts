@@ -17,11 +17,6 @@ export function nextFocusIndex(count: number, current: number, back: boolean): n
   return (current + (back ? count - 1 : 1)) % count
 }
 
-/** 对话框上按回车是否当成「确定」：焦点在按钮上时交给按钮自己（否则在「取消」上按回车会变成确定）。 */
-export function enterConfirms(target: { tagName?: string } | null): boolean {
-  return !(target && target.tagName === 'BUTTON')
-}
-
 type Focusable = { focus: () => void; isConnected?: boolean }
 
 /** 记下弹出前的焦点、关闭后还回去。一个框直接换成另一个框时只记第一次（原来的按钮）。 */

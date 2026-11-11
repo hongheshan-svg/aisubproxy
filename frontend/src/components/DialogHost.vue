@@ -16,13 +16,16 @@
   <!-- 用户端页面（不在 UserShell 里）的弹窗：外面套一层 user-ui 取 --u-* 配色，display: contents 不影响布局 -->
   <div v-if="d" class="dlg-wrap" :class="{ 'user-ui': userSide }">
   <div class="modal-mask fixed inset-0 z-[9998] flex items-center justify-center p-4" @click.self="onCancel">
+    <!-- 面板上不处理回车：回车只作用于获得焦点的元素（按钮自己点击、输入框交回输入）。
+         否则输入框里的回车冒泡上来，会把调用方紧接着弹出的确认框直接点成「确定」（如「恢复付款派发」）。
+         Esc 处理完不再冒泡，免得 document 上 Element 弹窗的 Esc 监听把底下的表单也关掉。 -->
     <div ref="panelEl" :class="userSide ? 'u-card dlg-user w-full max-w-md' : 'card card-solid w-full max-w-md'" role="dialog" aria-modal="true" tabindex="-1"
-      @keydown.enter="onKeyEnter" @keydown.esc="onCancel" @keydown.tab="onTab">
+      @keydown.esc.stop="onCancel" @keydown.tab="onTab">
       <h3 :class="userSide ? 'dlg-title' : 'text-lg font-semibold text-ink mb-2'">{{ d.title }}</h3>
       <div v-if="d.message" :class="userSide ? 'dlg-msg whitespace-pre-line' : 'text-sm text-muted whitespace-pre-line mb-4'">{{ d.message }}</div>
 
       <input v-if="d.kind === 'prompt'" ref="inputEl" v-model="d.value" :placeholder="d.placeholder"
-        :class="userSide ? 'u-input dlg-input' : 'input w-full mb-4'" @keydown.enter.prevent="onEnter" />
+        :class="userSide ? 'u-input dlg-input' : 'input w-full mb-4'" @keydown.enter.prevent.stop="onEnter" />
 
       <div v-if="d.kind === 'select'" class="flex flex-col gap-2 mb-4">
         <button v-for="(o, i) in d.options" :key="i"
@@ -47,7 +50,7 @@
 import { computed, ref, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { dialogState, resolveActive } from '../lib/dialog'
-import { createFocusReturn, enterConfirms, initialFocus, nextFocusIndex } from '../lib/dialogFocus'
+import { createFocusReturn, initialFocus, nextFocusIndex } from '../lib/dialogFocus'
 import { isAdminPath } from '../router/routes'
 
 const route = useRoute()
@@ -81,12 +84,6 @@ function onTab(e: KeyboardEvent) {
   const i = nextFocusIndex(items.length, items.indexOf(document.activeElement as HTMLElement), e.shiftKey)
   e.preventDefault()
   if (i >= 0) items[i].focus()
-}
-
-// 焦点在按钮上按回车交给按钮自己（在「取消」上按回车不能变成确定）
-function onKeyEnter(e: KeyboardEvent) {
-  if (!enterConfirms(e.target as HTMLElement | null)) return
-  onEnter()
 }
 
 function onEnter() {

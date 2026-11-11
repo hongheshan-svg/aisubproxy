@@ -1,12 +1,12 @@
 // 统一确认框的焦点（审查修复，F2-18 次要）：原生确认框会挡住整个页面；换成统一确认框后焦点还留在底下的按钮上，
 // 用键盘能 Tab 到底下的「原样重试」，或对着原按钮再按一次回车开出第二个框。
 // 现在弹出后焦点移到框内（确认、选择默认在「取消」上，提示在「确定」上，输入框在输入框上），Tab 在框内循环，
-// 关闭后焦点回到原来的按钮；焦点在按钮上按回车交给按钮自己（在「取消」上按回车不能变成确定）。
+// 关闭后焦点回到原来的按钮。回车不在框上处理，只作用于获得焦点的元素（见 components/__tests__/dialog-keys.spec.ts）。
 // 本机没有 DOM 环境：逻辑在 lib/dialogFocus.ts 里用假元素测，DialogHost 的接线按源码断言。
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import { createFocusReturn, enterConfirms, initialFocus, nextFocusIndex } from '../dialogFocus'
+import { createFocusReturn, initialFocus, nextFocusIndex } from '../dialogFocus'
 
 describe('initialFocus：弹出后焦点放在哪', () => {
   it('确认、选择：放在「取消」上（误按回车不会确认危险操作）', () => {
@@ -32,17 +32,6 @@ describe('nextFocusIndex：Tab 在框内循环', () => {
   })
   it('框里没有能聚焦的：-1', () => {
     expect(nextFocusIndex(0, -1, false)).toBe(-1)
-  })
-})
-
-describe('enterConfirms：对话框上的回车', () => {
-  it('焦点在按钮上：交给按钮自己，不当成确定', () => {
-    expect(enterConfirms({ tagName: 'BUTTON' } as any)).toBe(false)
-  })
-  it('焦点在输入框或框本身：当成确定', () => {
-    expect(enterConfirms({ tagName: 'INPUT' } as any)).toBe(true)
-    expect(enterConfirms({ tagName: 'DIV' } as any)).toBe(true)
-    expect(enterConfirms(null)).toBe(true)
   })
 })
 
@@ -92,9 +81,7 @@ describe('DialogHost 接线', () => {
     expect(src).toContain('ref="cancelEl"')
     expect(src).toContain('ref="okEl"')
   })
-  it('Tab 在框内循环；回车在按钮上时交给按钮', () => {
+  it('Tab 在框内循环', () => {
     expect(src).toMatch(/@keydown\.tab="onTab"/)
-    expect(src).toMatch(/@keydown\.enter="onKeyEnter"/)
-    expect(src).toMatch(/function onKeyEnter\(e: KeyboardEvent\) \{\s*if \(!enterConfirms\(e\.target as HTMLElement \| null\)\) return/)
   })
 })

@@ -263,7 +263,7 @@ func (s *Service) CreateCardholder(ctx context.Context, p marswallex.CardholderP
 				return nil, fmt.Errorf("%w（持卡人 %s）", ErrHolderAccepted, id)
 			}
 			log.Printf("[cardpool] 新建持卡人 %s 成功：%s", outID, id)
-			return getSubmission(wctx, outID)
+			return readSubmissionAfterSend(wctx, outID)
 		}
 		err = errors.New("平台未返回 card_holder_id")
 	}
@@ -280,7 +280,17 @@ func (s *Service) CreateCardholder(ctx context.Context, p marswallex.CardholderP
 		return nil, maybeApplied(err)
 	}
 	log.Printf("[cardpool] 新建持卡人 %s 结果未知（%s），等待推送或导入关联", outID, safeErr(err))
-	return getSubmission(wctx, outID)
+	return readSubmissionAfterSend(wctx, outID)
+}
+
+// readSubmissionAfterSend 读回已发到平台的新建持卡人提交记录。读回失败时平台可能已经受理，错误包上 ErrMaybeApplied，
+// 调用方据此记失败审计、提示勿重复提交。
+func readSubmissionAfterSend(ctx context.Context, outID string) (*Submission, error) {
+	sub, err := getSubmission(ctx, outID)
+	if err != nil {
+		return nil, maybeApplied(err)
+	}
+	return sub, nil
 }
 
 // saveCreatedHolder 写入新建成功的持卡人（仅姓名、国家、PENDING_REVIEW、商户侧 ID），提交记录标 linked。

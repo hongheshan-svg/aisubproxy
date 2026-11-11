@@ -172,14 +172,19 @@ func (s *Service) CreateSubAccount(ctx context.Context, name, by string) (*Accou
 	if acctName == "" {
 		acctName = name
 	}
-	if _, err := db.DB.ExecContext(context.WithoutCancel(ctx), `INSERT INTO mw_accounts (`+accountCols+`) VALUES (?, ?, ?, ?, ?, ?, '[]', 0, ?, ?)
+	wctx := context.WithoutCancel(ctx) // 平台已建好，本地写入和读回不受调用方取消影响
+	if _, err := db.DB.ExecContext(wctx, `INSERT INTO mw_accounts (`+accountCols+`) VALUES (?, ?, ?, ?, ?, ?, '[]', 0, ?, ?)
 		ON CONFLICT(account_no) DO UPDATE SET out_account_no = excluded.out_account_no, account_name = excluded.account_name,
 		status = excluded.status, gone = 0`,
 		out.AccountNo, out.OutAccountNo, acctName, accountTypeSub, purpose, status, now.Unix(), created); err != nil {
 		return nil, maybeApplied(err)
 	}
 	log.Printf("[cardpool] %s 创建子账户 %s", by, out.AccountNo)
-	return getAccount(ctx, out.AccountNo)
+	a, err := getAccount(wctx, out.AccountNo)
+	if err != nil {
+		return nil, maybeApplied(err) // 平台已建好：读回失败也提示勿重复提交
+	}
+	return a, nil
 }
 
 // isEmojiRune 判断是否 emoji（U+1F000–U+1FAFF、U+2600–U+27BF、U+FE0F）。
@@ -217,7 +222,8 @@ func (s *Service) SetSubAccountStatus(ctx context.Context, accountNo, status, re
 		return nil, apiErr
 	}
 	// 同步可能共享了更早开始、数据发生在变更之前的那一轮，所以接口成功后无条件写入新状态
-	if _, err := db.DB.ExecContext(context.WithoutCancel(ctx), `UPDATE mw_accounts SET status = ? WHERE account_no = ?`, status, accountNo); err != nil {
+	wctx := context.WithoutCancel(ctx) // 平台已生效，本地写入和读回不受调用方取消影响
+	if _, err := db.DB.ExecContext(wctx, `UPDATE mw_accounts SET status = ? WHERE account_no = ?`, status, accountNo); err != nil {
 		return nil, maybeApplied(err)
 	}
 	if syncErr != nil {
@@ -225,7 +231,11 @@ func (s *Service) SetSubAccountStatus(ctx context.Context, accountNo, status, re
 		s.markAccountsDirty()
 	}
 	log.Printf("[cardpool] %s 将子账户 %s 置为 %s", by, accountNo, status)
-	return getAccount(ctx, accountNo)
+	a, err := getAccount(wctx, accountNo)
+	if err != nil {
+		return nil, maybeApplied(err) // 平台已生效：读回失败也提示勿重复提交
+	}
+	return a, nil
 }
 
 // onAccountStatusChanged 按 account_no 更新本地账户状态；本地没有该账户时安排同步。

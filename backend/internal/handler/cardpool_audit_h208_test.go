@@ -258,3 +258,20 @@ func TestConfirmFailedNoteTruncatedInAudit(t *testing.T) {
 		t.Fatalf("备注应截到 200 字，得到 %d", n)
 	}
 }
+
+// 平台已建好子账户、本地读回失败：也算可能已生效，记失败审计并回固定提示（不带数据库错误）。
+func TestCreateAccountReadBackFailureAudited(t *testing.T) {
+	c, mw, _ := cpEnv(t, false)
+	if _, err := c.Exec(`CREATE TRIGGER corrupt_acct AFTER INSERT ON mw_accounts BEGIN
+		UPDATE mw_accounts SET created_at = 'bad' WHERE account_no = NEW.account_no; END`); err != nil {
+		t.Fatal(err)
+	}
+	mw.On("POST", "/v1/accounts", mwtest.OK(`{"account_no":"S1","account_name":"Ops","out_account_no":"ACX","status":"ACTIVE"}`))
+	w := cpDo(AdminCardPoolCreateAccount, "POST", "/x", "/x", `{"account_name":"Ops"}`)
+	if w.Code != 500 || mwJSON(t, w)["error"] != cardpool.ErrMaybeApplied.Error() {
+		t.Fatalf("应 500 并提示可能已生效: %d %s", w.Code, w.Body.String())
+	}
+	if a := cpAudit(t, c); !strings.Contains(a, "cardpool.wallet_create_account_failed name=Ops result=已发出，本地没记下结果") {
+		t.Fatalf("应记失败审计: %s", a)
+	}
+}

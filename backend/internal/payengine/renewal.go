@@ -113,7 +113,34 @@ func (s *Service) recoverRenewal(ctx context.Context, no string, r any) {
 		log.Printf("[payengine] 单据 %s 关闭续费时内部错误，记失败也没成功，下一轮再试: %v", no, err)
 		return
 	}
-	s.opts.Alert(fmt.Sprintf("付款单 %s 开通成功，但%s。单据仍是成功；请在 1 小时内到后台点「重试关闭续费」，或让用户自行在 ChatGPT 设置里关闭续费。", no, msg))
+	o, _ := getOrder(ctx, no) // 只用来算会话清空时刻；读不到时告警改说「尽快」
+	s.opts.Alert(fmt.Sprintf("付款单 %s 开通成功，但%s。单据仍是成功；%s", no, msg, s.renewalRetryHint(o)))
+}
+
+// beijingZone 是告警里写具体时刻用的北京时间。
+var beijingZone = time.FixedZone("UTC+8", 8*3600)
+
+// renewalRetryHint 是关闭续费失败告警的后半句：写明会话清空的具体时刻（北京时间，精确到分钟、往前取整），不写固定的「1 小时内」
+// （审查 P1-08）：告警发出时离起算点往往已过去十几分钟以上。起算点和 sweepSessions 一致（sessionKeepFrom）：
+// 人工定论过的从定论时刻算，其余从结束时刻算。o 为 nil 或两个时刻都没有时说「尽快」；已经到点时直接请用户自己关。
+func (s *Service) renewalRetryHint(o *Order) string {
+	const fallback = "请尽快到后台点「重试关闭续费」（会话保留到点就清空），或让用户自行在 ChatGPT 设置里关闭续费。"
+	if o == nil {
+		return fallback
+	}
+	from := o.ResolvedAt
+	if from == nil {
+		from = o.FinishedAt
+	}
+	if from == nil {
+		return fallback
+	}
+	deadline := time.Unix(*from, 0).Add(s.t.SessionKeep)
+	at := deadline.In(beijingZone).Format("2006-01-02 15:04")
+	if !s.now().Before(deadline) {
+		return fmt.Sprintf("会话已到清空时刻（%s，北京时间），请让用户自行在 ChatGPT 设置里关闭续费。", at)
+	}
+	return fmt.Sprintf("请在 %s（北京时间）前到后台点「重试关闭续费」（到点会话清空），或让用户自行在 ChatGPT 设置里关闭续费。", at)
 }
 
 // errRenewalBusy 表示这张单正在关闭续费（续费协程和手动重试不同时做）。
@@ -234,7 +261,7 @@ func (s *Service) renewOnce(ctx context.Context, no string, manual bool) (string
 		return "", err
 	}
 	if !manual {
-		s.opts.Alert(fmt.Sprintf("付款单 %s 开通成功，但%s。单据仍是成功；请在 1 小时内到后台点「重试关闭续费」，或让用户自行在 ChatGPT 设置里关闭续费。", no, msg))
+		s.opts.Alert(fmt.Sprintf("付款单 %s 开通成功，但%s。单据仍是成功；%s", no, msg, s.renewalRetryHint(o)))
 	}
 	return RenewalFailed, nil
 }

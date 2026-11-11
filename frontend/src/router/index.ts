@@ -30,7 +30,7 @@ async function ensureSetupStatus(): Promise<boolean> {
   return setupInstalled
 }
 
-const isLoginPath = (path: string) => path === `${OPS_BASE}/login` || path === '/auth/login'
+const isLoginPath = (path: string) => path === `${OPS_BASE}/login`
 
 router.beforeEach(async (to) => {
   if (to.matched.some((r) => r.meta.requiresAgent)) {

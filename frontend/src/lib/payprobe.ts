@@ -74,11 +74,6 @@ export function probeNeedsBrowser(checks: string[]): boolean {
   return PROBE_CHECKS.some((c) => c.kind === 'browser' && checks.includes(c.key))
 }
 
-/** 按固定顺序（探测项定义的顺序）排列选中的探测项，请求体里的顺序不影响后端，这里只让展示稳定。 */
-export function probeOrderChecks(checks: string[]): string[] {
-  return PROBE_CHECKS.map((c) => c.key).filter((k) => checks.includes(k))
-}
-
 function fmtDate(ts: number): string {
   const d = new Date(ts * 1000)
   const p = (n: number) => String(n).padStart(2, '0')

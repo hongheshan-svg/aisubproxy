@@ -78,7 +78,7 @@ export const routes: RouteRecordRaw[] = [
   {
     path: OPS_BASE,
     component: () => import('../layouts/AdminLayout.vue'),
-    meta: { requiresAuth: true, requiresAdmin: true },
+    meta: { requiresAdmin: true },
     children: [
       { path: '', name: 'AdminDashboard', component: () => import('../views/admin/AdminDashboard.vue'), meta: { title: '总览', group: '', icon: 'Odometer' } },
       // 通用能力

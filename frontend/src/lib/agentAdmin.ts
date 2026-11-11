@@ -314,13 +314,10 @@ export class AdjustRetry {
 
 /** 模块级单例：管理员后台各页面、多个标签页共用（经 localStorage）。 */
 export const adjustRetry = new AdjustRetry(localStore(), createLeaveGuard(), Date.now, { mutex: browserMutex(), settleMs: RETRY_SETTLE_MS })
-export const adjustPendings = adjustRetry.pendings
-export const adjustInflight = adjustRetry.inflight
 export const adjustKeeperFor = (agentId: number) => adjustRetry.keeperFor(agentId)
 export const adjustPendingFor = (agentId: number) => adjustRetry.pendingFor(agentId)
 export const adjustRecheck = (agentId: number, payload: PendingAdjust, shownLocked: boolean) => adjustRetry.recheck(agentId, payload, shownLocked)
 export const adjustBegin = (agentId: number) => adjustRetry.begin(agentId)
-export const adjustFinish = (agentId: number, payload: PendingAdjust, outcome: AdjustOutcome) => adjustRetry.finish(agentId, payload, outcome)
 export const adjustRun = (agentId: number, payload: PendingAdjust, send: (key: string) => Promise<{ status: number; data: any }>, onResult?: (o: AdjustOutcome) => void) =>
   adjustRetry.run(agentId, payload, send, onResult)
 export const adjustAbandon = (agentId: number) => adjustRetry.abandon(agentId)

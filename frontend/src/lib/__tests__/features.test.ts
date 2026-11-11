@@ -14,7 +14,7 @@ import { routes } from '../../router/routes'
 import { buildNavItems } from '../adminNav'
 import { AGENT_ERROR_TEXT } from '../agentApi'
 import {
-  AGENT_DISABLED_TEXT, featureOn, isAgentDisabled, shouldLeaveFeaturePage, visibleNavItems,
+  AGENT_DISABLED_TEXT, featureOn, shouldLeaveFeaturePage, visibleNavItems,
 } from '../features'
 
 const off = { loaded: true, agent: false }
@@ -78,12 +78,6 @@ describe('shouldLeaveFeaturePage', () => {
 })
 
 describe('代理商端：功能未开放', () => {
-  it('识别后端的 404 agent_disabled', () => {
-    expect(isAgentDisabled(404, { error: 'agent_disabled' })).toBe(true)
-    expect(isAgentDisabled(404, { error: 'not_found' })).toBe(false)
-    expect(isAgentDisabled(200, { error: 'agent_disabled' })).toBe(false)
-    expect(isAgentDisabled(404, null)).toBe(false)
-  })
   it('提示文字', () => {
     expect(AGENT_DISABLED_TEXT).toBe('代理商功能暂未开放')
     expect(AGENT_ERROR_TEXT.agent_disabled).toBe('代理商功能暂未开放')

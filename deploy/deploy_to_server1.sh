@@ -72,7 +72,6 @@ SERVER_MODE=release
 DB_PATH=$REMOTE_DIR/data/cdk_recharge.db
 WEB_DIR=$REMOTE_DIR/web
 JWT_SECRET=${JWT_NEW}
-JWT_EXPIRATION_HOURS=24
 INSTALL_MODE=wizard
 # 公网经 Caddy/CF 反代时不要写 127.0.0.1，否则浏览器安装会报 setup not allowed from this address
 # 安全靠 X-Setup-Token；若只内网装可再改为 127.0.0.1,::1

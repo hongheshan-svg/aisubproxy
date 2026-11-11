@@ -17,7 +17,6 @@ import (
 	"unicode"
 
 	_ "github.com/mattn/go-sqlite3"
-	"github.com/tuzi/cdk-recharge-system/internal/config"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -78,7 +77,7 @@ func writeInitialAdminPasswordFile(path, username, password string) error {
 	return os.Chmod(path, 0o600)
 }
 
-func Init(cfg *config.DatabaseConfig) error {
+func Init() error {
 	dbPath := ResolvePath()
 	log.Printf("使用数据库: %s", dbPath)
 	// WAL 让读不阻塞写；busy_timeout 让并发写等待锁而不是立刻报 database is locked。

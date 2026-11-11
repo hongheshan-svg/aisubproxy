@@ -34,7 +34,7 @@ type Server struct {
 
 func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	// Initialize database
-	if err := db.Init(&cfg.Database); err != nil {
+	if err := db.Init(); err != nil {
 		return nil, err
 	}
 	// 拒绝启动的检查（ADMIN_PASSWORD、明文旧版卡台密钥要有主密钥、JWT_SECRET、服务商适配器）：只读，

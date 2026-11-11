@@ -63,12 +63,6 @@ func syncWalletThrottled(ctx context.Context, pool *cardpool.Service) error {
 	return walletSyncLast
 }
 
-func resetWalletSyncThrottle() {
-	walletSyncMu.Lock()
-	walletSyncAt, walletSyncLast = time.Time{}, nil
-	walletSyncMu.Unlock()
-}
-
 // checkMarsWallex 是 MarsWallex 自己的就绪检查（适配器见 marsWallexAdapter），外面统一加上发码硬门槛（见 checkCardSupply）。
 // plan、region 都给时检查这一个组合；否则至少要有一个可用组合。发码和兑换共用：只有检查项全部通过才能发码、才能兑换。查询出错一律按未就绪。
 func checkMarsWallex(ctx context.Context, plan, region string, syncWallet walletSyncFunc) (provider.Readiness, []planCombo) {

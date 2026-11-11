@@ -3,6 +3,7 @@ package handler
 import (
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/tuzi/cdk-recharge-system/internal/db"
@@ -18,5 +19,8 @@ func TestAdminEnableRejectsEndedCDK(t *testing.T) {
 	w := e.do("POST", fmt.Sprintf("/admin/cdks/%d/enable", id), "")
 	if w.Code != http.StatusConflict {
 		t.Fatalf("已结束的码启用应 409，实际 %d %s", w.Code, w.Body.String())
+	}
+	if a := localAudit(t); strings.Contains(a, "local_cdk_enable") {
+		t.Fatalf("被拒绝的启用不该写审计: %s", a)
 	}
 }

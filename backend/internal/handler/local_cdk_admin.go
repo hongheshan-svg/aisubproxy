@@ -69,7 +69,7 @@ func AdminProviderReadiness(c *gin.Context) {
 type cdkIssueRequest struct {
 	Provider string `json:"provider"`
 	Plan     string `json:"plan"`
-	// Product gpt / x / grok。不传按档位键推断（老前端只传 plan）。
+	// Product gpt / x / grok / claude。不传按档位键推断（老前端只传 plan）。
 	Product          string `json:"product"`
 	Count            int    `json:"count"`
 	FundingConfirmed bool   `json:"funding_confirmed"`

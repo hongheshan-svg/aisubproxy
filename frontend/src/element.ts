@@ -33,7 +33,7 @@ import { ElUpload } from 'element-plus/es/components/upload/index.mjs'
 import { vLoading } from 'element-plus/es/components/loading/index.mjs'
 import {
   ArrowDown, Bell, Box, Brush, Coin, CreditCard, Document, Expand, Fold, Key, Link, List, Menu, Money,
-  Odometer, Operation, Platform, PriceTag, Refresh, Switch, SwitchButton, Tickets, User, Wallet, Connection, ChatDotRound,
+  Odometer, Operation, Platform, PriceTag, Refresh, ShoppingCart, Switch, SwitchButton, Tickets, User, Wallet, Connection, ChatDotRound,
 } from '@element-plus/icons-vue'
 
 import 'element-plus/theme-chalk/base.css'
@@ -87,7 +87,7 @@ const components = [
 // 管理端导航按名字引用图标（<component :is="'Odometer'" />），所以按原名全局注册。
 const icons = {
   ArrowDown, Bell, Box, Brush, ChatDotRound, Coin, Connection, CreditCard, Document, Expand, Fold, Key, Link, List, Menu, Money,
-  Odometer, Operation, Platform, PriceTag, Refresh, Switch, SwitchButton, Tickets, User, Wallet,
+  Odometer, Operation, Platform, PriceTag, Refresh, ShoppingCart, Switch, SwitchButton, Tickets, User, Wallet,
 }
 
 export function installElement(app: App) {

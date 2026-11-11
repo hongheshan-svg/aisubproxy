@@ -8,10 +8,18 @@ export const WEBHOOK_HINT = '没配置通知地址时，收不到 3DS 验证码�
 
 const p2 = (n: number) => String(n).padStart(2, '0')
 
-/** Unix 秒转北京时间 YYYY-MM-DD HH:mm:ss（格式同 payprobe 的 fmtDate），固定按 UTC+8 算，与浏览器所在时区无关。 */
+/** Unix 秒转北京时间 YYYY-MM-DD HH:mm:ss（后台所有时间都用它），固定按 UTC+8 算，与浏览器所在时区无关。 */
 export function fmtBeijing(ts: number): string {
   const d = new Date((ts + 8 * 3600) * 1000)
   return `${d.getUTCFullYear()}-${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())} ${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}:${p2(d.getUTCSeconds())}`
+}
+
+/** 后台通用：秒数（number）或 ISO 时间串都按北京时间显示；空值显示 —，解析不了的串原样返回。 */
+export function fmtBeijingAny(v: unknown): string {
+  if (v === null || v === undefined || v === '' || v === 0) return '—'
+  const ms = typeof v === 'number' ? v * 1000 : new Date(String(v)).getTime()
+  if (!Number.isFinite(ms)) return String(v)
+  return fmtBeijing(Math.floor(ms / 1000))
 }
 
 /** 「最近一次收到 Webhook：」后面的文字：没收到过（null、0）显示「从未」，否则显示北京时间。 */

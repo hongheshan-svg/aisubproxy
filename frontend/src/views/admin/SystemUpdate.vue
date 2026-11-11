@@ -103,6 +103,7 @@
 </template>
 
 <script setup lang="ts">
+import { fmtBeijingAny } from '../../lib/mwwebhook'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { authFetch } from '../../lib/api'
@@ -146,11 +147,7 @@ function numOrDash(v: unknown) {
 }
 
 function formatChecked(iso: string) {
-  try {
-    return new Date(iso).toLocaleString()
-  } catch {
-    return iso
-  }
+  return fmtBeijingAny(iso)
 }
 
 function stopUpdatePoll() {

@@ -210,6 +210,7 @@
 </template>
 
 <script setup lang="ts">
+import { fmtBeijingAny } from '../../lib/mwwebhook'
 import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { authFetch } from '../../lib/api'
@@ -323,8 +324,7 @@ const balanceRows = computed(() => {
 })
 
 function fmtTime(s: string) {
-  const d = new Date(s)
-  return isNaN(d.getTime()) ? s : d.toLocaleString()
+  return fmtBeijingAny(s)
 }
 
 async function copyText(t: string) {

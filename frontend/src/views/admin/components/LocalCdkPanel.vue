@@ -184,6 +184,7 @@
 </template>
 
 <script setup lang="ts">
+import { fmtBeijingAny } from '../../../lib/mwwebhook'
 import { computed, onBeforeUnmount, onMounted, onServerPrefetch, ref, watch } from 'vue'
 import ApiErrorNotice from '../../../components/ApiErrorNotice.vue'
 import { dialog } from '../../../lib/dialog'
@@ -420,9 +421,7 @@ const busyId = ref(0)
 let seq = 0
 
 function fmtTime(v: unknown) {
-  if (!v) return '—'
-  const d = typeof v === 'number' ? new Date(v * 1000) : new Date(String(v))
-  return Number.isNaN(d.getTime()) ? String(v) : d.toLocaleString()
+  return fmtBeijingAny(v)
 }
 
 async function load() {

@@ -81,6 +81,7 @@
 </template>
 
 <script setup lang="ts">
+import { fmtBeijingAny } from '../../../lib/mwwebhook'
 import { onMounted, reactive, ref } from 'vue'
 import { dialog } from '../../../lib/dialog'
 import { errText } from '../../../lib/cardpool'
@@ -92,9 +93,7 @@ const loadError = ref('')
 const stateFilter = ref('todo')
 
 function fmtTime(v: unknown) {
-  if (!v) return '—'
-  const d = typeof v === 'number' ? new Date(v * 1000) : new Date(String(v))
-  return Number.isNaN(d.getTime()) ? String(v) : d.toLocaleString()
+  return fmtBeijingAny(v)
 }
 
 async function load() {

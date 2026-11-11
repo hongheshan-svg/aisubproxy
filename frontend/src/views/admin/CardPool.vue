@@ -551,6 +551,7 @@
 </template>
 
 <script setup lang="ts">
+import { fmtBeijingAny } from '../../lib/mwwebhook'
 import ApiErrorNotice from '../../components/ApiErrorNotice.vue'
 import { mapApiError } from '../../lib/errors'
 import AdminPageHeader from '../../components/AdminPageHeader.vue'
@@ -638,8 +639,7 @@ const tab = useRouteTab('/ops/cardpool')
 
 // ---------- 通用 ----------
 function fmtIso(s: string) {
-  const d = new Date(s)
-  return isNaN(d.getTime()) ? s : d.toLocaleString()
+  return fmtBeijingAny(s)
 }
 
 function poolStateLabel(s: string) {

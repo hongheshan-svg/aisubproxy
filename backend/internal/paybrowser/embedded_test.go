@@ -2247,3 +2247,33 @@ func TestEmbeddedSubmitRefusesOffscreenButton(t *testing.T) {
 		t.Fatalf("仿造页收到 %d 次提交，期望 0 次", n)
 	}
 }
+
+// P2-02：卡片 iframe 原地换了文档（还是同一个 frame），本包缓存的执行环境随旧文档失效，在里面读不出。
+// 填表里只查一次的检查遇到这种情况要报错放弃这一单（Fill 失败就不点支付），不能把「读不出」当成「页面没有」：
+// 不然 Link 保存没取消、同意条款没勾、Link 验证框没看到、填表期间新出现的地址字段漏填、必填的邮箱没填。
+func TestOneShotChecksRefuseUnreadableFrame(t *testing.T) {
+	for _, check := range []string{"link-save", "email", "link-modal", "terms", "absent"} {
+		t.Run(check, func(t *testing.T) {
+			needChrome(t)
+			f := newFakeEmbedded(t)
+			b, ctx := openEmbedded(t, f, "")
+			if err := paybrowser.OneShotCheck(ctx, b, check); err != nil {
+				t.Fatalf("iframe 读得出时 %s = %v，期望页面没有、不报错", check, err)
+			}
+			if err := paybrowser.ReloadFrame(ctx, b, "#card-frame"); err != nil {
+				t.Fatalf("重新加载卡片 iframe: %v", err)
+			}
+			err := paybrowser.OneShotCheck(ctx, b, check)
+			if err == nil || !strings.Contains(err.Error(), "读不出") {
+				t.Fatalf("卡片 iframe 读不出时 %s = %v，期望报错放弃", check, err)
+			}
+			// 只影响这一次读：失效的执行环境已经丢掉，再查就重建、读得出
+			if err := paybrowser.OneShotCheck(ctx, b, check); err != nil {
+				t.Fatalf("执行环境重建后 %s = %v，期望页面没有、不报错", check, err)
+			}
+			if n := len(f.payments()); n != 0 {
+				t.Fatalf("只做检查，不能提交：仿造页收到 %d 次提交", n)
+			}
+		})
+	}
+}

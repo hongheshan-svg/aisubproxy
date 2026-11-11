@@ -1,7 +1,7 @@
 <template>
   <div class="pb-2">
     <div class="w-full space-y-5">
-      <AdminPageHeader title="审计日志" description="记录管理员的登录、改密、卡密增删禁用、任务处理、长链接生成等敏感操作。" class="!mb-0">
+      <AdminPageHeader title="审计日志" description="记录管理员和代理商的登录、改密、资金与卡池、付款配置、代理商、系统更新等敏感操作。" class="!mb-0">
         <template #actions>
           <button class="btn-secondary" @click="loadLogs">刷新</button>
         </template>
@@ -50,7 +50,7 @@ import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { onMounted, ref } from 'vue'
 import { authFetch } from '../../lib/api'
 import { dialog } from '../../lib/dialog'
-import { auditActionLabel, auditDetailLabel } from '../../lib/errors'
+import { auditActionClass, auditActionLabel, auditDetailLabel } from '../../lib/errors'
 import { fmtAuditTime as formatDate } from '../../lib/auditTime'
 import { AUDIT_PAGE_SIZE, appendAuditPage, auditLogsUrl, auditPageResult } from '../../lib/auditPaging'
 
@@ -113,23 +113,7 @@ const loadMore = async () => {
 
 const actionLabel = auditActionLabel
 
-const actionClass = (action: string) => {
-  const classes: Record<string, string> = {
-    login: 'pill pill-info',
-    change_password: 'pill pill-warn',
-    cdk_generate: 'pill pill-good',
-    cdk_disable: 'pill pill-warn',
-    cardplatform_cdk_note_set: 'pill pill-info',
-    cardplatform_cdk_note_clear: 'pill',
-    cardplatform_batch_note_set: 'pill pill-info',
-    cardplatform_batch_note_clear: 'pill',
-    cdk_delete: 'pill pill-err',
-    task_approve: 'pill pill-good',
-    task_reject: 'pill pill-err',
-    checkout_generate: 'pill pill-info',
-  }
-  return classes[action] || 'pill'
-}
+const actionClass = auditActionClass
 
 onMounted(loadLogs)
 </script>

@@ -362,11 +362,6 @@ func (s *Service) Get(ctx context.Context, no string) (*Order, []Event, error) {
 	return o, ev, nil
 }
 
-// List 按 id 倒序分页列出单据，state 为空不筛选；返回总数。
-func (s *Service) List(ctx context.Context, state string, page, size int) ([]Order, int, error) {
-	return listOrders(ctx, state, page, size)
-}
-
 // ListBy 按筛选条件（状态、续费进度、种类）分页列出单据，id 倒序；返回总数。
 func (s *Service) ListBy(ctx context.Context, f OrderFilter, page, size int) ([]Order, int, error) {
 	return listOrdersBy(ctx, f, page, size)

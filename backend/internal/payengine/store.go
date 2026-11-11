@@ -16,7 +16,7 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/db"
 )
 
-// settableColumns 是 transition / finish 允许写入的列（pay_orders 除
+// settableColumns 是 transition / move 允许写入的列（pay_orders 除
 // id、order_no、state、created_at、updated_at、finished_at、session_sealed 之外的全部列）。
 var settableColumns = map[string]bool{
 	"source": true, "source_ref": true, "dry_run": true, "plan_key": true, "region": true,
@@ -183,11 +183,6 @@ func transition(ctx context.Context, no, from, to, level, msg string, set map[st
 	return move(ctx, no, from, to, level, msg, set, moveStep)
 }
 
-// finish 同 transition，另设 finished_at 并清空 session_sealed。
-func finish(ctx context.Context, no, from, to, level, msg string, set map[string]any) error {
-	return move(ctx, no, from, to, level, msg, set, moveEnd)
-}
-
 // addEvent 追加一条时间线事件，不改状态，事件的 state 取单据当前状态。
 func addEvent(ctx context.Context, no, level, msg, screenshot string) error {
 	res, err := db.DB.ExecContext(ctx, `INSERT INTO pay_order_events (order_no, at, state, level, message, screenshot)
@@ -244,11 +239,6 @@ func collectOrders(rows *sql.Rows) ([]Order, error) {
 	return out, rows.Err()
 }
 
-// listOrders 按 id 倒序分页列出单据；state 为空不筛选。size 默认 20、上限 100。返回总数。
-func listOrders(ctx context.Context, state string, page, size int) ([]Order, int, error) {
-	return listOrdersBy(ctx, OrderFilter{State: state}, page, size)
-}
-
 // OrderFilter 是单据列表的筛选条件，空字段不筛选。
 type OrderFilter struct {
 	State   string // 单据状态
@@ -256,7 +246,7 @@ type OrderFilter struct {
 	Kind    string // 单据种类
 }
 
-// listOrdersBy 按筛选条件、id 倒序分页列出单据；返回总数。
+// listOrdersBy 按筛选条件、id 倒序分页列出单据；size 默认 20、上限 100。返回总数。
 func listOrdersBy(ctx context.Context, f OrderFilter, page, size int) ([]Order, int, error) {
 	if size <= 0 {
 		size = 20

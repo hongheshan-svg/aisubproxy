@@ -67,7 +67,6 @@ curl -fsSL https://raw.githubusercontent.com/hongheshan-svg/aisubproxy/master/de
 - 脚本会创建系统用户 `cdk-chrome`。服务以 root 运行时，Chrome 用这个低权限用户启动，**并保留 Chrome 沙箱**，任何情况下都不会关闭沙箱（不要用 `--no-sandbox`）。
 - 脚本结尾会以 `cdk-chrome` 身份带沙箱真实启动一次 Chrome 做自检（与 systemd 的 `NoNewPrivileges=true` 同一环境）。失败时退出码非 0，并提示排查方向：`sysctl user.max_user_namespaces` 不能为 0；Ubuntu 24.04 的 `kernel.apparmor_restrict_unprivileged_userns` 由 Chrome 安装包自带的 AppArmor 配置放行。
 - 服务器内存建议 ≥ 2GB（并发 1）。
-- `deploy/deploy_to_server1.sh`（scp + systemctl 部署）同样不会安装浏览器，用它部署的服务器也要手动跑一次上面的命令。
 
 ### Docker 部署
 

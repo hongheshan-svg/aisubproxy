@@ -179,3 +179,29 @@ describe('审计动作配色', () => {
     expect(src).not.toContain('checkout_generate')
   })
 })
+
+describe('审计动作配色：按分组逐个断言', () => {
+  const GROUPS: Record<string, string[]> = {
+    'pill pill-warn': [
+      'agent_adjust', 'agent_order', 'cardpool.fund_card', 'wallet_transfer', 'wallet_conversion',
+      'cardpool.sweep_card', 'pay_order_resolve', 'agent_exchange_resolve',
+      'view_sensitive', 'view_otp', 'change_password', 'agent_password_change',
+    ],
+    'pill pill-err': [
+      'cardpool.cancel_card', 'cardpool.freeze_card', 'agent_disable', 'agent_reset_password', 'agent_reset_totp',
+      'system_update_start', 'runtime_fallback', 'install_rollback', 'install_rollback_failed', 'admin_bootstrap_env',
+      'confirm_failed', 'agent_login_failed', 'agent_password_change_failed',
+      'cardpool.set_card_limit_failed', 'cardpool.apply_cards_failed',
+    ],
+    'pill pill-info': ['login', 'agent_login'],
+    'pill pill-good': ['local_cdk_issue', 'agent_create', 'agent_tier_create', 'agent_product_create'],
+  }
+  for (const [cls, list] of Object.entries(GROUPS)) {
+    it(cls + ' 组每个动作都对', () => {
+      for (const a of list) expect(auditActionClass(a), a).toBe(cls)
+    })
+  }
+  it('confirm_failed 是高危红色', () => {
+    expect(auditActionClass('cardpool.confirm_failed')).toBe('pill pill-err')
+  })
+})

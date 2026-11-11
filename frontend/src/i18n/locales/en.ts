@@ -71,7 +71,7 @@ export default {
     cdkListLabel: 'CDK list (one per line, max {max})',
     cdkPlaceholder: 'SXC-XXXX-XXXX-XXXX-XXXX\n…',
     cdkRecognized: '{n} CDKs detected',
-    cdkQueueHint: 'Large batches are queued and processed in turns — please be patient',
+    cdkOverLimit: 'Over {max} CDKs — please submit them in separate batches',
     credMode: 'Credential mode',
     modeSession: 'Session',
     modeMailbox: 'Email + password',

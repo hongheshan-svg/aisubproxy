@@ -35,8 +35,8 @@
               />
               <p class="text-xs text-muted mt-1">
                 {{ t('batch.cdkRecognized', { n: parsedCdks.length }) }}
-                <span v-if="parsedCdks.length > 100" class="text-warn">
-                  · {{ t('batch.cdkQueueHint') }}
+                <span v-if="parsedCdks.length > BATCH_MAX_KEYS" class="text-warn">
+                  · {{ t('batch.cdkOverLimit', { max: BATCH_MAX_KEYS }) }}
                 </span>
               </p>
             </div>
@@ -789,7 +789,7 @@ async function handleVerifyBatch() {
   const keys = parseCdks(cdkText.value)
   if (!keys.length) return
   if (keys.length > BATCH_MAX_KEYS) {
-    sessionError.value = `单次最多 ${BATCH_MAX_KEYS} 个卡密`
+    sessionError.value = t('batch.cdkOverLimit', { max: BATCH_MAX_KEYS })
     return
   }
   const gen = ++batchSeq

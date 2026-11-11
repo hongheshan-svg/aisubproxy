@@ -71,7 +71,7 @@ export default {
     cdkListLabel: '卡密列表（每行一个，最多 {max}）',
     cdkPlaceholder: 'SXC-XXXX-XXXX-XXXX-XXXX\n…',
     cdkRecognized: '已识别 {n} 个卡密',
-    cdkQueueHint: '大批量将分批排队处理，请耐心等待',
+    cdkOverLimit: '超出 {max} 张，请分批提交',
     credMode: '凭证方式',
     modeSession: 'Session',
     modeMailbox: '邮箱密码',

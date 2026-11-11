@@ -1,7 +1,5 @@
 // 颜色工具：对比度、侧栏颜色推导、混色。输出的色号一律大写 #RRGGBB。
 
-const HEX6 = /^#[0-9A-Fa-f]{6}$/
-
 type RGB = [number, number, number]
 
 function parse(hex: string): RGB {
@@ -25,11 +23,6 @@ export function contrastRatio(a: string, b: string): number {
   const la = luminance(a)
   const lb = luminance(b)
   return (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05)
-}
-
-/** 必须是 #RRGGBB，且白字压在上面的对比度不低于 4.5。 */
-export function isUsablePrimary(hex: string): boolean {
-  return typeof hex === 'string' && HEX6.test(hex) && contrastRatio('#FFFFFF', hex) >= 4.5
 }
 
 function rgbToHsl([r, g, b]: RGB): [number, number, number] {

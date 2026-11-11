@@ -1,14 +1,17 @@
-/* 用户端（兑换改版）配色与公共类。颜色值见规格 §3.1，尺寸见 §3.3。
-   主色由 UserShell 按站点设置写入 --brand-primary / --brand-primary-dark 等变量。 */
+/* 用户端配色与公共类：颜色和圆角全部取自当前皮肤（--bg、--ink、--primary、--radius-* 等），
+   跟着后台「外观与品牌」选的皮肤走。提醒、出错、禁用这六个状态色不属于皮肤，按 html 上的 data-tone 分亮暗。
+   .user-ui 底色透明，页面底色和背景装饰由 html 上的皮肤画出来。 */
 .user-ui {
-  --u-bg: #EEF5F3;
-  --u-surface: #FFFFFF;
-  --u-ink: #0E2A26;
-  --u-muted: #4A6560;
-  --u-line: #DCE5E3;
-  --u-primary: var(--brand-primary, #0F6B5F);
-  --u-on-primary: #FFFFFF;
-  --u-tint: var(--brand-tint, #E2EDEC);
+  --u-bg: var(--bg);
+  --u-surface: var(--surface-solid);
+  --u-ink: var(--ink);
+  --u-muted: var(--ink-2);
+  --u-line: var(--brd);
+  --u-primary: var(--primary);
+  --u-on-primary: var(--primary-on);
+  --u-tint: var(--primary-soft);
+  --u-radius: var(--radius-md);
+  --u-radius-card: var(--radius-lg);
   --u-warn-bg: #FBF3E4;
   --u-warn-ink: #7A5410;
   --u-error-bg: #FDECEA;
@@ -16,49 +19,20 @@
   --u-disabled-bg: #C9D8D5;
   --u-disabled-ink: #3A524D;
 
-  background: var(--u-bg);
+  background: transparent;
   color: var(--u-ink);
   font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Noto Sans SC", sans-serif;
   font-size: 16px;
   line-height: 1.6;
 }
 
-.user-ui[data-theme="dark"] {
-  --u-bg: #0C1A18;
-  --u-surface: #132522;
-  --u-ink: #E6F1EE;
-  --u-muted: #9DB5B0;
-  --u-line: #22403B;
-  --u-primary: var(--brand-primary-dark, #3FB8A5);
-  --u-on-primary: #0C1A18;
-  --u-tint: var(--brand-tint-dark, #1C423C);
+html[data-tone="dark"] .user-ui {
   --u-warn-bg: #2E2410;
   --u-warn-ink: #F0C878;
   --u-error-bg: #331614;
   --u-error-ink: #F4A39B;
   --u-disabled-bg: #22403B;
   --u-disabled-ink: #9DB5B0;
-  color-scheme: dark;
-}
-
-@media (prefers-color-scheme: dark) {
-  .user-ui[data-theme="auto"] {
-    --u-bg: #0C1A18;
-    --u-surface: #132522;
-    --u-ink: #E6F1EE;
-    --u-muted: #9DB5B0;
-    --u-line: #22403B;
-    --u-primary: var(--brand-primary-dark, #3FB8A5);
-    --u-on-primary: #0C1A18;
-    --u-tint: var(--brand-tint-dark, #1C423C);
-    --u-warn-bg: #2E2410;
-    --u-warn-ink: #F0C878;
-    --u-error-bg: #331614;
-    --u-error-ink: #F4A39B;
-    --u-disabled-bg: #22403B;
-    --u-disabled-ink: #9DB5B0;
-    color-scheme: dark;
-  }
 }
 
 /* 居中一栏，最宽 520px，内容左对齐 */
@@ -84,7 +58,7 @@
 .user-ui .u-card {
   background: var(--u-surface);
   border: 1px solid var(--u-line);
-  border-radius: 14px;
+  border-radius: var(--u-radius-card);
   padding: 16px;
 }
 
@@ -98,7 +72,7 @@
   color: var(--u-ink);
   background: var(--u-surface);
   border: 3px solid var(--u-primary);
-  border-radius: 14px;
+  border-radius: var(--u-radius);
 }
 
 .user-ui .u-btn-primary,
@@ -112,7 +86,7 @@
   font: inherit;
   font-size: 18px;
   font-weight: 600;
-  border-radius: 14px;
+  border-radius: var(--u-radius);
   cursor: pointer;
 }
 .user-ui .u-btn-primary {
@@ -142,7 +116,7 @@
 .user-ui .u-error {
   font-size: 15px;
   padding: 12px 14px;
-  border-radius: 14px;
+  border-radius: var(--u-radius);
 }
 .user-ui .u-warn { background: var(--u-warn-bg); color: var(--u-warn-ink); }
 .user-ui .u-error { background: var(--u-error-bg); color: var(--u-error-ink); }

@@ -27,8 +27,6 @@ const BRAND_KEY = 'site-brand'
 export interface SiteBrand {
   name: string
   sub: string
-  /** 用户端主色 #RRGGBB（后台站点外观设置） */
-  primary?: string
   /** Logo 版本号，空串表示没有 Logo */
   logoVersion?: string
 }
@@ -268,7 +266,6 @@ function loadBrand(): SiteBrand {
         return {
           name: String(o.name),
           sub: String(o.sub || ''),
-          primary: o.primary ? String(o.primary) : undefined,
           logoVersion: o.logoVersion ? String(o.logoVersion) : undefined,
         }
       }
@@ -448,7 +445,6 @@ export function setSiteBrand(patch: Partial<SiteBrand>) {
   siteBrand.value = {
     name: (patch.name ?? siteBrand.value.name).trim() || 'CDK Portal',
     sub: (patch.sub ?? siteBrand.value.sub).trim(),
-    primary: patch.primary ?? siteBrand.value.primary,
     logoVersion: patch.logoVersion ?? siteBrand.value.logoVersion,
   }
   try { localStorage.setItem(BRAND_KEY, JSON.stringify(siteBrand.value)) } catch { /* 存不了就只在本次生效 */ }

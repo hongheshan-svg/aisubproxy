@@ -19,8 +19,8 @@ async function loadPublicSite() {
     const d = await r.json()
     // 品牌 + 整站主题：管理员在后台设定，对所有用户生效
     if (d.brand_name) setSiteBrand({ name: d.brand_name, sub: d.brand_sub || '' })
-    // 用户端主色与 Logo 版本（没有 Logo 时 logo_version 为空串）
-    setSiteBrand({ primary: d.primary_color || undefined, logoVersion: d.logo_version || '' })
+    // Logo 版本（没有 Logo 时 logo_version 为空串）
+    setSiteBrand({ logoVersion: d.logo_version || '' })
     if (d.skin) setSkin(d.skin as SkinId)
     // 明暗：用户本机偏好优先；无偏好时跟服务端默认
     let hasLocalMode = false

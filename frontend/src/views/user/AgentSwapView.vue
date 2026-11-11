@@ -143,7 +143,7 @@ function reset() {
 .swap-strong { margin: 0; font-weight: 600; }
 .swap-ok { margin: 0; color: var(--u-ink); font-size: 15px; font-weight: 600; }
 .swap-cap { margin: 0 0 6px; }
-.swap-code { word-break: break-all; font-size: 15px; padding: 12px 14px; background: var(--u-tint); border: 1px solid var(--u-line); border-radius: 14px; }
+.swap-code { word-break: break-all; font-size: 15px; padding: 12px 14px; background: var(--u-tint); border: 1px solid var(--u-line); border-radius: var(--u-radius); }
 .swap-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 .swap-meta { margin: 0; display: flex; flex-direction: column; gap: 2px; }
 </style>

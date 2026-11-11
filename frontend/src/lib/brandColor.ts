@@ -1,10 +1,6 @@
-// 用户端主色推导：后台只存一个 #RRGGBB，暗色主色、浅色调都由它算出。
-// 输出的色号一律大写 #RRGGBB。
+// 颜色工具：对比度、侧栏颜色推导、混色。输出的色号一律大写 #RRGGBB。
 
 const HEX6 = /^#[0-9A-Fa-f]{6}$/
-const DEFAULT_PRIMARY = '#0F6B5F'
-const DEFAULT_DARK_PRIMARY = '#3FB8A5'
-const DARK_SURFACE = '#132522'
 
 type RGB = [number, number, number]
 
@@ -66,40 +62,11 @@ function hslToRgb(h: number, s: number, l: number): RGB {
   return [f(h + 1 / 3) * 255, f(h) * 255, f(h - 1 / 3) * 255]
 }
 
-/** 暗色下的主色：保持色相，逐步提亮直到压在卡片底色 #132522 上不低于 4.5（比页面底色更亮，达标则两处都达标）。 */
-export function darkPrimaryFrom(hex: string): string {
-  if (hex.toUpperCase() === DEFAULT_PRIMARY) return DEFAULT_DARK_PRIMARY
-  const [h, s, l0] = rgbToHsl(parse(hex))
-  for (let i = 0; ; i++) {
-    const l = l0 + 0.02 * i
-    if (l >= 1) return '#FFFFFF'
-    const c = format(hslToRgb(h, s, l))
-    if (contrastRatio(c, DARK_SURFACE) >= 4.5) return c
-  }
-}
-
 /** a 占 weightOfA，b 占其余。 */
 export function mixHex(a: string, b: string, weightOfA: number): string {
   const pa = parse(a)
   const pb = parse(b)
   return format([0, 1, 2].map((i) => pa[i] * weightOfA + pb[i] * (1 - weightOfA)) as RGB)
-}
-
-export function tintFrom(hex: string): string {
-  return mixHex(hex, '#FFFFFF', 0.12)
-}
-
-export function brandColorVars(
-  hex: string | undefined,
-): Record<'--brand-primary' | '--brand-primary-dark' | '--brand-tint' | '--brand-tint-dark', string> {
-  const primary = hex && isUsablePrimary(hex) ? hex.toUpperCase() : DEFAULT_PRIMARY
-  const dark = darkPrimaryFrom(primary)
-  return {
-    '--brand-primary': primary,
-    '--brand-primary-dark': dark,
-    '--brand-tint': tintFrom(primary),
-    '--brand-tint-dark': mixHex(dark, DARK_SURFACE, 0.2),
-  }
 }
 
 /**

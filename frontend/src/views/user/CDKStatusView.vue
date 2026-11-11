@@ -274,8 +274,8 @@ function reset() {
 .lk-tools { display: flex; flex-wrap: wrap; gap: 8px; }
 .lk-small { min-height: 48px; padding: 6px 14px; font-size: 15px; }
 .lk-sum { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 8px; font-size: 14px; }
-.lk-sum li { background: var(--u-tint); border-radius: 14px; padding: 8px 12px; }
-.lk-table-wrap { overflow-x: auto; border: 1px solid var(--u-line); border-radius: 14px; }
+.lk-sum li { background: var(--u-tint); border-radius: var(--u-radius); padding: 8px 12px; }
+.lk-table-wrap { overflow-x: auto; border: 1px solid var(--u-line); border-radius: var(--u-radius-card); }
 .lk-table { width: 100%; min-width: 720px; border-collapse: collapse; font-size: 14px; }
 .lk-table th { text-align: left; padding: 10px 12px; color: var(--u-muted); font-weight: 600; background: var(--u-tint); }
 .lk-table td { padding: 10px 12px; border-top: 1px solid var(--u-line); vertical-align: middle; }

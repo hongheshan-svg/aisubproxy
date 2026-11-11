@@ -240,7 +240,7 @@ onUnmounted(() => {
 .recharge-btn { width: 100%; margin-top: 12px; }
 .recharge-switch {
   display: block; min-height: 48px; margin: 12px auto 0; padding: 0 12px;
-  font: inherit; font-size: 15px; background: none; border: 0; border-radius: 14px;
+  font: inherit; font-size: 15px; background: none; border: 0; border-radius: var(--u-radius);
 }
 .recharge-hint { margin: 16px 0 0; font-size: 14px; color: var(--u-muted); text-align: center; }
 </style>

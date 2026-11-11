@@ -56,7 +56,7 @@ const logoSrc = computed(() => {
 /* 语言、明暗两个按钮是各皮肤共用的 btn-ghost，在用户端改用 --u-* 配色并保证 48px 高 */
 .uh-tools :deep(.btn-ghost) {
   box-sizing: border-box; min-height: 48px; min-width: 48px; padding: 0 12px;
-  color: var(--u-ink); background: var(--u-surface); border: 1px solid var(--u-line); border-radius: 14px;
+  color: var(--u-ink); background: var(--u-surface); border: 1px solid var(--u-line); border-radius: var(--u-radius);
   font-size: 15px; display: inline-flex; align-items: center; justify-content: center; cursor: pointer;
 }
 .uh-hero { padding-top: 16px; }

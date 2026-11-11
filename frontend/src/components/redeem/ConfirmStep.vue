@@ -159,7 +159,7 @@ function submit() {
 .step-irreversible { margin: 0; font-size: 14px; color: var(--u-muted); }
 .step-check { min-height: 48px; display: flex; gap: 10px; align-items: flex-start; font-size: 15px; color: var(--u-ink); }
 .step-check input { margin-top: 4px; width: 18px; height: 18px; }
-.step-btn { width: 100%; min-height: 48px; border-radius: 14px; gap: 10px; }
+.step-btn { width: 100%; min-height: 48px; border-radius: var(--u-radius); gap: 10px; }
 .step-spin {
   width: 18px; height: 18px; border-radius: 50%;
   border: 3px solid currentColor; border-right-color: transparent;

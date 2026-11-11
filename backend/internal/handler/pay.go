@@ -421,11 +421,11 @@ func AdminPayPutConfig(c *gin.Context) {
 		}
 		if err := paySaveConcurrency(req.Concurrency); err != nil {
 			// 套餐表已生效而并发数没存上：补一条审计，管理员可重试
-			auditAdmin(c, "pay_config_update", payConfigAudit(req.Plans, req.Concurrency)+" 套餐表已保存，并发数保存失败")
+			auditAdmin(c, "pay_config_update", payConfigAuditSaved(req.Plans, req.Concurrency, " 套餐表已保存，并发数保存失败"))
 			payFail(c, err)
 			return
 		}
-		auditAdmin(c, "pay_config_update", payConfigAudit(req.Plans, req.Concurrency))
+		auditAdmin(c, "pay_config_update", payConfigAuditSaved(req.Plans, req.Concurrency, ""))
 		body, err := payConfigBody(s)
 		if err != nil {
 			payFail(c, err)
@@ -433,6 +433,21 @@ func AdminPayPutConfig(c *gin.Context) {
 		}
 		c.JSON(http.StatusOK, body)
 	})(c)
+}
+
+// payPlanTableReload 是保存后重读套餐表的函数，供测试注入重读失败。
+var payPlanTableReload = payengine.LoadPlanTable
+
+// payConfigAuditSaved 按保存后实际生效的套餐表记审计，extra 接在后面。
+// 旧后台页面的请求不带 allow_zero 时库里沿用当前值，按请求记会把允许 0 元开通的地区漏掉，所以要重读。
+// 重读失败时退回按请求内容记，并在末尾注明。
+func payConfigAuditSaved(reqPlans []payengine.PlanConf, concurrency int, extra string) string {
+	saved, err := payPlanTableReload()
+	if err != nil {
+		log.Printf("[pay] 保存后重读套餐表失败，审计按请求内容记录: %v", err)
+		return payConfigAudit(reqPlans, concurrency) + extra + "（保存后重读套餐表失败，以上按请求内容记录）"
+	}
+	return payConfigAudit(saved, concurrency) + extra
 }
 
 // payConfigAudit 列出启用的「套餐:地区」、允许 0 元开通的「套餐:地区」（只记订阅套餐）与并发数。

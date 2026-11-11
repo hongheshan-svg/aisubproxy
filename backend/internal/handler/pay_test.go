@@ -561,6 +561,69 @@ func TestPayPutConfigAuditZero(t *testing.T) {
 	}
 }
 
+// 开着旧后台页面保存时请求不带 allow_zero，库里沿用当前值（Plus 默认允许）：审计按保存后实际生效的套餐表记，列出这些地区。
+func TestPayPutConfigAuditUsesSavedTable(t *testing.T) {
+	payEnv(t)
+	plans := payengine.DefaultPlanTable()
+	for i := range plans {
+		for r, rc := range plans[i].Regions {
+			rc.AllowZero = nil
+			plans[i].Regions[r] = rc
+		}
+		if plans[i].Key == "plus" {
+			plans[i].Regions["US"] = payengine.RegionConf{Enabled: true, Currency: "USD", CapMinor: 3000, FloorMinor: 1000, FundCents: 3000}
+		}
+	}
+	pb, _ := json.Marshal(map[string]any{"plans": plans, "concurrency": 2})
+	if strings.Contains(string(pb), "allow_zero") {
+		t.Fatalf("旧页面的请求不应带 allow_zero: %s", pb)
+	}
+	if w := payDo(AdminPayPutConfig, "PUT", "/config", "/config", string(pb)); w.Code != 200 {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	cur, err := payengine.LoadPlanTable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range cur {
+		if p.Key == "plus" && !p.Regions["US"].ZeroAllowed() {
+			t.Fatalf("缺 allow_zero 时库里应沿用当前值（允许）: %+v", p.Regions["US"])
+		}
+	}
+	// 行尾换行确认后面没有「重读失败」的注明
+	const want = "pay_config_update enabled=[plus:US] zero=[plus:CL,plus:EG,plus:JP,plus:PH,plus:US] concurrency=2\n"
+	if a := payAudit(t); !strings.Contains(a, want) {
+		t.Fatalf("审计应按保存后的套餐表记「%s」: %s", strings.TrimSpace(want), a)
+	}
+}
+
+// 保存后重读套餐表失败：退回按请求内容记，并在审计文字末尾注明。
+func TestPayPutConfigAuditReloadFails(t *testing.T) {
+	payEnv(t)
+	old := payPlanTableReload
+	payPlanTableReload = func() ([]payengine.PlanConf, error) { return nil, errors.New("重读失败") }
+	t.Cleanup(func() { payPlanTableReload = old })
+	yes, no := true, false
+	plans := payengine.DefaultPlanTable()
+	for i := range plans {
+		for r, rc := range plans[i].Regions {
+			rc.AllowZero = &no
+			plans[i].Regions[r] = rc
+		}
+		if plans[i].Key == "plus" {
+			plans[i].Regions["US"] = payengine.RegionConf{Enabled: true, Currency: "USD", CapMinor: 3000, FloorMinor: 1000, FundCents: 3000, AllowZero: &yes}
+		}
+	}
+	pb, _ := json.Marshal(map[string]any{"plans": plans, "concurrency": 2})
+	if w := payDo(AdminPayPutConfig, "PUT", "/config", "/config", string(pb)); w.Code != 200 {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	const want = "pay_config_update enabled=[plus:US] zero=[plus:US] concurrency=2（保存后重读套餐表失败，以上按请求内容记录）\n"
+	if a := payAudit(t); !strings.Contains(a, want) {
+		t.Fatalf("审计应退回按请求内容记并注明「%s」: %s", strings.TrimSpace(want), a)
+	}
+}
+
 func plusPHCap(t *testing.T) int64 {
 	t.Helper()
 	tbl, err := payengine.LoadPlanTable()

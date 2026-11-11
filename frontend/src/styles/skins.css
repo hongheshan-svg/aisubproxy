@@ -256,7 +256,7 @@ html[data-skin='zovo'] {
   --dot-current-border: transparent;
   --dot-current-fg: var(--bg);
 }
-html.dark[data-skin='zovo'] .u-title { text-shadow: 0 0 40px rgba(203, 176, 121, 0.22); }
+html.dark:not([data-surface="user"])[data-skin='zovo'] .u-title { text-shadow: 0 0 40px rgba(203, 176, 121, 0.22); }
 html.dark[data-skin='zovo'] .u-logo { color: #0a0a12; }
 
 /* 赤陶编辑部 terracotta：奶油纸面 + 衬线标题 + 胶囊按钮（带内高光的「釉面」质感） */
@@ -291,8 +291,8 @@ html.dark[data-skin='terracotta'] {
   --btn-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 12px 26px -12px rgba(217, 116, 79, 0.65);
   --card-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 30px 60px -36px rgba(0, 0, 0, 0.7);
 }
-html[data-skin='terracotta'] .u-title em,
-html[data-skin='terracotta'] .u-title { font-optical-sizing: auto; }
+html:not([data-surface="user"])[data-skin='terracotta'] .u-title em,
+html:not([data-surface="user"])[data-skin='terracotta'] .u-title { font-optical-sizing: auto; }
 
 /* 赛博终端 cyber：切角按钮、HUD 角标面板、等宽大写、霓虹发光标题 */
 html[data-skin='cyber'] {
@@ -335,17 +335,18 @@ html[data-skin='cyber'] {
   --logo-radius: 0;
   --logo-shadow: 0 0 18px rgba(34, 211, 238, 0.45);
 }
-html[data-skin='cyber'] .btn-primary,
-html[data-skin='cyber'] .btn-secondary,
+/* 切角按钮只在后台和登录页；用户端按钮纯色（规格 B §3.5） */
+html:not([data-surface="user"])[data-skin='cyber'] .btn-primary,
+html:not([data-surface="user"])[data-skin='cyber'] .btn-secondary,
 html[data-skin='cyber'] .u-logo {
   clip-path: polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px);
 }
-html[data-skin='cyber'] .u-eyebrow { border-radius: 0; }
-html[data-skin='cyber'] .u-eyebrow::after { content: '_'; animation: cyber-caret 1s steps(1) infinite; }
+html:not([data-surface="user"])[data-skin='cyber'] .u-eyebrow { border-radius: 0; }
+html:not([data-surface="user"])[data-skin='cyber'] .u-eyebrow::after { content: '_'; animation: cyber-caret 1s steps(1) infinite; }
 @keyframes cyber-caret { 50% { opacity: 0; } }
-html[data-skin='cyber'] .u-title { text-shadow: 0 0 28px rgba(34, 211, 238, 0.45); }
+html:not([data-surface="user"])[data-skin='cyber'] .u-title { text-shadow: 0 0 28px rgba(34, 211, 238, 0.45); }
 /* HUD 四角标：只给用户页面板，后台表格不加 */
-html[data-skin='cyber'] .u-main .card {
+html:not([data-surface="user"])[data-skin='cyber'] .u-main .card {
   background:
     linear-gradient(var(--primary), var(--primary)) top left / 16px 2px no-repeat,
     linear-gradient(var(--primary), var(--primary)) top left / 2px 16px no-repeat,
@@ -437,7 +438,7 @@ html.dark[data-skin='ocean'] {
   --badge-border: 1px solid rgba(255, 255, 255, 0.1);
   --dot-bg: #3a3a3c;
 }
-html[data-skin='ocean'] .u-title {
+html:not([data-surface="user"])[data-skin='ocean'] .u-title {
   background: linear-gradient(90deg, #2f7bff 0%, #8b5cf6 45%, #ec4899 75%, #f97316 100%);
   -webkit-background-clip: text;
   background-clip: text;
@@ -476,8 +477,8 @@ html[data-skin='ember'] {
   --dot-current-bg: linear-gradient(135deg, #ff5f2e, #ffc15e);
   --dot-current-border: transparent;
 }
-html[data-skin='ember'] .u-title { color: #fff1e4; text-shadow: 0 0 36px rgba(255, 120, 60, 0.45); }
-html[data-skin='ember'] .btn-primary::after {
+html:not([data-surface="user"])[data-skin='ember'] .u-title { color: #fff1e4; text-shadow: 0 0 36px rgba(255, 120, 60, 0.45); }
+html:not([data-surface="user"])[data-skin='ember'] .btn-primary::after {
   content: '';
   position: absolute;
   inset: 0;
@@ -486,8 +487,8 @@ html[data-skin='ember'] .btn-primary::after {
   transition: transform 0.6s ease;
   pointer-events: none;
 }
-html[data-skin='ember'] .btn-primary:hover:not(:disabled)::after { transform: translateX(120%); }
-html[data-skin='ember'] .u-eyebrow i { animation: ember-pulse 2.2s ease-in-out infinite; }
+html:not([data-surface="user"])[data-skin='ember'] .btn-primary:hover:not(:disabled)::after { transform: translateX(120%); }
+html:not([data-surface="user"])[data-skin='ember'] .u-eyebrow i { animation: ember-pulse 2.2s ease-in-out infinite; }
 @keyframes ember-pulse { 50% { box-shadow: 0 0 0 6px rgba(255, 133, 74, 0); } }
 
 /* 薄荷清新 forest：薄荷渐变底、毛玻璃白卡 + 左侧色条、实心翠绿按钮、薄荷描边次按钮 */
@@ -548,7 +549,7 @@ html.dark[data-skin='forest'] {
   --badge-border: 1px solid #2a4237;
   --dot-bg: #13201a;
 }
-html[data-skin='forest'] .u-main .card {
+html:not([data-surface="user"])[data-skin='forest'] .u-main .card {
   box-shadow: inset 3px 0 0 var(--primary), var(--card-shadow);
 }
 
@@ -716,8 +717,8 @@ html.dark[data-skin='slate'] {
   --logo-bg: #f4f4f1;
   --logo-fg: #0b0b0b;
 }
-html[data-skin='slate'] .u-eyebrow::before { content: '—'; margin-right: 2px; }
-html[data-skin='slate'] .u-eyebrow i { display: none; }
+html:not([data-surface="user"])[data-skin='slate'] .u-eyebrow::before { content: '—'; margin-right: 2px; }
+html:not([data-surface="user"])[data-skin='slate'] .u-eyebrow i { display: none; }
 html[data-skin='slate'] .stepper-label { font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
 
 /* 玫瑰杂志 rose：斜体衬线大标题、两侧细线的小标签、方角大写按钮、顶部粗线的版面卡、下划线页签 */
@@ -769,14 +770,14 @@ html[data-skin='rose'] {
 }
 html[data-skin='rose'] .btn-primary:hover:not(:disabled) { color: var(--bg); }
 html[data-skin='rose'] .btn-secondary:hover:not(:disabled) { background: var(--ink); color: var(--bg); }
-html[data-skin='rose'] .u-eyebrow i { display: none; }
-html[data-skin='rose'] .u-eyebrow::before,
-html[data-skin='rose'] .u-eyebrow::after { content: ''; width: 28px; height: 1px; background: currentColor; opacity: 0.6; }
-html[data-skin='rose'] .u-badges li + li::before { content: '·'; margin-right: 10px; color: var(--ink-3); }
-html[data-skin='rose'] .u-badges { gap: 10px; }
-html[data-skin='rose'] .u-badges li { padding: 0; }
-html[data-skin='rose'] .u-main .card { border-top: 3px solid var(--ink); }
-html[data-skin='rose'] .u-main h2 { font-family: 'Instrument Serif', 'Source Serif 4', 'Noto Serif SC', serif; font-weight: 400; font-size: 1.7rem; }
+html:not([data-surface="user"])[data-skin='rose'] .u-eyebrow i { display: none; }
+html:not([data-surface="user"])[data-skin='rose'] .u-eyebrow::before,
+html:not([data-surface="user"])[data-skin='rose'] .u-eyebrow::after { content: ''; width: 28px; height: 1px; background: currentColor; opacity: 0.6; }
+html:not([data-surface="user"])[data-skin='rose'] .u-badges li + li::before { content: '·'; margin-right: 10px; color: var(--ink-3); }
+html:not([data-surface="user"])[data-skin='rose'] .u-badges { gap: 10px; }
+html:not([data-surface="user"])[data-skin='rose'] .u-badges li { padding: 0; }
+html:not([data-surface="user"])[data-skin='rose'] .u-main .card { border-top: 3px solid var(--ink); }
+html:not([data-surface="user"])[data-skin='rose'] .u-main h2 { font-family: 'Instrument Serif', 'Source Serif 4', 'Noto Serif SC', serif; font-weight: 400; font-size: 1.7rem; }
 html[data-skin='rose'] .input { border-width: 0 0 1px; padding-left: 2px; }
 html[data-skin='rose'] textarea.input { border-width: 1px; padding-left: 12px; }
 html[data-skin='rose'] .input:focus { border-color: var(--primary); }
@@ -835,8 +836,8 @@ html[data-skin='noir'] {
   --logo-radius: 0;
   --logo-shadow: 4px 4px 0 #525252;
 }
-html[data-skin='noir'] .u-eyebrow { border-radius: 0; }
-html[data-skin='noir'] .u-title {
+html:not([data-surface="user"])[data-skin='noir'] .u-eyebrow { border-radius: 0; }
+html:not([data-surface="user"])[data-skin='noir'] .u-title {
   /* 马克笔划线：粗下划线上移压在字的下半截 */
   text-decoration: underline 0.3em #3f3f3f;
   text-underline-offset: -0.14em;
@@ -882,15 +883,15 @@ html[data-skin='paper'] {
   --logo-radius: 4px;
   --logo-shadow: 2px 2px 0 rgba(61, 52, 40, 0.25);
 }
-html[data-skin='paper'] .u-eyebrow { border-radius: 3px; }
-html[data-skin='paper'] .u-title {
+html:not([data-surface="user"])[data-skin='paper'] .u-eyebrow { border-radius: 3px; }
+html:not([data-surface="user"])[data-skin='paper'] .u-title {
   text-decoration: underline wavy var(--primary);
   text-decoration-thickness: 2px;
   text-underline-offset: 12px;
   text-decoration-skip-ink: none;
 }
-html[data-skin='paper'] .u-main .card { position: relative; }
-html[data-skin='paper'] .u-main .card::before {
+html:not([data-surface="user"])[data-skin='paper'] .u-main .card { position: relative; }
+html:not([data-surface="user"])[data-skin='paper'] .u-main .card::before {
   content: '';
   position: absolute;
   top: -11px;

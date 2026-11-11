@@ -42,3 +42,38 @@ describe('data-surface 的设置', () => {
     expect(read('../../router/index.ts')).toMatch(/data-surface|surfaceOf/)
   })
 })
+
+// ---- 元素级装饰：用户端一律不要，只留在后台和登录页（规格 B §3.5） ----
+describe('皮肤的元素级装饰不命中用户端', () => {
+  const skins = read('../skins.css').split('@media (prefers-reduced-motion')[0] // 末尾 reduced-motion 复位块只关动画，不算装饰
+  const rules = [...skins.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ sel: m[1].trim(), body: m[2] }))
+  const selectors = rules.flatMap((r) => r.sel.split(',').map((s) => ({ sel: s.trim(), body: r.body })))
+  const OUT = 'html:not([data-surface="user"])'
+  const startsOut = (s: string) => s.startsWith(OUT) || s.startsWith('html.dark:not([data-surface="user"])')
+
+  it('带 .u-title / .u-eyebrow / .u-badges / .u-main 的皮肤规则都限定在非用户端', () => {
+    const hit = selectors.filter((x) => /\.u-(title|eyebrow|badges|main)\b/.test(x.sel) && /\[data-skin=/.test(x.sel))
+    expect(hit.length).toBeGreaterThan(20)
+    expect(hit.filter((x) => !startsOut(x.sel)).map((x) => x.sel)).toEqual([])
+  })
+  it('按钮的掠光伪元素和切角 clip-path 限定在非用户端', () => {
+    const hit = selectors.filter((x) => /\.btn-(primary|secondary)/.test(x.sel) && (/::(before|after)/.test(x.sel) || /clip-path/.test(x.body)))
+    expect(hit.length).toBeGreaterThanOrEqual(3)
+    expect(hit.filter((x) => !startsOut(x.sel)).map((x) => x.sel)).toEqual([])
+  })
+  it('用户端把按钮的渐变、硬投影、位移变量复位成纯色', () => {
+    const ut = read('../user-theme.css')
+    const i = ut.indexOf('html[data-surface="user"][data-skin][data-tone] {')
+    expect(i).toBeGreaterThan(-1)
+    const body = ut.slice(i, ut.indexOf('}', i))
+    for (const v of ['--btn-img', '--btn-shadow', '--btn-shadow-hover', '--btn-shadow-active', '--btn2-shadow', '--btn-hover-move', '--btn-active-move']) {
+      expect(body, v).toMatch(new RegExp(`${v}:\\s*none;`))
+    }
+  })
+  it('皮肤里用过的按钮变量，复位块都覆盖到', () => {
+    const ut = read('../user-theme.css')
+    const body = ut.slice(ut.indexOf('html[data-surface="user"][data-skin][data-tone] {'))
+    const used = new Set([...skins.matchAll(/(--btn2?-(?:img|shadow(?:-hover|-active)?|border|hover-move|active-move|case|track)):/g)].map((m) => m[1]))
+    for (const v of used) expect(body, v).toContain(v + ':')
+  })
+})

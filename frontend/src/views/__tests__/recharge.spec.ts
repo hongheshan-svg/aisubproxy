@@ -171,6 +171,12 @@ describe('兑换页：电脑两栏', () => {
     expect(aside(html)).toContain('data-testid="device-guide"')
     expect(html).toContain('data-testid="credential-next"')
   })
+  it('第 ② 屏电脑布局 Claude 码：右栏是常见问题，没有 ChatGPT 设备说明', async () => {
+    const claude = { plan: 'claude_pro', product: 'claude', provider_kind: 'card_supply', kind: 'subscription' }
+    const html = await withDesktop(true, { screen: 'credential', code: 'SXC-AAAA', previewInfo: claude })
+    expect(html).not.toContain('data-testid="device-guide"')
+    expect(aside(html)).toContain('id="help"')
+  })
   it('第 ② 屏窄屏：设备说明在主栏，不在 aside 里，也没有 aside', async () => {
     const html = await withDesktop(false, cred)
     expect(count(html, 'data-testid="device-guide"')).toBe(1)

@@ -32,7 +32,7 @@ import { dialog } from '../../lib/dialog'
 import { isDesktop } from '../../lib/layoutMode'
 import { isCardSupply, isCreditCode } from '../../lib/mwredeem'
 import { planLabelT } from '../../lib/plan'
-import { targetPlanOf } from '../../lib/redeemAccount'
+import { isChatgptCode, targetPlanOf } from '../../lib/redeemAccount'
 import {
   canSwitchCode, checkActionFor, graceConfirmArgs, makeRecoverAction, makeStartOver, nextProgress, productOf, queryCode, recheckAction,
   showCheckButton, showGracePending, shownScreen, switchCodeEntry, ticksState, waitedLong,
@@ -244,7 +244,7 @@ onUnmounted(() => {
 
         <!-- 右栏只在电脑布局出现：粘贴登录信息这屏放设备说明，其余屏放常见问题 -->
         <template v-if="isDesktop" #aside>
-          <DeviceGuide v-if="shown === 'credential'" :initial="device" />
+          <DeviceGuide v-if="shown === 'credential' && isChatgptCode(previewInfo)" :initial="device" />
           <FaqList v-else />
         </template>
       </UserTwoColumn>

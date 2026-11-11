@@ -2,7 +2,7 @@
 import { describe, expect, it } from 'vitest'
 import zh from '../../i18n/locales/zh'
 import en from '../../i18n/locales/en'
-import { accountFromPreflight, blockingKey, canConfirm, confirmState, type AccountSummary } from '../redeemAccount'
+import { accountFromPreflight, blockingKey, canConfirm, confirmState, credentialKindOf, isChatgptCode, type AccountSummary } from '../redeemAccount'
 
 const checkedAccount: AccountSummary = {
   maskedEmail: 'al***@example.com',
@@ -165,5 +165,26 @@ describe('canConfirm：确认开通按钮何时可点', () => {
   it('提交中或不确定：一律锁住', () => {
     expect(canConfirm({ ...ok, submitState: 'submitting' })).toBe(false)
     expect(canConfirm({ ...ok, submitState: 'unknown' })).toBe(false)
+  })
+})
+
+describe('credentialKindOf / isChatgptCode：粘贴登录信息屏按码种分', () => {
+  it('ChatGPT plus、pro 是 chatgpt', () => {
+    for (const plan of ['plus', 'pro']) {
+      expect(credentialKindOf({ plan })).toBe('chatgpt')
+      expect(isChatgptCode({ plan })).toBe(true)
+    }
+  })
+  it('Claude 码是 claude，不是 ChatGPT', () => {
+    expect(credentialKindOf({ plan: 'pro', product: 'claude' })).toBe('claude')
+    expect(isChatgptCode({ plan: 'claude_pro' })).toBe(false)
+  })
+  it('Grok 码是 grok，不是 ChatGPT', () => {
+    expect(credentialKindOf({ plan: 'super_monthly', product: 'grok' })).toBe('grok')
+    expect(isChatgptCode({ plan: 'grok_super_monthly' })).toBe(false)
+  })
+  it('X 码是 x，不是 ChatGPT', () => {
+    expect(credentialKindOf({ plan: 'premium_monthly', product: 'x' })).toBe('x')
+    expect(isChatgptCode({ plan: 'x_premium_monthly' })).toBe(false)
   })
 })

@@ -5,13 +5,13 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { FlowError } from '../../composables/useRedeemFlow'
-import { claudeCredential, claudeOrgCheck, isClaudePlan, normalizeOrgId } from '../../lib/claude'
+import { claudeCredential, claudeOrgCheck, normalizeOrgId } from '../../lib/claude'
 import { detectDevice } from '../../lib/device'
-import { grokCredential, isGrokPlan } from '../../lib/grok'
+import { grokCredential } from '../../lib/grok'
 import { isCreditCode } from '../../lib/mwredeem'
-import { targetPlanOf } from '../../lib/redeemAccount'
+import { credentialKindOf } from '../../lib/redeemAccount'
 import { checkPastedSession } from '../../lib/sessionCheck'
-import { isXPremiumPlan, xPremiumCredential } from '../../lib/x-premium'
+import { xPremiumCredential } from '../../lib/x-premium'
 import CreditTermsBox from './CreditTermsBox.vue'
 import DeviceGuide from './DeviceGuide.vue'
 import SessionPasteBox from './SessionPasteBox.vue'
@@ -28,14 +28,7 @@ const emit = defineEmits<{
 }>()
 const { t } = useI18n({ useScope: 'global' })
 
-type Kind = 'claude' | 'grok' | 'x' | 'chatgpt'
-const kind = computed<Kind>(() => {
-  const p = targetPlanOf(props.preview)
-  if (isClaudePlan(p)) return 'claude'
-  if (isXPremiumPlan(p)) return 'x'
-  if (isGrokPlan(p)) return 'grok'
-  return 'chatgpt'
-})
+const kind = computed(() => credentialKindOf(props.preview))
 
 // 没有 navigator（渲染测试、服务端）时默认电脑；挂载后再按设备改
 const device = ref<'ios' | 'android' | 'desktop'>('desktop')

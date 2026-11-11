@@ -1,6 +1,8 @@
 // 第 ③ 屏「核对账号」的账号摘要和状态判断（规格 §5.4、§6.4）。纯函数：不碰 DOM、存储和网络。
-import { claudeTargetPlan } from './claude'
+import { claudeTargetPlan, isClaudePlan } from './claude'
+import { isGrokPlan } from './grok'
 import { maskEmail } from './sessionCheck'
+import { isXPremiumPlan } from './x-premium'
 
 /** 预览数据 → 带产品前缀的档位（码种判断只写这一份）。Grok / X 预览带 product 时补前缀，裸 premium_monthly 两家都有。 */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -12,6 +14,24 @@ export function targetPlanOf(info: any): string {
   if (plan && product === 'grok' && !plan.startsWith('grok_')) return 'grok_' + plan
   if (plan && product === 'x' && !plan.startsWith('x_')) return 'x_' + plan
   return plan
+}
+
+export type CredentialKind = 'claude' | 'grok' | 'x' | 'chatgpt'
+
+/** 第 ② 屏按码种分：Claude、X、Grok 之外都按 ChatGPT 处理（CredentialStep 和兑换页右栏共用这一份）。 */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function credentialKindOf(info: any): CredentialKind {
+  const p = targetPlanOf(info)
+  if (isClaudePlan(p)) return 'claude'
+  if (isXPremiumPlan(p)) return 'x'
+  if (isGrokPlan(p)) return 'grok'
+  return 'chatgpt'
+}
+
+/** 是不是 ChatGPT 码：只有 ChatGPT 码才需要 chatgpt.com 的登录信息教程（DeviceGuide）。 */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function isChatgptCode(info: any): boolean {
+  return credentialKindOf(info) === 'chatgpt'
 }
 
 export interface AccountSummary {

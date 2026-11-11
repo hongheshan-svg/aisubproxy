@@ -6,7 +6,6 @@
 # 签名私钥在仓库 Secret RELEASE_SIGNING_KEY（PEM）；公钥在 deploy/release-signing.pub.pem，
 # 并内置于程序（internal/handler/selfupdate.go）。缺少 Secret 时拒绝发布未签名的包。
 # 漏洞扫描不在发版必过项里（见 security.yml）：不能让外部新公布的漏洞卡住紧急修复版。
-# deploy/github-release.workflow.yml 是本文件的副本，以本文件为准。
 name: release
 
 on:

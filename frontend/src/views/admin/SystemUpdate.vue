@@ -108,7 +108,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { authFetch } from '../../lib/api'
 import { dialog } from '../../lib/dialog'
-import { createUpdateWatcher, type StatusResult, type UpdateState, type UpdateWatchDeps } from '../../lib/updateWatch'
+import { REQUEST_TIMEOUT_MS, createUpdateWatcher, withTimeout, type StatusResult, type UpdateState, type UpdateWatchDeps } from '../../lib/updateWatch'
 
 const versionLoading = ref(false)
 const versionError = ref('')
@@ -154,26 +154,19 @@ function formatChecked(iso: string) {
   return fmtBeijingAny(iso)
 }
 
-// 状态请求没成功（断网、网关在重载时回 502）算 null，交给跟踪逻辑去等 /health 再问一次
-async function fetchUpdateStatus(): Promise<StatusResult> {
-  try {
-    const r = await authFetch('/api/v1/admin/system/update/status')
+// 状态请求没成功（断网、超时、网关在重载时回 502）算 null，交给跟踪逻辑去等 /health 再问一次
+function fetchUpdateStatus(): Promise<StatusResult> {
+  return withTimeout(async (signal) => {
+    const r = await authFetch('/api/v1/admin/system/update/status', { signal })
     if (!r.ok) return null
     const d = await r.json().catch(() => null)
     if (!d || typeof d !== 'object') return null
     return { running: !!d.running, state: d.state || {} }
-  } catch {
-    return null
-  }
+  }, REQUEST_TIMEOUT_MS, null)
 }
 
-async function checkHealth(): Promise<boolean> {
-  try {
-    const h = await fetch('/health', { credentials: 'include' })
-    return h.ok
-  } catch {
-    return false
-  }
+function checkHealth(): Promise<boolean> {
+  return withTimeout(async (signal) => (await fetch('/health', { credentials: 'include', signal })).ok, REQUEST_TIMEOUT_MS, false)
 }
 
 function showUpdateState(st: UpdateState) {
@@ -193,6 +186,11 @@ function updateDeps(before: string | undefined): UpdateWatchDeps {
     checkHealth,
     sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
     onState: showUpdateState,
+    // 后端重载前在等在途付款单走完（最多 3 分钟）：说明原因，不要让人以为卡住了去重启服务
+    onDraining: (ms) => {
+      updateMessage.value = `文件已替换，正在等进行中的付款单结束，结束后自动重载（最多约 3 分钟，已等 ${Math.round(ms / 1000)} 秒）。请不要重启服务，以免打断付款`
+      updateProgress.value = Math.max(updateProgress.value, 95)
+    },
     onFailed: (st) => {
       updateFailed.value = true
       updateError.value = st.error || st.message || '更新失败'

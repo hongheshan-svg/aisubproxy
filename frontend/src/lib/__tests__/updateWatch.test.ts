@@ -6,7 +6,8 @@ import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import {
-  HEALTH_TRIES, afterHealth, createUpdateWatcher, pollStep, type StatusResult, type UpdateWatchDeps,
+  DRAIN_HINT_MS, HEALTH_GAP_MS, HEALTH_TRIES, RELOAD_WAIT_MS, REQUEST_TIMEOUT_MS, afterHealth, createUpdateWatcher, pollStep, withTimeout,
+  type StatusResult, type UpdateWatchDeps,
 } from '../updateWatch'
 
 const st = (phase: string, running = !['idle', 'done', 'failed'].includes(phase)): StatusResult =>
@@ -184,6 +185,85 @@ describe('createUpdateWatcher', () => {
   })
 })
 
+// 审查修复（重要 1）：后端进入重载阶段后先等在途付款单走完（最多 payengine.DrainMax = 3 分钟）再 re-exec，
+// 这段时间旧进程活着，/health 通、状态一直是 reloading。这段单独计时，不占「服务连不上」的 40 次。
+describe('重载前等在途付款单（审查修复 F2-01）', () => {
+  /** 时钟跟着 sleep 走 */
+  function clocked(f: ReturnType<typeof fake>) {
+    let clock = 0
+    f.deps.now = () => clock
+    f.deps.sleep = vi.fn(async (ms: number) => { clock += ms })
+    f.deps.onDraining = vi.fn()
+    return { elapsed: () => clock }
+  }
+
+  it('上限不短于 4 分钟（后端最多等 3 分钟，再加 re-exec 和余量）', () => {
+    expect(RELOAD_WAIT_MS).toBeGreaterThanOrEqual(4 * 60_000)
+  })
+
+  it('/health 通、状态是重载阶段持续 60 秒后变成 idle：显示已恢复，不报超时；期间提示在等付款单', async () => {
+    const n = 60_000 / HEALTH_GAP_MS
+    const f = fake([st('reloading'), ...Array(n).fill(st('reloading')), st('idle')])
+    const c = clocked(f)
+    await createUpdateWatcher(f.deps).start()
+    expect(f.deps.onTimeout).not.toHaveBeenCalled()
+    expect(f.deps.onRecovered).toHaveBeenCalledTimes(1)
+    expect(c.elapsed()).toBeGreaterThanOrEqual(60_000)
+    expect(f.deps.onDraining).toHaveBeenCalled()
+    const waited = (f.deps.onDraining as any).mock.calls.map((a: number[]) => a[0])
+    expect(Math.min(...waited)).toBeGreaterThanOrEqual(DRAIN_HINT_MS)
+  })
+
+  it('重载阶段一直不结束：等满 RELOAD_WAIT_MS 才报超时', async () => {
+    const f = fake([])
+    ;(f.deps.fetchStatus as any).mockImplementation(async () => st('reloading'))
+    const c = clocked(f)
+    await createUpdateWatcher(f.deps).start()
+    expect(f.deps.onTimeout).toHaveBeenCalledTimes(1)
+    expect(f.deps.onRecovered).not.toHaveBeenCalled()
+    expect(c.elapsed()).toBeGreaterThanOrEqual(RELOAD_WAIT_MS)
+    expect(c.elapsed()).toBeLessThan(RELOAD_WAIT_MS + 5_000)
+  })
+
+  it('正常重载（亚秒级）：不显示「在等付款单」', async () => {
+    const f = fake([st('reloading'), st('reloading'), st('idle')])
+    clocked(f)
+    await createUpdateWatcher(f.deps).start()
+    expect(f.deps.onRecovered).toHaveBeenCalledTimes(1)
+    expect(f.deps.onDraining).not.toHaveBeenCalled()
+  })
+
+  it('等付款单之后服务连不上（re-exec 中）：连不上的次数照旧另算 40 次', async () => {
+    const n = 10_000 / HEALTH_GAP_MS
+    const f = fake([st('reloading'), ...Array(n).fill(st('reloading'))], [...Array(n).fill(true), ...Array(HEALTH_TRIES).fill(false)])
+    clocked(f)
+    await createUpdateWatcher(f.deps).start()
+    expect(f.deps.checkHealth).toHaveBeenCalledTimes(n + HEALTH_TRIES)
+    expect(f.deps.onTimeout).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('withTimeout：状态和 /health 请求带超时（审查修复 F2-01）', () => {
+  it('到点没返回：中止请求，当作没拿到', async () => {
+    vi.useFakeTimers()
+    try {
+      let signal!: AbortSignal
+      const p = withTimeout((s) => { signal = s; return new Promise<string>(() => {}) }, REQUEST_TIMEOUT_MS, 'fallback')
+      await vi.advanceTimersByTimeAsync(REQUEST_TIMEOUT_MS)
+      expect(await p).toBe('fallback')
+      expect(signal.aborted).toBe(true)
+    } finally { vi.useRealTimers() }
+  })
+  it('按时返回：用返回值，不中止', async () => {
+    let signal!: AbortSignal
+    expect(await withTimeout(async (s) => { signal = s; return 'ok' }, 1000, 'fallback')).toBe('ok')
+    expect(signal.aborted).toBe(false)
+  })
+  it('请求抛异常：当作没拿到', async () => {
+    expect(await withTimeout(async () => { throw new Error('net') }, 1000, null)).toBeNull()
+  })
+})
+
 describe('版本更新页接线（F2-01）', () => {
   const src = readFileSync(resolve(__dirname, '../../views/admin/SystemUpdate.vue'), 'utf8')
   it('用 createUpdateWatcher 跟踪进度，不再用 setInterval 轮询', () => {
@@ -194,5 +274,12 @@ describe('版本更新页接线（F2-01）', () => {
   it('离开页面时停掉跟踪；提交更新返回时已离开就不再开始跟踪', () => {
     expect(src).toMatch(/onBeforeUnmount\(\(\) => \{[^}]*unmounted = true[^}]*watcher\?\.stop\(\)/)
     expect(src).toMatch(/if \(unmounted\) return\s*\n\s*watcher\?\.stop\(\)\s*\n\s*watcher = createUpdateWatcher\(/)
+  })
+  it('状态和 /health 请求都带超时（审查修复）', () => {
+    expect(src).toMatch(/withTimeout\(\s*async \(signal\) => \{[\s\S]*?authFetch\('\/api\/v1\/admin\/system\/update\/status', \{ signal \}\)/)
+    expect(src).toMatch(/withTimeout\(\s*async \(signal\) => \(await fetch\('\/health', \{ credentials: 'include', signal \}\)\)\.ok/)
+  })
+  it('重载前在等付款单时提示原因，不报重载超时（审查修复）', () => {
+    expect(src).toMatch(/onDraining: \(ms\) => \{[^}]*正在等进行中的付款单结束/)
   })
 })

@@ -1,7 +1,8 @@
 // 版本更新页的进度跟踪（F2-01）。后端的更新状态只在进程内：重载（re-exec）后新进程的状态是 idle。
 // - 状态查询失败不等于已经重载：等 /health 通了再问一次状态，还在下载、校验、替换就回去继续轮询；
 // - 重载阶段旧进程还活着时 /health 也是通的：状态仍是 reloading 就继续等，回到 idle（或 done）才算结束；
-// - 只有一个循环：上一次返回后才排下一次，不会并发；stop() 之后不再发请求、不再回调。
+//   后端重载前要先等在途付款单走完（最多 3 分钟），这段单独计时（RELOAD_WAIT_MS），不占「连不上」的次数；
+// - 只有一个循环：上一次返回后才排下一次，不会并发；每个请求有超时；stop() 之后不再发请求、不再回调。
 
 export interface UpdateState {
   phase?: string
@@ -23,11 +24,40 @@ export interface UpdateWatchDeps {
   /** 服务已恢复且更新已结束：刷新版本并显示结果 */
   onRecovered: () => Promise<void> | void
   onTimeout: () => void
+  /** /health 通、状态仍是重载阶段超过 DRAIN_HINT_MS：后端在等在途付款单，waitedMs 是已等的时间 */
+  onDraining?: (waitedMs: number) => void
+  /** 取当前时间（毫秒），测试里换成跟着 sleep 走的时钟 */
+  now?: () => number
 }
 
 export const POLL_MS = 800
 export const HEALTH_GAP_MS = 500
+/** 服务连不上（/health 不通或状态读不到）最多试几次 */
 export const HEALTH_TRIES = 40
+/**
+ * /health 通、状态一直是重载阶段时最多等多久。后端进入重载阶段后先睡 400 毫秒，再等在途付款单进入确认或结束，
+ * 最多 payengine.DrainMax = 3 分钟（backend/internal/payengine/drain.go:16，调用在 backend/internal/handler/update.go:412-414），
+ * 然后才 re-exec。取 4 分钟：3 分钟加 re-exec 和余量。
+ */
+export const RELOAD_WAIT_MS = 4 * 60_000
+/** 重载阶段持续超过这个时间（正常重载在一秒内），就提示在等进行中的付款单 */
+export const DRAIN_HINT_MS = 3_000
+/** 单个状态、/health 请求的超时：重载那一刻网关挂住不返回时，不让跟踪停在那里 */
+export const REQUEST_TIMEOUT_MS = 5_000
+
+/** 带超时的请求：到点中止（signal）并返回 fallback；请求抛异常也返回 fallback。 */
+export async function withTimeout<T>(run: (signal: AbortSignal) => Promise<T>, ms: number, fallback: T): Promise<T> {
+  const ctl = new AbortController()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const late = new Promise<T>((resolve) => {
+    timer = setTimeout(() => { ctl.abort(); resolve(fallback) }, ms)
+  })
+  try {
+    return await Promise.race([run(ctl.signal).catch(() => fallback), late])
+  } finally {
+    clearTimeout(timer)
+  }
+}
 
 /** 轮询拿到一次状态后：继续轮询、去等服务恢复、或显示失败。 */
 export function pollStep(res: StatusResult): 'poll' | 'reload' | 'failed' {
@@ -60,21 +90,36 @@ export function createUpdateWatcher(deps: UpdateWatchDeps) {
     try { return await deps.checkHealth() } catch { return false }
   }
 
-  // 等服务恢复；返回 'poll' 表示更新其实还在跑，要回去轮询
+  const now = deps.now ?? Date.now
+
+  // 等服务恢复；返回 'poll' 表示更新其实还在跑，要回去轮询。
+  // 两种等待分开算：连不上（/health 不通、状态读不到）最多 HEALTH_TRIES 次；
+  // 旧进程还活着、状态仍是重载阶段（后端在等在途付款单）从第一次见到起最多 RELOAD_WAIT_MS。
   async function waitHealthy(): Promise<'poll' | 'end'> {
-    for (let i = 0; i < HEALTH_TRIES; i++) {
+    let misses = 0
+    let reloadingSince = -1
+    for (;;) {
       await deps.sleep(HEALTH_GAP_MS)
       if (stopped) return 'end'
-      if (!(await healthy())) continue
+      const ok = await healthy()
       if (stopped) return 'end'
-      const res = await status()
-      if (stopped) return 'end'
-      const next = afterHealth(res)
-      if (next === 'wait') continue
-      if (next === 'failed') { deps.onFailed(res!.state); return 'end' }
-      if (next === 'poll') { deps.onState(res!.state); return 'poll' }
-      await deps.onRecovered()
-      return 'end'
+      if (ok) {
+        const res = await status()
+        if (stopped) return 'end'
+        const next = afterHealth(res)
+        if (next === 'failed') { deps.onFailed(res!.state); return 'end' }
+        if (next === 'poll') { deps.onState(res!.state); return 'poll' }
+        if (next === 'finished') { await deps.onRecovered(); return 'end' }
+        if (res && res.state.phase === 'reloading') {
+          const t = now()
+          if (reloadingSince < 0) reloadingSince = t
+          const waited = t - reloadingSince
+          if (waited >= RELOAD_WAIT_MS) break
+          if (waited >= DRAIN_HINT_MS) deps.onDraining?.(waited)
+          continue
+        }
+      }
+      if (++misses >= HEALTH_TRIES) break
     }
     if (!stopped) deps.onTimeout()
     return 'end'

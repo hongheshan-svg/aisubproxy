@@ -526,6 +526,41 @@ func TestPayPutConfig(t *testing.T) {
 	}
 }
 
+// 保存付款配置的审计在启用地区旁记下允许 0 元开通的「套餐:地区」：只记订阅套餐，点数档传了 true 也不记。
+func TestPayPutConfigAuditZero(t *testing.T) {
+	payEnv(t)
+	yes, no := true, false
+	plans := payengine.DefaultPlanTable()
+	for i := range plans {
+		for r, rc := range plans[i].Regions {
+			rc.AllowZero = &no
+			plans[i].Regions[r] = rc
+		}
+		allow := func(r string) {
+			rc := plans[i].Regions[r]
+			rc.AllowZero = &yes
+			plans[i].Regions[r] = rc
+		}
+		switch plans[i].Key {
+		case "plus":
+			plans[i].Regions["US"] = payengine.RegionConf{Enabled: true, Currency: "USD", CapMinor: 3000, FloorMinor: 1000, FundCents: 3000, AllowZero: &yes}
+			allow("PH")
+		case "go":
+			allow("JP")
+		case "credit250":
+			allow("PH")
+		}
+	}
+	pb, _ := json.Marshal(map[string]any{"plans": plans, "concurrency": 2})
+	if w := payDo(AdminPayPutConfig, "PUT", "/config", "/config", string(pb)); w.Code != 200 {
+		t.Fatalf("%d %s", w.Code, w.Body.String())
+	}
+	const want = "pay_config_update enabled=[plus:US] zero=[go:JP,plus:PH,plus:US] concurrency=2"
+	if a := payAudit(t); !strings.Contains(a, want) {
+		t.Fatalf("审计应含「%s」: %s", want, a)
+	}
+}
+
 func plusPHCap(t *testing.T) int64 {
 	t.Helper()
 	tbl, err := payengine.LoadPlanTable()

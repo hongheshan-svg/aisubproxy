@@ -435,22 +435,29 @@ func AdminPayPutConfig(c *gin.Context) {
 	})(c)
 }
 
-// payConfigAudit 列出启用的「套餐:地区」与并发数。
+// payConfigAudit 列出启用的「套餐:地区」、允许 0 元开通的「套餐:地区」（只记订阅套餐）与并发数。
 func payConfigAudit(plans []payengine.PlanConf, concurrency int) string {
-	var on []string
+	var on, zero []string
 	for _, p := range plans {
-		var regions []string
+		var regions, zeroRegions []string
 		for r, rc := range p.Regions {
 			if rc.Enabled {
 				regions = append(regions, r)
+			}
+			if payengine.PlanKind(p.Key) == payengine.KindSubscription && rc.ZeroAllowed() {
+				zeroRegions = append(zeroRegions, r)
 			}
 		}
 		sort.Strings(regions)
 		for _, r := range regions {
 			on = append(on, p.Key+":"+r)
 		}
+		sort.Strings(zeroRegions)
+		for _, r := range zeroRegions {
+			zero = append(zero, p.Key+":"+r)
+		}
 	}
-	return fmt.Sprintf("enabled=[%s] concurrency=%d", strings.Join(on, ","), concurrency)
+	return fmt.Sprintf("enabled=[%s] zero=[%s] concurrency=%d", strings.Join(on, ","), strings.Join(zero, ","), concurrency)
 }
 
 // traceClientFactory 与 traceTimeout 供测试注入假服务器与短超时。

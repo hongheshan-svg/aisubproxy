@@ -300,21 +300,26 @@ func (s *Service) recheckZero(ctx context.Context, gpt ChatGPT, j *job) {
 	j.zeroCheck = zeroRecheck{done: true}
 	expect, err := expectPlanType(j.o.PlanKey)
 	if err != nil {
-		j.zeroCheck.err = j.scrub(err.Error())
+		j.zeroCheck.err = truncate(j.scrub(err.Error()), errorMessageLimit)
 		return
 	}
 	j.zeroCheck.expect = expect
 	acc, err := gpt.Account(ctx, j.sess)
 	if err != nil {
-		j.zeroCheck.err = j.scrub(err.Error())
+		j.zeroCheck.err = truncate(j.scrub(err.Error()), errorMessageLimit)
 		return
 	}
 	j.zeroCheck.planType = strings.TrimSpace(acc.PlanType)
 }
 
 // noteZeroRecheck 把复查结果写进时间线：仍是期望套餐记 info；不是记 warn 并告警一次；查询出错只记 warn。只带单号和套餐类型。
+// 账号查询成功但没带套餐类型时也按「不是」处理，现在的套餐显示「未知」。
 func (s *Service) noteZeroRecheck(ctx context.Context, j *job) {
 	c := j.zeroCheck
+	now := strings.TrimSpace(c.planType)
+	if now == "" {
+		now = "未知"
+	}
 	switch {
 	case !c.done:
 		return
@@ -323,8 +328,8 @@ func (s *Service) noteZeroRecheck(ctx context.Context, j *job) {
 	case strings.EqualFold(strings.TrimSpace(c.planType), strings.TrimSpace(c.expect)):
 		s.event(ctx, j, "info", fmt.Sprintf("0 元开通的单关闭续费后，账号仍是 %s", c.expect), "")
 	default:
-		s.event(ctx, j, "warn", fmt.Sprintf("0 元开通的单关闭续费后，账号已不是 %s（现在是 %s）", c.expect, c.planType), "")
-		s.opts.Alert(fmt.Sprintf("付款单 %s 以 0 元开通，关闭续费后账号已不是 %s（现在是 %s），可能关续费让优惠当场结束了，请人工处理", j.o.OrderNo, c.expect, c.planType))
+		s.event(ctx, j, "warn", fmt.Sprintf("0 元开通的单关闭续费后，账号已不是 %s（现在是 %s）", c.expect, now), "")
+		s.opts.Alert(fmt.Sprintf("付款单 %s 以 0 元开通，关闭续费后账号已不是 %s（现在是 %s），可能关续费让优惠当场结束了，请人工处理", j.o.OrderNo, c.expect, now))
 	}
 }
 

@@ -573,6 +573,18 @@ func TestPlanTableAllowZero(t *testing.T) {
 		}
 	})
 
+	t.Run("库里点数档写着 true 读出来仍不允许", func(t *testing.T) {
+		dbtest.Open(t)
+		// 绕过 SavePlanTable 直接写库：读取路径自己也要把点数档兜底成不允许
+		raw := `[{"key":"credit250","label":"Codex 点数 250","regions":{"PH":{"enabled":true,"currency":"PHP","cap_minor":900,"fund_cents":50,"allow_zero":true}}}]`
+		if err := db.SetSetting(settingPlanTable, raw); err != nil {
+			t.Fatal(err)
+		}
+		if rc := loadRegion(t, "credit250", "PH"); !rc.Enabled || rc.AllowZero == nil || rc.ZeroAllowed() {
+			t.Fatalf("点数档读出来应不允许 0 元: %+v", rc)
+		}
+	})
+
 	t.Run("ResolvePlan 带出开关", func(t *testing.T) {
 		dbtest.Open(t)
 		for _, v := range []bool{false, true} {

@@ -187,6 +187,11 @@ func TestZeroAmountAllowedProceeds(t *testing.T) {
 	if n := countEventExact(t, o.OrderNo, "info", zeroAllowedNote); n != 1 {
 		t.Fatalf("应有一条 info「%s」: %d %+v", zeroAllowedNote, n, eventStates(t, o.OrderNo))
 	}
+	// 放行不新增注资和点击：和付费单一样，注资恰好一次、点支付恰好一次
+	if n := h.pool.count("Fund"); n != 1 {
+		t.Fatalf("允许 0 元开通应恰好注资一次: %d", n)
+	}
+	assertSubmitCount(t, h, 1)
 }
 
 // Plus 取消勾选、页面 ₱0.00：照旧以 amount_below_floor 放弃，没碰卡池。

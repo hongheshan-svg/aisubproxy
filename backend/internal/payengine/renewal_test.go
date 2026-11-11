@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/tuzi/cdk-recharge-system/internal/chatgpt"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
@@ -618,6 +619,42 @@ func TestZeroAmountRenewalRecheckError(t *testing.T) {
 	assertNoSecrets(t, "事件", ev[0].Message)
 	if a := h.alerts.Texts(); len(a) != 0 {
 		t.Fatalf("查询出错不告警: %v", a)
+	}
+}
+
+// 0 元开通、复查时账号查询成功但没带套餐类型：照样按「不是期望套餐」记 warn 并告警一次，现在的套餐显示「未知」而不是空。
+func TestZeroAmountRenewalRecheckEmptyPlanType(t *testing.T) {
+	h, o := runRenewalFlow(t, 0, "₱0.00", plusOnConfirm(func() (chatgpt.Account, error) {
+		return chatgpt.Account{AccountID: "acc-1", PlanType: "", HasActiveSubscription: false}, nil
+	}))
+	if o.State != StateSucceeded || o.RenewalState != RenewalCancelled {
+		t.Fatalf("复查结果不影响续费状态和单据: %+v", o)
+	}
+	const wantEvent = "0 元开通的单关闭续费后，账号已不是 plus（现在是 未知）"
+	ev := zeroRecheckEvents(t, o.OrderNo)
+	if len(ev) != 1 || ev[0].Level != "warn" || ev[0].Message != wantEvent {
+		t.Fatalf("应有一条 warn「%s」: %+v", wantEvent, ev)
+	}
+	a := h.alerts.Texts()
+	wantAlert := fmt.Sprintf("付款单 %s 以 0 元开通，关闭续费后账号已不是 plus（现在是 未知），可能关续费让优惠当场结束了，请人工处理", o.OrderNo)
+	if len(a) != 1 || a[0] != wantAlert || !strings.Contains(a[0], "（现在是 未知）") {
+		t.Fatalf("应告警一次「%s」: %v", wantAlert, a)
+	}
+}
+
+// 0 元开通、复查出错文字很长：脱敏后截到 errorMessageLimit 个字再写时间线，和同文件其他出错文字一致。
+func TestZeroAmountRenewalRecheckErrorTruncated(t *testing.T) {
+	long := "HTTP 502：" + strings.Repeat("长", 2*errorMessageLimit)
+	_, o := runRenewalFlow(t, 0, "₱0.00", plusOnConfirm(func() (chatgpt.Account, error) {
+		return chatgpt.Account{}, errors.New(long)
+	}))
+	prefix := zeroRecheckErr + "："
+	ev := zeroRecheckEvents(t, o.OrderNo)
+	if len(ev) != 1 || ev[0].Level != "warn" || !strings.HasPrefix(ev[0].Message, prefix+"HTTP 502") {
+		t.Fatalf("应有一条 warn「%s…」: %+v", prefix, ev)
+	}
+	if n := utf8.RuneCountInString(strings.TrimPrefix(ev[0].Message, prefix)); n != errorMessageLimit {
+		t.Fatalf("出错文字应截到 %d 个字，实际 %d 个字", errorMessageLimit, n)
 	}
 }
 

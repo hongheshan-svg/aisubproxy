@@ -1115,7 +1115,8 @@ async function runPreflightRedeem(
     const outcome = redeemOutcome(redeem.r.status, st, redeem.data)
 
     if (outcome === 'unknown') {
-      // 5xx（本站后端明确拒绝的 503 除外）：服务器可能已经建单（建单不跟随连接），按结果未知去查，不当失败
+      // 5xx（本站后端明确拒绝的 503 除外）：服务器可能已经建单（建单不跟随连接），按结果未知去查，不当失败；
+      // 2xx 但认不出单据状态的也一样，到时限标「结果未知」（FE2 审查次要 5）
       markResultUnknown(item, redemptionToken, orderEmail || email)
       return 'ok'
     }

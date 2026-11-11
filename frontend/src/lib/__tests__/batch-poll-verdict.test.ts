@@ -74,3 +74,23 @@ describe('审查描述的场景：这张卡密以前干净失败过，这次兑�
     expect(unknownExpired(since, since + UNKNOWN_QUERY_MS)).toBe(true)
   })
 })
+
+describe('查到 2xx 但认不出状态：结果未知的不当作查到（FE2 审查次要 5）', () => {
+  const since = 1_000_000
+  it('结果未知的条目：没有状态、没见过的状态都当作还没查到，继续查到时限', () => {
+    expect(pollVerdict(200, readPolledOrder({}), true)).toBe('pending')
+    expect(pollVerdict(200, readPolledOrder({ raw: '<html>ok</html>' }), true)).toBe('pending')
+    expect(pollVerdict(200, readPolledOrder(result('something_new')), true)).toBe('pending')
+  })
+  it('正常受理的条目：兑换回包已经证明建了单，认不出的状态照旧显示处理中', () => {
+    expect(pollVerdict(200, readPolledOrder({}), false)).toBe('processing')
+    expect(pollVerdict(200, readPolledOrder(result('something_new')), false)).toBe('processing')
+  })
+  it('兑换回 200 却认不出状态、之后一直查不到认得的状态：到 90 秒时限标「结果未知」', () => {
+    for (let t = since; t < since + UNKNOWN_QUERY_MS; t += 3_000) {
+      expect(pollVerdict(200, readPolledOrder({ raw: '' }), true)).toBe('pending')
+      expect(unknownExpired(since, t)).toBe(false)
+    }
+    expect(unknownExpired(since, since + UNKNOWN_QUERY_MS)).toBe(true)
+  })
+})

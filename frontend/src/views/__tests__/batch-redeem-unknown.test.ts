@@ -49,7 +49,7 @@ describe('兑换请求结果未知时只查不重发（F2-03）', () => {
   it('回复按 redeemOutcome 归类，5xx 走结果未知', () => {
     const b = body('runPreflightRedeem')
     expect(b).toContain('redeemOutcome(redeem.r.status, st, redeem.data)')
-    expect(b).toMatch(/outcome === 'unknown'\) \{(\s*\/\/[^\n]*)?\s*markResultUnknown\(/)
+    expect(b).toMatch(/outcome === 'unknown'\) \{(\s*\/\/[^\n]*)*\s*markResultUnknown\(/)
     expect(b).not.toContain('redeem.r.status !== 202')
   })
   it('结果未知：标处理中、写明正在查询，并带上开始时间去查', () => {

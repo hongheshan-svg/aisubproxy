@@ -56,6 +56,14 @@ export function isFailStatus(st: string): boolean {
   return FAIL_STATUSES.has(String(st || '').toLowerCase())
 }
 
+// 后端公开结果里「单已建好、还没出结果」的状态（backend/internal/handler/local_cdk.go localPublicState）
+const PROCESSING_STATUSES = new Set(['queued', 'running', 'review'])
+
+/** 单据状态是认得的「处理中」：说明这次的单已经建好。没有状态、没见过的状态都不算（FE2 审查次要 5）。 */
+export function isProcessingStatus(st: string): boolean {
+  return PROCESSING_STATUSES.has(String(st || '').toLowerCase())
+}
+
 export type RedeemOutcome = 'unknown' | 'rejected' | 'success' | 'failed' | 'processing'
 
 /**
@@ -83,7 +91,8 @@ export function ownRejectedBeforeOrder(httpStatus: number, body: unknown): boole
  * - 本站后端明确回的 503（ownRejectedBeforeOrder）：没有建单 → 失败；
  * - 其余 5xx、断线：服务器可能已经受理（建单不跟随客户端连接），结果未知 → 标「处理中」并只读地查结果，绝不重发；
  * - 其余非 2xx：服务器明确拒绝，没有用掉卡密 → 失败；
- * - 2xx：按单据状态。
+ * - 2xx：按单据状态；认不出状态（没有状态、网关回的 200 网页、没见过的状态）证明不了建了单，
+ *   也按结果未知只读地查，到时限收尾（FE2 审查次要 5）。
  *
  * 不直接用单张兑换页的 redeemRejectedBeforeOrder（lib/mwredeem.ts）：它只看状态码，分不清本站后端的 503
  * 和网关、代理回的 503（请求可能已经到了后端），所以这里另加了「响应体是本站后端的」这一条。
@@ -94,7 +103,8 @@ export function redeemOutcome(httpStatus: number, orderStatus: string, body?: un
   if (httpStatus >= 300) return 'rejected'
   if (isSuccessStatus(orderStatus)) return 'success'
   if (isFailStatus(orderStatus)) return 'failed'
-  return 'processing'
+  if (isProcessingStatus(orderStatus)) return 'processing'
+  return 'unknown'
 }
 
 /** 只读查询查到的一张单里页面要用的东西。canRetry：后端说这张卡密此刻仍未使用、可以重新提交（只有 true 才算）。 */
@@ -130,6 +140,7 @@ export type PollVerdict = 'pending' | 'success' | 'failed' | 'processing'
  * 查到「失败、可以重新提交」一律当作还没查到，继续查到时限，到时限标「结果未知」，绝不因为旧记录显示「可以重新提交」。
  * 代价：这次新建的单很快干净失败时，显示成「结果未知」而不是「失败」，方向是安全的。
  * 别的失败（declined、failed、cancelled）、处理中、成功都说明卡密已被占用或有了定论，照常处理。
+ * 认不出的状态（没有状态、没见过的）：结果未知的当作还没查到；正常受理的（兑换回包已证明建了单）照旧显示处理中（FE2 审查次要 5）。
  */
 export function pollVerdict(httpStatus: number, polled: Pick<PolledOrder, 'status' | 'canRetry'>, unknownPending: boolean): PollVerdict {
   if (httpStatus < 200 || httpStatus >= 300) return 'pending'
@@ -139,7 +150,8 @@ export function pollVerdict(httpStatus: number, polled: Pick<PolledOrder, 'statu
     if (unknownPending && (polled.canRetry || st === 'failed_precharge')) return 'pending'
     return 'failed'
   }
-  return 'processing'
+  if (isProcessingStatus(st)) return 'processing'
+  return unknownPending ? 'pending' : 'processing'
 }
 
 /**

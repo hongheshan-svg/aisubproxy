@@ -101,7 +101,15 @@ describe('兑换请求的结果归类（F2-03）', () => {
     expect(redeemOutcome(200, 'DECLINED')).toBe('failed')
     expect(redeemOutcome(200, 'failed_precharge')).toBe('failed')
     expect(redeemOutcome(202, 'queued')).toBe('processing')
-    expect(redeemOutcome(200, '')).toBe('processing')
+    expect(redeemOutcome(200, 'running')).toBe('processing')
+    expect(redeemOutcome(200, 'review')).toBe('processing')
+    expect(redeemOutcome(200, 'RUNNING')).toBe('processing')
+  })
+  it('2xx 但认不出单据状态（没有状态、网关回的 200 网页、没见过的状态）：结果未知，到时限收尾（FE2 审查次要 5）', () => {
+    expect(redeemOutcome(200, '')).toBe('unknown')
+    expect(redeemOutcome(200, '', { raw: '<html><body>ok</body></html>' })).toBe('unknown')
+    expect(redeemOutcome(200, 'something_new')).toBe('unknown')
+    expect(redeemOutcome(204, '')).toBe('unknown')
   })
 })
 

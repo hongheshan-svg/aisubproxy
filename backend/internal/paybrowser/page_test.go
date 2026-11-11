@@ -621,6 +621,31 @@ func TestNoticeMasked(t *testing.T) {
 	}
 }
 
+// P2-06：判成被拒、校验错误、成功的页面文字同样要脱敏：它们也进时间线和单据的 error_message。
+func TestOutcomeTextMasked(t *testing.T) {
+	const pii = " Contact buyer@example.com, ref 4242 4242 4242 4242."
+	cases := []struct {
+		name, query string
+		want        paybrowser.Outcome
+	}{
+		{"被拒", checkoutQuery("notice", "Your card was declined."+pii, "mode", "none"), paybrowser.OutcomeDeclined},
+		{"校验错误", checkoutQuery("fielderror", "Your postal code is incomplete."+pii), paybrowser.OutcomeFormRejected},
+		{"成功", checkoutQuery("successtext", "Payment successful."+pii), paybrowser.OutcomeSuccess},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			needChrome(t)
+			f := newFakeCheckout(t)
+			b, ctx := openCheckout(t, f, c.query, paybrowser.LaunchOptions{})
+			fillAndSubmit(t, b, ctx)
+			msg := waitOutcome(t, b, ctx, c.want)
+			if strings.Contains(msg, "buyer@") || strings.Contains(msg, "4242") || !strings.Contains(msg, "***@***") {
+				t.Fatalf("%s的页面文字未脱敏: %q", c.name, msg)
+			}
+		})
+	}
+}
+
 func TestMaskPageText(t *testing.T) {
 	cases := map[string]string{
 		"a.b+c@mail.example.com 你好":  "***@*** 你好",

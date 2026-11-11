@@ -635,7 +635,7 @@ func (b *Browser) settleOutcome(ctx context.Context, out Outcome, msg string) (O
 // 3DS 要先于提示：页面可能同时显示过程提示，提示判成结果就会关掉浏览器，验证走不下去。
 func (b *Browser) outcome(ctx context.Context, frames []frameRef) (Outcome, string) {
 	if e := b.find(ctx, frames, Sel.Success, false); e != nil {
-		return OutcomeSuccess, truncateMessage(innerText(ctx, e))
+		return OutcomeSuccess, pageText(innerText(ctx, e))
 	}
 	if e := b.find(ctx, frames, Sel.ChallengeFrame, false); e != nil {
 		if id, err := contentFrame(ctx, e); err == nil && !b.isAnswered(id) {
@@ -652,7 +652,7 @@ func (b *Browser) outcome(ctx context.Context, frames []frameRef) (Outcome, stri
 		}
 		switch classifyPageError(t) {
 		case OutcomeDeclined:
-			return OutcomeDeclined, truncateMessage(t)
+			return OutcomeDeclined, pageText(t)
 		case OutcomeFormRejected:
 			if formError == "" {
 				formError = t
@@ -662,7 +662,7 @@ func (b *Browser) outcome(ctx context.Context, frames []frameRef) (Outcome, stri
 		}
 	}
 	if formError != "" {
-		return OutcomeFormRejected, truncateMessage(formError)
+		return OutcomeFormRejected, pageText(formError)
 	}
 	return OutcomeUnknown, ""
 }
@@ -685,7 +685,7 @@ func classifyPageError(text string) Outcome {
 
 // noteNotice 记下一条认不出的提示：脱敏、去重、限量。页面文字可能夹带邮箱、卡号，出了这里就要进时间线。
 func (b *Browser) noteNotice(text string) {
-	text = truncateMessage(maskPageText(text))
+	text = pageText(text)
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.lastNotice = text
@@ -745,6 +745,10 @@ func (b *Browser) isAnswered(id cdp.FrameID) bool {
 	defer b.mu.Unlock()
 	return b.answered[id]
 }
+
+// pageText 把页面文字脱敏（maskPageText）再截断，凡是要交给引擎、进时间线或单据说明的页面文字都过这一道：
+// 页面文字可能夹带邮箱、卡号、手机号。不改变结果类别的判断：判断用的是脱敏前的原文。
+func pageText(s string) string { return truncateMessage(maskPageText(s)) }
 
 // truncateMessage 去掉首尾空白，最多保留 500 字。
 func truncateMessage(s string) string {

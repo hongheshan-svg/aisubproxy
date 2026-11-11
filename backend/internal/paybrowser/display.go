@@ -51,12 +51,6 @@ var xvfb struct {
 	alerted  bool      // 这一轮退回无头模式已经告警过；Xvfb 恢复后清零，下次再退回时再告警
 }
 
-func resetXvfbState() {
-	xvfb.mu.Lock()
-	xvfb.failedAt, xvfb.alerted = time.Time{}, false
-	xvfb.mu.Unlock()
-}
-
 // sharedXvfb 确保共享的 Xvfb（:99）在运行：每次先拨号确认存活，不在就启动一个（包括先前启动的已经退出的情况）。
 // 启动失败时退回无头模式并告警一次；失败后 xvfbRetryAfter 内不再尝试，过后再试，不永久退回无头模式。
 func sharedXvfb() bool {

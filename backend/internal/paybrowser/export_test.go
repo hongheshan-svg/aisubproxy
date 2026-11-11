@@ -254,3 +254,10 @@ func callOnFirst(ctx context.Context, b *Browser, sel, fn string, res any) error
 		return callOn(ctx, e.obj, fn, res)
 	})
 }
+
+// resetXvfbState 清掉共享 Xvfb 的失败时刻和告警标记，让每个用例从头开始。
+func resetXvfbState() {
+	xvfb.mu.Lock()
+	xvfb.failedAt, xvfb.alerted = time.Time{}, false
+	xvfb.mu.Unlock()
+}

@@ -60,25 +60,14 @@ func (b *Browser) ProbeOpen(ctx context.Context, url string, cookies []Cookie, s
 		if b.run(ctx, chromedp.Evaluate(`document.readyState`, &state)) == nil && state == "complete" {
 			break
 		}
-		if err := sleepCtx(ctx, pollInterval); err != nil {
+		if err := sleep(ctx, pollInterval); err != nil {
 			return err
 		}
 	}
-	return sleepCtx(ctx, settle)
-}
-
-func sleepCtx(ctx context.Context, d time.Duration) error {
-	if d <= 0 {
+	if settle <= 0 {
 		return nil
 	}
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-t.C:
-		return nil
-	}
+	return sleep(ctx, settle)
 }
 
 // ProbeRead 读当前页面的标题、地址、可见文字，以及 HTML 里有没有 Cloudflare 挑战特征。只读。

@@ -43,6 +43,10 @@ export type RedeemOutcome = 'unknown' | 'rejected' | 'success' | 'failed' | 'pro
  * - 断线、5xx：服务器可能已经受理（建单不跟随客户端连接），结果未知 → 标「处理中」并只读地查结果，绝不重发；
  * - 其余非 2xx：服务器明确拒绝，没有用掉卡密 → 失败；
  * - 2xx：按单据状态。
+ *
+ * 503 不照单张兑换页（lib/mwredeem.ts 的 redeemRejectedBeforeOrder）当作「被拒、没建单」：那个判断只看状态码，
+ * 分不清本站后端自己回的 503（都在建单之前）和前面代理、网关回的 503（请求可能已经到了后端）。
+ * 证明不了没建单，就按结果未知只读地查，宁可多等一会儿，也不显示成失败让买家重提（F2-03 裁定 2）。
  */
 export function redeemOutcome(httpStatus: number, orderStatus: string): RedeemOutcome {
   if (httpStatus < 200 || httpStatus >= 500) return 'unknown'

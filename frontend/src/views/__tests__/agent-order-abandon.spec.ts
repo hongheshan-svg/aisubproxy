@@ -1,6 +1,8 @@
 // 下单页「放弃并重新下单」（F2-18，用户选 1）：确认框换成统一的危险确认框（异步）。
 // 确认框返回后重新检查一次待重试状态：等待期间已在别处处理完、别的标签页锁定了另一笔、这页又发起了重试，
 // 都不放弃；放弃本身只清锁定，不发任何下单请求。
+// 审查修复：弹确认框前记下这笔的请求号，确认后按请求号核对（别的标签页放弃后又下了内容相同的一笔也认得出）；
+// 页面这一层「显示的还是不是这一笔」的核对单独有用例盯住。
 // 用 headless 挂载真正执行 onMounted（读商品和 /me、核对身份、恢复待重试），通过 setupState 调页面里的 abandon。
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -130,6 +132,49 @@ describe('放弃并重新下单（F2-18）', () => {
     expect(env.data[ORDER_RETRY_KEY]).toBe(stored) // 别的标签页的锁定原样保留
     expect(state.pending).toEqual(other)
     expect(state.err).toContain('有一笔订单结果未知')
+    expect(posts()).toHaveLength(0)
+    unmount()
+  })
+
+  it('确认框打开期间别的标签页放弃后又下了内容完全相同的一笔（结果未知）：不清那一笔的请求号，提示状态已变', async () => {
+    const { state, unmount } = await mountOrder()
+    const run = state.abandon()
+    await settle()
+    const t = otherTab()
+    t.abandon()
+    const k2 = t.begin({ ...P })
+    const stored = env.data[ORDER_RETRY_KEY]
+    answer(true)
+    await run
+    expect(env.data[ORDER_RETRY_KEY]).toBe(stored) // 新那笔的锁定原样保留
+    expect(otherTab().begin(P)).toBe(k2) // 还能用同一个请求号原样重试
+    expect(state.pending).toEqual(P)
+    expect(state.err).toContain('状态在别的页面变了，这次没有放弃')
+    expect(posts()).toHaveLength(0)
+    unmount()
+  })
+
+  it('确认框打开期间页面上的待重试被清空、存储里仍是同一笔：页面这一层的核对拦住，不清存储', async () => {
+    const { state, unmount } = await mountOrder()
+    const before = env.data[ORDER_RETRY_KEY]
+    const run = state.abandon()
+    await settle()
+    state.pending = null
+    answer(true)
+    await run
+    expect(env.data[ORDER_RETRY_KEY]).toBe(before)
+    expect(posts()).toHaveLength(0)
+    unmount()
+  })
+
+  it('点放弃时存储里已经没有这笔：不弹确认框，提示已在别处处理完', async () => {
+    const { state, unmount } = await mountOrder()
+    const t = otherTab()
+    t.settle(t.lock.current('alice')!.key)
+    await state.abandon()
+    expect(confirmCalls).toHaveLength(0)
+    expect(state.pending).toBeNull()
+    expect(state.notice).toContain('已在别的页面处理完')
     expect(posts()).toHaveLength(0)
     unmount()
   })

@@ -110,7 +110,7 @@ describe('theme：深青自助与亮暗配色', () => {
       expect(s).not.toHaveProperty('primaryLight')
     }
     const forest = t.SKINS.find((s) => s.id === 'forest')!
-    expect(t.skinTone(forest, false)).toEqual({ primary: '#059669', on: '#ffffff' })
+    expect(t.skinTone(forest, false)).toEqual({ primary: '#05825b', on: '#ffffff' })
     expect(t.skinTone(forest, true)).toEqual({ primary: '#34d399', on: '#0c1612' })
   })
 
@@ -147,7 +147,7 @@ describe('theme：深青自助与亮暗配色', () => {
     t.setTheme('light')
     t.setSkin('forest')
     expect(f.attrs['data-tone']).toBe('light')
-    expect(f.vars['--side-active']).toBe('#059669')
+    expect(f.vars['--side-active']).toBe('#05825b')
   })
 
   it('默认暗色皮肤选亮色时 data-tone 仍是 dark', async () => {

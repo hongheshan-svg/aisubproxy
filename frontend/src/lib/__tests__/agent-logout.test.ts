@@ -24,6 +24,14 @@ describe('agentLogout', () => {
       expect(await agentLogout()).toBe('failed')
     })
   }
+  it('404 agent_disabled（代理商功能被后台关掉）：返回 done，回登录页显示「暂未开放」', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 404, json: async () => ({ error: 'agent_disabled' }) })))
+    expect(await agentLogout()).toBe('done')
+  })
+  it('别的 404：仍是 failed', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 404, json: async () => ({ error: 'not_found' }) })))
+    expect(await agentLogout()).toBe('failed')
+  })
   it('网络错误：返回 failed', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch') }))
     expect(await agentLogout()).toBe('failed')

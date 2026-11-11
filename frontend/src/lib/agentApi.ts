@@ -52,6 +52,7 @@ export async function agentApi<T = any>(path: string, method = 'GET', body?: unk
  * 退出登录，按服务端结果返回（照管理员端 serverLogout）：
  * - done：成功或 401（会话本来就没了），可以清本地状态、回登录页。
  * - csrf：403，校验 Cookie 丢了，重试也不会成功，只能清除本站 Cookie。
+ * - done 也包括 404 agent_disabled：代理商功能已关，回登录页显示「暂未开放」。
  * - failed：断网、5xx 等，服务端会话可能还在，留在页面提示重试。
  */
 export async function agentLogout(): Promise<'done' | 'csrf' | 'failed'> {
@@ -63,6 +64,8 @@ export async function agentLogout(): Promise<'done' | 'csrf' | 'failed'> {
   }
   if (r.ok || r.status === 401) return 'done'
   if (r.status === 403) return 'csrf'
+  // 代理商功能被后台关掉：接口一律 404 agent_disabled，退不了也用不了；和 checkEnabled 一样回登录页（显示「暂未开放」）
+  if (r.status === 404 && (r.data as any)?.error === 'agent_disabled') return 'done'
   return 'failed'
 }
 

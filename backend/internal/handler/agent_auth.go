@@ -133,13 +133,13 @@ func issueAgentPre(c *gin.Context, a db.Agent, stage string) {
 	c.JSON(http.StatusOK, gin.H{"next": stage})
 }
 
-// agentPreCheck 校验临时凭证：stage 对、账号启用、会话版本一致、动态码错误没超限。
 // agentDBBusy 读库失败：记日志（只写错误），返回 503，不是认证失败。
 func agentDBBusy(c *gin.Context, err error) {
 	log.Printf("[agent] 读库失败: %v", err)
 	agentError(c, http.StatusServiceUnavailable, "busy", "服务繁忙，请稍后再试")
 }
 
+// agentPreCheck 校验临时凭证：stage 对、账号启用、会话版本一致、动态码错误没超限。
 func agentPreCheck(c *gin.Context, stage string) (agent.Claims, db.Agent, bool) {
 	gone := func() (agent.Claims, db.Agent, bool) {
 		agentError(c, http.StatusUnauthorized, "pre_expired", agentMsgPreGone)

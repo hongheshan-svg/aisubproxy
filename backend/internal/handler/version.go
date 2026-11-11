@@ -108,11 +108,6 @@ func AdminSystemVersion(c *gin.Context) {
 	versionCacheAt = time.Now()
 	versionCacheMu.Unlock()
 
-	// 缓存命中路径也需要带上动态字段
-	body["current"] = local
-	body["update_available"] = update
-	body["update_enabled"] = updateEnabled()
-	body["one_click_ready"] = update && hasBundle && updateEnabled()
 	c.JSON(http.StatusOK, body)
 }
 

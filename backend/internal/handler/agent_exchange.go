@@ -25,7 +25,7 @@ const (
 )
 
 // swapRateAllow 每 IP（IPv6 按 /64）每小时最多 20 次换码尝试。
-// 复用公开接口的限流表（localRateAllow）：有键数上限，过期键由 PublicGuard 每分钟清扫，不会随来源 IP 无限增长。
+// 复用公开接口的限流表（localRateAllow）：有键数上限，过期键由 StartLocalRateSweep 每分钟清扫，不会随来源 IP 无限增长。
 func swapRateAllow(ip string) bool {
 	return localRateAllow(localRateSwap, ip)
 }

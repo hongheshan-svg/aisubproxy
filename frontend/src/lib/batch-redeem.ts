@@ -147,6 +147,24 @@ export function unknownExpired(unknownSince: number, now: number): boolean {
 }
 
 /**
+ * 离最早一张结果未知（没到终态、带 unknownSince）的时限还有多久，毫秒，最少 0；没有就返回 null（FE2 审查次要 1）。
+ * 页面按它另排一个计时器检查时限：时限按墙钟算，不跟着查询间隔、429 退避（最长 2 分钟）、挂住的请求往后拖。
+ */
+export function msUntilUnknownDeadline(
+  targets: Readonly<Record<string, { terminal: boolean; unknownSince?: number }>>,
+  now: number,
+): number | null {
+  let earliest = Infinity
+  for (const v of Object.values(targets)) {
+    const since = v.unknownSince ?? 0
+    if (v.terminal || since <= 0) continue
+    earliest = Math.min(earliest, since + UNKNOWN_QUERY_MS)
+  }
+  if (earliest === Infinity) return null
+  return Math.max(0, earliest - now)
+}
+
+/**
  * 页面顶部的统计。查询中的结果未知是「处理中」，算在处理中；
  * 到时限停查的结果未知（status 'unknown'）单独计，不算失败也不算处理中。
  */

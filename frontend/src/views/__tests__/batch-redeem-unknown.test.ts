@@ -95,6 +95,25 @@ describe('兑换请求结果未知时只查不重发（F2-03）', () => {
     // 不再自己按状态表判成功、失败
     expect(a).not.toMatch(/isFailStatus\(|isSuccessStatus\(/)
   })
+  it('90 秒时限另排计时器、按墙钟算，不跟着查询的间隔和 429 退避往后拖（FE2 审查次要 1）', () => {
+    // 新的结果未知一进来就排时限计时器
+    const s = body('startPoll')
+    expect(s).toMatch(/if \(unknownSince > 0\) scheduleUnknownExpiry\(\)/)
+    // 计时器按最早一张的时限排，到点检查时限、再排下一张
+    const sch = body('scheduleUnknownExpiry')
+    expect(sch.trim().split('\n')[0].trim()).toBe('if (unmounted) return')
+    expect(sch).toContain('msUntilUnknownDeadline(pollTargets.value, Date.now())')
+    expect(sch).toContain('setTimeout(onUnknownDeadline, wait)')
+    const on = body('onUnknownDeadline')
+    expect(on).toContain('if (unmounted) return')
+    expect(on).toContain('expireUnknownTargets(Date.now())')
+    expect(on).toContain('scheduleUnknownExpiry()')
+    // 全部到终态时，排着的下一轮（可能是退避中）不用再等，提示也清掉
+    expect(on).toMatch(/if \(pollTimer\) clearTimeout\(pollTimer\)/)
+    expect(on).toContain("pollNotice.value = ''")
+    // 停查（重置、换批次、离开页面）时一起清掉
+    expect(body('stopAllPolls')).toMatch(/if \(expiryTimer\) clearTimeout\(expiryTimer\)\s*expiryTimer = null/)
+  })
   it('统计和导出用 lib 里的 batchStats、successRows、unknownRows', () => {
     expect(src).toMatch(/const stats = computed\(\(\) => batchStats\(items\.value\)\)/)
     const x = body('exportBatchSuccess')

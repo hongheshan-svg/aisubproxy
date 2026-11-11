@@ -358,6 +358,7 @@ import {
   claimRedeem,
   hasUnknownQuerying,
   isSubmittable,
+  msUntilUnknownDeadline,
   pollVerdict,
   readPolledOrder,
   redeemOutcome,
@@ -475,6 +476,8 @@ const pollTargets = ref<Record<string, PollTarget>>({})
 // 还有结果未知、正在查询的卡密：查完（查到记录或到时限）之前不能重置（F2-04b 裁定 3）
 const unknownQuerying = computed(() => hasUnknownQuerying(pollTargets.value))
 let pollTimer: ReturnType<typeof setTimeout> | null = null
+// 结果未知的时限计时器：按最早一张的时限另排，不跟着查询间隔、429 退避往后拖（FE2 审查次要 1）
+let expiryTimer: ReturnType<typeof setTimeout> | null = null
 let pollInFlight = false
 let pollBackoffMs = 0
 // 轮询被限流（429）时显示的提示，恢复后清掉
@@ -575,6 +578,8 @@ function planLabelOf(data: any): string {
 function stopAllPolls() {
   if (pollTimer) clearTimeout(pollTimer)
   pollTimer = null
+  if (expiryTimer) clearTimeout(expiryTimer)
+  expiryTimer = null
   pollInFlight = false
   pollBackoffMs = 0
   pollNotice.value = ''
@@ -598,6 +603,30 @@ function expireUnknownTargets(now: number) {
     updateItem(id, { status: 'unknown', progressMsg: t('batch.resultUnknownStopped'), error: '' })
     pollTargets.value[id] = { ...target, terminal: true }
   }
+}
+
+/** 按最早一张结果未知的时限排计时器（FE2 审查次要 1）。没有在查的结果未知就不排。 */
+function scheduleUnknownExpiry() {
+  if (unmounted) return
+  if (expiryTimer) clearTimeout(expiryTimer)
+  expiryTimer = null
+  const wait = msUntilUnknownDeadline(pollTargets.value, Date.now())
+  if (wait === null) return
+  expiryTimer = setTimeout(onUnknownDeadline, wait)
+}
+
+/** 时限到了：到时限的标「结果未知」、停查；全部到终态时，排着的下一轮（可能在 429 退避中）不用再等。 */
+function onUnknownDeadline() {
+  expiryTimer = null
+  if (unmounted) return
+  expireUnknownTargets(Date.now())
+  if (!Object.values(pollTargets.value).some((v) => !v.terminal)) {
+    if (pollTimer) clearTimeout(pollTimer)
+    pollTimer = null
+    pollNotice.value = ''
+    pollBackoffMs = 0
+  }
+  scheduleUnknownExpiry()
 }
 
 function applyPollResult(id: string, target: PollTarget, status: number, data: any) {
@@ -668,6 +697,8 @@ async function pollBatch() {
         continue
       }
       const byToken = new Map(outcome.items.map((it) => [it.token, it]))
+      // 查询途中时限计时器已把某张标了「结果未知」：这一轮查到定论照样写上，比「结果未知」更准；
+      // 「还没查到」的不改，仍是「结果未知」
       for (const [id, target] of group) {
         const it = byToken.get(target.token)
         if (it) applyPollResult(id, target, it.status, it.data)
@@ -697,6 +728,7 @@ function startPoll(id: string, token: string, gen: number, unknownSince = 0) {
   const target: PollTarget = { token, terminal: false }
   if (unknownSince > 0) target.unknownSince = unknownSince
   pollTargets.value = { ...pollTargets.value, [id]: target }
+  if (unknownSince > 0) scheduleUnknownExpiry()
   if (!pollTimer && !pollInFlight) void pollBatch()
 }
 

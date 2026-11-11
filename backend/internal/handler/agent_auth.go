@@ -469,7 +469,7 @@ func AgentTOTPLogin(c *gin.Context) {
 	}
 }
 
-// AgentLogout 清掉三个 cookie。
+// AgentLogout 清掉三个 cookie（需要登录；不作废服务端会话，其他设备不受影响）。
 func AgentLogout(c *gin.Context) {
 	clearAgentCookies(c)
 	c.JSON(http.StatusOK, gin.H{"ok": true})

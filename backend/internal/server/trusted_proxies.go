@@ -22,9 +22,10 @@ func applyTrustedProxies(engine *gin.Engine, raw string, alert func(string)) {
 		}
 		msg := fmt.Sprintf("TRUSTED_PROXIES 有 %d 项写错，已跳过：%s。其余 %d 项照常生效；请改成 IP 或网段（如 172.16.0.0/12），主机名不能用。",
 			len(invalid), strings.Join(shown, "、"), len(valid))
-		log.Printf("⚠️  %s", msg)
 		if alert != nil {
-			alert(msg)
+			alert(msg) // 告警函数自己会打日志，这里不再重复
+		} else {
+			log.Printf("⚠️  %s", msg)
 		}
 	}
 	if len(valid) == 0 {

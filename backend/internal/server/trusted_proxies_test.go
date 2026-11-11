@@ -68,3 +68,22 @@ func TestTrustedProxiesMasksBadEntries(t *testing.T) {
 		t.Fatalf("应有一条告警并说明已隐去: %v", alerts)
 	}
 }
+
+// 终审后端次要 4：有告警函数时，告警函数自己会打日志，这里不再单独打一遍；没有告警函数时才自己打。
+func TestTrustedProxiesLogsOnce(t *testing.T) {
+	var buf bytes.Buffer
+	old := log.Writer()
+	log.SetOutput(&buf)
+	defer log.SetOutput(old)
+
+	clientIPVia(t, "caddy,172.16.0.0/12", "172.16.0.5", func(s string) { log.Printf("[system] 告警: %s", s) })
+	if n := strings.Count(buf.String(), "TRUSTED_PROXIES 有"); n != 1 {
+		t.Fatalf("有告警函数时日志应只出现一次，实际 %d 次: %s", n, buf.String())
+	}
+
+	buf.Reset()
+	clientIPVia(t, "caddy,172.16.0.0/12", "172.16.0.5", nil)
+	if n := strings.Count(buf.String(), "TRUSTED_PROXIES 有"); n != 1 {
+		t.Fatalf("没有告警函数时应自己打一次日志，实际 %d 次", n)
+	}
+}

@@ -24,6 +24,30 @@ func TestMigrateCardPoolIdempotent(t *testing.T) {
 	}
 }
 
+// 已有数据库升级（C1-04）：旧的卡表没有「进入回收的时间」，迁移补上这一列，旧行为空（汇总按 updated_at 兜底），可重复执行。
+func TestMigrateCardPoolAddsReleasedAt(t *testing.T) {
+	dbtest.Open(t)
+	if _, err := db.DB.Exec(`ALTER TABLE mw_cards DROP COLUMN released_at`); err != nil {
+		t.Fatalf("模拟旧库：%v", err)
+	}
+	if _, err := db.DB.Exec(`INSERT INTO mw_cards (card_id, product_id, source, pool_state, created_at, updated_at)
+		VALUES ('old1', 'p1', 'opened', 'releasing', 1, 1)`); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := db.MigrateCardPool(); err != nil {
+			t.Fatalf("第 %d 次迁移: %v", i+1, err)
+		}
+	}
+	var v sql.NullInt64
+	if err := db.DB.QueryRow(`SELECT released_at FROM mw_cards WHERE card_id = 'old1'`).Scan(&v); err != nil {
+		t.Fatalf("迁移后应有 released_at 列: %v", err)
+	}
+	if v.Valid {
+		t.Fatalf("旧行的 released_at 应为空: %v", v)
+	}
+}
+
 func TestWebhookEventColumnsAdded(t *testing.T) {
 	c, err := sql.Open("sqlite3", ":memory:")
 	if err != nil {

@@ -269,9 +269,9 @@ func (s *Service) ImportCard(ctx context.Context, cardID, productID, holderID, b
 	now := s.now().Unix()
 	_, err = db.DB.ExecContext(ctx, `INSERT INTO mw_cards (card_id, card_holder_id, product_id, card_label, card_country, currency,
 		last4, expiry, platform_status, available_cents, frozen_cents, balance_synced_at, source, pool_state, next_action_at,
-		created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'imported', ?, ?, ?, ?)`,
+		released_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'imported', ?, ?, ?, ?, ?)`,
 		cardID, holderID, productID, d.CardLabel, d.CardCountry, d.CardCurrency, lastDigits4(d.CardNo), d.ExpiryDate, status,
-		avail, frozen, now, PoolReleasing, now, now, now)
+		avail, frozen, now, PoolReleasing, now, now, now, now)
 	if err != nil {
 		var se sqlite3.Error
 		if errors.As(err, &se) && se.ExtendedCode == sqlite3.ErrConstraintPrimaryKey {

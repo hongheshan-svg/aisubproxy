@@ -222,8 +222,8 @@ func terminalEffects(ctx context.Context, tx *sql.Tx, o *Order, now int64, cance
 			return nil
 		}
 		_, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO mw_cards (card_id, card_holder_id, product_id, currency,
-			source, pool_state, next_action_at, created_at, updated_at) VALUES (?, ?, ?, ?, 'opened', ?, ?, ?, ?)`,
-			o.CardID, o.CardHolderID, o.ProductID, o.Currency, PoolReleasing, now, now, now)
+			source, pool_state, next_action_at, released_at, created_at, updated_at) VALUES (?, ?, ?, ?, 'opened', ?, ?, ?, ?, ?)`,
+			o.CardID, o.CardHolderID, o.ProductID, o.Currency, PoolReleasing, now, now, now, now)
 		return err
 	case KindRecharge, KindWithdraw:
 		_, err := tx.ExecContext(ctx, `UPDATE mw_cards SET next_action_at = ?, updated_at = ? WHERE card_id = ?`, now, now, o.CardID)

@@ -57,6 +57,31 @@ describe('自动提交的并发循环（F2-04b）', () => {
     expect(c.started).toEqual(['A', 'B'])
   })
 
+  it('某一张意外抛错：别的照常各提交一次，循环等所有在途的都返回之后才报错（FE2 审查次要 3）', async () => {
+    const c = controlledSubmit()
+    const order: string[] = []
+    const submit = async (x: string) => {
+      if (x === 'B') throw new Error('boom')
+      await c.submit(x)
+      order.push(`done:${x}`)
+    }
+    let settled = ''
+    const done = runSubmitPool(['A', 'B', 'C', 'D'], 2, () => true, submit).then(
+      () => { settled = 'ok' },
+      (e: Error) => { settled = `err:${e.message}` },
+    )
+    // B 抛错之后它那条循环接着取 C；A 还在途，这时循环不能先结束
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(settled).toBe('')
+    expect(c.started).toEqual(['A', 'C'])
+    await c.releaseAll()
+    await done
+    expect(c.started).toEqual(['A', 'C', 'D'])
+    expect(order.sort()).toEqual(['done:A', 'done:C', 'done:D'])
+    expect(settled).toBe('err:boom')
+  })
+
   it('一开始就不在当前批次：一张都不提交', async () => {
     const seen: string[] = []
     await runSubmitPool(['A', 'B'], 2, () => false, async (x) => { seen.push(x) })

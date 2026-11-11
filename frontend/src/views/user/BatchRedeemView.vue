@@ -1218,6 +1218,18 @@ async function handleSubmitSession() {
   }
 }
 
+/**
+ * 一键自动提交里的一张。意外抛错时（理论情况：submitOne 自己会接住请求出错）不知道兑换请求发没发出，
+ * 按结果未知收尾，提示去卡密查询页核对、不要重复提交；错误不往外抛，并发循环照常取下一张（FE2 审查次要 3）。
+ */
+async function autoSubmitOne(item: BatchItem, run: () => Promise<unknown>) {
+  try {
+    await run()
+  } catch {
+    updateItem(item.id, { status: 'unknown', progressMsg: t('batch.resultUnknownStopped'), error: '' })
+  }
+}
+
 async function handleAutoSubmitAll() {
   if (autoSubmitting.value || submitting.value || verifying.value) return
   const gen = batchSeq
@@ -1239,22 +1251,25 @@ async function handleAutoSubmitAll() {
     autoSubmitting.value = true
     sessionError.value = ''
     const verifiedPositions = new Map(verifiedSnap.map((item, index) => [item.id, index]))
-    // 离开页面后不再取下一张（重置在自动提交时是禁用的）；已经在提交的那张照常等它返回
-    await runSubmitPool(pendingSnap, AUTO_SUBMIT_CONCURRENCY, () => live(gen), async (item) => {
-      const excelIdx = verifiedPositions.get(item.id) ?? -1
-      const mb = excelIdx >= 0 ? pool[excelIdx] : undefined
-      if (!mb) {
-        updateItem(item.id, {
-          status: 'failed',
-          progressMsg: `邮箱列表只有 ${pool.length} 条，第 ${excelIdx + 1} 张无对应`,
-          error: '邮箱密码不足',
-        })
-        return
-      }
-      await submitOne(item, { mode: 'mailbox', email: mb.email, password: mb.password })
-    })
-    sessionInput.value = ''
-    autoSubmitting.value = false
+    try {
+      // 离开页面后不再取下一张（重置在自动提交时是禁用的）；已经在提交的那张照常等它返回
+      await runSubmitPool(pendingSnap, AUTO_SUBMIT_CONCURRENCY, () => live(gen), (item) => autoSubmitOne(item, async () => {
+        const excelIdx = verifiedPositions.get(item.id) ?? -1
+        const mb = excelIdx >= 0 ? pool[excelIdx] : undefined
+        if (!mb) {
+          updateItem(item.id, {
+            status: 'failed',
+            progressMsg: `邮箱列表只有 ${pool.length} 条，第 ${excelIdx + 1} 张无对应`,
+            error: '邮箱密码不足',
+          })
+          return
+        }
+        await submitOne(item, { mode: 'mailbox', email: mb.email, password: mb.password })
+      }))
+    } finally {
+      sessionInput.value = ''
+      autoSubmitting.value = false
+    }
     return
   }
 
@@ -1266,21 +1281,24 @@ async function handleAutoSubmitAll() {
   autoSubmitting.value = true
   sessionError.value = ''
   const verifiedPositions = new Map(verifiedSnap.map((item, index) => [item.id, index]))
-  await runSubmitPool(pendingSnap, AUTO_SUBMIT_CONCURRENCY, () => live(gen), async (item) => {
-    const excelIdx = verifiedPositions.get(item.id) ?? -1
-    const sess = excelIdx >= 0 ? pool[excelIdx] : undefined
-    if (!sess) {
-      updateItem(item.id, {
-        status: 'failed',
-        progressMsg: `Excel 只有 ${pool.length} 条 Session，第 ${excelIdx + 1} 张无对应`,
-        error: 'Session 不足',
-      })
-      return
-    }
-    await submitOne(item, { mode: 'session', session: sess.session, imported: sess })
-  })
-  sessionInput.value = ''
-  autoSubmitting.value = false
+  try {
+    await runSubmitPool(pendingSnap, AUTO_SUBMIT_CONCURRENCY, () => live(gen), (item) => autoSubmitOne(item, async () => {
+      const excelIdx = verifiedPositions.get(item.id) ?? -1
+      const sess = excelIdx >= 0 ? pool[excelIdx] : undefined
+      if (!sess) {
+        updateItem(item.id, {
+          status: 'failed',
+          progressMsg: `Excel 只有 ${pool.length} 条 Session，第 ${excelIdx + 1} 张无对应`,
+          error: 'Session 不足',
+        })
+        return
+      }
+      await submitOne(item, { mode: 'session', session: sess.session, imported: sess })
+    }))
+  } finally {
+    sessionInput.value = ''
+    autoSubmitting.value = false
+  }
 }
 
 async function exportBatchSuccess() {

@@ -6,6 +6,8 @@
 /**
  * 自动提交的并发循环：最多 concurrency 张同时在提交，按顺序取下一张，每张只取一次。
  * 每取一张之前先问 isLive()：重置、换批次或离开页面之后不再取新的；已经在提交的那一张照常等它返回。
+ * 某一张意外抛错：这条循环接着取下一张，等所有在途的都返回之后才把第一个错误抛出去（FE2 审查次要 3）。
+ * 不能提前结束：调用方在结束后会解开「自动提交中」，提前解开时还在跑的循环和新的一轮会争同一批卡密。
  */
 export async function runSubmitPool<T>(
   items: T[],
@@ -14,14 +16,20 @@ export async function runSubmitPool<T>(
   submit: (item: T) => Promise<unknown>,
 ): Promise<void> {
   let cursor = 0
+  const errors: unknown[] = []
   const runners = Array.from({ length: Math.min(concurrency, items.length) }, async () => {
     while (isLive()) {
       const i = cursor++
       if (i >= items.length) return
-      await submit(items[i])
+      try {
+        await submit(items[i])
+      } catch (e) {
+        errors.push(e)
+      }
     }
   })
   await Promise.all(runners)
+  if (errors.length) throw errors[0]
 }
 
 /**

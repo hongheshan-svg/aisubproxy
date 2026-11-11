@@ -64,6 +64,22 @@ describe('重置、离开页面、换批次（F2-04b）', () => {
     expect((b.match(/\(\) => live\(gen\)/g) || []).length).toBe(2)
     expect(b).not.toMatch(/while \(true\)/)
   })
+  it('自动提交结束后复位放在 finally 里，每一张意外抛错按结果未知收尾（FE2 审查次要 3）', () => {
+    const b = body('handleAutoSubmitAll')
+    // 两条分支都是 try { await runSubmitPool(...) } finally { ...autoSubmitting.value = false }
+    const blocks = [...b.matchAll(/try \{\s*(?:\/\/[^\n]*\s*)*await runSubmitPool\([\s\S]*?\} finally \{([\s\S]*?)\}/g)]
+    expect(blocks.length).toBe(2)
+    for (const m of blocks) expect(m[1]).toContain('autoSubmitting.value = false')
+    // finally 之外不再单独复位
+    expect((b.match(/autoSubmitting\.value = false/g) || []).length).toBe(2)
+    // 每一张都过 autoSubmitOne：抛错不让循环提前结束，这一张标结果未知（不知道兑换请求发没发出），提示去核对
+    expect((b.match(/\(item\) => autoSubmitOne\(item, async \(\) => \{/g) || []).length).toBe(2)
+    const one = body('autoSubmitOne')
+    expect(one).toMatch(/try \{\s*await run\(\)\s*\} catch \{/)
+    expect(one).toContain("status: 'unknown'")
+    expect(one).toContain("t('batch.resultUnknownStopped')")
+    expect(one).not.toMatch(/'failed'|submitOne|runPreflightRedeem/)
+  })
   it('兑换请求发出前最后看一次：页面已离开就不再提交这一张', () => {
     const b = body('runPreflightRedeem')
     const guard = b.indexOf('if (!live(item.batch)) return')

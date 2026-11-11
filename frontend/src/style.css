@@ -64,12 +64,13 @@ html {
   --info: #2f6f9f;
   --info-soft: rgba(47, 111, 159, 0.12);
   /* 状态色当文字用（.text-warn、提示框、状态标签）：往正文色方向混，亮色下更深、暗色下更浅。
-     各皮肤改了 --good、--ink 等变量后跟着变。比例取 12 套皮肤亮暗、在页面底、面板底、次级底、浅色状态底上
-     都不低于 4.5:1 的最大值（红、蓝卡在深青暗色的次级底上），见 styles/__tests__/statusColors.test.ts。 */
+     各皮肤改了 --good、--ink 等变量后跟着变。亮色比例在这里，暗色比例在下面的 html.dark。
+     各取 12 套皮肤在页面底、面板底、次级底、悬停行，以及浅色状态底叠在这些底上都不低于 4.5:1 的最大值
+     （亮色卡在纸张、zovo 的标签叠次级底，暗色卡在深青），见 styles/__tests__/statusColors.test.ts。 */
   --good-ink: color-mix(in srgb, var(--good) 60%, var(--ink));
-  --warn-ink: color-mix(in srgb, var(--warn) 60%, var(--ink));
-  --err-ink: color-mix(in srgb, var(--err) 45%, var(--ink));
-  --info-ink: color-mix(in srgb, var(--info) 50%, var(--ink));
+  --warn-ink: color-mix(in srgb, var(--warn) 55%, var(--ink));
+  --err-ink: color-mix(in srgb, var(--err) 80%, var(--ink));
+  --info-ink: color-mix(in srgb, var(--info) 75%, var(--ink));
 
   --shadow: 0 18px 48px rgba(120, 72, 40, 0.1);
   --shadow-sm: 0 2px 12px rgba(120, 72, 40, 0.08);
@@ -79,6 +80,14 @@ html {
   --surface-solid: var(--surface);
   /* 悬停/斑马行底色：跟皮肤主色走，不再写死赤陶 */
   --row-hover: var(--primary-soft);
+}
+
+/* 状态文字色的暗色比例（说明见 :root 的 --*-ink） */
+html.dark {
+  --good-ink: color-mix(in srgb, var(--good) 50%, var(--ink));
+  --warn-ink: color-mix(in srgb, var(--warn) 55%, var(--ink));
+  --err-ink: color-mix(in srgb, var(--err) 45%, var(--ink));
+  --info-ink: color-mix(in srgb, var(--info) 45%, var(--ink));
 }
 
 /* density */

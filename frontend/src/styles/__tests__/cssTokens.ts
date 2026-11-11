@@ -3,6 +3,8 @@
 export type TokenMap = Record<string, string>
 export interface ParsedTokens {
   root: TokenMap
+  /** html.dark { … }：所有皮肤暗色下共用的变量（如状态文字色的暗色比例） */
+  rootDark: TokenMap
   skins: Record<string, { light: TokenMap; dark: TokenMap }>
 }
 
@@ -24,7 +26,7 @@ function declsOf(body: string): TokenMap {
 
 export function parseSkinTokens(css: string): ParsedTokens {
   const src = css.replace(/\/\*[\s\S]*?\*\//g, '')
-  const parsed: ParsedTokens = { root: {}, skins: {} }
+  const parsed: ParsedTokens = { root: {}, rootDark: {}, skins: {} }
   const slot = (id: string) => (parsed.skins[id] ??= { light: {}, dark: {} })
 
   let depth = 0
@@ -49,6 +51,7 @@ export function parseSkinTokens(css: string): ParsedTokens {
           for (const sel of selector.split(',').map((s) => s.trim())) {
             let m: RegExpMatchArray | null
             if (sel === ':root') Object.assign(parsed.root, decls)
+            else if (sel === 'html.dark') Object.assign(parsed.rootDark, decls)
             else if ((m = sel.match(SKIN_LIGHT))) Object.assign(slot(m[1]).light, decls)
             else if ((m = sel.match(SKIN_DARK))) Object.assign(slot(m[1]).dark, decls)
           }
@@ -62,10 +65,13 @@ export function parseSkinTokens(css: string): ParsedTokens {
   return parsed
 }
 
-/** 亮色 = root 叠皮肤亮色块；暗色 = 亮色再叠皮肤暗色块 */
+/**
+ * 亮色 = root 叠皮肤亮色块；暗色 = root、html.dark、皮肤亮色块、皮肤暗色块依次叠。
+ * html.dark 和 html[data-skin=…] 优先级相同（后者在 skins.css 里、后出现），html.dark[data-skin=…] 最高。
+ */
 export function effectiveTokens(parsed: ParsedTokens, skin: string, mode: 'light' | 'dark'): TokenMap {
   const s = parsed.skins[skin] ?? { light: {}, dark: {} }
-  return mode === 'light' ? { ...parsed.root, ...s.light } : { ...parsed.root, ...s.light, ...s.dark }
+  return mode === 'light' ? { ...parsed.root, ...s.light } : { ...parsed.root, ...parsed.rootDark, ...s.light, ...s.dark }
 }
 
 export type RGBA = [number, number, number, number]

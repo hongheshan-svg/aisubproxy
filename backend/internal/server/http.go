@@ -58,6 +58,10 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 	notify.SetSettingsSource(handler.TelegramSettings)
 	// 后台协程 panic 被兜住后的告警、没有自己告警通道的模块（如付款浏览器）的告警，都走这里发到 Telegram
 	safego.SetAlert(alertSender("system", notify.SendText))
+	// 启动时按环境变量建了管理员：告警器就绪后补发（db.Init 里那时还没法发）
+	if notice := db.TakeBootstrapNotice(); notice != "" {
+		alertSender("system", notify.SendText)(notice)
+	}
 
 	engine := newEngine()
 

@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -843,6 +844,8 @@ func ensureDefaultAdmin() error {
 	if err != nil {
 		return err
 	}
+	var others int
+	_ = DB.QueryRow(`SELECT COUNT(*) FROM admin_users`).Scan(&others)
 	// 随机密码不进日志（CodeQL go/clear-text-logging）：先写 0600 文件再建号，写不了就拒绝启动。
 	pwPath := InitialAdminPasswordPath()
 	if generated {
@@ -860,6 +863,7 @@ func ensureDefaultAdmin() error {
 		return err
 	}
 	_ = MarkInstalled(username)
+	recordBootstrapAdmin(username, generated, others)
 
 	if generated {
 		log.Printf("已创建管理员账号 %s，初始随机密码已写入 %s（权限 0600），请立即登录修改密码，改密成功后该文件会自动删除", username, pwPath)
@@ -867,6 +871,38 @@ func ensureDefaultAdmin() error {
 		log.Printf("✓ 已用 ADMIN_PASSWORD 创建管理员账号: %s", username)
 	}
 	return nil
+}
+
+// recordBootstrapAdmin 记下「启动时按环境变量建了管理员」（B1-10）：写一条审计，并留一条待发告警。
+// 这一步在 db.Init 里，那时 Telegram 告警还没接好，所以告警文字先存着，由 server 在告警就绪后用 TakeBootstrapNotice 取走发送。
+// 审计和告警都只写用户名和来源，不含密码。
+func recordBootstrapAdmin(username string, generated bool, others int) {
+	src := "ADMIN_PASSWORD 环境变量"
+	if generated {
+		src = "随机初始密码（INSTALL_MODE=auto）"
+	}
+	extra := ""
+	if others > 0 {
+		extra = fmt.Sprintf("；库里此前已有 %d 个管理员", others)
+	}
+	WriteAudit("system", "admin_bootstrap_env", fmt.Sprintf("username=%s source=%s others=%d", username, src, others), "")
+	bootstrapMu.Lock()
+	bootstrapNotice = fmt.Sprintf("启动时自动创建了管理员「%s」（来源：%s）%s。如果不是你操作的，请立刻检查 ADMIN_USERNAME / ADMIN_PASSWORD 环境变量并核对管理员列表。", username, src, extra)
+	bootstrapMu.Unlock()
+}
+
+var (
+	bootstrapMu     sync.Mutex
+	bootstrapNotice string
+)
+
+// TakeBootstrapNotice 取走（并清空）启动时建管理员留下的待发告警文字，没有则返回空串。
+func TakeBootstrapNotice() string {
+	bootstrapMu.Lock()
+	defer bootstrapMu.Unlock()
+	n := bootstrapNotice
+	bootstrapNotice = ""
+	return n
 }
 
 // CreateAdminUser 事务安全创建管理员（安装向导用）。若已有任意管理员则失败。

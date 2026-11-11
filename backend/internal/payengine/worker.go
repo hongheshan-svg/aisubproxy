@@ -212,9 +212,11 @@ type job struct {
 	// keepSession 为 true 时写终态不清空会话，留给续费协程关闭续费，最长保留 SessionKeep（见 renewal.go）
 	keepSession bool
 
-	accessUntil *time.Time // 关闭续费核实时订阅接口给的权益到期时间，见 cancelRenewal；没给为 nil
+	accessUntil *time.Time  // 关闭续费核实时订阅接口给的权益到期时间，见 cancelRenewal；没给为 nil
+	zeroCheck   zeroRecheck // 0 元单关闭续费核实后复查账号的结果，见 recheckZero；由 renewOnce 在续费记 cancelled 之后写事件、告警
 
 	floorMinor int64 // 最低金额，建会话时取自套餐配置；不落库，openPage 判下限用
+	allowZero  bool  // 页面金额正好是 0 时是否照常开通，建会话时取自套餐配置（只有订阅套餐可能为 true）；不落库，openPage 判下限用
 }
 
 // note 记下一列，随下一次状态写入落库。
@@ -571,6 +573,8 @@ func (s *Service) createLink(ctx context.Context, j *job) error {
 		return abort("internal_error", "读取套餐配置失败：%v", err)
 	}
 	j.floorMinor = rc.FloorMinor // 订阅单和点数单共用这一处
+	// 和最低金额同时取：之后管理员改表不影响这一单。点数套餐一律不允许 0 元开通
+	j.allowZero = rc.ZeroAllowed() && plan.Kind == KindSubscription
 	if j.o.Kind == KindCredit {
 		return s.createCreditLink(ctx, j)
 	}
@@ -706,7 +710,8 @@ func embeddedCheckoutLink(u *url.URL, raw string) bool {
 }
 
 // openPage 是步骤 4：启动浏览器（走地区代理）、注入会话 cookie、打开支付页、截整页图、读应付金额；
-// 打不开（停在 Cloudflare 挑战页记 cf_challenge 并告警）、读不出，或真实付款超过上限、低于最低金额也都在注资前放弃。
+// 打不开（停在 Cloudflare 挑战页记 cf_challenge 并告警）、读不出，或真实付款超过上限、低于最低金额也都在注资前放弃
+// （订阅套餐在该地区允许 0 元开通、页面金额正好是 0 时例外，照常开通）。
 // pageRenderWait 是打开支付页后、截图前最多等页面显示完整的时间。Stripe 先放金额再淡入，通常一两秒内完成。
 const pageRenderWait = 10 * time.Second
 
@@ -772,13 +777,20 @@ func (s *Service) openPage(ctx context.Context, j *job) error {
 	if !j.o.DryRun && minor > j.o.CapMinor {
 		return abort("amount_over_cap", "应付金额 %s 超过上限 %s %s", text, formatMinor(j.o.CapMinor, j.o.Currency), j.o.Currency)
 	}
-	// 下限：偏低多半是选错了档位或带了优惠。必须在任何注资动作之前判
+	// 下限：偏低多半是选错了档位或带了优惠。必须在任何注资动作之前判。
+	// 例外：套餐在该地区允许 0 元开通时，金额正好是 0（首月免费等优惠）照常开通；0 以上、低于最低金额的照旧放弃
+	zero := minor == 0 && j.allowZero
 	if j.o.DryRun {
-		if j.floorMinor <= 0 {
+		if zero {
+			s.event(ctx, j, "info", "支付页显示 0 元（首月免费等优惠），该套餐在该地区允许 0 元开通；真实付款会照常开通", "")
+		} else if j.floorMinor <= 0 {
 			s.event(ctx, j, "info", "未配置最低金额，跳过下限检查", "")
 		} else if minor < j.floorMinor {
 			s.event(ctx, j, "warn", fmt.Sprintf("支付页金额 %s 低于最低金额 %s %s（可能选错了档位或带了优惠）；真实付款会在此放弃", text, formatMinor(j.floorMinor, j.o.Currency), j.o.Currency), "")
 		}
+	} else if zero {
+		s.event(ctx, j, "info", "支付页显示 0 元（首月免费等优惠），该套餐在该地区允许 0 元开通，照常开通", "")
+		return nil
 	} else if j.floorMinor <= 0 {
 		// 真实单不允许没有最低金额：ResolvePlan 已兜底，这里防以后重构漏赋值时下限被悄悄跳过
 		return abort("plan_unavailable", "套餐 %s 在地区 %s 未配置最低金额，已放弃，未注资", j.o.PlanKey, j.o.Region)

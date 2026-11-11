@@ -185,7 +185,7 @@ func checkCardSupply(ctx context.Context, cs provider.CardSupply, plan, region s
 }
 
 // checkFirstRealPayment 是发码硬门槛：系统没有自动确认过一笔这家的真实付款，就不能对外承诺这条路能走通。
-// 试运行单、人工定论的单、别家的单都不算。订阅开通码和点数码分开算（设计 2026-11-03 §3.3、§5.4）：
+// 试运行单、人工定论的单、0 元开通的单、别家的单都不算。订阅开通码和点数码分开算（设计 2026-11-03 §3.3、§5.4）：
 //   - 订阅开通码：那笔开通单还要已经关闭续费并核实；
 //   - 点数码：要有一笔真实点数单成功。
 //
@@ -204,7 +204,7 @@ func checkFirstRealPayment(ctx context.Context, st *providerStatus, cs provider.
 	case !passed && kind == payengine.KindCredit:
 		st.Readiness.Fail("first_real_payment", "首笔真实付款", "需要一笔系统自动确认成功的真实点数付款（订阅开通单、试运行单和人工定论的单都不算），请先在后台测试兑换跑通一笔点数单")
 	case !passed:
-		st.Readiness.Fail("first_real_payment", "首笔真实付款", "需要一笔系统自动确认成功的真实付款，并且开通后已关闭续费（试运行单、人工定论的单、续费没关掉的单都不算），请先在后台测试兑换跑通一笔")
+		st.Readiness.Fail("first_real_payment", "首笔真实付款", "需要一笔系统自动确认成功的真实付款，并且开通后已关闭续费（试运行单、人工定论的单、续费没关掉的单、0 元开通的单都不算），请先在后台测试兑换跑通一笔")
 	case kind == payengine.KindCredit:
 		st.Readiness.Pass("first_real_payment", "首笔真实付款", "已有系统自动确认成功的真实点数付款")
 	default:

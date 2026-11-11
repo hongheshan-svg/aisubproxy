@@ -315,7 +315,7 @@ func TestHasRealSucceededPayOrderGate(t *testing.T) {
 	check(db.PayKindCredit, false)
 	for _, dry := range []int{1, 2} { // 试运行到读金额、到填表：哪怕续费状态写成已关闭也不算
 		no := addOrder(t, "admin_test", "admin", dry, "", "succeeded", "", false)
-		setOrderCols(t, no, "renewal_state = 'cancelled'")
+		setOrderCols(t, no, "renewal_state = 'cancelled', amount_minor = 112000, amount_text = '₱1,120.00'")
 	}
 	addOrder(t, "admin_test", "admin", 1, "", "previewed", "", false)
 	addOrder(t, "admin_test", "admin", 0, "", "failed", "declined", true)
@@ -323,16 +323,17 @@ func TestHasRealSucceededPayOrderGate(t *testing.T) {
 	check(db.PayKindSubscription, false)
 	// 人工定论成功的单不能证明系统能自己走通，不算
 	manual := addOrder(t, "admin_test", "admin", 0, "", "succeeded", "", true)
-	setOrderCols(t, manual, "resolved_by = 'alice', resolve_note = '核对已开通', renewal_state = 'cancelled'")
+	setOrderCols(t, manual, "resolved_by = 'alice', resolve_note = '核对已开通', renewal_state = 'cancelled', amount_minor = 112000, amount_text = '₱1,120.00'")
 	check(db.PayKindSubscription, false)
 	// 别家的成功单、服务商不明的成功单都不算
 	for _, p := range []string{"testcard", ""} {
 		no := addProviderOrder(t, p, "admin_test", "admin", 0, "", "succeeded", "", true)
-		setOrderCols(t, no, "renewal_state = 'cancelled'")
+		setOrderCols(t, no, "renewal_state = 'cancelled', amount_minor = 112000, amount_text = '₱1,120.00'")
 	}
 	check(db.PayKindSubscription, false)
 	// 订阅开通单成功了、但续费没关掉（不适用、待处理、失败、跳过）都不算
 	sub := addOrder(t, "admin_test", "admin", 0, "", "succeeded", "", true)
+	setOrderCols(t, sub, "amount_minor = 112000, amount_text = '₱1,120.00'")
 	for _, rs := range []string{"", "pending", "failed", "skipped"} {
 		setOrderCols(t, sub, "renewal_state = ?", rs)
 		check(db.PayKindSubscription, false)
@@ -361,6 +362,16 @@ func TestHasRealSucceededPayOrderGate(t *testing.T) {
 	}
 	if ok, err := db.HasRealSucceededPayOrder(localCtx, "othercard", db.PayKindSubscription); err != nil || ok {
 		t.Fatal(ok, err)
+	}
+	// 0 元开通（首月免费等优惠）的单成功了、续费也关了，也不能证明真实扣款走得通，不算
+	zero := addProviderOrder(t, "zerocard", "admin_test", "admin", 0, "", "succeeded", "", true)
+	setOrderCols(t, zero, "renewal_state = 'cancelled', amount_minor = 0, amount_text = '₱0.00'")
+	if ok, err := db.HasRealSucceededPayOrder(localCtx, "zerocard", db.PayKindSubscription); err != nil || ok {
+		t.Fatal("0 元开通的单不能过门槛", ok, err)
+	}
+	setOrderCols(t, zero, "amount_minor = 112000, amount_text = '₱1,120.00'")
+	if ok, err := db.HasRealSucceededPayOrder(localCtx, "zerocard", db.PayKindSubscription); err != nil || !ok {
+		t.Fatal("真实扣款的单应过门槛", ok, err)
 	}
 }
 

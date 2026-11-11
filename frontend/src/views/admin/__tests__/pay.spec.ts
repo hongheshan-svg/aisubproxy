@@ -6,6 +6,8 @@ import { createMemoryHistory, createRouter } from 'vue-router'
 import { renderToString } from 'vue/server-renderer'
 import { ID_INJECTION_KEY } from 'element-plus/es/hooks/use-id/index.mjs'
 import { ZINDEX_INJECTION_KEY } from 'element-plus/es/hooks/use-z-index/index.mjs'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
 vi.hoisted(() => {
   const data: Record<string, string> = {}
@@ -169,9 +171,26 @@ describe('付款配置：Codex 点数档', () => {
     expect(html).not.toContain('credit250')
   })
 
+  it('订阅表有「允许 0 元开通」列和提示，点数表没有', async () => {
+    const html = await render(PaySubscriptionPlans, { modelValue: [planToForm(plus, REGIONS)] }, '/', true)
+    expect(colLabels(html)).toContain('允许 0 元开通')
+    expect(html).toContain('结账页显示 0 元（首月免费等优惠）时照样开通；不勾则放弃这一单，不注资。')
+    const creditHtml = await render(PayCreditPlans, { modelValue: [planToForm(credit('credit250', 250), REGIONS)] }, '/', true)
+    expect(creditHtml).not.toContain('允许 0 元开通')
+  })
+
   it('没有点数档时不渲染', async () => {
     const html = await render(PayCreditPlans, { modelValue: [planToForm(plus, REGIONS)] })
     expect(html).not.toContain('data-testid="credit-plans"')
+  })
+})
+
+// SSR 下表格行和详情抽屉不渲染，直接查源码：列表和详情的金额栏都要带上订单状态，才能区分「0 元开通」和「页面显示 0 元」。
+describe('订单金额栏带订单状态', () => {
+  it('列表和详情调用 orderAmountLabel 时都传入订单状态', () => {
+    const src = readFileSync(fileURLToPath(new URL('../MarsWallexPay.vue', import.meta.url)), 'utf8')
+    expect(src).toContain('orderAmountLabel(row.amount_minor, row.amount_text, row.currency, row.state)')
+    expect(src).toContain('orderAmountLabel(detail.order.amount_minor, detail.order.amount_text, detail.order.currency, detail.order.state)')
   })
 })
 

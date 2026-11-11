@@ -497,18 +497,9 @@ func (s *Service) noteVerifyErr(ctx context.Context, j *job, source, prefix stri
 // verifyAccount 解开单据里的会话（终态才清空）查账号，判断是否已是目标套餐。
 // 期望套餐类型直接读套餐表：下单后管理员停用该地区不影响确认。
 func (s *Service) verifyAccount(ctx context.Context, j *job) (bool, error) {
-	tbl, err := LoadPlanTable()
+	expect, err := expectPlanType(j.o.PlanKey)
 	if err != nil {
 		return false, err
-	}
-	expect := ""
-	for i := range tbl {
-		if tbl[i].Key == j.o.PlanKey {
-			expect = strings.TrimSpace(tbl[i].ExpectPlanType)
-		}
-	}
-	if expect == "" {
-		return false, fmt.Errorf("套餐 %s 未配置期望套餐类型", j.o.PlanKey)
 	}
 	gpt, err := s.verifyClient(ctx, j)
 	if err != nil {
@@ -519,6 +510,25 @@ func (s *Service) verifyAccount(ctx context.Context, j *job) (bool, error) {
 		return false, err
 	}
 	return strings.EqualFold(strings.TrimSpace(acc.PlanType), expect), nil
+}
+
+// expectPlanType 从套餐表读出套餐 planKey 开通后账号应有的套餐类型（已去掉首尾空白）；没配置时报错。
+// 确认成功（verifyAccount）和 0 元单关续费后的复查（recheckZero）共用。
+func expectPlanType(planKey string) (string, error) {
+	tbl, err := LoadPlanTable()
+	if err != nil {
+		return "", err
+	}
+	expect := ""
+	for i := range tbl {
+		if tbl[i].Key == planKey {
+			expect = strings.TrimSpace(tbl[i].ExpectPlanType)
+		}
+	}
+	if expect == "" {
+		return "", fmt.Errorf("套餐 %s 未配置期望套餐类型", planKey)
+	}
+	return expect, nil
 }
 
 // verifyClient 解开单据里的会话（终态才清空）、按地区代理建 ChatGPT 客户端并刷新会话。确认阶段查账号、查点数余额、读已存卡共用。

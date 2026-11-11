@@ -1,6 +1,7 @@
 <template>
   <div class="space-y-4" data-testid="subscription-plans">
     <p class="text-xs text-muted">{{ BUILTIN_NOTE }}</p>
+    <p class="text-xs text-muted">{{ ALLOW_ZERO_NOTE }}</p>
     <div v-for="p in subscriptionPlans" :key="p.key" class="space-y-2" :data-plan="p.key">
       <div class="font-semibold flex flex-wrap items-center gap-2">
         {{ p.label || p.key }}
@@ -11,6 +12,9 @@
         <el-table-column label="地区" width="70" prop="region" />
         <el-table-column label="启用" width="70">
           <template #default="{ row }"><el-switch v-model="row.enabled" /></template>
+        </el-table-column>
+        <el-table-column label="允许 0 元开通" width="110">
+          <template #default="{ row }"><el-switch v-model="row.allowZero" /></template>
         </el-table-column>
         <el-table-column label="币种" width="110">
           <template #default="{ row }"><el-input v-model="row.currency" size="small" maxlength="3" autocomplete="off" /></template>
@@ -49,7 +53,7 @@
 // 付款配置里的订阅套餐：每个地区可配预期金额、最低金额、上限和注资。编辑的是父组件的表单（同一份 plansForm），随「保存」一起提交。
 import { computed, reactive } from 'vue'
 import {
-  BUILTIN_NOTE, applyBuiltinPrice, builtinRegions, capBelowExpect, currencyDigits, floorProblem, isCreditPlan, toMinor,
+  ALLOW_ZERO_NOTE, BUILTIN_NOTE, applyBuiltinPrice, builtinRegions, capBelowExpect, currencyDigits, floorProblem, isCreditPlan, toMinor,
   type BuiltinPrices, type FormPlan, type FormRow,
 } from '../../../lib/pay'
 

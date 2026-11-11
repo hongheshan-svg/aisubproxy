@@ -551,7 +551,11 @@ func (e *localEnv) waitOrdersFailed(id int64, n int) {
 // seedRealPayment 写一笔系统自动确认成功、已关闭续费的真实开通单：过订阅开通码的发码硬门槛。
 func (e *localEnv) seedRealPayment() {
 	e.t.Helper()
-	e.markRenewalCancelled(e.insertOrder("admin_test", "admin", 0, "seed@example.com", "succeeded", "", true))
+	no := e.insertOrder("admin_test", "admin", 0, "seed@example.com", "succeeded", "", true)
+	e.markRenewalCancelled(no)
+	if _, err := db.DB.Exec(`UPDATE pay_orders SET amount_minor = 112000, amount_text = '₱1,120.00' WHERE order_no = ?`, no); err != nil {
+		e.t.Fatal(err)
+	}
 }
 
 // markRenewalCancelled 把一张成功的开通单记成已关闭续费并核实。

@@ -710,6 +710,11 @@ func TestAdminProviderReadiness(t *testing.T) {
 	if mw["ok"] != false || !strings.Contains(localBody(t, mw["problems"]), "需要一笔系统自动确认成功的真实付款") {
 		t.Fatalf("硬门槛要列为原因: %v", mw)
 	}
+	// 订阅开通码的提示原文：0 元开通的单也不算（设计 2026-11-11 §4.5）
+	const firstPayHint = "需要一笔系统自动确认成功的真实付款，并且开通后已关闭续费（试运行单、人工定论的单、续费没关掉的单、0 元开通的单都不算），请先在后台测试兑换跑通一笔"
+	if !strings.Contains(localBody(t, mw["problems"]), firstPayHint) {
+		t.Fatalf("硬门槛提示应是「%s」: %v", firstPayHint, mw["problems"])
+	}
 	checks := map[string]bool{}
 	for _, it := range mw["checks"].([]any) {
 		c := it.(map[string]any)

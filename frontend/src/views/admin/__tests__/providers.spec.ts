@@ -68,6 +68,7 @@ describe('卡服务商页', () => {
     // 首笔真实付款提示由检查项数据触发
     expect((html.match(/data-testid="first-pay"/g) || []).length).toBe(1)
     expect(html).toContain('还差一笔系统自动确认成功的真实付款')
+    expect(html).toContain('试运行单、人工定论的单和 0 元开通的单都不算。')
   })
 
   it('按产品表格：每行一个产品，选项只含支持该产品的服务商，不支持的档位用小字列出', async () => {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   applyBuiltinPrice, failureLabel, failureText, floorProblem, formatMinor, formToPlan, fromMinor, isTerminal, pageOutcomeLabel, payBlockReason, planToForm,
-  proxyTestText, regionWithName, stateLabel, toMinor, type PlanConf,
+  orderAmountLabel, proxyTestText, regionWithName, stateLabel, toMinor, type PlanConf,
 } from '../pay'
 
 describe('regionWithName', () => {
@@ -156,5 +156,44 @@ describe('最低金额', () => {
     expect(floorProblem(10000, 10000, 12000)).toBe('')
     expect(floorProblem(0, 10000, 12000)).toBe('')
     expect(floorProblem(5000, 0, 0)).toBe('')
+  })
+})
+
+describe('允许 0 元开通', () => {
+  const plan = (kind: string, allow?: boolean): PlanConf => ({
+    key: 'k', label: 'K', chatgpt_plan_name: 'n', expect_plan_type: 'plus', kind,
+    regions: { US: { enabled: true, currency: 'USD', cap_minor: 2200, fund_cents: 2500, ...(allow === undefined ? {} : { allow_zero: allow }) } },
+  })
+  it('planToForm 读出 allow_zero，缺字段时为 false', () => {
+    expect(planToForm(plan('subscription', true), ['US']).rows[0].allowZero).toBe(true)
+    expect(planToForm(plan('subscription'), ['US']).rows[0].allowZero).toBe(false)
+  })
+  it('formToPlan：订阅写出行上的值，点数一律写 false', () => {
+    const sub = planToForm(plan('subscription', true), ['US'])
+    expect(formToPlan(sub).regions.US.allow_zero).toBe(true)
+    const credit = planToForm(plan('credit', true), ['US'])
+    credit.rows[0].allowZero = true
+    expect(formToPlan(credit).regions.US.allow_zero).toBe(false)
+  })
+  it('orderAmountLabel：大于 0 照旧显示金额，不看状态', () => {
+    expect(orderAmountLabel(112000, '₱1,120.00', 'PHP', 'succeeded')).toBe(formatMinor(112000, 'PHP'))
+    expect(orderAmountLabel(112000, '₱1,120.00', 'PHP', 'failed')).toBe(formatMinor(112000, 'PHP'))
+  })
+  it('orderAmountLabel：页面金额是 0 且成功才标「0 元开通」', () => {
+    expect(orderAmountLabel(0, '$0.00', 'USD', 'succeeded')).toBe(formatMinor(0, 'USD') + '（0 元开通）')
+  })
+  it('orderAmountLabel：页面金额是 0 但没开通（放弃、试运行）标「页面显示 0 元」，不含「开通」', () => {
+    for (const state of ['failed', 'previewed', 'needs_review']) {
+      const label = orderAmountLabel(0, '₱0.00', 'PHP', state)
+      expect(label).toBe(formatMinor(0, 'PHP') + '（页面显示 0 元）')
+      expect(label).not.toContain('开通')
+    }
+  })
+  it('orderAmountLabel：没读到金额、读不出金额、币种不符都显示「—」', () => {
+    for (const state of ['succeeded', 'failed']) {
+      expect(orderAmountLabel(0, '', 'USD', state)).toBe('—')
+      expect(orderAmountLabel(0, 'Free', 'USD', state)).toBe('—')
+      expect(orderAmountLabel(0, 'US$20.00', 'PHP', state)).toBe('—')
+    }
   })
 })

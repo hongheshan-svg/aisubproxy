@@ -1,6 +1,7 @@
 package payengine
 
 import (
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -147,7 +148,8 @@ func TestSavePlanTableValidates(t *testing.T) {
 		}
 	}
 	tbl := DefaultPlanTable()
-	tbl[1].Regions["PH"] = RegionConf{Enabled: true, Currency: "PHP", CapMinor: 1234, FloorMinor: 1000, FundCents: 99}
+	// 读出的每个地区 AllowZero 都不是 nil，存的时候也带上，才能原样读回
+	tbl[1].Regions["PH"] = RegionConf{Enabled: true, Currency: "PHP", CapMinor: 1234, FloorMinor: 1000, FundCents: 99, AllowZero: boolPtr(false)}
 	if err := SavePlanTable(tbl); err != nil {
 		t.Fatal(err)
 	}
@@ -424,4 +426,178 @@ func TestDefaultFloor(t *testing.T) {
 			}
 		}
 	}
+}
+
+// saveRegion 读出当前套餐表，改其中一个地区后整表保存（Regions 是 map，要整项写回）。
+func saveRegion(t *testing.T, key, region string, f func(*RegionConf)) {
+	t.Helper()
+	tbl, err := LoadPlanTable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range tbl {
+		if tbl[i].Key == key {
+			rc := tbl[i].Regions[region]
+			f(&rc)
+			tbl[i].Regions[region] = rc
+		}
+	}
+	if err := SavePlanTable(tbl); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// loadRegion 读出当前套餐表里某套餐某地区的配置。
+func loadRegion(t *testing.T, key, region string) RegionConf {
+	t.Helper()
+	tbl, err := LoadPlanTable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range tbl {
+		if p.Key == key {
+			rc, ok := p.Regions[region]
+			if !ok {
+				t.Fatalf("%s 缺地区 %s", key, region)
+			}
+			return rc
+		}
+	}
+	t.Fatalf("套餐表缺 %s", key)
+	return RegionConf{}
+}
+
+// 「允许 0 元开通」：出厂只有 Plus 允许；旧表缺字段按默认补；保存时缺字段沿用当前值；点数档一律不允许。
+func TestPlanTableAllowZero(t *testing.T) {
+	t.Run("出厂默认", func(t *testing.T) {
+		dbtest.Open(t)
+		if err := db.SetSetting(settingPlanTable, ""); err != nil {
+			t.Fatal(err)
+		}
+		tbl, err := LoadPlanTable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		plusRegions := 0
+		for _, p := range tbl {
+			for _, r := range Regions {
+				rc, ok := p.Regions[r]
+				if !ok {
+					t.Fatalf("%s 缺地区 %s", p.Key, r)
+				}
+				if rc.AllowZero == nil {
+					t.Fatalf("%s/%s 的 AllowZero 不应为 nil", p.Key, r)
+				}
+				if PlanKind(p.Key) == KindCredit && rc.ZeroAllowed() {
+					t.Fatalf("点数档 %s/%s 不应允许 0 元", p.Key, r)
+				}
+				if want := p.Key == "plus"; rc.ZeroAllowed() != want {
+					t.Fatalf("%s/%s ZeroAllowed = %v，期望 %v", p.Key, r, rc.ZeroAllowed(), want)
+				}
+				if p.Key == "plus" {
+					plusRegions++
+				}
+			}
+		}
+		if plusRegions != 5 {
+			t.Fatalf("plus 应有 5 个地区，实际 %d", plusRegions)
+		}
+	})
+
+	t.Run("旧表缺字段", func(t *testing.T) {
+		dbtest.Open(t)
+		raw := `[{"key":"plus","label":"Plus","chatgpt_plan_name":"chatgptplusplan","expect_plan_type":"plus","regions":{"PH":{"enabled":true,"currency":"PHP","cap_minor":900,"fund_cents":50}}},` +
+			`{"key":"pro_20x","label":"Pro 20x","chatgpt_plan_name":"chatgptpro","expect_plan_type":"pro","regions":{"PH":{"enabled":true,"currency":"PHP","cap_minor":900,"fund_cents":50}}}]`
+		if err := db.SetSetting(settingPlanTable, raw); err != nil {
+			t.Fatal(err)
+		}
+		tbl, err := LoadPlanTable()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range tbl {
+			for r, rc := range p.Regions {
+				if rc.AllowZero == nil {
+					t.Fatalf("%s/%s 的 AllowZero 不应为 nil", p.Key, r)
+				}
+			}
+		}
+		if rc := loadRegion(t, "plus", "PH"); !rc.ZeroAllowed() {
+			t.Fatalf("旧表的 plus/PH 应按默认允许 0 元: %+v", rc)
+		}
+		if rc := loadRegion(t, "pro_20x", "PH"); rc.ZeroAllowed() {
+			t.Fatalf("旧表的 pro_20x/PH 应按默认不允许 0 元: %+v", rc)
+		}
+	})
+
+	t.Run("保存时缺字段沿用当前值", func(t *testing.T) {
+		dbtest.Open(t)
+		saveRegion(t, "plus", "US", func(rc *RegionConf) { rc.AllowZero = boolPtr(false) })
+		saveRegion(t, "plus", "US", func(rc *RegionConf) { rc.AllowZero = nil })
+		if rc := loadRegion(t, "plus", "US"); rc.AllowZero == nil || rc.ZeroAllowed() {
+			t.Fatalf("plus/US 手动取消后再存缺字段的表，应仍不允许: %+v", rc)
+		}
+		saveRegion(t, "pro_20x", "US", func(rc *RegionConf) { rc.AllowZero = boolPtr(true) })
+		saveRegion(t, "pro_20x", "US", func(rc *RegionConf) { rc.AllowZero = nil })
+		if rc := loadRegion(t, "pro_20x", "US"); rc.AllowZero == nil || !rc.ZeroAllowed() {
+			t.Fatalf("pro_20x/US 手动勾上后再存缺字段的表，应仍允许: %+v", rc)
+		}
+	})
+
+	t.Run("点数档传 true 存成 false", func(t *testing.T) {
+		dbtest.Open(t)
+		saveRegion(t, "credit250", "PH", func(rc *RegionConf) { rc.AllowZero = boolPtr(true) })
+		if rc := loadRegion(t, "credit250", "PH"); rc.AllowZero == nil || rc.ZeroAllowed() {
+			t.Fatalf("点数档读出来应不允许 0 元: %+v", rc)
+		}
+		raw, err := db.GetSetting(settingPlanTable)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var saved []PlanConf
+		if err := json.Unmarshal([]byte(raw), &saved); err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, p := range saved {
+			if p.Key != "credit250" {
+				continue
+			}
+			found = true
+			if rc := p.Regions["PH"]; rc.AllowZero == nil || *rc.AllowZero {
+				t.Fatalf("点数档存进库的应是明确的 false: %+v", rc)
+			}
+		}
+		if !found {
+			t.Fatal("库里没有 credit250")
+		}
+	})
+
+	t.Run("库里点数档写着 true 读出来仍不允许", func(t *testing.T) {
+		dbtest.Open(t)
+		// 绕过 SavePlanTable 直接写库：读取路径自己也要把点数档兜底成不允许
+		raw := `[{"key":"credit250","label":"Codex 点数 250","regions":{"PH":{"enabled":true,"currency":"PHP","cap_minor":900,"fund_cents":50,"allow_zero":true}}}]`
+		if err := db.SetSetting(settingPlanTable, raw); err != nil {
+			t.Fatal(err)
+		}
+		if rc := loadRegion(t, "credit250", "PH"); !rc.Enabled || rc.AllowZero == nil || rc.ZeroAllowed() {
+			t.Fatalf("点数档读出来应不允许 0 元: %+v", rc)
+		}
+	})
+
+	t.Run("ResolvePlan 带出开关", func(t *testing.T) {
+		dbtest.Open(t)
+		for _, v := range []bool{false, true} {
+			saveRegion(t, "plus", "PH", func(rc *RegionConf) {
+				rc.Enabled, rc.FundCents, rc.AllowZero = true, 100, boolPtr(v)
+			})
+			_, rc, err := ResolvePlan("plus", "PH", false)
+			if err != nil {
+				t.Fatalf("plus/PH 应可用: %v", err)
+			}
+			if want := loadRegion(t, "plus", "PH").ZeroAllowed(); rc.ZeroAllowed() != want || want != v {
+				t.Fatalf("ResolvePlan 的 ZeroAllowed = %v，表里 %v，保存的 %v", rc.ZeroAllowed(), want, v)
+			}
+		}
+	})
 }

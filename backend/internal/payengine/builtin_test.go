@@ -72,11 +72,17 @@ func TestDefaultPlanTableUsesBuiltin(t *testing.T) {
 				}
 				continue
 			}
-			if rc != b || rc.Enabled || rc.FundCents != 0 {
+			if pricesOf(rc) != b || rc.Enabled || rc.FundCents != 0 {
 				t.Fatalf("%s/%s 出厂值应等于内置价: %+v 内置 %+v", p.Key, r, rc, b)
 			}
 		}
 	}
+}
+
+// pricesOf 去掉「允许 0 元开通」再比较：它是指针，不能用 == 比，这里只比价格相关字段，开关见 TestPlanTableAllowZero。
+func pricesOf(rc RegionConf) RegionConf {
+	rc.AllowZero = nil
+	return rc
 }
 
 func rawRegion(key, region, body string) string {
@@ -107,15 +113,15 @@ func TestLoadPlanTableFillsZeroAmounts(t *testing.T) {
 		return RegionConf{}
 	}
 	// 全是 0：补成内置值，启用开关和注资保留
-	if rc := get("plus", "PH"); rc != (RegionConf{Enabled: true, Currency: "PHP", ExpectMinor: 99900, FloorMinor: 87412, CapMinor: 112200, FundCents: 2500}) {
+	if rc := get("plus", "PH"); pricesOf(rc) != (RegionConf{Enabled: true, Currency: "PHP", ExpectMinor: 99900, FloorMinor: 87412, CapMinor: 112200, FundCents: 2500}) {
 		t.Fatalf("plus/PH: %+v", rc)
 	}
 	// 管理员填了预期和上限：只补最低金额
-	if rc := get("pro_5x", "US"); rc != (RegionConf{Currency: "USD", ExpectMinor: 10000, FloorMinor: 10000, CapMinor: 10500}) {
+	if rc := get("pro_5x", "US"); pricesOf(rc) != (RegionConf{Currency: "USD", ExpectMinor: 10000, FloorMinor: 10000, CapMinor: 10500}) {
 		t.Fatalf("pro_5x/US: %+v", rc)
 	}
 	// 预期补 2000 会大于管理员的上限 1500，不补；上限低于内置最低 2000，最低不补、留 0（终审二 Minor-2，以前降到上限）
-	if rc := get("plus", "US"); rc != (RegionConf{Enabled: true, Currency: "USD", ExpectMinor: 0, FloorMinor: 0, CapMinor: 1500}) {
+	if rc := get("plus", "US"); pricesOf(rc) != (RegionConf{Enabled: true, Currency: "USD", ExpectMinor: 0, FloorMinor: 0, CapMinor: 1500}) {
 		t.Fatalf("plus/US: %+v", rc)
 	}
 	// 币种被管理员改了：不补
@@ -158,7 +164,7 @@ func TestLoadPlanTableFillKeepsSaveable(t *testing.T) {
 		}
 		for _, p := range tbl {
 			if p.Key == "plus" {
-				if rc := p.Regions["US"]; rc != c.want {
+				if rc := p.Regions["US"]; pricesOf(rc) != c.want {
 					t.Fatalf("%s: 补完是 %+v，期望 %+v", c.name, rc, c.want)
 				}
 			}
@@ -223,7 +229,7 @@ func TestFillBuiltinWrongExpectLeavesFloorZero(t *testing.T) {
 		}
 	}
 	want := RegionConf{Enabled: true, Currency: "USD", ExpectMinor: 2000, FloorMinor: 0, CapMinor: 11000, FundCents: 2500}
-	if rc != want {
+	if pricesOf(rc) != want {
 		t.Fatalf("pro_5x/US 预期填错时最低应留 0: %+v 期望 %+v", rc, want)
 	}
 	if err := SavePlanTable(tbl); err != nil {
@@ -262,7 +268,7 @@ func TestFillBuiltinLowCapLeavesFloorZero(t *testing.T) {
 	}
 	// 内置预期 10000 大于上限 2000：预期不补；上限 2000 低于内置最低 10000：最低不补
 	want := RegionConf{Enabled: true, Currency: "USD", CapMinor: 2000, FundCents: 2500}
-	if rc != want {
+	if pricesOf(rc) != want {
 		t.Fatalf("pro_5x/US 只填低上限时最低应留 0: %+v 期望 %+v", rc, want)
 	}
 	if err := SavePlanTable(tbl); err != nil {

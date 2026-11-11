@@ -46,11 +46,11 @@ describe('点数档的付款配置', () => {
   const creditPlan: PlanConf = {
     key: 'credit250', label: 'Codex 点数 250', chatgpt_plan_name: '', expect_plan_type: '', kind: 'credit', credit_quantity: 250,
     regions: {
-      PH: { enabled: true, currency: 'PHP', expect_minor: 56500, floor_minor: 56500, cap_minor: 63280, fund_cents: 1500 },
-      US: { enabled: false, currency: 'USD', expect_minor: 0, floor_minor: 0, cap_minor: 0, fund_cents: 0 },
-      JP: { enabled: false, currency: 'JPY', expect_minor: 0, floor_minor: 0, cap_minor: 0, fund_cents: 0 },
-      CL: { enabled: false, currency: 'CLP', expect_minor: 0, floor_minor: 0, cap_minor: 0, fund_cents: 0 },
-      EG: { enabled: false, currency: 'EGP', expect_minor: 0, floor_minor: 0, cap_minor: 0, fund_cents: 0 },
+      PH: { enabled: true, currency: 'PHP', expect_minor: 56500, floor_minor: 56500, cap_minor: 63280, fund_cents: 1500, allow_zero: false },
+      US: { enabled: false, currency: 'USD', expect_minor: 0, floor_minor: 0, cap_minor: 0, fund_cents: 0, allow_zero: false },
+      JP: { enabled: false, currency: 'JPY', expect_minor: 0, floor_minor: 0, cap_minor: 0, fund_cents: 0, allow_zero: false },
+      CL: { enabled: false, currency: 'CLP', expect_minor: 0, floor_minor: 0, cap_minor: 0, fund_cents: 0, allow_zero: false },
+      EG: { enabled: false, currency: 'EGP', expect_minor: 0, floor_minor: 0, cap_minor: 0, fund_cents: 0, allow_zero: false },
     },
   }
 
@@ -81,8 +81,8 @@ describe('点数档的付款配置', () => {
       regions: { PH: { enabled: true, currency: 'PHP', cap_minor: 120000, fund_cents: 3000 } },
     }
     const back = formToPlan(planToForm(sub, REGIONS))
-    expect(back.regions.PH).toEqual({ enabled: true, currency: 'PHP', expect_minor: 0, floor_minor: 0, cap_minor: 120000, fund_cents: 3000 })
-    expect(back.regions.US).toEqual({ enabled: false, currency: '', expect_minor: 0, floor_minor: 0, cap_minor: 0, fund_cents: 0 })
+    expect(back.regions.PH).toEqual({ enabled: true, currency: 'PHP', expect_minor: 0, floor_minor: 0, cap_minor: 120000, fund_cents: 3000, allow_zero: false })
+    expect(back.regions.US).toEqual({ enabled: false, currency: '', expect_minor: 0, floor_minor: 0, cap_minor: 0, fund_cents: 0, allow_zero: false })
     expect(back.kind).toBe('')
   })
 
@@ -105,7 +105,7 @@ describe('点数档的付款配置', () => {
     }, REGIONS)
     expect(applyBuiltinPrice(form, 'PH', builtin)).toBe(true)
     const back = formToPlan(form)
-    expect(back.regions.PH).toEqual({ enabled: false, currency: 'PHP', expect_minor: 226000, floor_minor: 197750, cap_minor: 253120, fund_cents: 4500 })
+    expect(back.regions.PH).toEqual({ enabled: false, currency: 'PHP', expect_minor: 226000, floor_minor: 197750, cap_minor: 253120, fund_cents: 4500, allow_zero: false })
     expect(back.regions.US).toEqual(creditPlan.regions.US)
     expect(applyBuiltinPrice(form, 'US', builtin)).toBe(true)
     expect(formToPlan(form).regions.US).toMatchObject({ currency: 'USD', expect_minor: 4000, floor_minor: 4000, cap_minor: 4400 })

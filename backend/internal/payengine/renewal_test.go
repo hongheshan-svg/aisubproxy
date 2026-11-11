@@ -2,9 +2,11 @@ package payengine
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/tuzi/cdk-recharge-system/internal/chatgpt"
 	"github.com/tuzi/cdk-recharge-system/internal/db"
@@ -460,5 +462,240 @@ func TestRenewalFallbackAccountKeepsNil(t *testing.T) {
 	g := waitRenewal(t, o.OrderNo, RenewalCancelled)
 	if g.AccessUntil != nil {
 		t.Fatalf("AccessUntil 应为空: %v", *g.AccessUntil)
+	}
+}
+
+// 0 元开通的单关续费后复查账号（设计 2026-11-11 §4.4）。
+const (
+	zeroRecheckSame   = "0 元开通的单关闭续费后，账号仍是 plus"
+	zeroRecheckLost   = "0 元开通的单关闭续费后，账号已不是 plus（现在是 free）"
+	zeroRecheckErr    = "0 元开通的单关闭续费后，核实不了账号套餐"
+	zeroRecheckAlertF = "付款单 %s 以 0 元开通，关闭续费后账号已不是 plus（现在是 free），可能关续费让优惠当场结束了，请人工处理"
+)
+
+// runRenewalFlow 在新的续费测试环境里走完一张真实开通单：页面金额 minor/text、支付页给成功、Account 按 accountFn(h) 返回，
+// 等到单据成功、续费记 cancelled，并等这次关续费处理整个结束（复查的事件、告警在续费状态写库之后才写）。
+func runRenewalFlow(t *testing.T, minor int64, text string, accountFn func(h *harness) func(int) (chatgpt.Account, error)) (*harness, *Order) {
+	t.Helper()
+	h := newRenewalHarness(t)
+	h.gpt.accountFn = accountFn(h)
+	h.br.waitOutcome = outcomes(outcomeStep{out: paybrowser.OutcomeSuccess, text: "Thanks"})
+	setPage(h, minor, text)
+	h.start(t)
+	o := h.submit(t, false)
+	if g := waitDone(t, o.OrderNo); g.State != StateSucceeded {
+		t.Fatalf("应成功: %+v", g)
+	}
+	waitRenewal(t, o.OrderNo, RenewalCancelled)
+	waitRenewalIdle(t, h, o.OrderNo)
+	return h, mustOrder(t, o.OrderNo)
+}
+
+// waitRenewalIdle 轮询到这张单不在关续费中，最多 5 秒。续费已是 cancelled 的单不会再被领取，所以等到的就是这次处理的结束。
+func waitRenewalIdle(t *testing.T, h *harness, no string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for h.svc.renewalBusy(no) {
+		if time.Now().After(deadline) {
+			t.Fatalf("单据 %s 的关续费处理没有结束", no)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// accountAfterCancel 数出第一次调用取消续费接口之后 Account 又被调用了几次，也就是关续费阶段查了几次账号。
+func accountAfterCancel(h *harness) int {
+	n, seen := 0, false
+	for _, name := range h.gpt.order() {
+		switch {
+		case name == "CancelRenewal":
+			seen = true
+		case seen && name == "Account":
+			n++
+		}
+	}
+	return n
+}
+
+// plusOnConfirm 让确认成功时账号是 plus（第 1 次预检是 free）；取消续费接口调过之后，Account 改按 after 返回（nil 表示照旧 plus）。
+func plusOnConfirm(after func() (chatgpt.Account, error)) func(h *harness) func(int) (chatgpt.Account, error) {
+	return func(h *harness) func(int) (chatgpt.Account, error) {
+		confirm := planFrom(2)
+		return func(n int) (chatgpt.Account, error) {
+			if after != nil && h.gpt.count("CancelRenewal") > 0 {
+				return after()
+			}
+			return confirm(n)
+		}
+	}
+}
+
+// zeroRecheckEvents 返回时间线上复查留下的事件（原文以「0 元开通的单关闭续费后」开头）。
+func zeroRecheckEvents(t *testing.T, no string) []Event {
+	t.Helper()
+	var out []Event
+	for _, e := range eventStates(t, no) {
+		if strings.HasPrefix(e.Message, "0 元开通的单关闭续费后") {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// assertNoSecrets 确认文字里没有会话、token 和账号邮箱。
+func assertNoSecrets(t *testing.T, what string, texts ...string) {
+	t.Helper()
+	for _, s := range texts {
+		for _, sec := range []string{testSession, testAccessToken, testSessionToken, "at-refreshed"} {
+			if strings.Contains(s, sec) {
+				t.Fatalf("%s 不能带会话或 token %q: %s", what, sec, s)
+			}
+		}
+		if strings.Contains(strings.ToLower(s), "buyer@example.com") {
+			t.Fatalf("%s 不能带账号邮箱: %s", what, s)
+		}
+	}
+}
+
+// 0 元开通、关续费后账号仍是 plus：续费记 cancelled，记一条 info，不告警；关续费阶段比同样设置下的付费单多查一次账号。
+func TestZeroAmountRenewalRecheckStillPlus(t *testing.T) {
+	var paid int
+	if !t.Run("同样设置下的付费单", func(t *testing.T) {
+		h, _ := runRenewalFlow(t, 112000, "₱1,120.00", plusOnConfirm(nil))
+		paid = accountAfterCancel(h)
+	}) {
+		t.FailNow()
+	}
+	h, o := runRenewalFlow(t, 0, "₱0.00", plusOnConfirm(nil))
+	if o.AmountMinor != 0 || o.AmountText != "₱0.00" || o.State != StateSucceeded || o.RenewalState != RenewalCancelled {
+		t.Fatalf("应是成功的 0 元单、续费已关: %+v", o)
+	}
+	if n := countEventExact(t, o.OrderNo, "info", zeroRecheckSame); n != 1 {
+		t.Fatalf("应有一条 info「%s」: %d %+v", zeroRecheckSame, n, eventStates(t, o.OrderNo))
+	}
+	if ev := zeroRecheckEvents(t, o.OrderNo); len(ev) != 1 {
+		t.Fatalf("复查只记一条事件: %+v", ev)
+	}
+	if a := h.alerts.Texts(); len(a) != 0 {
+		t.Fatalf("仍是 plus 不应告警: %v", a)
+	}
+	if got := accountAfterCancel(h); got != paid+1 {
+		t.Fatalf("关续费阶段应比付费单多查一次账号: 0 元单 %d 次，付费单 %d 次", got, paid)
+	}
+}
+
+// 0 元开通、关续费后账号掉回 free：续费仍记 cancelled、单据仍成功，记一条 warn 并告警一次；都不带会话和邮箱。
+func TestZeroAmountRenewalRecheckLostPlan(t *testing.T) {
+	h, o := runRenewalFlow(t, 0, "₱0.00", plusOnConfirm(func() (chatgpt.Account, error) {
+		return chatgpt.Account{AccountID: "acc-1", PlanType: "free", HasActiveSubscription: false}, nil
+	}))
+	if o.State != StateSucceeded || o.RenewalState != RenewalCancelled {
+		t.Fatalf("复查结果不影响续费状态和单据: %+v", o)
+	}
+	ev := zeroRecheckEvents(t, o.OrderNo)
+	if len(ev) != 1 || ev[0].Level != "warn" || ev[0].Message != zeroRecheckLost {
+		t.Fatalf("应有一条 warn「%s」: %+v", zeroRecheckLost, ev)
+	}
+	a := h.alerts.Texts()
+	if want := fmt.Sprintf(zeroRecheckAlertF, o.OrderNo); len(a) != 1 || a[0] != want {
+		t.Fatalf("应告警一次「%s」: %v", want, a)
+	}
+	assertNoSecrets(t, "告警", a...)
+	assertNoSecrets(t, "事件", ev[0].Message)
+}
+
+// 0 元开通、复查时账号查询出错：续费仍记 cancelled，记一条 warn「核实不了账号套餐」（出错文字已脱敏），不告警。
+func TestZeroAmountRenewalRecheckError(t *testing.T) {
+	h, o := runRenewalFlow(t, 0, "₱0.00", plusOnConfirm(func() (chatgpt.Account, error) {
+		return chatgpt.Account{}, fmt.Errorf("HTTP 502：token %s / %s，账号 %s", "at-refreshed", testSessionToken, "buyer@example.com")
+	}))
+	if o.State != StateSucceeded || o.RenewalState != RenewalCancelled {
+		t.Fatalf("复查出错不影响续费状态和单据: %+v", o)
+	}
+	ev := zeroRecheckEvents(t, o.OrderNo)
+	if len(ev) != 1 || ev[0].Level != "warn" || !strings.HasPrefix(ev[0].Message, zeroRecheckErr) || !strings.Contains(ev[0].Message, "HTTP 502") {
+		t.Fatalf("应有一条 warn「%s：…」: %+v", zeroRecheckErr, ev)
+	}
+	assertNoSecrets(t, "事件", ev[0].Message)
+	if a := h.alerts.Texts(); len(a) != 0 {
+		t.Fatalf("查询出错不告警: %v", a)
+	}
+}
+
+// 0 元开通、复查时账号查询成功但没带套餐类型：照样按「不是期望套餐」记 warn 并告警一次，现在的套餐显示「未知」而不是空。
+func TestZeroAmountRenewalRecheckEmptyPlanType(t *testing.T) {
+	h, o := runRenewalFlow(t, 0, "₱0.00", plusOnConfirm(func() (chatgpt.Account, error) {
+		return chatgpt.Account{AccountID: "acc-1", PlanType: "", HasActiveSubscription: false}, nil
+	}))
+	if o.State != StateSucceeded || o.RenewalState != RenewalCancelled {
+		t.Fatalf("复查结果不影响续费状态和单据: %+v", o)
+	}
+	const wantEvent = "0 元开通的单关闭续费后，账号已不是 plus（现在是 未知）"
+	ev := zeroRecheckEvents(t, o.OrderNo)
+	if len(ev) != 1 || ev[0].Level != "warn" || ev[0].Message != wantEvent {
+		t.Fatalf("应有一条 warn「%s」: %+v", wantEvent, ev)
+	}
+	a := h.alerts.Texts()
+	wantAlert := fmt.Sprintf("付款单 %s 以 0 元开通，关闭续费后账号已不是 plus（现在是 未知），可能关续费让优惠当场结束了，请人工处理", o.OrderNo)
+	if len(a) != 1 || a[0] != wantAlert || !strings.Contains(a[0], "（现在是 未知）") {
+		t.Fatalf("应告警一次「%s」: %v", wantAlert, a)
+	}
+}
+
+// 0 元开通、复查出错文字很长：脱敏后截到 errorMessageLimit 个字再写时间线，和同文件其他出错文字一致。
+func TestZeroAmountRenewalRecheckErrorTruncated(t *testing.T) {
+	long := "HTTP 502：" + strings.Repeat("长", 2*errorMessageLimit)
+	_, o := runRenewalFlow(t, 0, "₱0.00", plusOnConfirm(func() (chatgpt.Account, error) {
+		return chatgpt.Account{}, errors.New(long)
+	}))
+	prefix := zeroRecheckErr + "："
+	ev := zeroRecheckEvents(t, o.OrderNo)
+	if len(ev) != 1 || ev[0].Level != "warn" || !strings.HasPrefix(ev[0].Message, prefix+"HTTP 502") {
+		t.Fatalf("应有一条 warn「%s…」: %+v", prefix, ev)
+	}
+	if n := utf8.RuneCountInString(strings.TrimPrefix(ev[0].Message, prefix)); n != errorMessageLimit {
+		t.Fatalf("出错文字应截到 %d 个字，实际 %d 个字", errorMessageLimit, n)
+	}
+}
+
+// 关续费的重试读到「已经关掉」时也复查：0 元单手动重试，不再发取消请求，照样查一次账号并记事件。
+func TestZeroAmountRenewalRecheckOnRetry(t *testing.T) {
+	h := newRenewalHarness(t)
+	h.gpt.account = accountPlus
+	o := presetSucceeded(t, h, "zero-retry@example.com", map[string]any{"amount_minor": 0, "amount_text": "₱0.00",
+		"renewal_state": RenewalFailed, "renewal_attempts": 4, "renewal_next_at": nil})
+	g, err := h.svc.RetryRenewal(ctx, o.OrderNo, "alice")
+	if err != nil || g.RenewalState != RenewalCancelled || g.State != StateSucceeded {
+		t.Fatalf("手动重试应关掉: %+v %v", g, err)
+	}
+	if n := h.gpt.count("CancelRenewal"); n != 0 {
+		t.Fatalf("读到已关掉就不再取消: %d", n)
+	}
+	// 没启动工作协程、订阅接口给了 will_renew：这里的 Account 只可能是复查
+	if n := h.gpt.count("Account"); n != 1 {
+		t.Fatalf("应复查一次账号: %d", n)
+	}
+	if n := countEventExact(t, o.OrderNo, "info", zeroRecheckSame); n != 1 {
+		t.Fatalf("应有一条 info「%s」: %d %+v", zeroRecheckSame, n, eventStates(t, o.OrderNo))
+	}
+	if a := h.alerts.Texts(); len(a) != 0 {
+		t.Fatalf("仍是 plus 不应告警: %v", a)
+	}
+}
+
+// 付费单（默认页面 ₱1,120.00）关续费不复查：没有「0 元开通」的事件，不告警，关续费阶段不查账号（订阅接口给了 will_renew，本来就不查）。
+func TestRenewalNoRecheckForPaidOrder(t *testing.T) {
+	h, o := runRenewalFlow(t, 112000, "₱1,120.00", plusOnConfirm(nil))
+	if o.AmountMinor != 112000 || o.State != StateSucceeded || o.RenewalState != RenewalCancelled {
+		t.Fatalf("应是成功的付费单、续费已关: %+v", o)
+	}
+	if n := countEvents(t, o.OrderNo, "0 元开通"); n != 0 {
+		t.Fatalf("付费单不应有 0 元开通的事件: %d %+v", n, eventStates(t, o.OrderNo))
+	}
+	if a := h.alerts.Texts(); len(a) != 0 {
+		t.Fatalf("付费单不应告警: %v", a)
+	}
+	if n := accountAfterCancel(h); n != 0 {
+		t.Fatalf("付费单关续费阶段不应多查账号: %d", n)
 	}
 }

@@ -151,7 +151,11 @@ func (e *localEnv) useTestProviders() *fakeUpstream {
 // seedProviderRealPayment 写一笔这家的系统自动确认成功的真实付款单：过这家的发码硬门槛。
 func (e *localEnv) seedProviderRealPayment(prov provider.Name) {
 	e.t.Helper()
-	e.markRenewalCancelled(e.insertProviderOrder(string(prov), "admin_test", "admin", 0, "seed-"+string(prov)+"@example.com", "succeeded", "", true))
+	no := e.insertProviderOrder(string(prov), "admin_test", "admin", 0, "seed-"+string(prov)+"@example.com", "succeeded", "", true)
+	e.markRenewalCancelled(no)
+	if _, err := db.DB.Exec(`UPDATE pay_orders SET amount_minor = 112000, amount_text = '₱1,120.00' WHERE order_no = ?`, no); err != nil {
+		e.t.Fatal(err)
+	}
 }
 
 // issueProviderCode 走后台接口给指定服务商发一张码。

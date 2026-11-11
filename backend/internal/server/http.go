@@ -38,7 +38,7 @@ func New(ctx context.Context, cfg *config.Config) (*Server, error) {
 		return nil, err
 	}
 	// 拒绝启动的检查（ADMIN_PASSWORD、明文旧版卡台密钥要有主密钥、JWT_SECRET、服务商适配器）：只读，
-	// 在改数据之前做；命令行 --check 跑的是同一个函数（在线更新换版本前的预检）
+	// 在 db.Init（建表和库内迁移）之后、旧版密钥迁移和 webhook 清洗之前做；命令行 --check 跑的是同一个函数（在线更新换版本前的预检）
 	if err := startupChecks(cfg.Server.Mode, false); err != nil {
 		return nil, err
 	}
@@ -169,9 +169,6 @@ func upstreamKeysConfigured() (bool, error) {
 // deploy/app.env.example 的占位值，以及带 change-me / changeme / example 字样的值，不区分大小写。
 func isExampleJWTSecret(secret string) bool {
 	lower := strings.ToLower(secret)
-	if lower == "change-me-to-random-32chars-min" {
-		return true
-	}
 	for _, marker := range []string{"change-me", "changeme", "example"} {
 		if strings.Contains(lower, marker) {
 			return true
@@ -466,8 +463,4 @@ func setupRoutes(r *gin.Engine) {
 			c.File(indexFile)
 		})
 	}
-}
-
-func (s *Server) Run(addr string) error {
-	return s.engine.Run(addr)
 }

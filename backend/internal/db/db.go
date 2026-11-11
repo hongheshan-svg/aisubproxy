@@ -107,7 +107,7 @@ func Init(cfg *config.DatabaseConfig) error {
 	db.SetMaxIdleConns(5)
 
 	DB = db
-	log.Println("✓ SQLite 数据库连接成功: data/cdk_recharge.db")
+	log.Println("✓ SQLite 数据库连接成功")
 
 	// 创建表
 	if err := createTables(); err != nil {
@@ -342,10 +342,6 @@ func createTables() error {
 		if _, err := DB.Exec(query); err != nil {
 			// 语句都带 IF NOT EXISTS，正常不会失败；失败多半是磁盘满、库文件损坏或表结构不对，
 			// 带病启动只会在后面以更难懂的方式出错，这里直接终止（审计 A-16）。
-			if strings.Contains(err.Error(), "already exists") {
-				log.Printf("创建表时提示已存在，跳过: %v", err)
-				continue
-			}
 			return fmt.Errorf("建表失败（%s）: %w", ddlHead(query), err)
 		}
 	}
@@ -458,7 +454,6 @@ func legacySHA256(password string) string {
 	return hex.EncodeToString(hash[:])
 }
 
-// HashAdminPassword 现在使用 bcrypt（带盐、慢哈希）。
 // WriteAudit 记录一条管理员操作审计日志（best-effort，失败只记日志不影响主流程）。
 func WriteAudit(username, action, detail, ip string) {
 	if DB == nil {
@@ -472,6 +467,7 @@ func WriteAudit(username, action, detail, ip string) {
 	}
 }
 
+// HashAdminPassword 现在使用 bcrypt（带盐、慢哈希）。
 func HashAdminPassword(password string) (string, error) {
 	b, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
 	if err != nil {

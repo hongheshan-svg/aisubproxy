@@ -63,7 +63,7 @@ func TestMarsWallexKeypairRouteRegistered(t *testing.T) {
 	t.Fatal("route missing: POST /api/v1/admin/marswallex/keypair")
 }
 
-// 付款后台接口的 10 条路由都注册在 /api/v1/admin/pay 下。
+// 付款后台接口的路由都注册在 /api/v1/admin/pay 下。
 func TestPayRoutesRegistered(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	t.Setenv("WEB_DIR", "")
@@ -79,12 +79,14 @@ func TestPayRoutesRegistered(t *testing.T) {
 		"GET " + p + "/orders",
 		"GET " + p + "/orders/:no",
 		"POST " + p + "/orders/:no/resolve",
+		"POST " + p + "/orders/:no/renewal/retry",
 		"GET " + p + "/orders/:no/shots/:name",
 		"GET " + p + "/config",
 		"PUT " + p + "/config",
 		"GET " + p + "/proxies",
 		"PUT " + p + "/proxies",
 		"POST " + p + "/browser-check",
+		"POST " + p + "/proxies/test",
 	} {
 		if !have[want] {
 			t.Errorf("route missing: %s", want)
@@ -92,7 +94,7 @@ func TestPayRoutesRegistered(t *testing.T) {
 	}
 }
 
-// 付款接口必须在 admin 组内：走真实路由和中间件，无凭证一律 401，防止路由被挪出鉴权。
+// 代理换码的后台接口必须在 admin 组内：无凭证一律 401。
 func TestAgentExchangeAdminRoutesRequireAdminAuth(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	t.Setenv("WEB_DIR", "")
@@ -111,6 +113,7 @@ func TestAgentExchangeAdminRoutesRequireAdminAuth(t *testing.T) {
 	}
 }
 
+// 付款接口必须在 admin 组内：走真实路由和中间件，无凭证一律 401，防止路由被挪出鉴权。
 func TestPayRoutesRequireAdminAuth(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	t.Setenv("WEB_DIR", "")
@@ -119,6 +122,7 @@ func TestPayRoutesRequireAdminAuth(t *testing.T) {
 	const no = "PO260101000000abcdef01"
 	for _, c := range []struct{ method, path string }{
 		{"POST", "/orders"}, {"GET", "/orders"}, {"GET", "/orders/" + no},
+		{"POST", "/orders/" + no + "/renewal/retry"}, {"POST", "/proxies/test"},
 		{"POST", "/orders/" + no + "/resolve"}, {"GET", "/orders/" + no + "/shots/01-form.png"},
 		{"GET", "/config"}, {"PUT", "/config"}, {"GET", "/proxies"}, {"PUT", "/proxies"}, {"POST", "/browser-check"},
 		{"GET", "/breaker"}, {"POST", "/breaker/resume"},

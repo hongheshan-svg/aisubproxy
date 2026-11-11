@@ -195,25 +195,6 @@ func LocalCDKIDsForAgentOrder(ctx context.Context, agentID, orderID int64) ([]in
 	return out, rows.Err()
 }
 
-// AgentOrderProductCodes 这个代理商每笔订单的商品编码（订单 ID → 商品编码），只读两列，给码列表标商品用。
-func AgentOrderProductCodes(ctx context.Context, agentID int64) (map[int64]string, error) {
-	rows, err := DB.QueryContext(ctx, `SELECT id, product_code FROM agent_orders WHERE agent_id = ?`, agentID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	out := map[int64]string{}
-	for rows.Next() {
-		var id int64
-		var code string
-		if err := rows.Scan(&id, &code); err != nil {
-			return nil, err
-		}
-		out[id] = code
-	}
-	return out, rows.Err()
-}
-
 // AgentOrderRef 是订单的商品编码和来源，给码列表标商品、标来源用。
 type AgentOrderRef struct{ ProductCode, Source, ExternalRef string }
 

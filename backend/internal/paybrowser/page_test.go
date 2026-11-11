@@ -927,6 +927,24 @@ func TestShotRules(t *testing.T) {
 	}
 }
 
+// P2-01：3DS 验证框铺满整个窗口、背景透明时不截图：截下来就是整页，下面的卡号、有效期、CVC 都在里面。
+// 截图失败引擎只记警告，3DS 照常往下走。
+func TestShotChallengeRefusesFullWindowFrame(t *testing.T) {
+	needChrome(t)
+	f := newFakeCheckout(t)
+	dir := t.TempDir()
+	b, ctx := openCheckout(t, f, "mode=3ds&challenge=full", paybrowser.LaunchOptions{ShotDir: dir})
+	fillAndSubmit(t, b, ctx)
+	waitOutcome(t, b, ctx, paybrowser.OutcomeChallenge)
+
+	if name, err := b.Shot(ctx, "challenge", paybrowser.ShotChallenge); err == nil || !strings.Contains(err.Error(), "一半") {
+		t.Fatalf("Shot(ShotChallenge) = %q, %v，期望因验证框占了窗口一半以上而不截", name, err)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Fatalf("不截图时不应写出文件: %v", entries)
+	}
+}
+
 func TestSavedCardChoosesNew(t *testing.T) {
 	needChrome(t)
 	f := newFakeCheckout(t)

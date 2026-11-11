@@ -12,6 +12,11 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: 'chore(deps)'
+    # chromedp、cdproto 是付款浏览器的核心，0.x 的小版本也会改 API（0.23 起 Action 改成泛型，
+    # 0.14 的写法编译不过）。不自动升级，要升时另开任务按新 API 改，并跑完整 paybrowser 测试。
+    ignore:
+      - dependency-name: github.com/chromedp/chromedp
+      - dependency-name: github.com/chromedp/cdproto
     groups:
       go-minor-patch:
         update-types: [minor, patch]

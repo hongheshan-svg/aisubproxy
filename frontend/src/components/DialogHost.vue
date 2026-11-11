@@ -51,10 +51,10 @@ import { computed, ref, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { dialogState, resolveActive } from '../lib/dialog'
 import { createFocusReturn, initialFocus, nextFocusIndex } from '../lib/dialogFocus'
-import { isAdminPath } from '../router/routes'
+import { surfaceOf } from '../router/routes'
 
 const route = useRoute()
-const userSide = computed(() => !isAdminPath(route.path) && !route.path.startsWith('/agent'))
+const userSide = computed(() => surfaceOf(route.path) === 'user')
 
 const d = computed(() => dialogState.active)
 const panelEl = ref<HTMLElement | null>(null)

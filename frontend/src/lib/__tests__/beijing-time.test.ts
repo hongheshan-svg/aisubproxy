@@ -54,3 +54,28 @@ describe('后台源文件不再用浏览器本地时区格式化时间', () => {
     expect(readFileSync(join(src, 'lib/billingRecord.ts'), 'utf8')).toContain('toLocaleString(')
   })
 })
+
+// 终审前端次要 2：钱包流水的起止日按北京时间日界算，与浏览器所在时区无关
+import { walletSerialRange } from '../agentViews'
+describe('钱包流水的起止时间', () => {
+  it('选某天：起点是北京时间当天 0 点，终点是次日 0 点前一秒（浏览器在西五区也一样）', () => {
+    const old = process.env.TZ
+    process.env.TZ = 'America/New_York'
+    try {
+      // 2023-11-15 00:00 北京时间 = 2023-11-14 16:00 UTC = 1699977600
+      const r = walletSerialRange('2023-11-15', '2023-11-15', 1800000000)!
+      expect(r.start).toBe(1699977600)
+      expect(r.end).toBe(1699977600 + 86400 - 1)
+      // 跨多天
+      expect(walletSerialRange('2023-11-15', '2023-11-17', 1800000000)!.end).toBe(1699977600 + 3 * 86400 - 1)
+    } finally {
+      if (old === undefined) delete process.env.TZ
+      else process.env.TZ = old
+    }
+  })
+  it('终点不晚于当前时刻；日期不合法返回 null', () => {
+    expect(walletSerialRange('2023-11-15', '2023-11-15', 1699977600 + 100)!.end).toBe(1699977600 + 100)
+    expect(walletSerialRange('bad', '2023-11-15', 1)).toBeNull()
+    expect(walletSerialRange('2023-11-16', '2023-11-15', 1)).toBeNull()
+  })
+})

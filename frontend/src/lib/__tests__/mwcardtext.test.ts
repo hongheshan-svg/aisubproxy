@@ -30,9 +30,9 @@ describe('mwcardtext lib', () => {
     expect(t).toContain('余额清零后回到可用')
     expect(t).not.toContain('已用满')
   })
-  it('releaseConfirmText: 没取过卡号', () => {
+  it('releaseConfirmText: 没取过卡号时不写这半句（后台已取不到卡号）', () => {
     const t = releaseConfirmText({ card_id: 'c1', last4: '1234', use_count: 2, lease_sensitive: false }, policy)
-    expect(t).toContain('本次租约没有取过卡号')
+    expect(t).not.toContain('取过卡号')
     expect(t).toContain('余额清零后回到可用')
   })
   it('releaseConfirmText: 会用满', () => {

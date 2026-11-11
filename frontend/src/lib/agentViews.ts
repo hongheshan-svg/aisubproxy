@@ -234,6 +234,16 @@ export function beijingRange(fromDate: string, toDate: string): { from: number; 
   return { from: f, to: t + DAY }
 }
 
+/**
+ * 钱包流水的起止（Unix 秒）：起止日按北京时间日界，起点是起始日 0 点，终点是结束日次日 0 点前一秒，
+ * 且不晚于 nowSec。日期不合法或起点晚于终点返回 null。
+ */
+export function walletSerialRange(startDate: string, endDate: string, nowSec: number): { start: number; end: number } | null {
+  const r = beijingRange(startDate, endDate)
+  if (!r) return null
+  return { start: r.from, end: Math.min(r.to - 1, nowSec) }
+}
+
 /** Unix 秒 → 北京时间的 HH:mm。 */
 export function hmBeijing(sec: number): string {
   const d = new Date((sec + 8 * 3600) * 1000)

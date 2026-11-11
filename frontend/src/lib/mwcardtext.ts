@@ -33,13 +33,13 @@ function usedUpFate(c: LeaseLike, p: UsePolicy | null | undefined): string {
 
 /** 释放确认框的文字。 */
 export function releaseConfirmText(c: LeaseLike & { card_id: string; last4: string }, p: UsePolicy | null | undefined): string {
-  const taken = c.lease_sensitive ? '本次租约已取过卡号' : '本次租约没有取过卡号'
+  const taken = c.lease_sensitive ? '本次租约已取过卡号，' : ''
   const used = releaseWillBeUsedUp(c, p)
   let fate: string
   if (used === null) fate = '卡的去向取决于使用次数是否达到上限（策略未加载，无法预判）'
   else if (used) fate = usedUpFate(c, p)
   else fate = '余额清零后回到可用'
-  return `确认释放卡 ${c.card_id}（后四位 ${c.last4}）？${taken}，释放后：${fate}。`
+  return `确认释放卡 ${c.card_id}（后四位 ${c.last4}）？${taken}释放后：${fate}。`
 }
 
 /** 释放成功后的提示：卡的去向。 */

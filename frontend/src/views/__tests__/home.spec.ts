@@ -181,6 +181,13 @@ describe('首页新组件', () => {
     expect(text(two)).not.toContain('再失败一次')
   })
 
+  it('结果卡：服务商原因带 HTML 时按文本输出，不生成元素（终审前端次要 5）', async () => {
+    const result = { ...base, status: 'failed', can_resubmit: true, guide: 'provider_retry', provider_note: '<img src=x onerror=alert(1)>' }
+    const html = await render(CodeStatusCard, 'zh', { context: 'result', result, attemptsLeft: 2 })
+    expect(html).not.toContain('<img')
+    expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;')
+  })
+
   it('结果卡 result：转人工换标题，有说明和「复制卡密」', async () => {
     const html = await render(CodeStatusCard, 'zh', { context: 'result', result: { ...base, status: 'failed', can_resubmit: false } })
     const s = text(html)

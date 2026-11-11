@@ -176,7 +176,7 @@ func TestEngineLogsDoNotLeakCodes(t *testing.T) {
 
 	r := newEngine()
 	r.GET("/ok", func(c *gin.Context) { c.Status(http.StatusNoContent) })
-	r.GET("/boom", func(*gin.Context) { panic("boom") })
+	r.GET("/boom", func(*gin.Context) { panic("带着 SECRET-VALUE 的错误") })
 
 	for _, target := range []string{
 		"/ok?code=" + code + "&page=2",
@@ -198,14 +198,19 @@ func TestEngineLogsDoNotLeakCodes(t *testing.T) {
 	gin.SetMode(gin.DebugMode)
 	t.Cleanup(func() { gin.SetMode(gin.TestMode) })
 	w := httptest.NewRecorder()
-	r.ServeHTTP(w, httptest.NewRequest("GET", "/boom?code="+code+"&token="+token+"&page=3", nil))
+	req := httptest.NewRequest("GET", "/boom?code="+code+"&token="+token+"&page=3", nil)
+	req.Header.Set("Cookie", "auth_token=SECRET-COOKIE")
+	req.Header.Set("X-Setup-Token", "SECRET-SETUP")
+	r.ServeHTTP(w, req)
 	if w.Code != http.StatusInternalServerError {
-		t.Fatalf("崩溃应由 Recovery 兜住: %d", w.Code)
+		t.Fatalf("崩溃应由恢复中间件兜住: %d", w.Code)
 	}
-	if !strings.Contains(errOut.String(), "boom") || !strings.Contains(errOut.String(), "page=3") {
-		t.Fatalf("崩溃日志要写，且带请求行: %s", errOut.String())
+	// B1-03：日志里有请求行和 panic 的类型、位置；没有 panic 的值，没有请求头
+	if !strings.Contains(errOut.String(), "page=3") || !strings.Contains(errOut.String(), "string") || !strings.Contains(errOut.String(), "provider_routes_test.go:") {
+		t.Fatalf("崩溃日志要写，且带请求行、panic 类型和位置: %s", errOut.String())
 	}
-	if s := errOut.String() + out.String(); strings.Contains(s, code) || strings.Contains(s, token) {
+	if s := errOut.String() + out.String(); strings.Contains(s, code) || strings.Contains(s, token) ||
+		strings.Contains(s, "SECRET-VALUE") || strings.Contains(s, "SECRET-COOKIE") || strings.Contains(s, "SECRET-SETUP") {
 		t.Fatalf("崩溃日志泄露: %s", s)
 	}
 }

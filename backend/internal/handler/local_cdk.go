@@ -127,11 +127,14 @@ func sweepLocalRate(now time.Time) int {
 	return n
 }
 
-// rateIPKey 限流用的来源键：IPv6 按 /64 聚合（一个客户端通常拿到整段 /64，逐地址计数等于没限），IPv4 和解析不了的原样。
+// rateIPKey 限流用的来源键：IPv6 按 /64 聚合（一个客户端通常拿到整段 /64，逐地址计数等于没限），IPv4 和解析不了的原样，IPv4 映射的 IPv6（::ffff:a.b.c.d）按 IPv4 处理。
 func rateIPKey(ip string) string {
 	addr, err := netip.ParseAddr(ip)
-	if err != nil || addr.Is4() || addr.Is4In6() {
+	if err != nil || addr.Is4() {
 		return ip
+	}
+	if addr.Is4In6() {
+		return addr.Unmap().String() // IPv4 映射的 IPv6 和对应的 IPv4 是同一个来源
 	}
 	p, err := addr.Prefix(64)
 	if err != nil {

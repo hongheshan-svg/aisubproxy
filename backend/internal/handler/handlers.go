@@ -39,6 +39,11 @@ type AdminLoginRequest struct {
 
 // ===== Recharge Portal APIs =====
 
+// adminLoginRateKey 管理员登录失败限流的键：来源（IPv6 按 /64 归并）+ 小写去空白的用户名。
+func adminLoginRateKey(ip, username string) string {
+	return rateIPKey(ip) + "|" + strings.ToLower(strings.TrimSpace(username))
+}
+
 func AdminLogin(c *gin.Context) {
 	var req AdminLoginRequest
 	if !bindAuthJSON(c, &req, "Invalid request") {
@@ -46,7 +51,7 @@ func AdminLogin(c *gin.Context) {
 	}
 
 	// 登录限流：按 客户端IP + 用户名 计数
-	rateKey := c.ClientIP() + "|" + strings.ToLower(strings.TrimSpace(req.Username))
+	rateKey := adminLoginRateKey(c.ClientIP(), req.Username)
 	if ok, wait := loginAllowed(rateKey); !ok {
 		c.JSON(http.StatusTooManyRequests, gin.H{
 			"error": fmt.Sprintf("尝试次数过多，请 %d 分钟后再试", int(wait.Minutes())+1),

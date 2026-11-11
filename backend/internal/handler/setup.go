@@ -20,12 +20,12 @@ const (
 	setupLockWindow  = time.Hour
 )
 
-// 安装接口的失败计数用和登录同一种有上限的限流表（setupLimiter，见 ratelimit.go），按来源 IP 计。
-func setupAllowed(ip string) (bool, time.Duration) { return setupLimiter.allowed(ip) }
+// 安装接口的失败计数用和登录同一种有上限的限流表（setupLimiter，见 ratelimit.go），按来源 IP 计（IPv6 按 /64 归并）。
+func setupAllowed(ip string) (bool, time.Duration) { return setupLimiter.allowed(rateIPKey(ip)) }
 
-func setupFailed(ip string) { setupLimiter.failed(ip) }
+func setupFailed(ip string) { setupLimiter.failed(rateIPKey(ip)) }
 
-func setupSucceeded(ip string) { setupLimiter.succeeded(ip) }
+func setupSucceeded(ip string) { setupLimiter.succeeded(rateIPKey(ip)) }
 
 // SetupStatus GET /api/v1/setup/status — 仅返回是否已安装，不泄露细节。
 func SetupStatus(c *gin.Context) {

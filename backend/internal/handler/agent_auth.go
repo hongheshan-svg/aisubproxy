@@ -46,7 +46,7 @@ func agentBurnPassword(pw string) {
 }
 
 func agentRateKey(c *gin.Context, username string) string {
-	return "agent:" + c.ClientIP() + "|" + username
+	return "agent:" + rateIPKey(c.ClientIP()) + "|" + username
 }
 
 func clipName(s string) string {

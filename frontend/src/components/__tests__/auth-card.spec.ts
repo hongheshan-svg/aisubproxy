@@ -68,6 +68,27 @@ describe('AuthCard', () => {
   })
 })
 
+describe('AuthCard 按钮不带皮肤装饰', () => {
+  const src = readFileSync(resolve(__dirname, '../AuthCard.vue'), 'utf8')
+  it('清掉切角、位移、边框、大写和等宽字体', () => {
+    expect(src).toContain('clip-path: none')
+    expect(src).toContain('transform: none')
+    expect(src).toContain('border: 0 solid transparent')
+    expect(src).toContain('text-transform: none')
+    expect(src).toContain('letter-spacing: normal')
+    expect(src).toContain('font-family: inherit')
+  })
+  it('伪元素（ember 光扫）被隐藏', () => {
+    expect(src).toMatch(/:deep\(\.btn-primary\)::after[\s\S]*display: none/)
+  })
+  it('悬停、按下、聚焦态也重置 transform 和 clip-path', () => {
+    expect(src).toContain(':deep(.btn-primary:hover:not(:disabled))')
+    expect(src).toContain(':deep(.btn-primary:active:not(:disabled))')
+    expect(src).toContain(':deep(.btn-primary:focus-visible)')
+    expect(src).toMatch(/:deep\(\.btn-primary:focus-visible\)[^}]*clip-path: none/)
+  })
+})
+
 describe('四个登录类页面都用 AuthCard', () => {
   it('LoginView：有用户名和密码输入框、返回首页链接', async () => {
     const html = await render(LoginView)

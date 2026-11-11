@@ -98,15 +98,26 @@ watch(logoSrc, () => { logoFailed.value = false })
 }
 .auth-card :deep(.btn-primary),
 .auth-card :deep(.btn-primary:hover:not(:disabled)),
-.auth-card :deep(.btn-primary:active:not(:disabled)) {
+.auth-card :deep(.btn-primary:active:not(:disabled)),
+.auth-card :deep(.btn-primary:focus-visible) {
   min-height: 48px;
+  border: 0 solid transparent;
   border-radius: var(--radius-md);
   background: var(--primary);
   background-image: none;
   color: var(--primary-on);
   box-shadow: none;
   filter: none;
+  /* 去掉皮肤的切角、悬停/按下位移、大写和等宽字体 */
+  clip-path: none;
+  transform: none;
+  text-transform: none;
+  letter-spacing: normal;
+  font-family: inherit;
 }
+/* 皮肤给按钮加的伪元素（ember 光扫等）不要 */
+.auth-card :deep(.btn-primary)::before,
+.auth-card :deep(.btn-primary)::after { display: none; }
 .auth-card :deep(.btn-primary:hover:not(:disabled)) { background: var(--primary-hover); }
 .auth-card :deep(.btn-primary:active:not(:disabled)) { background: var(--primary-active); }
 .auth-card :deep(.btn-primary:disabled) { opacity: 0.5; cursor: not-allowed; }

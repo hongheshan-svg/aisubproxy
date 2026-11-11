@@ -161,28 +161,47 @@ export function isSubmittable(status: string): boolean {
 interface ExportItem {
   status: string
   cardKey: string
+  /** 屏幕显示用的邮箱：兑换回包、查询结果会用服务端打过码的值覆盖它 */
   email: string
+  /** 买家自己提供的完整邮箱（FE2 审查重要 2）。导出优先用它；页面拿不到时为空 */
+  ownEmail?: string
   gptPassword: string
   emailPassword: string
   accessToken: string
 }
 
+/**
+ * 买家自己提供的完整邮箱：按顺序取第一个像完整邮箱的（有 @、没有打码的 *），都不像就返回空。
+ * 来源只能是买家自己粘贴或导入的登录信息、邮箱密码列表，或核对账号时后端从买家登录信息里读出的；
+ * 兑换回包、查询结果里的 account_email 是后端打过码的（local_cdk.go localOrderPublic），不能当来源。
+ */
+export function ownEmailOf(...candidates: Array<string | null | undefined>): string {
+  for (const c of candidates) {
+    const e = String(c ?? '').trim()
+    if (e.includes('@') && !e.includes('*')) return e
+  }
+  return ''
+}
+
 const exportPart = (value: string) => String(value || '').replace(/[\r\n]+/g, ' ').trim()
 
-/** 导出本批成功号的表格行：只要开通成功的，值保持原样（不打码），只把换行压成空格。 */
+/** 导出用的邮箱：买家自己提供的完整邮箱优先；页面从头到尾拿不到时才用显示用的那个（可能是服务端打过码的），不硬造。 */
+const exportEmail = (i: ExportItem) => exportPart(i.ownEmail || i.email)
+
+/** 导出本批成功号的表格行：只要开通成功的，值不打码（邮箱见 exportEmail），只把换行压成空格。 */
 export function successRows(items: ReadonlyArray<ExportItem>): Array<[string, string, string, string]> {
   return items
     .filter((i) => i.status === 'success')
-    .map((i) => [exportPart(i.email), exportPart(i.gptPassword), exportPart(i.emailPassword), exportPart(i.accessToken)])
+    .map((i) => [exportEmail(i), exportPart(i.gptPassword), exportPart(i.emailPassword), exportPart(i.accessToken)])
 }
 
-/** 导出表里「结果未知」那一页的行：带卡密（拿去卡密查询页核对），最后一列写明结果未知；值保持原样。 */
+/** 导出表里「结果未知」那一页的行：带卡密（拿去卡密查询页核对），最后一列写明结果未知；值不打码。 */
 export function unknownRows(items: ReadonlyArray<ExportItem>, label: string): string[][] {
   return items
     .filter((i) => i.status === 'unknown')
     .map((i) => [
       exportPart(i.cardKey),
-      exportPart(i.email),
+      exportEmail(i),
       exportPart(i.gptPassword),
       exportPart(i.emailPassword),
       exportPart(i.accessToken),

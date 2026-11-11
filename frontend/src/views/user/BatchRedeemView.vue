@@ -361,6 +361,7 @@ import {
   readPolledOrder,
   redeemOutcome,
   runSubmitPool,
+  ownEmailOf,
   successRows,
   unknownExpired,
   unknownRows,
@@ -368,7 +369,7 @@ import {
 import SessionHelp from '../../components/SessionHelp.vue'
 import { isGrokCredential } from '../../lib/grok'
 import { isClaudePreview } from '../../lib/claude'
-// 屏幕上的邮箱只显示打码后的（和单张兑换页同一个函数）；导出表格仍用原值（F2-21）
+// 屏幕上的邮箱只显示打码后的（和单张兑换页同一个函数）；导出表格用条目的 ownEmail（F2-21、FE2 审查重要 2）
 import { maskEmail } from '../../lib/sessionCheck'
 import {
   AUTO_SUBMIT_CONCURRENCY,
@@ -414,7 +415,13 @@ interface BatchItem {
   verifyMsg: string
   redemptionToken: string
   progressMsg: string
+  /** 屏幕显示用（显示时还会过 maskEmail）；兑换回包、查询结果会用服务端打过码的邮箱覆盖它 */
   email: string
+  /**
+   * 买家自己提供的完整邮箱（粘贴或导入的登录信息、邮箱密码列表，或核对账号时后端从买家登录信息读出的），
+   * 只给导出用，屏幕上不显示；服务端回的打码邮箱不写这里（FE2 审查重要 2）
+   */
+  ownEmail: string
   cardLastFour: string
   accessToken: string
   gptPassword: string
@@ -844,6 +851,7 @@ async function handleVerifyBatch() {
     redemptionToken: '',
     progressMsg: '',
     email: '',
+    ownEmail: '',
     cardLastFour: '',
     accessToken: '',
     gptPassword: '',
@@ -935,6 +943,7 @@ async function submitOne(
     updateItem(item.id, {
       status: 'submitting',
       email: check.email || imported?.email || '',
+      ownEmail: ownEmailOf(check.email, imported?.email),
       accessToken: imported?.accessToken || accessTokenFromSession(credential.session),
       gptPassword: imported?.gptPassword || '',
       emailPassword: imported?.emailPassword || '',
@@ -957,6 +966,7 @@ async function submitOne(
   updateItem(item.id, {
     status: 'submitting',
     email,
+    ownEmail: ownEmailOf(email),
     emailPassword: password,
     progressMsg: '账号预检…',
     error: '',
@@ -1032,7 +1042,11 @@ async function runPreflightRedeem(
     const email = String(body.email || body.account_email || fallbackEmail || '')
     // 兑换是唯一会用掉卡密的请求：发出前最后看一次，页面已离开或换了批次就不再提交这一张
     if (!live(item.batch)) return 'fail'
-    updateItem(item.id, { email, progressMsg: '预检通过，提交兑换…' })
+    updateItem(item.id, {
+      email,
+      ownEmail: ownEmailOf(fallbackEmail, body.email, body.account_email),
+      progressMsg: '预检通过，提交兑换…',
+    })
 
     const client_request_id = `batch-${deviceId.slice(0, 8)}-${Date.now()}-${item.id}`
     redeemSent = true

@@ -26,7 +26,8 @@ func (s *Service) Kick() {
 }
 
 // Start 启动五个后台协程，ctx 结束时全部退出：
-//   - 每 5 秒：释放到期租约 → 清除过期验证码 → 处理有效期不足的可用卡 → 对账 → 检查是否长期收不到 Webhook → 同步账户 → 回收；
+//   - 每 5 秒：释放到期租约 → 清除过期验证码 → 处理有效期不足的可用卡 → 每日待人工汇总（北京时间 9 点后每天告警一次）→
+//     对账 → 检查是否长期收不到 Webhook → 同步账户 → 回收；
 //   - 每 60 秒或收到补卡通知：补卡；
 //   - 收到 Kick 或每 10 秒：处理 Webhook 事件（启动时先处理一轮积压）；
 //   - 每 15 分钟：补拉授权与结算交易（与手动补拉串行）；
@@ -68,7 +69,7 @@ func (s *Service) runLoop(ctx context.Context, name string, every time.Duration,
 	}
 }
 
-// maintainRound：先做只读写本地库的步骤（释放到期租约、清除过期验证码、处理有效期不足的可用卡），平台变慢也不会拖延它们；
+// maintainRound：先做只读写本地库的步骤（释放到期租约、清除过期验证码、处理有效期不足的可用卡、每日待人工汇总），平台变慢也不会拖延它们；
 // 再对账（取不到客户端时只做本地的超时升级并告警，见 reconcileOrdersOnce），然后检查是否长期收不到 Webhook（只读本地库）、按需同步账户，
 // 最后回收（要调接口，取不到客户端时跳过；Webhook 检查与同步账户也只在 MarsWallex 已就绪时做）。
 func (s *Service) maintainRound(ctx context.Context, lg *loopLog) {

@@ -29,6 +29,7 @@ func (s *Service) replenishAllowed(ctx context.Context, pol Policy) (bool, error
 
 // SelectableCards 统计该套餐现在能选到多少张指定币种的卡，口径和 Acquire 一致：
 // 产品优先级（没配时取 default）、跳过停用的产品、selectableWhere、有效期还剩一个月以上。
+// 例外：currency 必填，传空串时返回 0（Acquire 的空币种表示不限，这里不支持）。
 func (s *Service) SelectableCards(ctx context.Context, planKey, currency string) (int, error) {
 	pol, err := LoadPolicy()
 	if err != nil {

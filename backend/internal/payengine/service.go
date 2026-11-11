@@ -118,6 +118,9 @@ func DefaultTimeouts() Timeouts {
 // MaxPayDuration 是一单付款从取卡租约到定论最长可能占用卡的时间，卡池租约须不短于它：
 // 注资 + 填表 + 点支付后等页面结果 + 3DS 页面加载 + 验证码 + 填验证码并等结果 + 被拒宽限 + 确认 + 确认间隔 + 扫描间隔 + 5 秒关闭浏览器
 // + 两次定论前补拉（期限到达之前最后一轮，加上到期那一轮，都可能等满补拉时限）。
+// 没算进去的三段：点支付前复核金额（最多 PageLoad）、两次等结果外层各多出的 OutcomeMargin、到期那一轮检查（最多 VerifyCheck）。
+// 不算也不要紧：提交之前的各步加起来远小于这个数；确认阶段每一轮都给卡续租（renewVerifyLeases），租约不会因为这几段到期。
+// 公式不改：就绪检查和后台付款入口拿它当租约下限，加大它会让现在够用的租约配置突然报「租约太短」。
 func MaxPayDuration(t Timeouts) time.Duration {
 	return t.Fund + t.Fill + t.SubmitResult + t.SubmitResult + t.PageLoad + t.OTP +
 		t.SubmitResult + t.SubmitResult + t.DeclineGrace + t.Verify + t.VerifyEvery + t.VerifyTick + 5*time.Second + 2*t.Backfill

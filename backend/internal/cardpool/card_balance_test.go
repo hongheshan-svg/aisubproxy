@@ -132,3 +132,50 @@ func TestImportAndPreviewNegativeBalance(t *testing.T) {
 		t.Fatalf("后台当场操作不另外告警: %v", alerts.Texts())
 	}
 }
+
+// 余额格式错误不带平台原文全文（C1-03 审查修复）：原文先把长数字串打码再截到 20 字，刷新、导入和回收刷新失败告警都一样。
+func TestBalanceFormatErrorRedactsAndTruncatesRaw(t *testing.T) {
+	const pan = "4111111111111111"
+	for _, raw := range []string{pan + "x", pan, "-" + pan, "abcdefghijklmnopqrstuvwxyz"} {
+		t.Run(raw, func(t *testing.T) {
+			s, mw, clock, alerts := newTestService(t)
+			mw.On("GET", pathProducts, mwtest.OK(productsJSON))
+			insertCard(t, Card{CardID: "c1", ProductID: "p1", PoolState: PoolReleasing})
+			mw.On("GET", detailPath("c1"), mwtest.OK(detailJSON("c1", "0.00", raw, "ACTIVE")))
+			mw.On("GET", detailPath("c2"), mwtest.OK(cardJSON("USD", raw, "0.00", "ACTIVE")))
+			check := func(where, text string) {
+				t.Helper()
+				if strings.Contains(text, pan) || strings.Contains(text, "uvwxyz") {
+					t.Fatalf("%s带了平台原文全文: %s", where, text)
+				}
+				if !strings.Contains(text, "格式无法识别") {
+					t.Fatalf("%s应写明格式无法识别: %s", where, text)
+				}
+			}
+
+			_, err := s.RefreshCard(context.Background(), "c1")
+			if err == nil || errors.Is(err, ErrNegativeBalance) {
+				t.Fatalf("刷新应报格式错误: %v", err)
+			}
+			check("刷新的错误", err.Error())
+			if !strings.Contains(err.Error(), "冻结余额") {
+				t.Fatalf("应写明是哪个余额: %v", err)
+			}
+			_, err = s.ImportCard(context.Background(), "c2", "p1", "", "admin")
+			if err == nil {
+				t.Fatal("导入应报格式错误")
+			}
+			check("导入的错误", err.Error())
+
+			for i := 0; i <= 30; i++ {
+				_ = s.advanceCardsOnce(context.Background())
+				clock.Advance(time.Minute)
+			}
+			got := alerts.Texts()
+			if len(got) != 1 {
+				t.Fatalf("回收刷新持续失败应告警一次: %v", got)
+			}
+			check("刷新失败告警", got[0])
+		})
+	}
+}

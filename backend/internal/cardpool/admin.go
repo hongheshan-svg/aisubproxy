@@ -172,11 +172,17 @@ func parseBalance(s string) (int64, error) {
 }
 
 // balanceErr 包装卡余额 field（「可用余额」「冻结余额」）的解析错误：负数单独写明，其余是格式错误。
+// 错误会进日志、事件备注和回收刷新失败告警，只带平台原文的摘要（balanceRaw），不包解析函数的错误（那里有原文全文）。
 func balanceErr(field, raw string, err error) error {
 	if errors.Is(err, ErrNegativeBalance) {
-		return fmt.Errorf("%s为负数（%s）: %w", field, truncate(raw, 20), ErrNegativeBalance)
+		return fmt.Errorf("%s为负数（%s）: %w", field, balanceRaw(raw), ErrNegativeBalance)
 	}
-	return fmt.Errorf("解析%s失败: %w", field, err)
+	return fmt.Errorf("解析%s失败：格式无法识别（%s）", field, balanceRaw(raw))
+}
+
+// balanceRaw 是平台余额原文的摘要：先把长数字串（可能是卡号）打码，再截到 20 字。
+func balanceRaw(raw string) string {
+	return truncate(longDigits.ReplaceAllString(raw, "****"), 20)
 }
 
 // cardBalanceErr 同 balanceErr；负数时另外告警（key negbalance:<卡>，每卡每个北京日一条，src 是告警来源）。
@@ -184,7 +190,7 @@ func balanceErr(field, raw string, err error) error {
 func (s *Service) cardBalanceErr(cardID, field, raw string, err error, src alertSource) error {
 	if errors.Is(err, ErrNegativeBalance) {
 		s.alert("negbalance:"+cardID, fmt.Sprintf("MarsWallex 卡 %s 在平台上的%s为负数（%s），本地余额没有更新，这张卡的刷新和回收会一直失败，请到 MarsWallex 后台核查（多半是结算金额大于授权金额）",
-			cardID, field, truncate(raw, 20))+src.suffix())
+			cardID, field, balanceRaw(raw))+src.suffix())
 	}
 	return balanceErr(field, raw, err)
 }

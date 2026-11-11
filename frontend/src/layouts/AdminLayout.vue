@@ -32,7 +32,7 @@
 
     <template #foot="{ rail }">
       <div class="sn-tools"><ThemeToggle /></div>
-      <el-dropdown trigger="click" placement="top-start" @command="onUserCommand">
+      <el-dropdown class="sn-user-menu" trigger="click" placement="top-start" @command="onUserCommand">
         <button type="button" class="sn-user" :title="username">
           <span class="sn-avatar">{{ username.slice(0, 1).toUpperCase() }}</span>
           <span v-if="!rail" class="sn-user-name">{{ username }}</span>
@@ -203,7 +203,7 @@ async function submitPwd() {
 .sn-tools :deep(.btn-ghost:focus-visible),
 .sn-user:focus-visible { outline: 2px solid var(--side-ink); outline-offset: -2px; }
 .is-collapsed .sn-tools { justify-content: center; }
-:deep(.el-dropdown) { width: 100%; }
+.sn-user-menu { width: 100%; }
 .sn-user {
   width: 100%; display: flex; align-items: center; gap: 8px;
   padding: 6px 8px; border-radius: var(--radius-md);

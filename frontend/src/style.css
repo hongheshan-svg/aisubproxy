@@ -35,8 +35,6 @@ html {
   --side-w: 232px;
   --side-w-collapsed: 64px;
   --topbar-h: 56px;
-  --side-bg: var(--surface-solid);
-  --side-brd: var(--brd);
   --content-max: 1500px;
 
   --bg: #f2ede4;
@@ -1003,20 +1001,10 @@ html.dark[data-skin="zovo"] ::-webkit-scrollbar { width: 10px; height: 10px; }
 html.dark[data-skin="zovo"] ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.12); border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; }
 html.dark[data-skin="zovo"] ::-webkit-scrollbar-track { background: transparent; }
 
-/* cyber 侧栏霓虹：只覆盖侧栏变量与当前项发光 */
-html[data-skin='cyber'] {
-  --side-bg: linear-gradient(180deg, #0d1524 0%, #0a101c 100%);
-  --side-brd: rgba(34, 211, 238, 0.22);
-}
-html[data-skin='cyber'] .app-shell .sn-item.active {
-  box-shadow: inset 3px 0 0 var(--primary), 0 0 0 1px rgba(34, 211, 238, 0.35), 0 0 20px rgba(34, 211, 238, 0.08);
-}
-
 /* 导航形态：由 data-nav 驱动，作用于侧栏项 */
 html[data-nav='pill'] .sn-item { border-radius: 999px; }
 html[data-nav='block'] .sn-item { border-radius: 6px; }
 html[data-nav='underline'] .sn-item { border-radius: 0; }
-html[data-nav='underline'] .sn-item.active { background: transparent; }
 
 /* Element 按钮圆角跟随主题 */
 .el-button { border-radius: var(--radius-md) !important; }

@@ -226,4 +226,11 @@ describe('皮肤元数据', () => {
   it('不再有 layout 字段（壳只有一种）', () => {
     for (const s of SKINS) expect('layout' in s).toBe(false)
   })
+
+  it('账号菜单下拉用 .sn-user-menu 限定整宽，不泄漏到其他后台下拉', () => {
+    const src = readFileSync(fileURLToPath(new URL('../AdminLayout.vue', import.meta.url)), 'utf8')
+    expect(src).not.toContain(':deep(.el-dropdown)')
+    expect(src).toContain('class="sn-user-menu"')
+    expect(src).toMatch(/\.sn-user-menu \{ width: 100%; \}/)
+  })
 })

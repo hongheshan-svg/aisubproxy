@@ -91,6 +91,13 @@ describe('首页', () => {
     for (const w of ['常见问题', '批量兑换', '账单查询']) expect(s).toContain(w)
   })
 
+  it('页脚有「卡密查询」入口指向 /history，中英文各一份（F2-12）', async () => {
+    const zhHtml = await render(HomeView)
+    expect(zhHtml).toMatch(/<footer[^>]*>[\s\S]*href="\/history"[^>]*>[^<]*卡密查询/)
+    const enHtml = await render(HomeView, 'en')
+    expect(enHtml).toMatch(/<footer[^>]*>[\s\S]*href="\/history"[^>]*>[^<]*Code lookup/)
+  })
+
   it('常见问题：Session 与 Claude 用指定说明，可展开', async () => {
     const html = await render(HomeView)
     const s = text(html)

@@ -258,6 +258,7 @@ export default {
       footerFaq: 'FAQ',
       footerBatch: 'Bulk redeem',
       footerBilling: 'Billing lookup',
+      footerLookup: 'Code lookup',
     },
     ticks: {
       checkCode: 'Check code',

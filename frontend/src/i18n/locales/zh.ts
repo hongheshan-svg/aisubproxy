@@ -258,6 +258,7 @@ export default {
       footerFaq: '常见问题',
       footerBatch: '批量兑换',
       footerBilling: '账单查询',
+      footerLookup: '卡密查询',
     },
     ticks: {
       checkCode: '核对卡密',

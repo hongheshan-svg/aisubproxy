@@ -9,8 +9,10 @@ import './styles/user-theme.css'
 import { useAuthStore } from './stores/auth'
 import { initTheme, setSiteBrand, setSkin, setTheme, type SkinId, type ThemeMode } from './theme'
 import { i18n } from './i18n'
+import { initLayoutMode } from './lib/layoutMode'
 
 initTheme()
+initLayoutMode()
 
 async function loadPublicSite() {
   try {

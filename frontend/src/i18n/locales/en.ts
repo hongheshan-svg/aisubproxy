@@ -361,6 +361,10 @@ export default {
   redeemUi: {
     showPassword: 'Show',
     hidePassword: 'Hide',
+    nav: {
+      redeem: 'Redeem',
+      label: 'Main navigation',
+    },
     home: {
       title: 'Paste your code here',
       subtitle: 'Unused codes go to redemption; used codes show their result right away.',

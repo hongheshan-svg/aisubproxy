@@ -48,6 +48,11 @@ html[data-tone="dark"] .user-ui {
   text-align: left;
 }
 
+/* 电脑布局的宽页（两栏页用）：内容区最宽 1120px，左右至少 24px */
+@media (min-width: 1024px) {
+  .user-ui .u-page--split { max-width: 1120px; padding-left: 24px; padding-right: 24px; }
+}
+
 .user-ui .u-title { font-size: 28px; font-weight: 700; line-height: 1.3; margin: 0 0 12px; }
 @media (max-width: 480px) {
   .user-ui .u-title { font-size: 24px; }

@@ -158,8 +158,11 @@ async function bootstrap(m: 'generate' | 'manual') {
         'setup failed, please retry': '安装没有完成（已自动撤销，可直接重试）',
         'passwords do not match': '两次密码不一致',
         'password must include letters and digits': '密码需同时包含字母和数字',
+        'password too long (max 72 bytes)': '密码太长：最多 72 字节（英文、数字每个占 1 字节，中文每个占 3 字节）',
       }
-      error.value = map[d.error] || d.error || '安装失败'
+      error.value = d.rollback_failed
+        ? '安装没有完成，而且自动撤销也失败了，需要人工处理：请查看服务器日志，不要直接重试'
+        : map[d.error] || d.error || '安装失败'
       return
     }
     resultUser.value = d.username

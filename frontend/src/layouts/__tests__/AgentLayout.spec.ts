@@ -138,6 +138,15 @@ describe('AgentLayout 侧栏折叠后仍能看到余额', () => {
     expect(html).toContain('$1,234.56')
     expect(html).toContain('title="余额 $1,234.56"')
   })
+  it('折叠态金额不超出 64px 窄条：拉满底部栏宽度（借用两侧内边距），长金额走省略号', () => {
+    const src = readFileSync(fileURLToPath(new URL('../../components/shell/AgentSideMe.vue', import.meta.url)), 'utf8')
+    const m = src.match(/\.sn-me-rail\s*\{([^}]*)\}/)
+    expect(m).toBeTruthy()
+    // 底部栏是竖排 flex 且折叠时 align-items: center，子元素按内容宽度会溢出；stretch 把宽度定死，负外边距让 $9,999.99 这种常见金额放得下
+    expect(m![1]).toContain('align-self: stretch')
+    expect(m![1]).toContain('margin-inline: -8px')
+    expect(m![1]).toContain('text-overflow: ellipsis')
+  })
   it('AgentLayout 不再用 v-if="me && !rail" 把折叠态的余额藏掉', () => {
     const src = readFileSync(fileURLToPath(new URL('../AgentLayout.vue', import.meta.url)), 'utf8')
     expect(src).not.toContain('me && !rail')

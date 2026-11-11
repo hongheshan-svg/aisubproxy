@@ -18,5 +18,5 @@ defineProps<{ name: string; balanceCents: number; rail: boolean }>()
 .sn-me { padding: 2px 8px 6px; color: var(--side-ink); font-size: 13px; min-width: 0; }
 .sn-me-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sn-me-bal { color: var(--side-muted); font-size: 12px; }
-.sn-me-rail { padding: 2px 2px 6px; color: var(--side-muted); font-size: 11px; line-height: 1.2; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sn-me-rail { padding: 2px 2px 6px; align-self: stretch; margin-inline: -8px; color: var(--side-muted); font-size: 11px; line-height: 1.2; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>

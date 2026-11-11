@@ -62,15 +62,21 @@ export const authFetch = async (input: RequestInfo | URL, init: RequestInit = {}
   return response
 }
 
-// 主动登出：先请求后端清除 HttpOnly cookie，再清本地状态
-export const serverLogout = async () => {
+// 主动登出：先请求后端清除 HttpOnly cookie，服务端确认后才清本地状态。返回是否已退出。
+// 网络错误、5xx、403（如 CSRF 校验失败）时服务端会话还在：本地状态不动，由调用方提示重试；
+// 401 说明会话本来就没了，照常清本地（F1-02）。
+export const serverLogout = async (): Promise<boolean> => {
+  let status = 0
   try {
     const csrf = getCookie('csrf_token')
     const headers = new Headers()
     if (csrf) headers.set('X-CSRF-Token', csrf)
-    await fetch('/api/v1/auth/admin/logout', { method: 'POST', headers, credentials: 'include' })
-  } catch (error) {
-    // 忽略网络错误，本地状态照常清除
+    const r = await fetch('/api/v1/auth/admin/logout', { method: 'POST', headers, credentials: 'include' })
+    status = r.status
+  } catch {
+    status = 0
   }
-  useAuthStore().logout()
+  const done = (status >= 200 && status < 300) || status === 401
+  if (done) useAuthStore().logout()
+  return done
 }

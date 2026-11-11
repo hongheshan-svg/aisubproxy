@@ -162,7 +162,11 @@ async function onUserCommand(cmd: string) {
   } else if (cmd === 'logout') {
     // 从存储判断（别的标签页留下的未决也算），不只看本页内存
     if (adjustHasAnyPending() && !(await dialog.confirm('有调账结果未知，退出后这台电脑上不能再原样重试，请先到代理商的「余额流水」核对。确定退出吗？', { title: '调账结果未知', okText: '仍然退出', danger: true }))) return
-    await serverLogout()
+    // 服务端没确认退出时留在后台：HttpOnly 的会话 cookie 还在，回登录页会让人以为已经退了
+    if (!(await serverLogout())) {
+      dialog.toast('退出失败，服务器上的登录状态还在，请重试', 'err')
+      return
+    }
     clearAdjustRetries() // 退出登录清掉调账的待重试记录（只有幂等键、金额和原因）
     router.push('/ops/login')
   }

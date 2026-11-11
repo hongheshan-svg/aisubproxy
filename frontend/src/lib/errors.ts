@@ -112,6 +112,8 @@ const AUDIT_LABELS: Record<string, string> = {
   admin_feature_toggle: '切换功能开关',
   update_telegram: '修改 Telegram 告警',
   telegram_clear: '清除 Telegram 告警',
+  pay_proxy_test: '测试地区代理',
+  telegram_test: '测试 Telegram 告警',
   runtime_fallback: '新版启动失败已回退',
   provider_config_update: '修改卡服务商配置',
   provider_default_update: '修改默认卡服务商',

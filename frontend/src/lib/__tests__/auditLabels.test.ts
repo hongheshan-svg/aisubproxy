@@ -10,6 +10,8 @@ const CURRENT = [
   'admin_feature_toggle',
   'update_telegram',
   'telegram_clear',
+  'pay_proxy_test',
+  'telegram_test',
   'runtime_fallback',
   'provider_config_update',
   'provider_default_update',
@@ -111,7 +113,7 @@ const POOL_FAILED = [
 
 describe('审计动作中文名', () => {
   it('表 1 的每个动作都有中文名，卡池前缀也能查到', () => {
-    expect(CURRENT).toHaveLength(61)
+    expect(CURRENT).toHaveLength(63)
     for (const k of CURRENT) {
       expect(auditActionLabel(k), k).not.toBe(k)
       expect(auditActionLabel('cardpool.' + k), k).toBe(auditActionLabel(k))

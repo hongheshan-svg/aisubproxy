@@ -214,6 +214,10 @@ func AdminPayList(c *gin.Context) {
 			payFail(c, err)
 			return
 		}
+		// 列表里账号邮箱打码；完整邮箱只在详情（AdminPayGet）给，人工核对用
+		for i := range orders {
+			orders[i].AccountEmail = maskEmailForAdmin(orders[i].AccountEmail)
+		}
 		c.JSON(http.StatusOK, gin.H{"orders": nonNil(orders), "total": total})
 	})(c)
 }

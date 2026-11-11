@@ -207,6 +207,24 @@ func TestPaySubmitAuditHasNoSession(t *testing.T) {
 	}
 }
 
+// H2-04 / F2-20：列表里的账号邮箱打码，详情保留完整邮箱（人工核对用）。
+func TestPayListMasksEmailDetailKeepsFull(t *testing.T) {
+	payEnv(t)
+	w := payDo(AdminPaySubmit, "POST", "/orders", "/orders", paySubmitBody("plus", "PH", paySession("alice.longname@example.com"), false))
+	var ok struct {
+		OrderNo string `json:"order_no"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &ok)
+	l := payDo(AdminPayList, "GET", "/orders", "/orders", "")
+	if strings.Contains(l.Body.String(), "alice.longname@example.com") || !strings.Contains(l.Body.String(), "al***@example.com") {
+		t.Fatalf("列表邮箱应打码: %s", l.Body.String())
+	}
+	d := payDo(AdminPayGet, "GET", "/orders/:no", "/orders/"+ok.OrderNo, "")
+	if !strings.Contains(d.Body.String(), "alice.longname@example.com") {
+		t.Fatalf("详情应保留完整邮箱: %s", d.Body.String())
+	}
+}
+
 func TestPayOrderDetailAndList(t *testing.T) {
 	payEnv(t)
 	w := payDo(AdminPaySubmit, "POST", "/orders", "/orders", paySubmitBody("plus", "PH", paySession("a@example.com"), false))

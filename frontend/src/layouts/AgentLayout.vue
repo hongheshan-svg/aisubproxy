@@ -16,7 +16,7 @@
 
     <template #foot="{ rail }">
       <AgentSideMe v-if="me" :name="me.display_name || me.username || ''" :balance-cents="me.balance_cents || 0" :rail="rail" />
-      <div class="sn-tools"><ThemeToggle /></div>
+      <div v-if="!themeLocked" class="sn-tools"><ThemeToggle /></div>
       <button type="button" class="sn-logout" title="退出登录" @click="logout">
         <el-icon><SwitchButton /></el-icon>
         <span v-if="!rail">退出登录</span>
@@ -33,7 +33,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { agentApi, setAgentUnauthorizedHandler } from '../lib/agentApi'
 import { resetAgentSession } from '../lib/agentSession'
 import { orderRetry } from '../lib/agentViews'
-import { siteBrand } from '../theme'
+import { siteBrand, themeLocked } from '../theme'
 import ThemeToggle from '../components/ThemeToggle.vue'
 import AgentSideMe from '../components/shell/AgentSideMe.vue'
 import SideNavShell from '../components/shell/SideNavShell.vue'

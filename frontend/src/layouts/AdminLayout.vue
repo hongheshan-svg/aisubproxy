@@ -31,7 +31,7 @@
     </template>
 
     <template #foot="{ rail }">
-      <div class="sn-tools"><ThemeToggle /></div>
+      <div v-if="!themeLocked" class="sn-tools"><ThemeToggle /></div>
       <el-dropdown class="sn-user-menu" trigger="click" placement="top-start" @command="onUserCommand">
         <button type="button" class="sn-user" :title="username">
           <span class="sn-avatar">{{ username.slice(0, 1).toUpperCase() }}</span>
@@ -77,7 +77,7 @@ import { useAuthStore } from '../stores/auth'
 import { authFetch, serverLogout } from '../lib/api'
 import { dialog } from '../lib/dialog'
 import { adjustHasAnyPending, clearAdjustRetries } from '../lib/agentAdmin'
-import { siteBrand } from '../theme'
+import { siteBrand, themeLocked } from '../theme'
 import ThemeToggle from '../components/ThemeToggle.vue'
 import SideNavShell from '../components/shell/SideNavShell.vue'
 import { PAGE_TABS, tabCrumb, marsEnv, type EnvBadge } from '../lib/adminui'

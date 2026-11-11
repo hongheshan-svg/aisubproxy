@@ -63,7 +63,7 @@ d:function(e,t){if("workspace"===e)return"1243009938";switch(t){case"plus":…ca
   - 页面里嵌 Stripe 的 PaymentElement、AddressElement、ExpressCheckoutElement（iframe）。
   - 确认付款走 `POST /payments/checkout/confirm`。
   - 证据：【前端】`async/111951.5243187031.js` 里有 `"/payments/checkout/confirm"`、`createConfirmationToken`，`PaymentElement` 出现 16 次。
-- **`url`**：跳转结账（redirect）。仓库原型 `automation/README.md` 记录的支付链接形态是 `https://pay.openai.com/c/pay/cs_live_...`，即 Stripe 托管的 Checkout 页。【旁证】
+- **`url`**：跳转结账（redirect）。早期原型（已从仓库删除）记录的支付链接形态是 `https://pay.openai.com/c/pay/cs_live_...`，即 Stripe 托管的 Checkout 页。【旁证】
 
 **用哪种由请求里的 `checkout_ui_mode` 决定**。【前端】`js/418851…` 的函数 `H`：
 

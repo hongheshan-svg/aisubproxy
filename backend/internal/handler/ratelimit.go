@@ -79,8 +79,9 @@ func (l *failLimiter) allowed(key string) (bool, time.Duration) {
 	return true, 0
 }
 
-// failed 记一次失败，达到阈值则锁定。
-func (l *failLimiter) failed(key string) {
+// failed 记一次失败，达到阈值则锁定。返回 true 表示这一次刚好把计数推到上限（从未锁变成锁定）；
+// 表满没记上、或本来就已超过上限时返回 false。
+func (l *failLimiter) failed(key string) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
@@ -95,7 +96,7 @@ func (l *failLimiter) failed(key string) {
 	if e == nil {
 		if len(l.entries) >= l.maxKeys && !l.evictUnlocked(now) {
 			// 表满且全是锁定中的键：这次失败不记录，也不挤掉任何锁定键（审计 auth N-1）
-			return
+			return false
 		}
 		e = &failEntry{key: key, windowStart: now}
 		e.elem = l.order.PushBack(e)
@@ -107,6 +108,7 @@ func (l *failLimiter) failed(key string) {
 	if e.failures >= l.maxFailures {
 		e.lockedUntil = now.Add(l.window)
 	}
+	return e.failures == l.maxFailures
 }
 
 // evictUnlocked 表满时腾出一个位置：从最久没失败的键往后找，淘汰第一个不在锁定中的键。全在锁定中时返回 false。

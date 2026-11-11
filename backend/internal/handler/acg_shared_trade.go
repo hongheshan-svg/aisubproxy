@@ -160,7 +160,7 @@ func sharedTradeFail(c *gin.Context, requestNo string, err error, refuse func(re
 	case errors.Is(err, db.ErrAgentDisabled), errors.Is(err, db.ErrAgentNotFound):
 		sharedTradeLog(appID, requestNo, "agent_disabled")
 		sharedFail(c, sharedMsgAgentOff)
-	default: // 含 errAgentOrderBusy（数据库忙、等同号锁超时）、errAgentOrderInternal；都没有扣款，下游重发同号是安全的
+	default: // 含 *agentOrderBusyError（数据库忙、等同号锁超时）、errAgentOrderInternal；都没有扣款，下游重发同号是安全的
 		refuse(sharedReasonBusy, sharedMsgBusy, "（"+err.Error()+"）")
 	}
 }

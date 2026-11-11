@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -92,6 +93,13 @@ func AdminPutSettings(c *gin.Context) {
 			return
 		}
 	}
+	// 换码口令的长度和弱口令校验也放在任何写入之前
+	if body.AgentSwapPassword != nil {
+		if err := validateAgentSwapPassword(*body.AgentSwapPassword); err != nil {
+			bad(err.Error())
+			return
+		}
+	}
 	var writes []struct{ key, val string }
 	for _, it := range []textItem{
 		{"brand_name", body.BrandName, 40, "站点名称"},
@@ -122,7 +130,8 @@ func AdminPutSettings(c *gin.Context) {
 		pw := strings.TrimSpace(*body.AgentSwapPassword)
 		if pw != "" {
 			if err := setAgentSwapPassword(pw); err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+				log.Printf("[settings] 保存换码口令失败: %v", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "保存失败"})
 				return
 			}
 		}

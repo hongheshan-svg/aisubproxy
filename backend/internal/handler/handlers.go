@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
@@ -39,6 +40,11 @@ type AdminLoginRequest struct {
 
 // ===== Recharge Portal APIs =====
 
+// adminLoginRateKey 管理员登录失败限流的键：来源（IPv6 按 /64 归并）+ 小写去空白的用户名。
+func adminLoginRateKey(ip, username string) string {
+	return rateIPKey(ip) + "|" + strings.ToLower(strings.TrimSpace(username))
+}
+
 func AdminLogin(c *gin.Context) {
 	var req AdminLoginRequest
 	if !bindAuthJSON(c, &req, "Invalid request") {
@@ -46,7 +52,7 @@ func AdminLogin(c *gin.Context) {
 	}
 
 	// 登录限流：按 客户端IP + 用户名 计数
-	rateKey := c.ClientIP() + "|" + strings.ToLower(strings.TrimSpace(req.Username))
+	rateKey := adminLoginRateKey(c.ClientIP(), req.Username)
 	if ok, wait := loginAllowed(rateKey); !ok {
 		c.JSON(http.StatusTooManyRequests, gin.H{
 			"error": fmt.Sprintf("尝试次数过多，请 %d 分钟后再试", int(wait.Minutes())+1),
@@ -186,7 +192,11 @@ func AdminChangePassword(c *gin.Context) {
 	req.OldPassword = strings.TrimSpace(req.OldPassword)
 	req.NewPassword = strings.TrimSpace(req.NewPassword)
 
-	if len(req.NewPassword) < 12 || db.IsWeakPassword(req.NewPassword) {
+	if db.PasswordTooLong(req.NewPassword) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "新密码太长：最多 72 字节（英文、数字每个占 1 字节，中文每个占 3 字节）"})
+		return
+	}
+	if utf8.RuneCountInString(req.NewPassword) < 12 || db.IsWeakPassword(req.NewPassword) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "新密码至少 12 位，且不能为常见弱口令"})
 		return
 	}

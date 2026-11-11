@@ -108,11 +108,6 @@ func AdminSystemVersion(c *gin.Context) {
 	versionCacheAt = time.Now()
 	versionCacheMu.Unlock()
 
-	// 缓存命中路径也需要带上动态字段
-	body["current"] = local
-	body["update_available"] = update
-	body["update_enabled"] = updateEnabled()
-	body["one_click_ready"] = update && hasBundle && updateEnabled()
 	c.JSON(http.StatusOK, body)
 }
 
@@ -151,12 +146,10 @@ func fetchGitHubLatest(repo string) (latest, releaseURL, tagsURL, source string,
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		if resp.StatusCode == 200 {
 			var payload struct {
-				TagName string `json:"tag_name"`
-				HTMLURL string `json:"html_url"`
-				Body    string `json:"body"`
-				Assets  []struct {
-					Name string `json:"name"`
-				} `json:"assets"`
+				TagName string         `json:"tag_name"`
+				HTMLURL string         `json:"html_url"`
+				Body    string         `json:"body"`
+				Assets  []releaseAsset `json:"assets"`
 			}
 			if json.Unmarshal(raw, &payload) == nil && strings.TrimSpace(payload.TagName) != "" {
 				latest = strings.TrimPrefix(strings.TrimSpace(payload.TagName), "v")
@@ -165,13 +158,7 @@ func fetchGitHubLatest(repo string) (latest, releaseURL, tagsURL, source string,
 				}
 				source = "release"
 				notes = truncateReleaseNotes(payload.Body)
-				for _, a := range payload.Assets {
-					n := strings.ToLower(a.Name)
-					if strings.Contains(n, "cdk-bundle") && (strings.HasSuffix(n, ".tgz") || strings.HasSuffix(n, ".tar.gz")) {
-						hasBundle = true
-						break
-					}
-				}
+				hasBundle = bundleComplete(payload.Assets)
 				return
 			}
 		}

@@ -180,7 +180,7 @@ async function submitPassword() {
 }
 
 async function submitNewPassword() {
-  if (newPassword.value.length < 12) { errorText.value = '新密码至少 12 位'; return }
+  if (Array.from(newPassword.value).length < 12) { errorText.value = '新密码至少 12 位'; return }
   if (newPassword.value !== newPassword2.value) { errorText.value = '两次输入的新密码不一致'; return }
   await call('/auth/password/initial', { new_password: newPassword.value })
   newPassword.value = ''

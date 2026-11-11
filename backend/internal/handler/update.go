@@ -351,18 +351,13 @@ func runSeamlessUpdate(target, username string) {
 		failUpdate("创建备份目录失败，已中止更新: " + err.Error())
 		return
 	}
-	// 备份旧二进制
-	if _, err := os.Stat(l.CurBin); err == nil {
-		_ = copyFile(l.CurBin, filepath.Join(bak, "cdk-recharge"))
+	// 备份旧程序、旧前端、旧版本号：任何一项失败都中止（此时现网文件一个都没动），否则回滚会拿到更早的版本
+	if err := backupCurrentFiles(l, bak); err != nil {
+		_ = os.RemoveAll(bak)
+		failUpdate("备份当前版本失败，已中止更新: " + err.Error())
+		return
 	}
-	// 备份 web
-	if st, err := os.Stat(l.CurWeb); err == nil && st.IsDir() {
-		_ = copyDir(l.CurWeb, filepath.Join(bak, "web"))
-	}
-	// 备份版本号与数据库（数据库备份失败则中止：没有可回退的数据就不升级）
-	if _, err := os.Stat(l.CurVer); err == nil {
-		_ = copyFile(l.CurVer, filepath.Join(bak, "VERSION"))
-	}
+	// 数据库备份失败也中止：没有可回退的数据就不升级
 	if err := backupDatabase(filepath.Join(bak, "cdk_recharge.db")); err != nil {
 		failUpdate("备份数据库失败，已中止更新: " + err.Error())
 		return
@@ -380,10 +375,16 @@ func runSeamlessUpdate(target, username string) {
 		return
 	}
 	// 写 VERSION：放在程序之后，容器的启动接管以它为准，程序没换成功就不会有新版本号
-	if verSrc != "" {
-		_ = copyFile(verSrc, l.Ver)
-	} else {
-		_ = os.WriteFile(l.Ver, []byte(version+"\n"), 0o644)
+	if err := writeNewVersionFn(l, verSrc, version); err != nil {
+		log.Printf("[update] 写新 VERSION 失败: %v", err)
+		// 程序和前端已经是新版而版本号没写成：先从备份还原旧版，还原成功就按「更新失败」收场，不重载
+		if rerr := restoreFromBackupFn(l, bak); rerr != nil {
+			log.Printf("[update] 还原旧版失败: %v", rerr)
+			failUpdate("写入新版本号失败，且还原旧版也失败，请手动回滚并重启服务。" + manualRollbackHint(l, bak))
+			return
+		}
+		failUpdate("写入新版本号失败，已还原为更新前的版本，本次更新未生效: " + err.Error())
+		return
 	}
 
 	// 容器：这次 exec 就是一次接管，计一次启动（新版本完成启动后清零）；起不来时容器重启，由启动接管继续计数
@@ -623,12 +624,8 @@ func resolveReleaseBundle(target string) (assetURL, version, shaURL, sigURL stri
 		return "", "", "", "", fmt.Errorf("GitHub release HTTP %d: %s", resp.StatusCode, msg)
 	}
 	var rel struct {
-		TagName string `json:"tag_name"`
-		Assets  []struct {
-			Name               string `json:"name"`
-			BrowserDownloadURL string `json:"browser_download_url"`
-			Size               int64  `json:"size"`
-		} `json:"assets"`
+		TagName string         `json:"tag_name"`
+		Assets  []releaseAsset `json:"assets"`
 	}
 	if err := json.Unmarshal(raw, &rel); err != nil {
 		return "", "", "", "", err
@@ -638,7 +635,36 @@ func resolveReleaseBundle(target string) (assetURL, version, shaURL, sigURL stri
 		return "", "", "", "", fmt.Errorf("release 无 tag_name")
 	}
 
-	// 优先架构匹配包
+	assetURL, shaURL, sigURL, ok := pickReleaseBundle(rel.Assets)
+	if !ok {
+		return "", "", "", "", fmt.Errorf("release v%s 未找到适用于本机架构的预编译包 "+bundlePrimaryName()+"（需同时带 .sha256 和 .sig）。请先用 git tag 触发 CI 发布，或手动上传 bundle 到 Release", version)
+	}
+	return assetURL, version, shaURL, sigURL, nil
+}
+
+// releaseAsset 是 Release 里的一个附件（名字和下载地址）。
+type releaseAsset struct {
+	Name string `json:"name"`
+	URL  string `json:"browser_download_url"`
+}
+
+// bundleComplete 发布包、.sha256、.sig 三者齐全。一键更新要求齐全：缺 sha256 或缺签名都会在更新时中止。
+func bundleComplete(assets []releaseAsset) bool {
+	_, sha, sig, ok := pickReleaseBundle(assets)
+	return ok && sha != "" && sig != ""
+}
+
+// bundlePrimaryName 本机架构对应的发布包文件名（报错提示用）。
+func bundlePrimaryName() string {
+	if runtime.GOARCH == "arm64" {
+		return "cdk-bundle-linux-arm64.tgz"
+	}
+	return "cdk-bundle-linux-amd64.tgz"
+}
+
+// pickReleaseBundle 从 Release 附件里挑本机架构的发布包（不认别的架构），并带上同名的 .sha256 和 .sig（可能为空）。
+// 在线更新（resolveReleaseBundle）和版本页的「可一键更新」（fetchGitHubLatest，经 bundleComplete）共用这一套规则。
+func pickReleaseBundle(assets []releaseAsset) (assetURL, shaURL, sigURL string, ok bool) {
 	prefer := []string{
 		"cdk-bundle-linux-amd64.tgz",
 		"cdk-bundle-linux-x86_64.tgz",
@@ -652,48 +678,31 @@ func resolveReleaseBundle(target string) (assetURL, version, shaURL, sigURL stri
 		}
 	}
 	var shaCandidates []string
-	for _, a := range rel.Assets {
-		name := strings.ToLower(a.Name)
-		if strings.HasSuffix(name, ".sha256") {
-			shaCandidates = append(shaCandidates, a.BrowserDownloadURL)
+	for _, a := range assets {
+		if strings.HasSuffix(strings.ToLower(a.Name), ".sha256") {
+			shaCandidates = append(shaCandidates, a.URL)
 		}
 	}
 	for _, want := range prefer {
-		for _, a := range rel.Assets {
-			if strings.EqualFold(a.Name, want) {
-				// 找对应 sha
-				for _, a2 := range rel.Assets {
-					if strings.EqualFold(a2.Name, want+".sha256") {
-						shaURL = a2.BrowserDownloadURL
-					}
-					if strings.EqualFold(a2.Name, want+".sig") {
-						sigURL = a2.BrowserDownloadURL
-					}
-				}
-				if shaURL == "" && len(shaCandidates) == 1 {
-					shaURL = shaCandidates[0]
-				}
-				return a.BrowserDownloadURL, version, shaURL, sigURL, nil
+		for _, a := range assets {
+			if !strings.EqualFold(a.Name, want) {
+				continue
 			}
-		}
-	}
-	// 任意 cdk-bundle*.tgz
-	for _, a := range rel.Assets {
-		n := strings.ToLower(a.Name)
-		if strings.Contains(n, "cdk-bundle") && (strings.HasSuffix(n, ".tgz") || strings.HasSuffix(n, ".tar.gz")) {
-			// 同名的 .sha256 / .sig 一并带上，后续校验仍然强制
-			for _, a2 := range rel.Assets {
-				if strings.EqualFold(a2.Name, a.Name+".sha256") {
-					shaURL = a2.BrowserDownloadURL
+			for _, a2 := range assets {
+				if strings.EqualFold(a2.Name, want+".sha256") {
+					shaURL = a2.URL
 				}
-				if strings.EqualFold(a2.Name, a.Name+".sig") {
-					sigURL = a2.BrowserDownloadURL
+				if strings.EqualFold(a2.Name, want+".sig") {
+					sigURL = a2.URL
 				}
 			}
-			return a.BrowserDownloadURL, version, shaURL, sigURL, nil
+			if shaURL == "" && len(shaCandidates) == 1 {
+				shaURL = shaCandidates[0]
+			}
+			return a.URL, shaURL, sigURL, true
 		}
 	}
-	return "", "", "", "", fmt.Errorf("release v%s 未找到预编译包 cdk-bundle-linux-amd64.tgz。请先用 git tag 触发 CI 发布，或手动上传 bundle 到 Release", version)
+	return "", "", "", false
 }
 
 // 下载发布包的时限（G7）：总共最多 10 分钟，60 秒没有收到新数据就取消。测试可缩短。
@@ -897,6 +906,128 @@ func locateBundleContents(extractDir string) (bin, web, versionFile string, err 
 	}
 	return "", "", "", fmt.Errorf("包内缺少 cdk-recharge 二进制或 web/ 目录（请使用 CI 产物 cdk-bundle-linux-amd64.tgz）")
 }
+
+// backupCurrentFiles 把当前在跑的程序、前端、版本号复制到备份目录 bak；源文件存在却复制失败就返回错误。
+func backupCurrentFiles(l updateLayout, bak string) error {
+	if _, err := os.Stat(l.CurBin); err == nil {
+		if err := copyFile(l.CurBin, filepath.Join(bak, "cdk-recharge")); err != nil {
+			return fmt.Errorf("备份当前程序: %w", err)
+		}
+	}
+	if st, err := os.Stat(l.CurWeb); err == nil && st.IsDir() {
+		if err := copyDir(l.CurWeb, filepath.Join(bak, "web")); err != nil {
+			return fmt.Errorf("备份当前前端: %w", err)
+		}
+	}
+	if _, err := os.Stat(l.CurVer); err == nil {
+		if err := copyFile(l.CurVer, filepath.Join(bak, "VERSION")); err != nil {
+			return fmt.Errorf("备份当前版本号: %w", err)
+		}
+	}
+	return nil
+}
+
+// 测试可替换。
+var (
+	writeNewVersionFn   = writeNewVersion
+	restoreFromBackupFn = restoreFromBackup
+)
+
+// restoreFromBackup 把备份目录 bak 里的旧程序和旧前端放回现网位置（先备好再换名，换名失败就保持原样）。
+// 备份里没有旧程序时返回错误。版本号文件不用还原：writeNewVersion 先写临时文件再改名，失败时原 VERSION 原封不动。
+func restoreFromBackup(l updateLayout, bak string) error {
+	binBak := filepath.Join(bak, "cdk-recharge")
+	if _, err := os.Stat(binBak); err != nil {
+		return fmt.Errorf("备份里没有旧程序: %w", err)
+	}
+	binTmp := l.Bin + ".restore"
+	_ = os.Remove(binTmp)
+	if err := updCopyFile(binBak, binTmp); err != nil {
+		_ = os.Remove(binTmp)
+		return fmt.Errorf("还原程序: %w", err)
+	}
+	if err := os.Chmod(binTmp, 0o755); err != nil {
+		_ = os.Remove(binTmp)
+		return fmt.Errorf("还原程序权限: %w", err)
+	}
+	webBak := filepath.Join(bak, "web")
+	var webTmp, webFailed string
+	if st, err := os.Stat(webBak); err == nil && st.IsDir() {
+		webTmp, webFailed = l.Web+".restore", l.Web+".failed"
+		_ = os.RemoveAll(webTmp)
+		_ = os.RemoveAll(webFailed)
+		if err := copyDir(webBak, webTmp); err != nil {
+			_ = os.RemoveAll(webTmp)
+			_ = os.Remove(binTmp)
+			return fmt.Errorf("还原前端: %w", err)
+		}
+	}
+	if err := updRename(binTmp, l.Bin); err != nil {
+		_ = os.Remove(binTmp)
+		if webTmp != "" {
+			_ = os.RemoveAll(webTmp)
+		}
+		return fmt.Errorf("还原程序: %w", err)
+	}
+	if webTmp != "" {
+		hadWeb := false
+		if _, err := os.Stat(l.Web); err == nil {
+			hadWeb = true
+			if err := updRename(l.Web, webFailed); err != nil {
+				_ = os.RemoveAll(webTmp)
+				return fmt.Errorf("还原前端（程序已还原）: %w", err)
+			}
+		}
+		if err := updRename(webTmp, l.Web); err != nil {
+			if hadWeb {
+				_ = updRename(webFailed, l.Web)
+			}
+			_ = os.RemoveAll(webTmp)
+			return fmt.Errorf("还原前端（程序已还原）: %w", err)
+		}
+		_ = os.RemoveAll(webFailed)
+	}
+	return nil
+}
+
+// manualRollbackHint 自动还原也失败时给管理员的手动回滚步骤：哪几个文件从哪个备份还原。
+func manualRollbackHint(l updateLayout, bak string) string {
+	if l.Container {
+		// 容器：备份里的 VERSION 来自镜像目录，不是 runtime/VERSION，不能复制回去。
+		// 启动接管看 runtime/VERSION：删掉它就不再接管、回到镜像自带的版本；要保留上一次升级的版本，就把它改回升级前的版本号。
+		return fmt.Sprintf("手动回滚：停止容器，把备份目录 %s 里的 cdk-recharge 复制回 %s，web 目录复制回 %s；不要复制备份里的 VERSION（那是镜像自带的版本号）。%s 里的版本号如果不是升级前的，请改回升级前的版本号，或者删除它（删除后启动时不再接管，回到镜像自带的版本），再启动容器。",
+			bak, l.Bin, l.Web, l.Ver)
+	}
+	return fmt.Sprintf("手动回滚：停止服务，把备份目录 %s 里的 cdk-recharge 复制回 %s，web 目录复制回 %s，VERSION 复制回 %s（备份里没有 VERSION 就删掉新写的），再启动服务。",
+		bak, l.Bin, l.Web, l.Ver)
+}
+
+// writeNewVersion 写新版本号：包里带了 VERSION 就用它的内容，否则写 version。
+// 先写同目录的临时文件再改名，写到一半失败（磁盘满等）时原 VERSION 原封不动，临时文件删掉。
+func writeNewVersion(l updateLayout, verSrc, version string) error {
+	data := []byte(version + "\n")
+	if verSrc != "" {
+		b, err := os.ReadFile(verSrc)
+		if err != nil {
+			return err
+		}
+		data = b
+	}
+	tmp := l.Ver + ".tmp"
+	_ = os.Remove(tmp)
+	if err := writeVersionFileFn(tmp, data); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := updRename(tmp, l.Ver); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+// writeVersionFileFn 写版本号文件（测试可替换，用来模拟写到一半失败）。
+var writeVersionFileFn = func(path string, data []byte) error { return os.WriteFile(path, data, 0o644) }
 
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)

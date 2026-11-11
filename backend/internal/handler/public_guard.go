@@ -21,7 +21,7 @@ const (
 )
 
 // PublicGuard 是 /api/v1/public 组的中间件：先按 IP 限流（GET、HEAD 算查询，其余算变更），通过了再读请求体，
-// 超过 256 KB 返回 413。上游型服务商的码也一样限流。
+// 超过 256 KB 返回 413。
 func PublicGuard() gin.HandlerFunc {
 	return publicGuard(func(c *gin.Context) string {
 		if c.Request.Method == http.MethodGet || c.Request.Method == http.MethodHead {

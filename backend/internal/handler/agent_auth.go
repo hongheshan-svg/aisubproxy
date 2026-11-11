@@ -46,7 +46,7 @@ func agentBurnPassword(pw string) {
 }
 
 func agentRateKey(c *gin.Context, username string) string {
-	return "agent:" + c.ClientIP() + "|" + username
+	return "agent:" + rateIPKey(c.ClientIP()) + "|" + username
 }
 
 func clipName(s string) string {
@@ -133,13 +133,13 @@ func issueAgentPre(c *gin.Context, a db.Agent, stage string) {
 	c.JSON(http.StatusOK, gin.H{"next": stage})
 }
 
-// agentPreCheck 校验临时凭证：stage 对、账号启用、会话版本一致、动态码错误没超限。
 // agentDBBusy 读库失败：记日志（只写错误），返回 503，不是认证失败。
 func agentDBBusy(c *gin.Context, err error) {
 	log.Printf("[agent] 读库失败: %v", err)
 	agentError(c, http.StatusServiceUnavailable, "busy", "服务繁忙，请稍后再试")
 }
 
+// agentPreCheck 校验临时凭证：stage 对、账号启用、会话版本一致、动态码错误没超限。
 func agentPreCheck(c *gin.Context, stage string) (agent.Claims, db.Agent, bool) {
 	gone := func() (agent.Claims, db.Agent, bool) {
 		agentError(c, http.StatusUnauthorized, "pre_expired", agentMsgPreGone)
@@ -469,7 +469,7 @@ func AgentTOTPLogin(c *gin.Context) {
 	}
 }
 
-// AgentLogout 清掉三个 cookie。
+// AgentLogout 清掉三个 cookie（需要登录；不作废服务端会话，其他设备不受影响）。
 func AgentLogout(c *gin.Context) {
 	clearAgentCookies(c)
 	c.JSON(http.StatusOK, gin.H{"ok": true})

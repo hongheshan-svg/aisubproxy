@@ -294,18 +294,18 @@ func startFakeGitHub(t *testing.T, rel fakeRelease) {
 	t.Cleanup(srv.Close)
 	sum := sha256.Sum256(rel.bundle)
 	assets := []map[string]any{
-		{"name": "cdk-bundle-linux-amd64.tgz", "browser_download_url": srv.URL + "/dl/bundle.tgz", "size": len(rel.bundle)},
-		{"name": "cdk-bundle-linux-amd64.tgz.sha256", "browser_download_url": srv.URL + "/dl/bundle.sha256"},
+		{"name": testBundleName, "browser_download_url": srv.URL + "/dl/bundle.tgz", "size": len(rel.bundle)},
+		{"name": testBundleName + ".sha256", "browser_download_url": srv.URL + "/dl/bundle.sha256"},
 	}
 	if rel.sig != "" {
-		assets = append(assets, map[string]any{"name": "cdk-bundle-linux-amd64.tgz.sig", "browser_download_url": srv.URL + "/dl/bundle.sig"})
+		assets = append(assets, map[string]any{"name": testBundleName + ".sig", "browser_download_url": srv.URL + "/dl/bundle.sig"})
 	}
 	mux.HandleFunc("/repos/o/r/releases/latest", func(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"tag_name": "v" + rel.version, "assets": assets})
 	})
 	mux.HandleFunc("/dl/bundle.tgz", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write(rel.bundle) })
 	mux.HandleFunc("/dl/bundle.sha256", func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(hex.EncodeToString(sum[:]) + "  cdk-bundle-linux-amd64.tgz\n"))
+		_, _ = w.Write([]byte(hex.EncodeToString(sum[:]) + "  " + testBundleName + "\n"))
 	})
 	mux.HandleFunc("/dl/bundle.sig", func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(rel.sig + "\n")) })
 	old := githubAPIBase

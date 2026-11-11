@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	_ "github.com/mattn/go-sqlite3"
 	"golang.org/x/crypto/bcrypt"
@@ -589,6 +590,13 @@ func GetSetting(key string) (string, error) {
 	return v, err
 }
 
+// SettingNonEmpty 该设置项存在且非空。只查有没有，不把值读出来（适合很大的值，如 Logo 的 base64）。
+func SettingNonEmpty(key string) bool {
+	var one int
+	err := DB.QueryRow(`SELECT 1 FROM site_settings WHERE key = ? AND value <> '' LIMIT 1`, key).Scan(&one)
+	return err == nil
+}
+
 func SetSetting(key, value string) error {
 	_, err := DB.Exec(`
 		INSERT INTO site_settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
@@ -652,16 +660,34 @@ func VerifySetupToken(plain string) bool {
 	return subtle.ConstantTimeCompare([]byte(got), []byte(stored)) == 1
 }
 
-// RollbackAdminBootstrap 撤销一次没通过自检的安装：删掉刚建的管理员和安装完成标记，
+// RollbackAdminBootstrap 撤销一次没走完的安装：删掉刚建的管理员和安装完成标记，
 // 并把安装令牌恢复成这次用的那个（CreateAdminUser 已把它删了），管理员不用重启就能用同一个令牌重试（审计 A-11）。
-func RollbackAdminBootstrap(userID int64, setupToken string) error {
+// userID 为 0（读回 id 失败）时按 username 找。只有「库里恰好只有这一个管理员」时才动手：
+// 多于一个说明里面有回滚之前就存在的管理员，一个都不删，返回错误。
+func RollbackAdminBootstrap(userID int64, username, setupToken string) error {
 	tx, err := DB.Begin()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.Exec(`DELETE FROM admin_users WHERE id = ?`, userID); err != nil {
+	var n int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM admin_users`).Scan(&n); err != nil {
 		return err
+	}
+	if n != 1 {
+		return fmt.Errorf("库里有 %d 个管理员，不是刚建的唯一一个，拒绝回滚", n)
+	}
+	if userID == 0 {
+		if err := tx.QueryRow(`SELECT id FROM admin_users WHERE username = ?`, username).Scan(&userID); err != nil {
+			return err
+		}
+	}
+	res, err := tx.Exec(`DELETE FROM admin_users WHERE id = ?`, userID)
+	if err != nil {
+		return err
+	}
+	if k, _ := res.RowsAffected(); k != 1 {
+		return fmt.Errorf("没有找到要回滚的管理员 id=%d", userID)
 	}
 	if _, err := tx.Exec(`DELETE FROM site_settings WHERE key = 'install_completed_at'`); err != nil {
 		return err
@@ -693,11 +719,17 @@ var weakPasswordWords = map[string]bool{
 	"root": true, "test": true, "default": true,
 }
 
+// MaxPasswordBytes bcrypt 只取口令的前 72 字节，超过的哈希函数直接报错。
+const MaxPasswordBytes = 72
+
+// PasswordTooLong 口令超过 bcrypt 的 72 字节上限（英文数字每个 1 字节，汉字每个 3 字节）。
+func PasswordTooLong(p string) bool { return len(strings.TrimSpace(p)) > MaxPasswordBytes }
+
 // IsWeakPassword 拦截常见弱口令与历史默认口令：名单原文、常见词加首尾数字或符号、
 // 同一字符重复、连续数字（升序或降序，可跨 9→0）。只在设置或修改口令时检查，已保存的口令不受影响。
 func IsWeakPassword(p string) bool {
 	p = strings.TrimSpace(p)
-	if len(p) < 12 {
+	if utf8.RuneCountInString(p) < 12 { // 按字符数，和各处「至少 12 位」口径一致
 		return true
 	}
 	lower := strings.ToLower(p)

@@ -232,7 +232,7 @@ func (s *Service) ResumeBreaker(ctx context.Context, by, note string) (BreakerSt
 		return cur, err
 	}
 	s.mu.Lock()
-	s.breakerAlerted = ""
+	s.breakerAlerted = nil
 	s.mu.Unlock()
 	s.Kick()
 	return computeBreaker(ctx)
@@ -262,13 +262,23 @@ func (s *Service) breakerPaused(ctx context.Context) bool {
 	return true
 }
 
-// breakerAlert 按「恢复点 + 原因 + 北京日」去重；去重记录只在内存里，重启后多发一条可以接受。
+// breakerAlertMaxKeys 是 breakerAlerted 最多记多少个键，满了就清空重记：多发几条告警可以接受，内存不能无限涨。
+const breakerAlertMaxKeys = 64
+
+// breakerAlert 按「恢复点 + 原因 + 北京日」去重。记的是发过的键的集合，不只是最近一个：
+// 已暂停期间熔断查询时好时坏，原因会在「查询失败」和真实原因之间来回变，每种原因仍只发一条。
+// 去重记录只在内存里，重启后多发一条可以接受。
 func (s *Service) breakerAlert(reason string, resumeAt int64, text string) {
 	day := time.Now().In(time.FixedZone("UTC+8", 8*3600)).Format("2006-01-02")
 	key := fmt.Sprintf("%d|%s|%s", resumeAt, reason, day)
 	s.mu.Lock()
-	dup := s.breakerAlerted == key
-	s.breakerAlerted = key
+	_, dup := s.breakerAlerted[key]
+	if !dup {
+		if s.breakerAlerted == nil || len(s.breakerAlerted) >= breakerAlertMaxKeys {
+			s.breakerAlerted = map[string]struct{}{}
+		}
+		s.breakerAlerted[key] = struct{}{}
+	}
 	s.mu.Unlock()
 	if !dup {
 		s.opts.Alert(text)

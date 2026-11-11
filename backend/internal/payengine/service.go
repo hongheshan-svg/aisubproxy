@@ -156,7 +156,7 @@ type Service struct {
 	// verifyFails 记各单确认阶段查账号连续出错的次数（单号 → 次数），用来退避下次检查；只在内存里，成功一次或单据定论时删除。受 mu 保护。
 	verifyFails map[string]int
 
-	breakerAlerted string // 熔断告警的去重键，见 breakerAlert；受 mu 保护
+	breakerAlerted map[string]struct{} // 发过的熔断告警的去重键集合，见 breakerAlert；恢复时清空；受 mu 保护
 	// panicAlerted 记接管、收敛停滞单时 panic 的告警发到了哪一天（单号|阶段 → 北京日），见 panicAlert；受 mu 保护
 	panicAlerted map[string]string
 

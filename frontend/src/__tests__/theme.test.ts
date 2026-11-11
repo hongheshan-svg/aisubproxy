@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
 // theme.ts 加载时就会读 localStorage，测试环境没有 DOM，所以先装假对象再动态引入
 function installFakes(storage: unknown) {
@@ -36,9 +38,9 @@ describe('theme：存储被禁用', () => {
     expect(t.themeMode.value).toBe('auto')
     t.setTheme('light')
     expect(t.themeMode.value).toBe('light')
-    expect(() => t.setSkin('cyber')).not.toThrow() // preferDark 皮肤会把 light 转 dark
+    expect(() => t.setSkin('cyber')).not.toThrow()
     expect(t.siteSkin.value).toBe('cyber')
-    expect(t.themeMode.value).toBe('dark')
+    expect(t.themeMode.value).toBe('light') // F1-04：换皮肤不再改写访客的明暗选择
   })
 })
 
@@ -164,5 +166,140 @@ describe('theme：深青自助与亮暗配色', () => {
     const t = await import('../theme')
     t.setSkinFontsAllowed(true)
     expect(appended.length).toBe(0)
+  })
+})
+
+
+// 带真实读写行为的假存储
+function memStore(init: Record<string, string> = {}) {
+  const data: Record<string, string> = { ...init }
+  return Object.assign(
+    {
+      getItem: (k: string) => (k in data ? data[k] : null),
+      setItem: (k: string, v: string) => { data[k] = v },
+      removeItem: (k: string) => { delete data[k] },
+    },
+    { data },
+  )
+}
+
+describe('theme：站点默认明暗不写成访客偏好（F1-01）', () => {
+  it('空存储下 applySiteThemeMode(dark)：生效、写 site-theme-mode、不写 theme-mode', async () => {
+    const st = memStore()
+    installFakes(st)
+    const t = await import('../theme')
+    t.applySiteThemeMode('dark')
+    expect(t.themeMode.value).toBe('dark')
+    expect(st.data['site-theme-mode']).toBe('dark')
+    expect(st.data['theme-mode']).toBeUndefined()
+  })
+
+  it('本机选过就不跟站点', async () => {
+    const st = memStore({ 'theme-mode': 'light' })
+    installFakes(st)
+    const t = await import('../theme')
+    t.applySiteThemeMode('dark')
+    expect(t.themeMode.value).toBe('light')
+    expect(st.data['site-theme-mode']).toBe('dark')
+    expect(st.data['theme-mode']).toBe('light')
+  })
+
+  it('站点默认之后被管理员改了，没有本机偏好的访客跟着变', async () => {
+    const st = memStore()
+    installFakes(st)
+    const t = await import('../theme')
+    t.applySiteThemeMode('dark')
+    t.applySiteThemeMode('light')
+    expect(t.themeMode.value).toBe('light')
+  })
+
+  it('非法值忽略', async () => {
+    const st = memStore()
+    installFakes(st)
+    const t = await import('../theme')
+    t.applySiteThemeMode('purple' as never)
+    expect(t.themeMode.value).toBe('auto')
+    expect(st.data['site-theme-mode']).toBeUndefined()
+  })
+
+  it('没有本机偏好时启动先用上次的站点默认', async () => {
+    installFakes(memStore({ 'site-theme-mode': 'dark' }))
+    const t = await import('../theme')
+    expect(t.themeMode.value).toBe('dark')
+  })
+
+  it('存储被禁用时 applySiteThemeMode 不抛', async () => {
+    installFakes(throwingStorage)
+    const t = await import('../theme')
+    expect(() => t.applySiteThemeMode('dark')).not.toThrow()
+    expect(t.themeMode.value).toBe('dark')
+  })
+
+  it('访客自己点切换（setTheme）仍然落盘到 theme-mode', async () => {
+    const st = memStore()
+    installFakes(st)
+    const t = await import('../theme')
+    t.setTheme('dark')
+    expect(st.data['theme-mode']).toBe('dark')
+  })
+
+  it('main.ts 不再用 setTheme 写站点默认；index.html 首屏脚本回退读 site-theme-mode', () => {
+    const read = (p: string) => readFileSync(fileURLToPath(new URL(p, import.meta.url)), 'utf8')
+    expect(read('../main.ts')).not.toMatch(/\bsetTheme\(/)
+    expect(read('../main.ts')).toContain('applySiteThemeMode')
+    expect(read('../../index.html')).toContain('site-theme-mode')
+  })
+})
+
+describe('theme：只有暗色的皮肤一律按暗色（F1-04）', () => {
+  it('setSkin 到赛博/余烬/黑白，本机的 theme-mode 不被改写', async () => {
+    for (const id of ['cyber', 'ember', 'noir'] as const) {
+      vi.resetModules()
+      const st = memStore({ 'theme-mode': 'light' })
+      installFakes(st)
+      const t = await import('../theme')
+      t.setSkin(id)
+      expect(st.data['theme-mode']).toBe('light')
+      expect(t.themeMode.value).toBe('light')
+    }
+  })
+
+  it('isDark 在这三套皮肤下恒为真，themeLocked 为真；其他皮肤不锁', async () => {
+    installFakes(memStore({ 'theme-mode': 'light' }))
+    const t = await import('../theme')
+    t.setSkin('cyber')
+    expect(t.isDark()).toBe(true)
+    expect(t.themeLocked.value).toBe(true)
+    t.setSkin('forest')
+    expect(t.isDark()).toBe(false)
+    expect(t.themeLocked.value).toBe(false)
+  })
+
+  it('锁定时 toggleTheme 什么也不改', async () => {
+    const st = memStore({ 'theme-mode': 'light' })
+    installFakes(st)
+    const t = await import('../theme')
+    t.setSkin('noir')
+    t.toggleTheme()
+    expect(t.themeMode.value).toBe('light')
+    expect(st.data['theme-mode']).toBe('light')
+  })
+
+  it('.dark 类、data-tone 三处说法一致：选亮色也是 dark', async () => {
+    const classes: Array<[string, boolean | undefined]> = []
+    const st = memStore({ 'theme-mode': 'light' })
+    const f = installFakes(st)
+    ;(document.documentElement.classList as { toggle: (c: string, on?: boolean) => void }).toggle = (c, on) => { classes.push([c, on]) }
+    const t = await import('../theme')
+    t.setSkin('ember')
+    expect(classes[classes.length - 1]).toEqual(['dark', true])
+    expect(f.attrs['data-tone']).toBe('dark')
+  })
+
+  it('ThemeToggle 在锁定时不渲染；SkinPicker 的明暗按钮和后台明暗单选在锁定时置灰', () => {
+    const read = (p: string) => readFileSync(fileURLToPath(new URL(p, import.meta.url)), 'utf8')
+    expect(read('../components/ThemeToggle.vue')).toMatch(/v-if="!themeLocked"/)
+    expect(read('../components/SkinPicker.vue')).toMatch(/:disabled="themeLocked"/)
+    expect(read('../views/admin/SiteAppearance.vue')).toMatch(/:disabled="themeLocked"/)
   })
 })

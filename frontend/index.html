@@ -18,8 +18,11 @@
       (function () {
         try {
           // 默认：深青自助(teal) + 跟随系统。与 theme.ts、后端 /public/site 的默认值保持一致
+          // 访客自己的选择 > 上次记下的站点默认（site-theme-mode）> 跟随系统
+          var ok = function (v) { return v === 'light' || v === 'dark' || v === 'auto' }
           var mode = localStorage.getItem('theme-mode')
-          if (mode !== 'light' && mode !== 'dark' && mode !== 'auto') mode = 'auto'
+          if (!ok(mode)) mode = localStorage.getItem('site-theme-mode')
+          if (!ok(mode)) mode = 'auto'
           var skin = localStorage.getItem('site-skin') || 'teal'
           var dark =
             mode === 'dark' ||

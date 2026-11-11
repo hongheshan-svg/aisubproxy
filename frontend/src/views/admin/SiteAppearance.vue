@@ -26,12 +26,12 @@
           </div>
         </el-form-item>
         <el-form-item label="明暗">
-          <el-radio-group :model-value="themeMode" @update:model-value="(v: any) => setTheme(v as ThemeMode)">
+          <el-radio-group :model-value="themeMode" :disabled="themeLocked" @update:model-value="(v: any) => setTheme(v as ThemeMode)">
             <el-radio-button value="light">亮色</el-radio-button>
             <el-radio-button value="dark">暗色</el-radio-button>
             <el-radio-button value="auto">跟随系统</el-radio-button>
           </el-radio-group>
-          <div class="text-xs text-subtle w-full mt-1">保存的明暗是访客的默认值；每个人仍可在自己的浏览器里切换。</div>
+          <div class="text-xs text-subtle w-full mt-1">保存的明暗是访客的默认值；每个人仍可在自己的浏览器里切换。<template v-if="themeLocked">当前皮肤只有暗色，明暗不可选。</template></div>
         </el-form-item>
         <el-form-item>
           <el-button type="primary" data-testid="save-brand" :loading="saving" @click="saveBrand">保存并对所有访客生效</el-button>
@@ -45,7 +45,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import AdminPageHeader from '../../components/AdminPageHeader.vue'
-import { siteBrand, setSiteBrand, setSkin, setTheme, siteSkin, themeMode, applyThemeAll, type SkinId, type ThemeMode } from '../../theme'
+import { siteBrand, setSiteBrand, setSkin, setTheme, siteSkin, themeMode, themeLocked, applyThemeAll, type SkinId, type ThemeMode } from '../../theme'
 import SkinPicker from '../../components/SkinPicker.vue'
 import { authFetch } from '../../lib/api'
 import { dialog } from '../../lib/dialog'

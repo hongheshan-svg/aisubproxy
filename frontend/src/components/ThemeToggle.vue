@@ -1,5 +1,6 @@
 <template>
   <button
+    v-if="!themeLocked"
     class="btn-ghost !px-2.5"
     :title="dark ? '切换到亮色' : '切换到暗色'"
     :aria-label="dark ? '切换到亮色' : '切换到暗色'"
@@ -19,7 +20,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { isDark, toggleTheme, themeMode } from '../theme'
+import { isDark, toggleTheme, themeMode, themeLocked } from '../theme'
 
 // themeMode is referenced so the computed re-evaluates on change
 const dark = computed(() => {

@@ -151,6 +151,26 @@ describe('侧栏外壳 SideNavShell', () => {
     expect(html).toContain('sn-brand-name')
   })
 
+  it('侧栏底部主题按钮压住皮肤给 .btn-ghost 加的背景和边框', () => {
+    const src = readFileSync(fileURLToPath(new URL('../AdminLayout.vue', import.meta.url)), 'utf8')
+    for (const sel of ['.sn-tools :deep(.btn-ghost)', '.sn-tools :deep(.btn-ghost:hover)']) {
+      const m = src.match(new RegExp(sel.replace(/[()]/g, '\\$&') + '\\s*\\{([^}]*)\\}'))
+      expect(m, sel).toBeTruthy()
+      if (sel.endsWith('hover)')) expect(m![1]).toContain('border-color: transparent')
+      else {
+        expect(m![1]).toContain('background: transparent')
+        expect(m![1]).toContain('border-color: transparent')
+      }
+    }
+  })
+
+  it('侧栏分隔线只由侧栏变量推出（不回落到浅色的 --brd）', () => {
+    expect(shellSrc).not.toContain('--side-brd')
+    // 仅顶栏下边线（规格指定）可以用 --brd
+    expect((shellSrc.match(/var\(--brd\)/g) || []).length).toBe(1)
+    expect(shellSrc).toMatch(/\.topbar \{[^}]*var\(--brd\)/)
+  })
+
   it('分组名为空串时不渲染分组标题', () => {
     expect(shellSrc).toMatch(/v-if="g\.name && !railMode"/)
   })

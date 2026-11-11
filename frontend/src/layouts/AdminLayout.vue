@@ -198,8 +198,8 @@ async function submitPwd() {
 <style scoped>
 /* 侧栏底部（插槽内容，样式在这里）：颜色全用侧栏变量 */
 .sn-tools { display: flex; gap: 6px; }
-.sn-tools :deep(.btn-ghost) { color: var(--side-ink); }
-.sn-tools :deep(.btn-ghost:hover) { background: color-mix(in srgb, var(--side-ink) 12%, transparent); }
+.sn-tools :deep(.btn-ghost) { color: var(--side-ink); background: transparent; border-color: transparent; box-shadow: none; }
+.sn-tools :deep(.btn-ghost:hover) { color: var(--side-ink); background: color-mix(in srgb, var(--side-ink) 12%, transparent); border-color: transparent; }
 .sn-tools :deep(.btn-ghost:focus-visible),
 .sn-user:focus-visible { outline: 2px solid var(--side-ink); outline-offset: -2px; }
 .is-collapsed .sn-tools { justify-content: center; }

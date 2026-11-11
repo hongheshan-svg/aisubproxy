@@ -593,6 +593,13 @@ func GetSetting(key string) (string, error) {
 	return v, err
 }
 
+// SettingNonEmpty 该设置项存在且非空。只查有没有，不把值读出来（适合很大的值，如 Logo 的 base64）。
+func SettingNonEmpty(key string) bool {
+	var one int
+	err := DB.QueryRow(`SELECT 1 FROM site_settings WHERE key = ? AND value <> '' LIMIT 1`, key).Scan(&one)
+	return err == nil
+}
+
 func SetSetting(key, value string) error {
 	_, err := DB.Exec(`
 		INSERT INTO site_settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)

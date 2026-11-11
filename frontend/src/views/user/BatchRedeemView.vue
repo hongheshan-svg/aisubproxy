@@ -751,6 +751,7 @@ function clearSessionPool() {
 }
 
 async function handleVerifyBatch() {
+  if (verifying.value || submitting.value || autoSubmitting.value) return
   const keys = parseCdks(cdkText.value)
   if (!keys.length) return
   if (keys.length > BATCH_MAX_KEYS) {

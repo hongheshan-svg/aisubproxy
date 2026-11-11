@@ -180,6 +180,7 @@ function goRedeemCard(code: string) {
 }
 
 async function query() {
+  if (querying.value) return
   const code = cdkCode.value.trim()
   if (!code) return
   querying.value = true
@@ -201,6 +202,7 @@ async function query() {
 }
 
 async function queryBatch() {
+  if (querying.value) return
   const codes = parsedCodes.value.slice(0, LOOKUP_BATCH_MAX)
   if (!codes.length) {
     error.value = t('cdkLookup.batchEmpty')

@@ -308,7 +308,7 @@ func (s *Service) Sensitive(ctx context.Context, l *Lease) (*CardSensitive, erro
 	}
 	sv, err := client.GetCardSensitive(ctx, c.CardID)
 	if err != nil {
-		return nil, err
+		return nil, redactPAN(err)
 	}
 	if sv == nil {
 		return nil, errors.New("发卡平台没有返回卡号")
@@ -545,5 +545,6 @@ func (s *Service) ViewSensitive(ctx context.Context, cardID, by string) (*marswa
 		}
 	}
 	log.Printf("[cardpool] 管理员 %s 查看卡 %s 的卡号（池状态 %s）", by, cardID, c.PoolState)
-	return client.GetCardSensitive(ctx, c.CardID)
+	sv, err := client.GetCardSensitive(ctx, c.CardID)
+	return sv, redactPAN(err)
 }

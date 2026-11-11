@@ -80,7 +80,9 @@ func previewBalanceErr(field string, err error) error {
 
 var longDigits = regexp.MustCompile(`\d(?:[ -]?\d){11,}`)
 
-// redactPAN 去掉错误全文里夹带的长数字串（可能是完整卡号）：平台错误的 Code、Message、被包裹的底层错误都打码，
+// redactPAN 去掉错误全文里夹带的长数字串（可能是完整卡号）。卡详情（GetCard）和取卡号（GetCardSensitive）的平台错误
+// 都要先过它再返回、记日志或告警：这两个接口的回复里有完整卡号，平台的 message 也可能回显。
+// 平台错误的 Code、Message、被包裹的底层错误都打码，
 // 别的错误对整条文本打码。错误类型不变，errors.Is / errors.As 照常可用；errors.As 取到的平台错误是打过码的副本。
 func redactPAN(err error) error {
 	if err == nil {

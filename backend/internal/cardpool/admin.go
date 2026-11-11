@@ -237,7 +237,7 @@ func (s *Service) ImportCard(ctx context.Context, cardID, productID, holderID, b
 	}
 	d, err := c.GetCard(ctx, cardID)
 	if err != nil {
-		return nil, err
+		return nil, redactPAN(err) // 平台错误可能回显卡号，见 redactPAN
 	}
 	products, err := c.ListCardProducts(ctx)
 	if err != nil {
@@ -302,7 +302,7 @@ func (s *Service) refreshCard(ctx context.Context, cardID string, src alertSourc
 	}
 	d, err := c.GetCard(ctx, cardID)
 	if err != nil {
-		return nil, err
+		return nil, redactPAN(err) // 平台错误可能回显卡号，见 redactPAN
 	}
 	avail, err := parseBalance(d.AvailableBalance)
 	if err != nil {

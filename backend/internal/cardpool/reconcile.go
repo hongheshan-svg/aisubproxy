@@ -169,7 +169,7 @@ func (s *Service) queryOrder(ctx context.Context, c *marswallex.Client, o *Order
 	case KindStatus:
 		d, err := c.GetCard(ctx, o.CardID)
 		if err != nil {
-			return queryResult{}, false, err
+			return queryResult{}, false, redactPAN(err)
 		}
 		st := normStatus(d.Status)
 		if st == o.TargetStatus {

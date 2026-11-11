@@ -28,4 +28,11 @@ describe('brandColor', () => {
       expect(contrastRatio(s.muted, s.bg)).toBeGreaterThanOrEqual(4.5)
     }
   })
+  it('侧栏颜色：rose、violet 暗色主色的菜单字和分组标题也达标', () => {
+    for (const p of ['#fb7185', '#a78bfa']) {
+      const s = sideColorsFrom(p)
+      expect(contrastRatio(s.ink, s.bg), `${p} ink`).toBeGreaterThanOrEqual(4.5)
+      expect(contrastRatio(s.muted, s.bg), `${p} muted`).toBeGreaterThanOrEqual(4.5)
+    }
+  })
 })

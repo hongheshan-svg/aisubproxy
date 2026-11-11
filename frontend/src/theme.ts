@@ -134,7 +134,7 @@ export const SKINS: SkinMeta[] = [
     density: 'compact',
     nav: 'block',
     light: { primary: '#0070e1', on: '#ffffff' },
-    dark: { primary: '#0a84ff', on: '#1e1e1e' },
+    dark: { primary: '#0a84ff', on: '#0b1220' },
     fonts: ['Inter:wght@400;500;600;700', 'Outfit:wght@500;600;700'],
   },
   {

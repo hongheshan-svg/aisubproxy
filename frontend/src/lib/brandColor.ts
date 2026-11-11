@@ -104,7 +104,7 @@ export function brandColorVars(
 
 /**
  * 侧栏颜色：由当前主色推出。side-bg 保持主色的色相和饱和度，亮度每次降 0.02，
- * 直到白字压在上面不低于 10:1；菜单字、分组标题是白色混入 side-bg。
+ * 直到白字压在上面不低于 10:1；菜单字、分组标题是白色混入 side-bg（起点 78% / 60%，不达标逐步提高）。
  */
 export function sideColorsFrom(primary: string): { bg: string; ink: string; muted: string } {
   const [h, s, l0] = rgbToHsl(parse(primary))
@@ -113,5 +113,15 @@ export function sideColorsFrom(primary: string): { bg: string; ink: string; mute
     l = Math.max(0, l - 0.02)
     bg = format(hslToRgb(h, s, l))
   }
-  return { bg, ink: mixHex('#FFFFFF', bg, 0.78), muted: mixHex('#FFFFFF', bg, 0.6) }
+  // 菜单字、分组标题：白色占比起点 78% / 60%，和 side-bg 的对比度不到 4.5 就每次加 2%，最多到纯白
+  const lift = (start: number): string => {
+    let w = start
+    let c = mixHex('#FFFFFF', bg, w)
+    while (contrastRatio(c, bg) < 4.5 && w < 1) {
+      w = Math.min(1, Math.round((w + 0.02) * 100) / 100)
+      c = mixHex('#FFFFFF', bg, w)
+    }
+    return c
+  }
+  return { bg, ink: lift(0.78), muted: lift(0.6) }
 }

@@ -10,11 +10,6 @@ const read = (p: string) => readFileSync(fileURLToPath(new URL(p, import.meta.ur
 // 与 main.ts 的引入顺序一致：style.css 在前，skins.css 在后
 const parsed = parseSkinTokens(read('../../style.css') + '\n' + read('../skins.css'))
 
-// 侧栏菜单分组标题（muted，白色混入 side-bg 60%）在这两套暗色主色推出的侧栏底上只有 4.27 / 4.35。
-// 主色只往浅调到白色也修不好，根子在 sideColorsFrom 的混色比例；修好它之后这两项会转为通过，
-// 到时把 it.fails 改回 it。
-const SIDE_MUTED_KNOWN_GAP = new Set(['rose dark', 'violet dark'])
-
 const PAIRS: Array<[string, string]> = [
   ['--ink', '--bg'], ['--ink', '--surface-solid'], ['--ink-2', '--bg'], ['--ink-2', '--surface-solid'],
   ['--primary-on', '--primary'], ['--primary', '--surface-solid'],
@@ -34,8 +29,7 @@ describe('12 套皮肤的对比度', () => {
       expect(resolveHex(tk, '--primary')).toBe(s[mode].primary.toUpperCase())
       expect(resolveHex(tk, '--primary-on')).toBe(s[mode].on.toUpperCase())
     })
-    const sideIt = SIDE_MUTED_KNOWN_GAP.has(`${s.id} ${mode}`) ? it.fails : it
-    sideIt(`${s.id} ${mode} 侧栏颜色达标`, () => {
+    it(`${s.id} ${mode} 侧栏颜色达标`, () => {
       const side = sideColorsFrom(s[mode].primary)
       expect(contrastRatio('#FFFFFF', side.bg)).toBeGreaterThanOrEqual(10)
       expect(contrastRatio(side.ink, side.bg)).toBeGreaterThanOrEqual(4.5)

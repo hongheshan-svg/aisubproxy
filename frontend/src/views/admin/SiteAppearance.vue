@@ -103,7 +103,7 @@ async function saveBrand() {
     savedSkin.value = siteSkin.value
     dialog.toast('已保存，对所有访客生效', 'ok')
   } catch {
-    dialog.toast('网络错误，不确定是否已保存，请刷新页面核对', 'err')
+    dialog.toast('网络错误，不确定是否已保存，请刷新页面核对', 'err', 8000)
   } finally {
     saving.value = false
   }

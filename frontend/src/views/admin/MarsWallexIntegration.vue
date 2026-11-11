@@ -351,7 +351,7 @@ async function loadConfig() {
     }
     applyConfig(d)
   } catch {
-    dialog.toast('网络错误', 'err')
+    dialog.toast('网络错误，读取配置失败', 'err')
   }
 }
 
@@ -383,7 +383,7 @@ async function save() {
     dialog.toast('已保存', 'ok')
     await loadConfig()
   } catch {
-    dialog.toast('网络错误，不确定是否已保存，请刷新页面核对', 'err')
+    dialog.toast('网络错误，不确定是否已保存，请刷新页面核对', 'err', 8000)
   } finally {
     saving.value = false
   }
@@ -403,7 +403,7 @@ async function checkEgress() {
     }
     egress.value = d
   } catch {
-    dialog.toast('网络错误', 'err')
+    dialog.toast('网络错误，出口 IP 没有检测', 'err')
   } finally {
     egressLoading.value = false
   }
@@ -452,7 +452,7 @@ async function runTest() {
     }
     result.value = d
   } catch {
-    dialog.toast('网络错误', 'err')
+    dialog.toast('网络错误，没连上本站后台，测试没有做', 'err')
   } finally {
     testing.value = false
   }
@@ -469,7 +469,7 @@ async function loadEvents() {
     }
     events.value = d.events || []
   } catch {
-    dialog.toast('网络错误', 'err')
+    dialog.toast('网络错误，读取 Webhook 事件失败', 'err')
   } finally {
     loadingEvents.value = false
   }
@@ -487,7 +487,7 @@ async function reprocess(row: WebhookEvent) {
     dialog.toast('已提交重新处理', 'ok')
     await loadEvents()
   } catch {
-    dialog.toast('网络错误，不确定是否已保存，请刷新页面核对', 'err')
+    dialog.toast('网络错误，不确定是否已提交重新处理，请刷新事件列表核对', 'err', 8000)
   } finally {
     reprocessingId.value = null
   }

@@ -111,16 +111,29 @@ func agentSwapPasswordWeak() bool {
 	return strings.TrimSpace(v) == "1"
 }
 
-func setAgentSwapPassword(plain string) error {
+// validateAgentSwapPassword 只校验不写库：长度和弱口令。空串表示清除口令，视为合格。
+func validateAgentSwapPassword(plain string) error {
 	plain = strings.TrimSpace(plain)
 	if plain == "" {
-		return db.DeleteSetting(agentSwapPasswordKey)
+		return nil
 	}
 	if len(plain) < minAgentSwapPasswordLen {
 		return errPasswordTooShort
 	}
 	if db.IsWeakPassword(plain) {
 		return errPasswordWeak
+	}
+	return nil
+}
+
+// setAgentSwapPassword 校验不过返回 errPasswordTooShort / errPasswordWeak，写库失败返回原始错误。
+func setAgentSwapPassword(plain string) error {
+	plain = strings.TrimSpace(plain)
+	if plain == "" {
+		return db.DeleteSetting(agentSwapPasswordKey)
+	}
+	if err := validateAgentSwapPassword(plain); err != nil {
+		return err
 	}
 	hash, err := db.HashAdminPassword(plain)
 	if err != nil {
@@ -130,7 +143,11 @@ func setAgentSwapPassword(plain string) error {
 		return err
 	}
 	swapPasswordFails.succeeded(swapPasswordFailKey) // 换了口令，旧口令上的猜测计数作废，立即解锁
-	return db.DeleteSetting(agentSwapWeakKey)
+	if err := db.DeleteSetting(agentSwapWeakKey); err != nil {
+		// 口令已经换成功；只是「弱口令」标记没清掉，不能因此报失败
+		log.Printf("[settings] 清除换码口令弱标记失败: %v", err)
+	}
+	return nil
 }
 
 var (

@@ -443,7 +443,7 @@ func chooseOption(ctx context.Context, e *elem, f field) (changed bool, err erro
 	}
 	switch r {
 	case "missing":
-		return false, fmt.Errorf("「%s」下拉框里没有 %s 这一项", f.label, f.value)
+		return false, fmt.Errorf("「%s」下拉框里没有账单地址的这一项", f.label) // 不带值：错误会进时间线
 	case "rejected":
 		return false, fmt.Errorf("「%s」选择后核对不一致", f.label)
 	case "changed":

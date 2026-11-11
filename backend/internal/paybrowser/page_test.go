@@ -1038,6 +1038,25 @@ func TestFillRejectsBillingControlChars(t *testing.T) {
 	}
 }
 
+// P2-07：页面下拉框里没有账单地址的国家时报错放弃，错误消息只带字段名，不带账单地址的值（它会进时间线）。
+func TestFillMissingOptionHidesValue(t *testing.T) {
+	needChrome(t)
+	f := newFakeCheckout(t)
+	b, ctx := openCheckout(t, f, "", paybrowser.LaunchOptions{})
+	bl := testBilling
+	bl.Country = "Secretland"
+	err := b.Fill(ctx, testCard, bl)
+	if err == nil || !strings.Contains(err.Error(), "「国家」下拉框里没有") {
+		t.Fatalf("Fill = %v，期望报「国家」下拉框里没有这一项", err)
+	}
+	if strings.Contains(strings.ToLower(err.Error()), "secret") {
+		t.Fatalf("错误消息泄露了账单地址的值: %v", err)
+	}
+	if n := len(f.payments()); n != 0 {
+		t.Fatalf("Fill 失败时仿造页收到 %d 次提交", n)
+	}
+}
+
 func TestTruncateMessage(t *testing.T) {
 	long := strings.Repeat("拒", 600)
 	if got := paybrowser.Truncate(long); utf8.RuneCountInString(got) != 500 {

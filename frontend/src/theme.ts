@@ -384,6 +384,16 @@ function applyMode() {
   document.documentElement.classList.toggle('dark', isDark())
 }
 
+/** 浏览器地址栏颜色跟着当前皮肤的底色走（取样式表里算出来的 --bg，取不到就不动） */
+function syncThemeColor(root: HTMLElement) {
+  try {
+    const meta = document.querySelector('meta[name="theme-color"]')
+    if (!meta || typeof window.getComputedStyle !== 'function') return
+    const bg = window.getComputedStyle(root).getPropertyValue('--bg').trim()
+    if (/^#[0-9a-fA-F]{3,8}$/.test(bg)) meta.setAttribute('content', bg)
+  } catch { /* 地址栏颜色只是锦上添花 */ }
+}
+
 function applySkin() {
   const meta = currentSkinMeta.value
   const root = document.documentElement
@@ -403,6 +413,7 @@ function applySkin() {
   root.style.setProperty('--side-active', tone.primary)
   root.style.setProperty('--side-active-on', tone.on)
   root.style.colorScheme = dark ? 'dark' : 'light'
+  syncThemeColor(root)
   if (skinFontsAllowed) ensureSkinFonts(meta)
 }
 

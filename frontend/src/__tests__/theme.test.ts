@@ -303,3 +303,23 @@ describe('theme：只有暗色的皮肤一律按暗色（F1-04）', () => {
     expect(read('../views/admin/SiteAppearance.vue')).toMatch(/:disabled="themeLocked"/)
   })
 })
+
+describe('theme：默认站名与地址栏颜色（F1-15）', () => {
+  it('没记过站名时用和后端一致的默认站名', async () => {
+    installFakes(memStore())
+    const t = await import('../theme')
+    expect(t.siteBrand.value).toEqual({ name: 'Recharge Portal', sub: 'Account Upgrade Service' })
+    t.setSiteBrand({ name: '   ' })
+    expect(t.siteBrand.value.name).toBe('Recharge Portal')
+  })
+
+  it('切换皮肤后 theme-color 跟着当前 --bg 更新', async () => {
+    installFakes(memStore())
+    const meta = { attrs: {} as Record<string, string>, setAttribute(k: string, v: string) { this.attrs[k] = v } }
+    ;(document as unknown as { querySelector: unknown }).querySelector = (sel: string) => (sel.includes('theme-color') ? meta : null)
+    ;(window as unknown as { getComputedStyle: unknown }).getComputedStyle = () => ({ getPropertyValue: (k: string) => (k === '--bg' ? ' #123456 ' : '') })
+    const t = await import('../theme')
+    t.setSkin('forest')
+    expect(meta.attrs.content).toBe('#123456')
+  })
+})

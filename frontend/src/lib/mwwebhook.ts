@@ -14,10 +14,21 @@ export function fmtBeijing(ts: number): string {
   return `${d.getUTCFullYear()}-${p2(d.getUTCMonth() + 1)}-${p2(d.getUTCDate())} ${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}:${p2(d.getUTCSeconds())}`
 }
 
-/** 后台通用：秒数（number）或 ISO 时间串都按北京时间显示；空值显示 —，解析不了的串原样返回。 */
+// 后端 SQLite CURRENT_TIMESTAMP / strftime 给出的时间：UTC，`YYYY-MM-DD HH:MM:SS`，没有时区标记。
+// 浏览器会把它当本地时间（Safari 干脆解析失败），所以先按 UTC 手动拆开。
+const SQLITE_UTC = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.\d+)?$/
+
+/** 服务端时间串转毫秒：无时区标记的 SQLite 串按 UTC，其余（RFC3339 等）交给 Date.parse；解析不了返回 NaN。 */
+export function parseServerTimeMs(raw: string): number {
+  const s = raw.trim()
+  const m = SQLITE_UTC.exec(s)
+  return m ? Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]), Number(m[6])) : Date.parse(s)
+}
+
+/** 后台通用：秒数（number）或服务端时间串都按北京时间显示；空值显示 —，解析不了的串原样返回。 */
 export function fmtBeijingAny(v: unknown): string {
   if (v === null || v === undefined || v === '' || v === 0) return '—'
-  const ms = typeof v === 'number' ? v * 1000 : new Date(String(v)).getTime()
+  const ms = typeof v === 'number' ? v * 1000 : parseServerTimeMs(String(v))
   if (!Number.isFinite(ms)) return String(v)
   return fmtBeijing(Math.floor(ms / 1000))
 }

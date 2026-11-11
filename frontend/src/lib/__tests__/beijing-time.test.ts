@@ -24,6 +24,9 @@ describe('后台时间显示固定为北京时间', () => {
     expect(fmtBeijingAny(TS)).toBe(BJ)
     expect(fmtBeijingAny('2023-11-14T22:13:20Z')).toBe(BJ)
     expect(fmtBeijingAny('2023-11-15T06:13:20+08:00')).toBe(BJ)
+    // SQLite CURRENT_TIMESTAMP：UTC、不带时区标记（代理换码面板的 created_at/updated_at 就是这种）
+    expect(fmtBeijingAny('2023-11-14 22:13:20')).toBe(BJ)
+    expect(fmtBeijingAny('2023-11-14T22:13:20')).toBe(BJ)
     expect(fmtBeijingAny('')).toBe('—')
     expect(fmtBeijingAny(null)).toBe('—')
     expect(fmtBeijingAny('not a time')).toBe('not a time')

@@ -116,6 +116,12 @@ describe('样式：用户端标题不吃皮肤的标题装饰（终审前端重�
     expect(rule).toContain('font-style: normal')
     expect(rule).toContain('letter-spacing: -0.03em')
   })
+  it('排除用户端的 h1/h2/h3 规则用 :where 包住，不抬高优先级（不压过登录卡片 .auth-title 的作用域字重）', () => {
+    for (const [name, text] of [['skins.css', skins], ['style.css', css]] as const) {
+      const bad = text.split('\n').filter((l) => /\[data-skin/.test(l) && /(^|[\s,>])h[1-3]\b/.test(l) && !l.includes('html:where(:not([data-surface="user"]))'))
+      expect(bad, name).toEqual([])
+    }
+  })
   it('皮肤里直接选 h1/h2/h3 的规则都排除用户端', () => {
     for (const [name, text] of [['skins.css', skins], ['style.css', css]] as const) {
       const bad = text.split('\n').filter((l) => /\[data-skin/.test(l) && /(^|[\s,>])h[1-3]\b/.test(l) && !l.includes(':not([data-surface="user"])'))

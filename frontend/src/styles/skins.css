@@ -338,7 +338,7 @@ html.dark[data-skin='violet'] {
   --input-border: 1px solid #322848;
   --title-fg: #f5f3ff;
 }
-html:not([data-surface="user"])[data-skin='violet'] h2 { font-weight: 800; letter-spacing: -0.02em; }
+html:where(:not([data-surface="user"]))[data-skin='violet'] h2 { font-weight: 800; letter-spacing: -0.02em; }
 
 /* 黑白控制台 slate：象牙灰底、白卡细边无投影、黑色胶囊按钮、等宽大写小标签、超大标题 */
 html[data-skin='slate'] {

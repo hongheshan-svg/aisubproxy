@@ -622,6 +622,7 @@ func IsLocalCDKOrderConflict(err error) bool {
 // 别家的成功单不算：一家走通不能证明另一家的卡和流程也能走通。
 //   - 订阅开通码（kind = subscription）：那笔单还要已经关闭续费并核实（renewal_state = cancelled），
 //     证明「付款 → 确认 → 关闭续费」整条链路走通了。旧库迁移时成功单记为 skipped，不算。
+//     金额还要大于 0：0 元开通（首月免费等优惠）的单不能证明真实扣款走得通。
 //   - 点数码（kind = credit）：要有一笔真实点数单成功，订阅开通单不算。
 func HasRealSucceededPayOrder(ctx context.Context, provider, kind string) (bool, error) {
 	provider = strings.TrimSpace(provider)
@@ -631,7 +632,8 @@ func HasRealSucceededPayOrder(ctx context.Context, provider, kind string) (bool,
 	extra := ""
 	switch kind {
 	case PayKindSubscription:
-		extra = ` AND kind = 'subscription' AND renewal_state = 'cancelled'`
+		// 0 元开通（首月免费等优惠）的单不能证明真实扣款走得通
+		extra = ` AND kind = 'subscription' AND renewal_state = 'cancelled' AND amount_minor > 0`
 	case PayKindCredit:
 		extra = ` AND kind = 'credit'`
 	default:

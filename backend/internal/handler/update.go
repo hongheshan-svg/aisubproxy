@@ -351,18 +351,13 @@ func runSeamlessUpdate(target, username string) {
 		failUpdate("创建备份目录失败，已中止更新: " + err.Error())
 		return
 	}
-	// 备份旧二进制
-	if _, err := os.Stat(l.CurBin); err == nil {
-		_ = copyFile(l.CurBin, filepath.Join(bak, "cdk-recharge"))
+	// 备份旧程序、旧前端、旧版本号：任何一项失败都中止（此时现网文件一个都没动），否则回滚会拿到更早的版本
+	if err := backupCurrentFiles(l, bak); err != nil {
+		_ = os.RemoveAll(bak)
+		failUpdate("备份当前版本失败，已中止更新: " + err.Error())
+		return
 	}
-	// 备份 web
-	if st, err := os.Stat(l.CurWeb); err == nil && st.IsDir() {
-		_ = copyDir(l.CurWeb, filepath.Join(bak, "web"))
-	}
-	// 备份版本号与数据库（数据库备份失败则中止：没有可回退的数据就不升级）
-	if _, err := os.Stat(l.CurVer); err == nil {
-		_ = copyFile(l.CurVer, filepath.Join(bak, "VERSION"))
-	}
+	// 数据库备份失败也中止：没有可回退的数据就不升级
 	if err := backupDatabase(filepath.Join(bak, "cdk_recharge.db")); err != nil {
 		failUpdate("备份数据库失败，已中止更新: " + err.Error())
 		return
@@ -380,10 +375,14 @@ func runSeamlessUpdate(target, username string) {
 		return
 	}
 	// 写 VERSION：放在程序之后，容器的启动接管以它为准，程序没换成功就不会有新版本号
-	if verSrc != "" {
-		_ = copyFile(verSrc, l.Ver)
-	} else {
-		_ = os.WriteFile(l.Ver, []byte(version+"\n"), 0o644)
+	if err := writeNewVersion(l, verSrc, version); err != nil {
+		log.Printf("[update] 写新 VERSION 失败: %v", err)
+		if l.Container {
+			// 容器的启动接管以 runtime 目录的 VERSION 为准，写不进去就不能重载，否则下次重启可能不接管新程序
+			failUpdate("程序已替换，但写入新版本号失败，已中止重载: " + err.Error())
+			return
+		}
+		setUpdateState(func(s *updateState) { s.Message = "写入新版本号失败（程序已替换）: " + err.Error() })
 	}
 
 	// 容器：这次 exec 就是一次接管，计一次启动（新版本完成启动后清零）；起不来时容器重启，由启动接管继续计数
@@ -896,6 +895,34 @@ func locateBundleContents(extractDir string) (bin, web, versionFile string, err 
 		}
 	}
 	return "", "", "", fmt.Errorf("包内缺少 cdk-recharge 二进制或 web/ 目录（请使用 CI 产物 cdk-bundle-linux-amd64.tgz）")
+}
+
+// backupCurrentFiles 把当前在跑的程序、前端、版本号复制到备份目录 bak；源文件存在却复制失败就返回错误。
+func backupCurrentFiles(l updateLayout, bak string) error {
+	if _, err := os.Stat(l.CurBin); err == nil {
+		if err := copyFile(l.CurBin, filepath.Join(bak, "cdk-recharge")); err != nil {
+			return fmt.Errorf("备份当前程序: %w", err)
+		}
+	}
+	if st, err := os.Stat(l.CurWeb); err == nil && st.IsDir() {
+		if err := copyDir(l.CurWeb, filepath.Join(bak, "web")); err != nil {
+			return fmt.Errorf("备份当前前端: %w", err)
+		}
+	}
+	if _, err := os.Stat(l.CurVer); err == nil {
+		if err := copyFile(l.CurVer, filepath.Join(bak, "VERSION")); err != nil {
+			return fmt.Errorf("备份当前版本号: %w", err)
+		}
+	}
+	return nil
+}
+
+// writeNewVersion 写新版本号：包里带了 VERSION 就复制，否则写 version。
+func writeNewVersion(l updateLayout, verSrc, version string) error {
+	if verSrc != "" {
+		return copyFile(verSrc, l.Ver)
+	}
+	return os.WriteFile(l.Ver, []byte(version+"\n"), 0o644)
 }
 
 func copyFile(src, dst string) error {

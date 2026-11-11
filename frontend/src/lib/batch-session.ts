@@ -224,7 +224,8 @@ export function extractCdkSession(raw: string): string {
   const s = raw.trim()
   if (!s) return ''
   if (!s.startsWith('{') && s.split('.').length >= 5) return s
-  if (!s.startsWith('{') && s.startsWith('eyJ') && s.split('.').length === 3) return ''
+  // 纯 Access Token（三段 JWT，带 Bearer 前缀也算）不能当凭证
+  if (!s.startsWith('{') && looksLikeJwt(s)) return ''
   if (s.startsWith('{')) {
     try {
       const o = JSON.parse(s)

@@ -63,6 +63,14 @@ html {
   --err-soft: rgba(192, 57, 43, 0.12);
   --info: #2f6f9f;
   --info-soft: rgba(47, 111, 159, 0.12);
+  /* 状态色当文字用（.text-warn、提示框、状态标签）：往正文色方向混，亮色下更深、暗色下更浅。
+     各皮肤改了 --good、--ink 等变量后跟着变。亮色比例在这里，暗色比例在下面的 html.dark。
+     各取 12 套皮肤在页面底、面板底、次级底、悬停行，以及浅色状态底叠在这些底上都不低于 4.5:1 的最大值
+     （亮色卡在纸张、zovo 的标签叠次级底，暗色卡在深青），见 styles/__tests__/statusColors.test.ts。 */
+  --good-ink: color-mix(in srgb, var(--good) 60%, var(--ink));
+  --warn-ink: color-mix(in srgb, var(--warn) 55%, var(--ink));
+  --err-ink: color-mix(in srgb, var(--err) 80%, var(--ink));
+  --info-ink: color-mix(in srgb, var(--info) 75%, var(--ink));
 
   --shadow: 0 18px 48px rgba(120, 72, 40, 0.1);
   --shadow-sm: 0 2px 12px rgba(120, 72, 40, 0.08);
@@ -72,6 +80,14 @@ html {
   --surface-solid: var(--surface);
   /* 悬停/斑马行底色：跟皮肤主色走，不再写死赤陶 */
   --row-hover: var(--primary-soft);
+}
+
+/* 状态文字色的暗色比例（说明见 :root 的 --*-ink） */
+html.dark {
+  --good-ink: color-mix(in srgb, var(--good) 50%, var(--ink));
+  --warn-ink: color-mix(in srgb, var(--warn) 55%, var(--ink));
+  --err-ink: color-mix(in srgb, var(--err) 45%, var(--ink));
+  --info-ink: color-mix(in srgb, var(--info) 45%, var(--ink));
 }
 
 /* density */
@@ -210,6 +226,17 @@ html {
   background-image: var(--bg-tint);
 }
 
+/* 皮肤的页面底纹（--bg-tint 的渐变、网格、横线）和 zovo 的固定氛围层，只画在后台、代理商后台和登录页；
+   用户端页面保持纯色背景。data-surface 由 index.html 首屏脚本和路由切换设置（user = 用户端，console = 其余）。
+   body::before/::after 的选择器多带一个 [data-skin]，优先级高于皮肤自己的氛围层规则。 */
+html[data-surface="user"] {
+  background-image: none;
+}
+html[data-surface="user"][data-skin] body::before,
+html[data-surface="user"][data-skin] body::after {
+  display: none;
+}
+
 body {
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
@@ -223,17 +250,17 @@ body {
   transition: color 0.25s ease;
 }
 
-h1, h2, h3, h4, .page-title, .stat-value, .brand-title, .brand-text {
+h1, h2, h3, h4 {
   font-family: var(--font-display, var(--font-serif));
   letter-spacing: -0.02em;
 }
 
-.mono, .stat-value, table .cell, .tabular, code {
+.mono, table .cell, code {
   font-family: var(--font-mono);
 }
 
 /* tabular figures for amounts / data */
-.mono, .stat-value, table .cell, .tabular {
+.mono, table .cell {
   font-variant-numeric: tabular-nums;
 }
 
@@ -262,22 +289,28 @@ html[data-skin] .card.card-solid {
   background: var(--el-mask-color, rgba(0, 0, 0, 0.5));
 }
 
-.card-hover:hover,
 a.card:hover,
 button.card:hover {
   border-color: var(--brd-2);
   box-shadow: var(--shadow);
 }
 
-.bg-surface { background: var(--surface); }
 .bg-soft { background: var(--surface-2); }
 .bd { border-color: var(--brd) !important; }
-.bd-2 { border-color: var(--brd-2) !important; }
 
 /* ── Text ── */
 .text-ink { color: var(--ink); }
 .text-muted { color: var(--ink-2); }
 .text-subtle { color: var(--ink-3); }
+/* 状态文字：后台各页共用，不再各自写死一份 */
+.text-ok { color: var(--good-ink); }
+.text-warn { color: var(--warn-ink); }
+.text-err,
+.field-error { color: var(--err-ink); }
+
+/* 分步配置页（MarsWallex 对接、Telegram 告警）的步骤标题和序号 */
+.ops-step-title { display: flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 600; color: var(--ink); }
+.ops-step-no { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; background: var(--primary-soft); color: var(--primary); font-size: 12px; font-weight: 700; }
 
 .app-link {
   color: var(--primary);
@@ -349,17 +382,17 @@ textarea.input { resize: vertical; }
   color: var(--ink-2);
   border: 1px solid var(--brd);
 }
-.pill-good { background: var(--good-soft); color: var(--good); border-color: transparent; }
-.pill-warn { background: var(--warn-soft); color: var(--warn); border-color: transparent; }
-.pill-err  { background: var(--err-soft);  color: var(--err);  border-color: transparent; }
-.pill-info { background: var(--info-soft); color: var(--info); border-color: transparent; }
+.pill-good { background: var(--good-soft); color: var(--good-ink); border-color: transparent; }
+.pill-warn { background: var(--warn-soft); color: var(--warn-ink); border-color: transparent; }
+.pill-err  { background: var(--err-soft);  color: var(--err-ink);  border-color: transparent; }
+.pill-info { background: var(--info-soft); color: var(--info-ink); border-color: transparent; }
 
 /* ── Alert boxes ── */
 .alert { @apply rounded-xl p-4 text-sm; border: 1px solid transparent; }
-.alert-error   { background: var(--err-soft);  color: var(--err);  border-color: var(--err); }
-.alert-success { background: var(--good-soft); color: var(--good); border-color: var(--good); }
-.alert-info    { background: var(--info-soft); color: var(--info); border-color: var(--info); }
-.alert-warning { background: var(--warn-soft); color: var(--warn); border-color: var(--warn); }
+.alert-error   { background: var(--err-soft);  color: var(--err-ink);  border-color: var(--err); }
+.alert-success { background: var(--good-soft); color: var(--good-ink); border-color: var(--good); }
+.alert-info    { background: var(--info-soft); color: var(--info-ink); border-color: var(--info); }
+.alert-warning { background: var(--warn-soft); color: var(--warn-ink); border-color: var(--warn); }
 
 /* ── Data tables ── */
 .data-table { @apply min-w-full text-sm; border-collapse: collapse; }
@@ -382,20 +415,9 @@ textarea.input { resize: vertical; }
   border-right-color: transparent;
 }
 
-.divide-line { border-color: var(--brd); }
-
 ::selection {
   background: var(--primary-soft);
 }
-
-/* ── Animations ── */
-@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
-@keyframes slideInUp {
-  from { opacity: 0; transform: translateY(16px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-.animate-fadeIn { animation: fadeIn 0.4s ease-out; }
-.animate-slideInUp { animation: slideInUp 0.45s ease-out; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
@@ -895,10 +917,7 @@ html[data-skin="zovo"] body::after {
 html.dark[data-skin="zovo"] body::after { opacity: 0.07; }
 
 html[data-skin="zovo"] h1,
-html[data-skin="zovo"] h2,
-html[data-skin="zovo"] .page-title,
-html[data-skin="zovo"] .brand-title { letter-spacing: -0.01em; font-weight: 600; }
-html[data-skin="zovo"] .stat-value { font-family: var(--font-mono); letter-spacing: -0.02em; }
+html[data-skin="zovo"] h2 { letter-spacing: -0.01em; font-weight: 600; }
 
 /* 主按钮：日间墨色、夜间金色渐变 + 柔光 */
 html[data-skin="zovo"] .btn-primary {
@@ -941,8 +960,7 @@ html[data-skin="zovo"] .el-button:not(.el-button--primary):not(.el-button--dange
 html[data-skin="zovo"] .card,
 html[data-skin="zovo"] .el-card { background: var(--surface) !important; border-color: var(--brd) !important; box-shadow: var(--shadow-sm); }
 html[data-skin="zovo"] a.card:hover,
-html[data-skin="zovo"] button.card:hover,
-html[data-skin="zovo"] .card-hover:hover {
+html[data-skin="zovo"] button.card:hover {
   border-color: color-mix(in oklab, var(--primary) 34%, transparent) !important;
   box-shadow: 0 20px 36px -28px color-mix(in oklab, var(--primary) 40%, rgba(0, 0, 0, 0.3));
   transform: translateY(-2px);
@@ -1011,22 +1029,6 @@ html[data-nav='underline'] .sn-item { border-radius: 0; }
 .el-card { border-radius: var(--radius-lg) !important; }
 .el-dialog { border-radius: var(--radius-lg) !important; }
 .el-input__wrapper, .el-select__wrapper { border-radius: var(--radius-md) !important; }
-
-/* 结果状态卡片 */
-.result-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-  gap: 10px;
-}
-.result-tile {
-  background: var(--surface-2);
-  border: 1px solid var(--brd);
-  border-radius: var(--radius-md);
-  padding: 12px 14px;
-}
-.result-tile .k { font-size: 11px; color: var(--ink-3); margin-bottom: 4px; }
-.result-tile .v { font-size: 14px; font-weight: 600; color: var(--ink); word-break: break-all; }
-.result-tile .v.mono { font-family: var(--font-mono); font-size: 13px; }
 
 /* 窄屏防横向溢出：分页条允许换行，长文案复选框允许折行 */
 .el-pagination { flex-wrap: wrap; row-gap: 6px; max-width: 100%; }

@@ -4,7 +4,7 @@ import { agentGuardDecision } from '../lib/agentSession'
 
 import { setSkinFontsAllowed } from '../theme'
 import { hashScroll, prefersReducedMotion } from './scroll'
-import { OPS_BASE, isAdminPath, routes } from './routes'
+import { OPS_BASE, isAdminPath, routes, surfaceOf } from './routes'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -19,22 +19,26 @@ async function ensureSetupStatus(): Promise<boolean> {
   if (setupChecked) return setupInstalled
   try {
     const r = await fetch('/api/v1/setup/status')
+    if (!r.ok) throw new Error('status')
     const d = await r.json()
     setupInstalled = !!d.installed
   } catch {
-    setupInstalled = true // 后端不可达时不阻断登录页
+    // 后端不可达或回了错误：这次放行，不记结果，下次跳转再问（不把管理员误送去安装向导）
+    return true
   }
   setupChecked = true
   return setupInstalled
 }
 
-const isLoginPath = (path: string) => path === `${OPS_BASE}/login` || path === '/auth/login'
+const isLoginPath = (path: string) => path === `${OPS_BASE}/login`
 
 router.beforeEach(async (to) => {
   if (to.matched.some((r) => r.meta.requiresAgent)) {
     return (await agentGuardDecision(true, to.fullPath, () => fetch('/api/v1/agent/me', { credentials: 'include' }))) ?? undefined
   }
   if (to.path === '/agent/login') return
+  // 安装状态只有后台页面用得上；用户端页面不等这次请求
+  if (!isAdminPath(to.path)) return
   const authStore = useAuthStore()
   const installed = await ensureSetupStatus()
 
@@ -67,6 +71,9 @@ router.beforeEach(async (to) => {
 })
 
 // Google 字体只在后台页面加载，用户端不拉
-router.afterEach((to) => setSkinFontsAllowed(isAdminPath(to.path)))
+router.afterEach((to) => {
+  setSkinFontsAllowed(isAdminPath(to.path))
+  document.documentElement.setAttribute('data-surface', surfaceOf(to.path))
+})
 
 export default router

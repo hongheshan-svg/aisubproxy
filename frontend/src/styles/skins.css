@@ -1,68 +1,14 @@
 /* ══════════════════════════════════════════════════════════════════════
-   皮肤「性格」层：主题不只是换配色，按钮形状、面板质感、输入框、页签、
-   步骤条、标题排版各皮肤各有一套。参考了一批同类 CDK 兑换站的做法
-   （苹果玻璃、黑白控制台、靛紫重磅、薄荷清新、杂志编辑、粗野主义…）。
+   皮肤「性格」层：主题不只是换配色，按钮形状、面板质感、输入框、标题排版各皮肤各有一套。
+   参考了一批同类 CDK 兑换站的做法（苹果玻璃、黑白控制台、靛紫重磅、薄荷清新、杂志编辑、粗野主义…）。
 
    结构：
-   1. 共用骨架（页头、标题区、步骤条、页签）——所有皮肤一样的布局
+   1. 标题（.u-title，UserPageHeader 在用；旧的页头、标题区、步骤条、页签骨架已在 F2-10 删除）
    2. 共用原件读「性格令牌」（--btn-*、--card-*、--input-*…），默认值 = 旧外观
-   3. 每个皮肤只改令牌 + 少量专属装饰
-   ★装饰性的东西（胶带、角标、左侧色条）只加在用户页 .u-main 里，管理后台保持清爽★
+   3. 每个皮肤只改令牌 + 少量专属装饰；元素级装饰一律限定在 html:not([data-surface="user"])，用户端不要
    ══════════════════════════════════════════════════════════════════════ */
 
-/* ── 1. 共用骨架 ─────────────────────────────────────────────────────── */
-.u-page { min-height: 100vh; padding-bottom: 72px; }
-
-.u-topbar {
-  max-width: 72rem;
-  margin: 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 18px 24px;
-}
-.u-brand { display: inline-flex; align-items: center; gap: 10px; color: var(--ink); min-width: 0; }
-.u-logo {
-  display: grid;
-  place-items: center;
-  flex: none;
-  width: 38px;
-  height: 38px;
-  border-radius: var(--logo-radius, 12px);
-  background: var(--logo-bg, var(--primary));
-  color: var(--logo-fg, var(--primary-on));
-  box-shadow: var(--logo-shadow, 0 6px 16px -6px var(--primary));
-}
-.u-logo svg { width: 20px; height: 20px; }
-.u-brand-text { display: flex; flex-direction: column; line-height: 1.2; min-width: 0; }
-.u-brand-text strong { font-family: var(--font-display); font-size: 15px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.u-brand-text small { font-size: 11px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.u-tools { display: flex; align-items: center; gap: 4px; flex: none; }
-
-.u-hero {
-  max-width: 46rem;
-  margin: 26px auto 34px;
-  padding: 0 24px;
-  text-align: var(--hero-align, center);
-}
-.u-hero--compact { margin-bottom: 24px; }
-.u-eyebrow {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 12px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: var(--eyebrow-track, 0.02em);
-  text-transform: var(--eyebrow-case, none);
-  color: var(--eyebrow-fg, var(--ink-2));
-  background: var(--eyebrow-bg, var(--surface));
-  border: var(--eyebrow-border, 1px solid var(--brd));
-  font-family: var(--eyebrow-font, inherit);
-}
-.u-eyebrow i { width: 6px; height: 6px; border-radius: 50%; background: var(--eyebrow-dot, var(--good)); box-shadow: 0 0 0 3px color-mix(in srgb, var(--eyebrow-dot, var(--good)) 22%, transparent); }
+/* ── 1. 标题 ─────────────────────────────────────────────────────────── */
 .u-title {
   margin-top: 16px;
   font-family: var(--title-font, var(--font-display));
@@ -73,93 +19,6 @@
   line-height: 1.12;
   color: var(--title-fg, var(--ink));
   text-wrap: balance;
-}
-.u-sub {
-  margin: 14px auto 0;
-  max-width: 36rem;
-  font-size: 15px;
-  line-height: 1.7;
-  color: var(--ink-2);
-  text-wrap: pretty;
-}
-.u-badges { display: flex; flex-wrap: wrap; justify-content: var(--hero-justify, center); gap: 8px; margin: 20px 0 0; padding: 0; list-style: none; }
-.u-badges li {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 12px;
-  border-radius: var(--badge-radius, 999px);
-  font-size: 12.5px;
-  font-weight: 500;
-  color: var(--ink-2);
-  background: var(--badge-bg, var(--surface));
-  border: var(--badge-border, 1px solid var(--brd));
-}
-.u-badges svg { width: 14px; height: 14px; color: var(--badge-icon, var(--primary)); }
-.u-main { margin-left: auto; margin-right: auto; padding: 0 24px; }
-
-/* 步骤条：圆点 + 连线，当前步骤高亮，已完成连线着主色 */
-.stepper { display: flex; list-style: none; margin: 0 0 22px; padding: 0; }
-.stepper li {
-  position: relative;
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 8px;
-  font-size: 12.5px;
-  color: var(--ink-3);
-  min-width: 0;
-}
-.stepper li:not(:first-child)::before {
-  content: '';
-  position: absolute;
-  top: 15px;
-  right: calc(50% + 20px);
-  width: calc(100% - 40px);
-  height: 2px;
-  border-radius: 2px;
-  background: var(--brd-2);
-}
-.stepper li.is-done::before,
-.stepper li.is-current::before { background: var(--primary); }
-.stepper-dot {
-  position: relative;
-  display: grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  border-radius: var(--dot-radius, 50%);
-  font-family: var(--dot-font, var(--font-mono));
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--ink-3);
-  background: var(--dot-bg, var(--surface-solid));
-  border: var(--dot-border-w, 2px) var(--dot-border-style, solid) var(--brd-2);
-  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
-}
-.stepper li.is-done .stepper-dot { border-color: var(--primary); color: var(--primary); }
-.stepper li.is-current .stepper-dot {
-  border-color: var(--dot-current-border, var(--primary));
-  background: var(--dot-current-bg, var(--primary));
-  color: var(--dot-current-fg, var(--primary-on));
-  box-shadow: var(--dot-current-shadow, 0 0 0 5px var(--primary-soft));
-}
-.stepper li.is-current .stepper-label { color: var(--ink); font-weight: 600; }
-.stepper-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
-
-/* 首页服务卡片 */
-.svc-card { display: flex; flex-direction: column; }
-.svc-card > :last-child { margin-top: auto; padding-top: 1.25rem; }
-
-@media (max-width: 640px) {
-  .u-topbar { padding: 14px 16px; }
-  .u-brand-text small { display: none; }
-  .u-hero { margin: 12px auto 24px; padding: 0 16px; }
-  .u-sub { font-size: 14px; }
-  .u-main { padding: 0 16px; }
-  .stepper-label { font-size: 11.5px; }
-  .stepper li:not(:first-child)::before { right: calc(50% + 18px); width: calc(100% - 36px); }
 }
 
 /* ── 2. 原件读令牌（默认值 = 原外观）──────────────────────────────────── */
@@ -245,19 +104,9 @@
 
 /* zovo（曜夜雾金）：已有完整定义（style.css），这里只补标题与骨架 */
 html[data-skin='zovo'] {
-  --logo-bg: var(--accent-grad);
-  --logo-fg: var(--bg);
-  --logo-shadow: 0 10px 26px -10px var(--glow);
-  --eyebrow-dot: var(--primary);
-  --badge-icon: var(--primary);
   --title-weight: 600;
-  --tab-active-fg: var(--primary);
-  --dot-current-bg: var(--accent-grad);
-  --dot-current-border: transparent;
-  --dot-current-fg: var(--bg);
 }
-html.dark[data-skin='zovo'] .u-title { text-shadow: 0 0 40px rgba(203, 176, 121, 0.22); }
-html.dark[data-skin='zovo'] .u-logo { color: #0a0a12; }
+html.dark:not([data-surface="user"])[data-skin='zovo'] .u-title { text-shadow: 0 0 40px rgba(203, 176, 121, 0.22); }
 
 /* 赤陶编辑部 terracotta：奶油纸面 + 衬线标题 + 胶囊按钮（带内高光的「釉面」质感） */
 html[data-skin='terracotta'] {
@@ -270,29 +119,16 @@ html[data-skin='terracotta'] {
   --card-radius: 26px;
   --card-shadow: 0 1px 0 rgba(255, 255, 255, 0.7) inset, 0 28px 56px -36px rgba(120, 72, 40, 0.45);
   --input-radius: 14px;
-  --tabs-radius: 999px;
-  --tab-radius: 999px;
-  --tab-active-bg: var(--primary);
-  --tab-active-fg: var(--primary-on);
-  --tab-active-shadow: 0 6px 14px -6px rgba(192, 86, 58, 0.6);
   --title-font: var(--font-serif);
   --title-weight: 600;
   --title-track: -0.02em;
-  --eyebrow-bg: transparent;
-  --eyebrow-border: 0;
-  --eyebrow-case: uppercase;
-  --eyebrow-track: 0.18em;
-  --eyebrow-fg: var(--primary);
-  --eyebrow-dot: var(--primary);
-  --dot-font: var(--font-serif);
-  --logo-radius: 999px;
 }
 html.dark[data-skin='terracotta'] {
   --btn-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2), 0 12px 26px -12px rgba(217, 116, 79, 0.65);
   --card-shadow: 0 1px 0 rgba(255, 255, 255, 0.04) inset, 0 30px 60px -36px rgba(0, 0, 0, 0.7);
 }
-html[data-skin='terracotta'] .u-title em,
-html[data-skin='terracotta'] .u-title { font-optical-sizing: auto; }
+html:not([data-surface="user"])[data-skin='terracotta'] .u-title em,
+html:not([data-surface="user"])[data-skin='terracotta'] .u-title { font-optical-sizing: auto; }
 
 /* 赛博终端 cyber：切角按钮、HUD 角标面板、等宽大写、霓虹发光标题 */
 html[data-skin='cyber'] {
@@ -311,53 +147,16 @@ html[data-skin='cyber'] {
   --input-radius: 0;
   --input-bg: rgba(2, 8, 18, 0.55);
   --input-focus-shadow: 0 0 0 1px var(--primary), 0 0 18px -4px rgba(34, 211, 238, 0.55);
-  --tabs-radius: 2px;
-  --tab-radius: 0;
-  --tab-case: uppercase;
-  --tab-track: 0.08em;
-  --tab-active-bg: rgba(34, 211, 238, 0.12);
-  --tab-active-fg: var(--primary);
-  --tab-active-shadow: inset 0 -2px 0 var(--primary);
   --title-font: var(--font-mono);
   --title-weight: 700;
   --title-track: -0.01em;
-  --eyebrow-bg: transparent;
-  --eyebrow-border: 1px solid rgba(34, 211, 238, 0.35);
-  --eyebrow-font: var(--font-mono);
-  --eyebrow-case: uppercase;
-  --eyebrow-track: 0.14em;
-  --eyebrow-fg: var(--primary);
-  --eyebrow-dot: var(--primary);
-  --badge-radius: 0;
-  --badge-bg: rgba(34, 211, 238, 0.05);
-  --dot-radius: 0;
-  --dot-current-shadow: 0 0 16px rgba(34, 211, 238, 0.6);
-  --logo-radius: 0;
-  --logo-shadow: 0 0 18px rgba(34, 211, 238, 0.45);
 }
-html[data-skin='cyber'] .btn-primary,
-html[data-skin='cyber'] .btn-secondary,
-html[data-skin='cyber'] .u-logo {
+/* 切角按钮只在后台和登录页；用户端按钮纯色（规格 B §3.5） */
+html:not([data-surface="user"])[data-skin='cyber'] .btn-primary,
+html:not([data-surface="user"])[data-skin='cyber'] .btn-secondary {
   clip-path: polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px);
 }
-html[data-skin='cyber'] .u-eyebrow { border-radius: 0; }
-html[data-skin='cyber'] .u-eyebrow::after { content: '_'; animation: cyber-caret 1s steps(1) infinite; }
-@keyframes cyber-caret { 50% { opacity: 0; } }
-html[data-skin='cyber'] .u-title { text-shadow: 0 0 28px rgba(34, 211, 238, 0.45); }
-/* HUD 四角标：只给用户页面板，后台表格不加 */
-html[data-skin='cyber'] .u-main .card {
-  background:
-    linear-gradient(var(--primary), var(--primary)) top left / 16px 2px no-repeat,
-    linear-gradient(var(--primary), var(--primary)) top left / 2px 16px no-repeat,
-    linear-gradient(var(--primary), var(--primary)) top right / 16px 2px no-repeat,
-    linear-gradient(var(--primary), var(--primary)) top right / 2px 16px no-repeat,
-    linear-gradient(var(--primary), var(--primary)) bottom left / 16px 2px no-repeat,
-    linear-gradient(var(--primary), var(--primary)) bottom left / 2px 16px no-repeat,
-    linear-gradient(var(--primary), var(--primary)) bottom right / 16px 2px no-repeat,
-    linear-gradient(var(--primary), var(--primary)) bottom right / 2px 16px no-repeat,
-    var(--surface);
-}
-html[data-skin='cyber'] .stepper-label { font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.06em; }
+html:not([data-surface="user"])[data-skin='cyber'] .u-title { text-shadow: 0 0 28px rgba(34, 211, 238, 0.45); }
 
 /* 苹果玻璃 ocean：浅灰底 + 彩色柔光、大圆角白卡、渐变胶囊按钮、iOS 分段控件、彩虹渐变标题 */
 html[data-skin='ocean'] {
@@ -391,22 +190,8 @@ html[data-skin='ocean'] {
   --input-border: 1px solid transparent;
   --input-focus-bg: #ffffff;
   --input-focus-shadow: 0 0 0 4px rgba(10, 132, 255, 0.18);
-  --tabs-bg: rgba(118, 118, 128, 0.12);
-  --tabs-border: 0;
-  --tabs-radius: 999px;
-  --tab-radius: 999px;
-  --tab-active-bg: #ffffff;
-  --tab-active-shadow: 0 3px 8px rgba(0, 0, 0, 0.12), 0 3px 1px rgba(0, 0, 0, 0.04);
   --title-weight: 800;
   --title-track: -0.035em;
-  --eyebrow-bg: rgba(255, 255, 255, 0.85);
-  --eyebrow-border: 1px solid rgba(255, 255, 255, 0.95);
-  --badge-bg: rgba(255, 255, 255, 0.85);
-  --badge-border: 1px solid rgba(255, 255, 255, 0.95);
-  --dot-bg: #e8e8ed;
-  --dot-border-w: 0;
-  --logo-bg: linear-gradient(135deg, #3aa0ff, #0058d6);
-  --logo-fg: #fff;
   --font-display: 'Outfit', 'Inter', 'PingFang SC', 'Noto Sans SC', sans-serif;
 }
 html.dark[data-skin='ocean'] {
@@ -429,15 +214,8 @@ html.dark[data-skin='ocean'] {
   --card-shadow: 0 30px 60px -30px rgba(0, 0, 0, 0.8);
   --input-bg: #2c2c2e;
   --input-focus-bg: #2c2c2e;
-  --tab-active-bg: #636366;
-  --tab-active-fg: #ffffff;
-  --eyebrow-bg: rgba(255, 255, 255, 0.06);
-  --eyebrow-border: 1px solid rgba(255, 255, 255, 0.1);
-  --badge-bg: rgba(255, 255, 255, 0.06);
-  --badge-border: 1px solid rgba(255, 255, 255, 0.1);
-  --dot-bg: #3a3a3c;
 }
-html[data-skin='ocean'] .u-title {
+html:not([data-surface="user"])[data-skin='ocean'] .u-title {
   background: linear-gradient(90deg, #2f7bff 0%, #8b5cf6 45%, #ec4899 75%, #f97316 100%);
   -webkit-background-clip: text;
   background-clip: text;
@@ -463,21 +241,9 @@ html[data-skin='ember'] {
   --input-radius: 12px;
   --input-bg: rgba(0, 0, 0, 0.28);
   --input-focus-shadow: 0 0 0 3px rgba(255, 133, 74, 0.2), 0 0 24px -6px rgba(255, 133, 74, 0.6);
-  --tabs-bg: rgba(255, 255, 255, 0.03);
-  --tab-active-bg: rgba(255, 133, 74, 0.14);
-  --tab-active-fg: #ffb48a;
-  --tab-active-shadow: inset 0 0 0 1px rgba(255, 133, 74, 0.35), 0 0 22px -8px rgba(255, 120, 60, 0.6);
-  --eyebrow-dot: #ff854a;
-  --badge-icon: #ffb347;
-  --dot-current-shadow: 0 0 0 5px rgba(255, 133, 74, 0.15), 0 0 22px rgba(255, 120, 60, 0.55);
-  --logo-bg: linear-gradient(135deg, #ff5f2e, #ffc15e);
-  --logo-fg: #1a0a04;
-  --logo-shadow: 0 0 24px -4px rgba(255, 110, 50, 0.7);
-  --dot-current-bg: linear-gradient(135deg, #ff5f2e, #ffc15e);
-  --dot-current-border: transparent;
 }
-html[data-skin='ember'] .u-title { color: #fff1e4; text-shadow: 0 0 36px rgba(255, 120, 60, 0.45); }
-html[data-skin='ember'] .btn-primary::after {
+html:not([data-surface="user"])[data-skin='ember'] .u-title { color: #fff1e4; text-shadow: 0 0 36px rgba(255, 120, 60, 0.45); }
+html:not([data-surface="user"])[data-skin='ember'] .btn-primary::after {
   content: '';
   position: absolute;
   inset: 0;
@@ -486,9 +252,7 @@ html[data-skin='ember'] .btn-primary::after {
   transition: transform 0.6s ease;
   pointer-events: none;
 }
-html[data-skin='ember'] .btn-primary:hover:not(:disabled)::after { transform: translateX(120%); }
-html[data-skin='ember'] .u-eyebrow i { animation: ember-pulse 2.2s ease-in-out infinite; }
-@keyframes ember-pulse { 50% { box-shadow: 0 0 0 6px rgba(255, 133, 74, 0); } }
+html:not([data-surface="user"])[data-skin='ember'] .btn-primary:hover:not(:disabled)::after { transform: translateX(120%); }
 
 /* 薄荷清新 forest：薄荷渐变底、毛玻璃白卡 + 左侧色条、实心翠绿按钮、薄荷描边次按钮 */
 html[data-skin='forest'] {
@@ -511,20 +275,8 @@ html[data-skin='forest'] {
   --input-radius: 10px;
   --input-bg: #ffffff;
   --input-border: 1px solid #cfe9dc;
-  --tabs-bg: rgba(255, 255, 255, 0.7);
-  --tab-radius: 10px;
-  --tab-active-bg: #05825b;
-  --tab-active-fg: #ffffff;
-  --tab-active-shadow: 0 6px 14px -6px rgba(5, 150, 105, 0.6);
   --title-fg: #065f46;
   --title-weight: 800;
-  --eyebrow-bg: rgba(255, 255, 255, 0.85);
-  --eyebrow-border: 1px solid #c6ecda;
-  --eyebrow-fg: #047857;
-  --badge-bg: rgba(255, 255, 255, 0.85);
-  --badge-border: 1px solid #d3f0e2;
-  --dot-bg: #ffffff;
-  --logo-radius: 12px;
 }
 html.dark[data-skin='forest'] {
   --bg-tint: radial-gradient(circle at 20% 0%, rgba(16, 185, 129, 0.14), transparent 45%);
@@ -537,19 +289,7 @@ html.dark[data-skin='forest'] {
   --card-shadow: 0 24px 48px -30px rgba(0, 0, 0, 0.7);
   --input-bg: #0f1a15;
   --input-border: 1px solid #2a4237;
-  --tabs-bg: rgba(255, 255, 255, 0.03);
-  --tab-active-bg: #10b981;
-  --tab-active-fg: #052e22;
   --title-fg: #a7f3d0;
-  --eyebrow-bg: rgba(255, 255, 255, 0.04);
-  --eyebrow-border: 1px solid #2a4237;
-  --eyebrow-fg: #6ee7b7;
-  --badge-bg: rgba(255, 255, 255, 0.04);
-  --badge-border: 1px solid #2a4237;
-  --dot-bg: #13201a;
-}
-html[data-skin='forest'] .u-main .card {
-  box-shadow: inset 3px 0 0 var(--primary), var(--card-shadow);
 }
 
 /* 靛紫重磅 violet：极粗标题、墨蓝主按钮 + 深投影、黑底方块步骤号、靛紫点缀 */
@@ -576,28 +316,10 @@ html[data-skin='violet'] {
   --input-bg: #ffffff;
   --input-border: 1px solid #e2def0;
   --input-focus-shadow: 0 0 0 4px rgba(99, 102, 241, 0.16);
-  --tabs-bg: #f1effa;
-  --tabs-border: 1px solid #e6e1f5;
-  --tab-radius: 10px;
-  --tab-active-bg: #ffffff;
-  --tab-active-fg: #4f46e5;
   --title-weight: 900;
   --title-track: -0.045em;
   --title-fg: #111827;
   --title-font: var(--font-sans);
-  --eyebrow-bg: rgba(99, 102, 241, 0.1);
-  --eyebrow-border: 0;
-  --eyebrow-fg: #4f46e5;
-  --eyebrow-dot: #10b981;
-  --dot-radius: 9px;
-  --dot-bg: #ffffff;
-  --dot-current-bg: #111827;
-  --dot-current-border: #111827;
-  --dot-current-fg: #ffffff;
-  --dot-current-shadow: 0 8px 18px -6px rgba(17, 24, 39, 0.5);
-  --logo-bg: linear-gradient(135deg, #312e81, #6366f1);
-  --logo-fg: #ffffff;
-  --logo-radius: 10px;
 }
 html.dark[data-skin='violet'] {
   --btn-color: #8b5cf6;
@@ -614,16 +336,7 @@ html.dark[data-skin='violet'] {
   --card-shadow: 0 24px 60px -30px rgba(0, 0, 0, 0.7);
   --input-bg: #140f20;
   --input-border: 1px solid #322848;
-  --tabs-bg: #140f20;
-  --tabs-border: 1px solid #2c2342;
-  --tab-active-bg: #2c2342;
-  --tab-active-fg: #c4b5fd;
   --title-fg: #f5f3ff;
-  --eyebrow-bg: rgba(167, 139, 250, 0.12);
-  --eyebrow-fg: #c4b5fd;
-  --dot-bg: #1a1428;
-  --dot-current-bg: #8b5cf6;
-  --dot-current-border: #8b5cf6;
 }
 html[data-skin='violet'] h2 { font-weight: 800; letter-spacing: -0.02em; }
 
@@ -656,33 +369,10 @@ html[data-skin='slate'] {
   --input-bg: #f5f5f2;
   --input-border: 1px solid #e5e5df;
   --input-focus-shadow: 0 0 0 3px rgba(13, 13, 13, 0.08);
-  --tabs-bg: #efefeb;
-  --tabs-border: 1px solid #e3e3dd;
-  --tabs-radius: 999px;
-  --tab-radius: 999px;
-  --tab-active-bg: #0d0d0d;
-  --tab-active-fg: #ffffff;
-  --tab-active-shadow: 0 4px 10px -4px rgba(0, 0, 0, 0.4);
   --title-font: var(--font-sans);
   --title-weight: 600;
   --title-track: -0.05em;
   --title-size: clamp(2.4rem, 7vw, 4.2rem);
-  --eyebrow-bg: transparent;
-  --eyebrow-border: 0;
-  --eyebrow-font: var(--font-mono);
-  --eyebrow-case: uppercase;
-  --eyebrow-track: 0.2em;
-  --eyebrow-fg: var(--ink-3);
-  --eyebrow-dot: #0d0d0d;
-  --badge-bg: transparent;
-  --badge-border: 1px solid #deded8;
-  --dot-bg: #ffffff;
-  --dot-border-w: 1px;
-  --dot-current-shadow: none;
-  --logo-bg: #0d0d0d;
-  --logo-fg: #ffffff;
-  --logo-radius: 999px;
-  --logo-shadow: none;
 }
 html.dark[data-skin='slate'] {
   --bg: #0b0b0b;
@@ -706,19 +396,7 @@ html.dark[data-skin='slate'] {
   --card-border: 1px solid #262626;
   --input-bg: #1c1c1c;
   --input-border: 1px solid #262626;
-  --tabs-bg: #141414;
-  --tabs-border: 1px solid #262626;
-  --tab-active-bg: #f4f4f1;
-  --tab-active-fg: #0b0b0b;
-  --badge-border: 1px solid #383838;
-  --dot-bg: #141414;
-  --eyebrow-dot: #f4f4f1;
-  --logo-bg: #f4f4f1;
-  --logo-fg: #0b0b0b;
 }
-html[data-skin='slate'] .u-eyebrow::before { content: '—'; margin-right: 2px; }
-html[data-skin='slate'] .u-eyebrow i { display: none; }
-html[data-skin='slate'] .stepper-label { font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; }
 
 /* 玫瑰杂志 rose：斜体衬线大标题、两侧细线的小标签、方角大写按钮、顶部粗线的版面卡、下划线页签 */
 html[data-skin='rose'] {
@@ -738,48 +416,17 @@ html[data-skin='rose'] {
   --input-bg: transparent;
   --input-border: 1px solid var(--brd-2);
   --input-focus-shadow: none;
-  --tabs-bg: transparent;
-  --tabs-border: 0;
-  --tabs-radius: 0;
-  --tab-radius: 0;
-  --tab-case: uppercase;
-  --tab-track: 0.12em;
-  --tab-active-bg: transparent;
-  --tab-active-fg: var(--primary);
-  --tab-active-shadow: inset 0 -2px 0 var(--primary);
   --title-font: 'Instrument Serif', 'Source Serif 4', 'Noto Serif SC', serif;
   --title-style: italic;
   --title-weight: 400;
   --title-track: -0.01em;
   --title-size: clamp(2.8rem, 8vw, 4.8rem);
-  --eyebrow-bg: transparent;
-  --eyebrow-border: 0;
-  --eyebrow-case: uppercase;
-  --eyebrow-track: 0.28em;
-  --eyebrow-fg: var(--primary);
-  --badge-bg: transparent;
-  --badge-border: 0;
-  --badge-radius: 0;
-  --dot-font: 'Instrument Serif', 'Source Serif 4', serif;
-  --dot-bg: transparent;
-  --dot-border-w: 1px;
-  --dot-current-shadow: none;
-  --logo-radius: 2px;
-  --logo-shadow: none;
 }
 html[data-skin='rose'] .btn-primary:hover:not(:disabled) { color: var(--bg); }
 html[data-skin='rose'] .btn-secondary:hover:not(:disabled) { background: var(--ink); color: var(--bg); }
-html[data-skin='rose'] .u-eyebrow i { display: none; }
-html[data-skin='rose'] .u-eyebrow::before,
-html[data-skin='rose'] .u-eyebrow::after { content: ''; width: 28px; height: 1px; background: currentColor; opacity: 0.6; }
-html[data-skin='rose'] .u-badges li + li::before { content: '·'; margin-right: 10px; color: var(--ink-3); }
-html[data-skin='rose'] .u-badges { gap: 10px; }
-html[data-skin='rose'] .u-badges li { padding: 0; }
-html[data-skin='rose'] .u-main .card { border-top: 3px solid var(--ink); }
-html[data-skin='rose'] .u-main h2 { font-family: 'Instrument Serif', 'Source Serif 4', 'Noto Serif SC', serif; font-weight: 400; font-size: 1.7rem; }
-html[data-skin='rose'] .input { border-width: 0 0 1px; padding-left: 2px; }
-html[data-skin='rose'] textarea.input { border-width: 1px; padding-left: 12px; }
-html[data-skin='rose'] .input:focus { border-color: var(--primary); }
+html:not([data-surface="user"])[data-skin='rose'] .input { border-width: 0 0 1px; padding-left: 2px; }
+html:not([data-surface="user"])[data-skin='rose'] textarea.input { border-width: 1px; padding-left: 12px; }
+html:not([data-surface="user"])[data-skin='rose'] .input:focus { border-color: var(--primary); }
 
 /* 粗野主义 noir：2px 粗描边、硬投影、按下回弹、反白标签、方块步骤号 */
 html[data-skin='noir'] {
@@ -808,35 +455,10 @@ html[data-skin='noir'] {
   --input-border: 2px solid #3a3a3a;
   --input-focus-border: #fafafa;
   --input-focus-shadow: 4px 4px 0 #3a3a3a;
-  --tabs-bg: #000000;
-  --tabs-border: 2px solid #e5e5e5;
-  --tabs-radius: 0;
-  --tab-radius: 0;
-  --tab-case: uppercase;
-  --tab-track: 0.06em;
-  --tab-active-bg: #fafafa;
-  --tab-active-fg: #0a0a0a;
-  --tab-active-shadow: none;
   --title-weight: 700;
   --title-track: -0.04em;
-  --eyebrow-bg: #fafafa;
-  --eyebrow-border: 0;
-  --eyebrow-fg: #0a0a0a;
-  --eyebrow-case: uppercase;
-  --eyebrow-track: 0.12em;
-  --eyebrow-dot: #0a0a0a;
-  --badge-radius: 0;
-  --badge-bg: #000000;
-  --badge-border: 2px solid #3a3a3a;
-  --badge-icon: #fafafa;
-  --dot-radius: 0;
-  --dot-bg: #000000;
-  --dot-current-shadow: 4px 4px 0 #525252;
-  --logo-radius: 0;
-  --logo-shadow: 4px 4px 0 #525252;
 }
-html[data-skin='noir'] .u-eyebrow { border-radius: 0; }
-html[data-skin='noir'] .u-title {
+html:not([data-surface="user"])[data-skin='noir'] .u-title {
   /* 马克笔划线：粗下划线上移压在字的下半截 */
   text-decoration: underline 0.3em #3f3f3f;
   text-underline-offset: -0.14em;
@@ -862,51 +484,17 @@ html[data-skin='paper'] {
   --input-focus-border: var(--primary);
   --input-focus-shadow: none;
   --input-focus-bg: rgba(255, 255, 255, 0.4);
-  --tabs-radius: 4px;
-  --tab-radius: 3px;
-  --tab-active-bg: var(--surface-solid);
-  --tab-active-fg: var(--primary);
-  --tab-active-shadow: 2px 2px 0 rgba(61, 52, 40, 0.15);
   --title-weight: 700;
   --title-track: -0.01em;
-  --eyebrow-bg: transparent;
-  --eyebrow-border: 1px dashed var(--brd-2);
-  --eyebrow-fg: var(--primary);
-  --eyebrow-dot: var(--primary);
-  --badge-radius: 3px;
-  --badge-bg: transparent;
-  --badge-border: 1px dashed var(--brd-2);
-  --dot-border-style: dashed;
-  --dot-font: var(--font-display);
-  --dot-current-shadow: 2px 2px 0 rgba(61, 52, 40, 0.25);
-  --logo-radius: 4px;
-  --logo-shadow: 2px 2px 0 rgba(61, 52, 40, 0.25);
 }
-html[data-skin='paper'] .u-eyebrow { border-radius: 3px; }
-html[data-skin='paper'] .u-title {
+html:not([data-surface="user"])[data-skin='paper'] .u-title {
   text-decoration: underline wavy var(--primary);
   text-decoration-thickness: 2px;
   text-underline-offset: 12px;
   text-decoration-skip-ink: none;
 }
-html[data-skin='paper'] .u-main .card { position: relative; }
-html[data-skin='paper'] .u-main .card::before {
-  content: '';
-  position: absolute;
-  top: -11px;
-  left: 50%;
-  width: 92px;
-  height: 22px;
-  transform: translateX(-50%) rotate(-2deg);
-  background: color-mix(in srgb, var(--primary) 22%, rgba(255, 250, 235, 0.6));
-  border-left: 1px dashed rgba(61, 52, 40, 0.15);
-  border-right: 1px dashed rgba(61, 52, 40, 0.15);
-  pointer-events: none;
-}
-html[data-skin='paper'] textarea.input { border-style: dashed; }
+html:not([data-surface="user"])[data-skin='paper'] textarea.input { border-style: dashed; }
 
 @media (prefers-reduced-motion: reduce) {
-  html[data-skin='ember'] .btn-primary::after,
-  html[data-skin='ember'] .u-eyebrow i,
-  html[data-skin='cyber'] .u-eyebrow::after { animation: none; transition: none; }
+  html[data-skin='ember'] .btn-primary::after { animation: none; transition: none; }
 }

@@ -5,8 +5,8 @@
       <div class="flex justify-end">
         <el-button :loading="versionLoading" @click="loadVersion(true)">检查更新</el-button>
       </div>
-      <div v-if="versionError" class="text-sm" style="color: var(--err)">{{ versionError }}</div>
-      <div v-if="versionInfo.update_hint" class="text-xs" style="color: var(--warn)">{{ versionInfo.update_hint }}</div>
+      <div v-if="versionError" class="text-sm text-err">{{ versionError }}</div>
+      <div v-if="versionInfo.update_hint" class="text-xs text-warn">{{ versionInfo.update_hint }}</div>
       <div class="space-y-2 text-sm">
         <div class="flex justify-between gap-2">
           <span class="text-muted">当前版本</span>
@@ -14,7 +14,7 @@
         </div>
         <div class="flex justify-between gap-2">
           <span class="text-muted">GitHub 最新</span>
-          <span class="mono font-semibold" :style="versionInfo.update_available ? 'color: var(--warn)' : 'color: var(--good)'">
+          <span class="mono font-semibold" :class="versionInfo.update_available ? 'text-warn' : 'text-ok'">
             {{ versionInfo.latest ? `v${versionInfo.latest}` : '—' }}
           </span>
         </div>
@@ -62,7 +62,7 @@
             :style="{ width: `${updateProgress}%`, background: updateFailed ? 'var(--err)' : 'var(--primary)' }"
           />
         </div>
-        <div v-if="updateFailed" class="text-xs" style="color: var(--err)">{{ updateError }}</div>
+        <div v-if="updateFailed" class="text-xs text-err">{{ updateError }}</div>
       </div>
 
       <div class="flex flex-wrap gap-2 pt-1">
@@ -103,9 +103,12 @@
 </template>
 
 <script setup lang="ts">
+import { fmtBeijingAny } from '../../lib/mwwebhook'
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { authFetch } from '../../lib/api'
+import { dialog } from '../../lib/dialog'
+import { REQUEST_TIMEOUT_MS, createUpdateWatcher, withTimeout, type StatusResult, type UpdateState, type UpdateWatchDeps } from '../../lib/updateWatch'
 
 const versionLoading = ref(false)
 const versionError = ref('')
@@ -119,7 +122,9 @@ const updateMessage = ref('')
 const updateProgress = ref(0)
 const updateFailed = ref(false)
 const updateError = ref('')
-let updatePollTimer: number | null = null
+// 跟踪更新进度（只有一个循环，离开页面就停）；离开页面后置真
+let watcher: ReturnType<typeof createUpdateWatcher> | null = null
+let unmounted = false
 
 const canOneClickUpdate = computed(() => {
   if (updating.value) return false
@@ -146,56 +151,53 @@ function numOrDash(v: unknown) {
 }
 
 function formatChecked(iso: string) {
-  try {
-    return new Date(iso).toLocaleString()
-  } catch {
-    return iso
+  return fmtBeijingAny(iso)
+}
+
+// 状态请求没成功（断网、超时、网关在重载时回 502）算 null，交给跟踪逻辑去等 /health 再问一次
+function fetchUpdateStatus(): Promise<StatusResult> {
+  return withTimeout(async (signal) => {
+    const r = await authFetch('/api/v1/admin/system/update/status', { signal })
+    if (!r.ok) return null
+    const d = await r.json().catch(() => null)
+    if (!d || typeof d !== 'object') return null
+    return { running: !!d.running, state: d.state || {} }
+  }, REQUEST_TIMEOUT_MS, null)
+}
+
+function checkHealth(): Promise<boolean> {
+  return withTimeout(async (signal) => (await fetch('/health', { credentials: 'include', signal })).ok, REQUEST_TIMEOUT_MS, false)
+}
+
+function showUpdateState(st: UpdateState) {
+  updatePhase.value = st.phase || ''
+  updateMessage.value = st.message || ''
+  updateProgress.value = Number(st.progress) || 0
+  if (st.phase === 'reloading' || st.phase === 'done') {
+    updateMessage.value = st.message || '重载中，等待服务恢复…'
+    updateProgress.value = Math.max(updateProgress.value, 95)
   }
 }
 
-function stopUpdatePoll() {
-  if (updatePollTimer != null) {
-    window.clearInterval(updatePollTimer)
-    updatePollTimer = null
-  }
-}
-
-async function pollUpdateStatus() {
-  try {
-    const r = await authFetch('/api/v1/admin/system/update/status')
-    const d = await r.json().catch(() => ({}))
-    const st = d.state || {}
-    updatePhase.value = st.phase || ''
-    updateMessage.value = st.message || ''
-    updateProgress.value = Number(st.progress) || 0
-    if (st.phase === 'failed') {
+// before：开始更新时的版本，恢复后用来判断是否真的换了版本
+function updateDeps(before: string | undefined): UpdateWatchDeps {
+  return {
+    fetchStatus: fetchUpdateStatus,
+    checkHealth,
+    sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+    onState: showUpdateState,
+    // 后端重载前在等在途付款单走完（最多 3 分钟）：说明原因，不要让人以为卡住了去重启服务
+    onDraining: (ms) => {
+      updateMessage.value = `文件已替换，正在等进行中的付款单结束，结束后自动重载（最多约 3 分钟，已等 ${Math.round(ms / 1000)} 秒）。请不要重启服务，以免打断付款`
+      updateProgress.value = Math.max(updateProgress.value, 95)
+    },
+    onFailed: (st) => {
       updateFailed.value = true
       updateError.value = st.error || st.message || '更新失败'
       updating.value = false
-      stopUpdatePoll()
-      return
-    }
-    if (st.phase === 'reloading' || st.phase === 'done') {
-      updateMessage.value = st.message || '重载中，等待服务恢复…'
-      updateProgress.value = Math.max(updateProgress.value, 95)
-      // 轮询 health + 新版本
-      await waitForReload()
-    }
-  } catch {
-    // 进程 re-exec 瞬间可能短暂断连，继续等 health
-    await waitForReload()
-  }
-}
-
-async function waitForReload() {
-  stopUpdatePoll()
-  const before = versionInfo.value.current
-  for (let i = 0; i < 40; i++) {
-    await new Promise((r) => setTimeout(r, 500))
-    try {
-      const h = await fetch('/health', { credentials: 'include' })
-      if (!h.ok) continue
-      // 恢复后刷新版本
+    },
+    onRecovered: async () => {
+      // 服务已恢复、更新已结束：刷新版本
       await loadVersion(true)
       const after = versionInfo.value.current
       updateProgress.value = 100
@@ -205,28 +207,29 @@ async function waitForReload() {
         : `服务已恢复（当前 v${after || before || '—'}）`
       updating.value = false
       updateFailed.value = false
-      return
-    } catch {
-      /* keep waiting */
-    }
+    },
+    onTimeout: () => {
+      updateFailed.value = true
+      updateError.value = isDocker.value
+        ? '重载超时：请手动刷新页面，并用 docker logs cdk-recharge 查看日志'
+        : '重载超时：请手动刷新页面并检查 systemctl status cdk-recharge'
+      updating.value = false
+    },
   }
-  updateFailed.value = true
-  updateError.value = isDocker.value
-    ? '重载超时：请手动刷新页面，并用 docker logs cdk-recharge 查看日志'
-    : '重载超时：请手动刷新页面并检查 systemctl status cdk-recharge'
-  updating.value = false
 }
 
 async function oneClickUpdate() {
   if (!canOneClickUpdate.value) return
   const target = versionInfo.value.latest || 'latest'
-  const ok = window.confirm(
+  const ok = await dialog.confirm(
     `确认一键无痕更新到 v${target}？\n\n` +
       '• 在线下载 GitHub 预编译包\n' +
       '• 热替换二进制与前端（不改 app.env / 数据库）\n' +
-      '• 进程 re-exec 亚秒重载\n',
+      '• 进程 re-exec 亚秒重载',
+    { title: '一键无痕更新', okText: '开始更新', danger: true },
   )
-  if (!ok) return
+  // 确认框是异步的：等待期间离开了页面或状态变了（如已在更新）就不提交
+  if (!ok || unmounted || !canOneClickUpdate.value) return
 
   updating.value = true
   updateFailed.value = false
@@ -246,11 +249,10 @@ async function oneClickUpdate() {
       updating.value = false
       return
     }
-    stopUpdatePoll()
-    updatePollTimer = window.setInterval(() => {
-      pollUpdateStatus()
-    }, 800)
-    await pollUpdateStatus()
+    if (unmounted) return
+    watcher?.stop()
+    watcher = createUpdateWatcher(updateDeps(versionInfo.value.current))
+    watcher.start()
   } catch (e: any) {
     updateFailed.value = true
     updateError.value = e?.message || '网络错误'
@@ -283,5 +285,8 @@ async function loadVersion(force = false) {
 onMounted(() => {
   loadVersion(false)
 })
-onBeforeUnmount(stopUpdatePoll)
+onBeforeUnmount(() => {
+  unmounted = true
+  watcher?.stop()
+})
 </script>

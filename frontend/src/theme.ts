@@ -21,8 +21,13 @@ export type SkinId =
 export const DEFAULT_SKIN: SkinId = 'teal'
 
 const MODE_KEY = 'theme-mode'
+/** 后台设的站点默认明暗：和访客自己的选择（MODE_KEY）分开存，管理员改了才能传到没选过的访客 */
+const SITE_MODE_KEY = 'site-theme-mode'
 const SKIN_KEY = 'site-skin'
 const BRAND_KEY = 'site-brand'
+// 与后端 /public/site 的默认站名一致（backend/internal/handler/settings.go）
+export const DEFAULT_BRAND_NAME = 'Recharge Portal'
+export const DEFAULT_BRAND_SUB = 'Account Upgrade Service'
 
 export interface SiteBrand {
   name: string
@@ -245,10 +250,26 @@ function readSkin(): SkinId {
   return DEFAULT_SKIN
 }
 
-function readMode(): ThemeMode {
+function isMode(v: unknown): v is ThemeMode {
+  return v === 'light' || v === 'dark' || v === 'auto'
+}
+
+/** 访客自己选过的明暗；没选过返回 null */
+function readOwnMode(): ThemeMode | null {
   try {
     const v = localStorage.getItem(MODE_KEY)
-    if (v === 'light' || v === 'dark' || v === 'auto') return v
+    if (isMode(v)) return v
+  } catch { /* 取不到本机记录 */ }
+  return null
+}
+
+// 访客自己的选择 > 上次记下的站点默认 > 跟随系统
+function readMode(): ThemeMode {
+  const own = readOwnMode()
+  if (own) return own
+  try {
+    const v = localStorage.getItem(SITE_MODE_KEY)
+    if (isMode(v)) return v
   } catch { /* 取不到本机记录，按站点设置 */ }
   return 'auto'
 }
@@ -271,7 +292,7 @@ function loadBrand(): SiteBrand {
       }
     }
   } catch { /* ignore */ }
-  return { name: 'CDK Portal', sub: 'Card Platform Redeem' }
+  return { name: DEFAULT_BRAND_NAME, sub: DEFAULT_BRAND_SUB }
 }
 
 export const siteBrand = ref<SiteBrand>(loadBrand())
@@ -280,11 +301,9 @@ function systemPrefersDark(): boolean {
   return !!(typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)
 }
 
+/** 当前是否按暗色呈现：只有暗色的皮肤（preferDark）永远算暗，.dark 类、data-tone、配色三处同一个说法 */
 export function isDark(): boolean {
-  const meta = currentSkinMeta.value
-  // preferDark 皮肤在 light 模式下仍用皮肤自身暗色 token；.dark 类只在用户选 dark/auto-dark 时加
-  if (themeMode.value === 'auto') return systemPrefersDark()
-  return themeMode.value === 'dark'
+  return effectiveDark(themeMode.value, currentSkinMeta.value, systemPrefersDark())
 }
 
 /** 这个皮肤在当前模式下是否按暗色呈现（preferDark 皮肤永远算暗；data-tone、侧栏、Element Plus 都以它为准） */
@@ -297,6 +316,9 @@ export function skinTone(skin: SkinMeta, dark: boolean): SkinTone {
 }
 
 export const currentSkinMeta = computed(() => SKINS.find((s) => s.id === siteSkin.value) || SKINS[0])
+
+/** 当前皮肤只有暗色：明暗切换没有意义，界面上把切换按钮藏起来或置灰 */
+export const themeLocked = computed(() => !!currentSkinMeta.value.preferDark)
 
 /** 由主色生成 EP light/dark 阶梯 */
 function hexToRgb(hex: string): [number, number, number] | null {
@@ -362,6 +384,16 @@ function applyMode() {
   document.documentElement.classList.toggle('dark', isDark())
 }
 
+/** 浏览器地址栏颜色跟着当前皮肤的底色走（取样式表里算出来的 --bg，取不到就不动） */
+function syncThemeColor(root: HTMLElement) {
+  try {
+    const meta = document.querySelector('meta[name="theme-color"]')
+    if (!meta || typeof window.getComputedStyle !== 'function') return
+    const bg = window.getComputedStyle(root).getPropertyValue('--bg').trim()
+    if (/^#[0-9a-fA-F]{3,8}$/.test(bg)) meta.setAttribute('content', bg)
+  } catch { /* 地址栏颜色只是锦上添花 */ }
+}
+
 function applySkin() {
   const meta = currentSkinMeta.value
   const root = document.documentElement
@@ -370,8 +402,7 @@ function applySkin() {
   root.setAttribute('data-heading', meta.heading)
   root.setAttribute('data-density', meta.density)
   root.setAttribute('data-nav', meta.nav)
-  // preferDark 皮肤选亮色时不加 .dark 类（applyMode 保持原行为），但配色按暗色算
-  const dark = effectiveDark(themeMode.value, meta, systemPrefersDark())
+  const dark = isDark()
   const tone = skinTone(meta, dark)
   root.setAttribute('data-tone', dark ? 'dark' : 'light')
   syncElementPlus(tone.primary, tone.on, dark)
@@ -382,6 +413,7 @@ function applySkin() {
   root.style.setProperty('--side-active', tone.primary)
   root.style.setProperty('--side-active-on', tone.on)
   root.style.colorScheme = dark ? 'dark' : 'light'
+  syncThemeColor(root)
   if (skinFontsAllowed) ensureSkinFonts(meta)
 }
 
@@ -424,7 +456,20 @@ export function setTheme(mode: ThemeMode) {
   applyThemeAll()
 }
 
+/**
+ * 站点默认明暗（后台「外观」里设的）：只在访客自己没选过时生效，且不写进访客自己的偏好。
+ * 单独存一份，下次打开页面首屏就能先用上，不会先亮后暗地闪。
+ */
+export function applySiteThemeMode(mode: ThemeMode) {
+  if (!isMode(mode)) return
+  try { localStorage.setItem(SITE_MODE_KEY, mode) } catch { /* 存不了就只在本次生效 */ }
+  if (readOwnMode()) return
+  themeMode.value = mode
+  applyThemeAll()
+}
+
 export function toggleTheme() {
+  if (themeLocked.value) return
   setTheme(isDark() ? 'light' : 'dark')
 }
 
@@ -432,18 +477,13 @@ export function setSkin(id: SkinId) {
   if (!SKINS.some((s) => s.id === id)) return
   siteSkin.value = id
   try { localStorage.setItem(SKIN_KEY, id) } catch { /* 存不了就只在本次生效 */ }
-  const meta = SKINS.find((s) => s.id === id)!
-  // 切到 preferDark 皮肤时，若当前是 light 且用户没刻意锁 light，可自动转 dark 以完整适配
-  if (meta.preferDark && themeMode.value === 'light') {
-    themeMode.value = 'dark'
-    try { localStorage.setItem(MODE_KEY, 'dark') } catch { /* 存不了就只在本次生效 */ }
-  }
+  // 只有暗色的皮肤由 isDark() 一律按暗色呈现，不再改写访客本机的明暗选择
   applyThemeAll()
 }
 
 export function setSiteBrand(patch: Partial<SiteBrand>) {
   siteBrand.value = {
-    name: (patch.name ?? siteBrand.value.name).trim() || 'CDK Portal',
+    name: (patch.name ?? siteBrand.value.name).trim() || DEFAULT_BRAND_NAME,
     sub: (patch.sub ?? siteBrand.value.sub).trim(),
     logoVersion: patch.logoVersion ?? siteBrand.value.logoVersion,
   }

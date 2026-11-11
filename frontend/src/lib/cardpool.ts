@@ -1,6 +1,7 @@
 // 卡池 / 钱包后台页面的公共函数。
 import { authFetch } from './api'
 import { dialog } from './dialog'
+import { fmtBeijing } from './mwwebhook'
 
 export interface Resp<T = any> { ok: boolean; status: number; data: T }
 
@@ -46,10 +47,10 @@ export function money(cents?: number | null): string {
   return ((cents || 0) / 100).toFixed(2)
 }
 
-/** Unix 秒转本地时间；空、0 与负数（后端零值时间序列化为负数）显示 —。 */
+/** Unix 秒转北京时间（后台统一，与浏览器时区无关）；空、0 与负数（后端零值时间序列化为负数）显示 —。 */
 export function fmtTs(ts?: number | null): string {
   if (!ts || ts <= 0) return '—'
-  return new Date(ts * 1000).toLocaleString()
+  return fmtBeijing(ts)
 }
 
 // ---------- 单据状态提示 ----------

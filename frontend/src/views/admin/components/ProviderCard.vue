@@ -90,7 +90,5 @@ const hasCombos = computed(() => Array.isArray(props.readiness?.combos))
 </script>
 
 <style scoped>
-.text-ok { color: #16a34a; }
-.text-err { color: #dc2626; }
 .first-pay { border-width: 2px; }
 </style>

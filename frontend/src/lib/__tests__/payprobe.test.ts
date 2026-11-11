@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  PROBE_CHECKS, pollProbe, probeBlockReason, probeCounts, probeErrorText, probeNeedsBrowser, probeOrderChecks, probeStatusLabel, probeToText,
+  PROBE_CHECKS, pollProbe, probeBlockReason, probeCounts, probeErrorText, probeNeedsBrowser, probeStatusLabel, probeToText,
 } from '../payprobe'
 import { PAGE_TABS } from '../adminui'
 
@@ -31,10 +31,6 @@ describe('payprobe lib', () => {
     expect(probeNeedsBrowser(['account'])).toBe(false)
     expect(probeNeedsBrowser(['account', 'customer_portal'])).toBe(true)
     expect(probeNeedsBrowser(['chatgpt_browser'])).toBe(true)
-  })
-
-  it('probeOrderChecks 按固定顺序', () => {
-    expect(probeOrderChecks(['credit_balance', 'account'])).toEqual(['account', 'credit_balance'])
   })
 
   it('状态文字与计数', () => {

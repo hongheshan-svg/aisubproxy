@@ -541,6 +541,7 @@
 </template>
 
 <script setup lang="ts">
+import { fmtBeijingAny } from '../../lib/mwwebhook'
 import ApiErrorNotice from '../../components/ApiErrorNotice.vue'
 import { mapApiError } from '../../lib/errors'
 import AdminPageHeader from '../../components/AdminPageHeader.vue'
@@ -627,8 +628,7 @@ const tab = useRouteTab('/ops/cardpool')
 
 // ---------- 通用 ----------
 function fmtIso(s: string) {
-  const d = new Date(s)
-  return isNaN(d.getTime()) ? s : d.toLocaleString()
+  return fmtBeijingAny(s)
 }
 
 function poolStateLabel(s: string) {
@@ -719,18 +719,22 @@ const cardTotal = ref(0)
 const cardsLoading = ref(false)
 const cardFilter = reactive({ state: '', product_id: '', page: 1 })
 
+// 连改筛选、翻页时先发的请求可能后到：只认最新一次
+let cardsSeq = 0
 async function loadCards() {
+  const my = ++cardsSeq
   cardsLoading.value = true
   try {
     const q = new URLSearchParams({ page: String(cardFilter.page), page_size: String(PAGE_SIZE) })
     if (cardFilter.state) q.set('state', cardFilter.state)
     if (cardFilter.product_id) q.set('product_id', cardFilter.product_id)
     const r = await api<{ items: Card[]; total: number }>('/cards?' + q)
+    if (my !== cardsSeq) return // 已有更新的请求，丢弃旧响应
     if (!r.ok) return dialog.toast(errText(r, '加载卡失败'), 'err')
     cards.value = r.data.items
     cardTotal.value = r.data.total
   } finally {
-    cardsLoading.value = false
+    if (my === cardsSeq) cardsLoading.value = false
   }
 }
 function resetCards() {
@@ -1132,18 +1136,21 @@ const orderTotal = ref(0)
 const ordersLoading = ref(false)
 const orderFilter = reactive({ state: '', kind: '', page: 1 })
 
+let ordersSeq = 0
 async function loadOrders() {
+  const my = ++ordersSeq
   ordersLoading.value = true
   try {
     const q = new URLSearchParams({ page: String(orderFilter.page), page_size: String(PAGE_SIZE) })
     if (orderFilter.state) q.set('state', orderFilter.state)
     if (orderFilter.kind) q.set('kind', orderFilter.kind)
     const r = await api<{ items: Order[]; total: number }>('/orders?' + q)
+    if (my !== ordersSeq) return // 已有更新的请求，丢弃旧响应
     if (!r.ok) return dialog.toast(errText(r, '加载单据失败'), 'err')
     orders.value = r.data.items
     orderTotal.value = r.data.total
   } finally {
-    ordersLoading.value = false
+    if (my === ordersSeq) ordersLoading.value = false
   }
 }
 function resetOrders() {
@@ -1176,17 +1183,20 @@ const txnTotal = ref(0)
 const txnsLoading = ref(false)
 const txnFilter = reactive({ card_id: '', page: 1 })
 
+let txnsSeq = 0
 async function loadTxns() {
+  const my = ++txnsSeq
   txnsLoading.value = true
   try {
     const q = new URLSearchParams({ page: String(txnFilter.page), page_size: String(PAGE_SIZE) })
     if (txnFilter.card_id.trim()) q.set('card_id', txnFilter.card_id.trim())
     const r = await api<{ items: Txn[]; total: number }>('/transactions?' + q)
+    if (my !== txnsSeq) return // 已有更新的请求，丢弃旧响应
     if (!r.ok) return dialog.toast(errText(r, '加载交易失败'), 'err')
     txns.value = r.data.items
     txnTotal.value = r.data.total
   } finally {
-    txnsLoading.value = false
+    if (my === txnsSeq) txnsLoading.value = false
   }
 }
 function resetTxns() {
@@ -1420,17 +1430,13 @@ onBeforeUnmount(() => {
 </script>
 
 <style scoped>
-.text-warn {
-  color: #d97706;
-}
 :deep(.mismatch-row td) {
-  background: rgba(220, 38, 38, 0.12) !important;
-  color: #dc2626;
+  background: var(--err-soft) !important;
+  color: var(--err-ink);
 }
 .field-error {
   margin-bottom: 8px;
   font-size: 13px;
-  color: #dc2626;
 }
 .pending-chip {
   padding: 8px 14px;
@@ -1445,7 +1451,7 @@ onBeforeUnmount(() => {
   font-size: 16px;
 }
 .pending-chip:hover {
-  border-color: #3b82f6;
+  border-color: var(--primary);
 }
 .grid-form {
   display: grid;

@@ -1,6 +1,8 @@
 // 免付款探测页的公共函数：探测项定义、提交前检查、结果转文本。
 // 探测全部不付款；结果里不含会话、token、完整邮箱和完整结账链接（后端已脱敏）。
 
+import { fmtBeijing } from './mwwebhook'
+
 export type ProbeStatus = 'ok' | 'fail' | 'skipped'
 
 export interface ProbeResult {
@@ -74,20 +76,9 @@ export function probeNeedsBrowser(checks: string[]): boolean {
   return PROBE_CHECKS.some((c) => c.kind === 'browser' && checks.includes(c.key))
 }
 
-/** 按固定顺序（探测项定义的顺序）排列选中的探测项，请求体里的顺序不影响后端，这里只让展示稳定。 */
-export function probeOrderChecks(checks: string[]): string[] {
-  return PROBE_CHECKS.map((c) => c.key).filter((k) => checks.includes(k))
-}
-
-function fmtDate(ts: number): string {
-  const d = new Date(ts * 1000)
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
-}
-
 /** 把一次探测记录转成纯文本，用来「复制为文本」发给开发。内容就是后端已脱敏的结果，这里不再加任何会话相关的东西。 */
 export function probeToText(rec: ProbeRecord): string {
-  const lines = [`免付款探测 #${rec.id || '-'}　${rec.created_at ? fmtDate(rec.created_at) : ''}${rec.region ? `　地区 ${rec.region}` : ''}`]
+  const lines = [`免付款探测 #${rec.id || '-'}　${rec.created_at ? fmtBeijing(rec.created_at) : ''}${rec.region ? `　地区 ${rec.region}` : ''}`]
   for (const r of rec.results || []) {
     lines.push('', `[${probeStatusLabel(r.status)}] ${r.key} ${r.title}`, `  ${r.summary}`)
     if (r.details && Object.keys(r.details).length) {

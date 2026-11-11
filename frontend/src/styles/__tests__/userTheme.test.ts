@@ -61,3 +61,15 @@ describe('UserShell', () => {
     expect(html).not.toContain('--brand-primary')
   })
 })
+
+// F1-12：tailwind 配置里不再留没人用的旧色板
+describe('tailwind.config.js', () => {
+  const cfg = readFileSync(fileURLToPath(new URL('../../../tailwind.config.js', import.meta.url)), 'utf8')
+  it('没有 terracotta / cream / warm 三组旧色板，也没有 ink.muted / ink.subtle', () => {
+    expect(cfg).not.toContain('terracotta')
+    expect(cfg).not.toContain('cream')
+    expect(cfg).not.toMatch(/warm\s*:/)
+    expect(cfg).not.toMatch(/muted\s*:|subtle\s*:/)
+  })
+  it('保留 ink.DEFAULT', () => expect(cfg).toContain("DEFAULT: 'var(--ink)'"))
+})

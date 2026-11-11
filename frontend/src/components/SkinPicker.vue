@@ -24,11 +24,11 @@
       </button>
     </div>
     <div v-if="showMode" class="sp-mode">
-      <span class="sp-mode-label">明暗叠加</span>
+      <span class="sp-mode-label">明暗叠加<template v-if="themeLocked">（此皮肤只有暗色）</template></span>
       <div class="sp-mode-btns">
-        <button type="button" :class="{ on: themeMode === 'light' }" @click="setTheme('light')">亮</button>
-        <button type="button" :class="{ on: themeMode === 'dark' }" @click="setTheme('dark')">暗</button>
-        <button type="button" :class="{ on: themeMode === 'auto' }" @click="setTheme('auto')">自动</button>
+        <button type="button" :class="{ on: themeMode === 'light' }" :disabled="themeLocked" @click="setTheme('light')">亮</button>
+        <button type="button" :class="{ on: themeMode === 'dark' }" :disabled="themeLocked" @click="setTheme('dark')">暗</button>
+        <button type="button" :class="{ on: themeMode === 'auto' }" :disabled="themeLocked" @click="setTheme('auto')">自动</button>
       </div>
     </div>
     <div v-if="!compact && current" class="sp-current">
@@ -39,7 +39,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
-import { SKINS, siteSkin, setSkin, themeMode, setTheme, currentSkinMeta } from '../theme'
+import { SKINS, siteSkin, setSkin, themeMode, setTheme, currentSkinMeta, themeLocked } from '../theme'
 
 defineProps<{
   compact?: boolean

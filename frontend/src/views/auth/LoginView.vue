@@ -50,6 +50,7 @@ const errorMessage = ref('')
 clearSetupLeftovers(typeof sessionStorage === 'undefined' ? undefined : sessionStorage)
 
 const submit = async () => {
+  if (loading.value) return
   loading.value = true
   errorMessage.value = ''
 

@@ -40,7 +40,7 @@
       class="rounded-lg bg-soft px-3 py-2 text-[11px] text-muted max-h-24 overflow-y-auto font-mono"
     >
       <div v-for="(s, i) in sessionPool.slice(0, 8)" :key="i">
-        {{ i + 1 }}. {{ s.email || '(无邮箱)' }} · session {{ s.session.length }} 字
+        {{ i + 1 }}. {{ s.email ? maskEmail(s.email) : '(无邮箱)' }} · session {{ s.session.length }} 字
       </div>
       <div v-if="sessionPool.length > 8">…共 {{ sessionPool.length }} 条</div>
     </div>
@@ -52,6 +52,8 @@
 import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { ImportedSession } from '../lib/batch-session'
+// 导入预览只显示打码后的邮箱（F2-21）
+import { maskEmail } from '../lib/sessionCheck'
 
 defineProps<{
   sessionPool: ImportedSession[]

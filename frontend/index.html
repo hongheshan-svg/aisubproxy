@@ -6,36 +6,67 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark light" />
     <meta name="theme-color" content="#0C1A18" />
-    <title>CDK Portal</title>
+    <title>Recharge Portal</title>
     <!-- 用户端不加载 Google 字体；后台皮肤的字体由 theme.ts 只在后台页面按需加载 -->
     <style>
-      /* 样式表到达前的首屏底色，避免夜间模式先闪一下白 */
+      /* 样式表到达前的首屏底色，避免夜间模式先闪一下白；按本机记住的皮肤取色 */
       /* 只给 html：body 要保持透明，否则会盖住主题的固定氛围层 */
       /* :where() 零特异性：样式表一到，各皮肤自己的底色就能覆盖它 */
-      :where(html.dark) { background: #0C1A18; color: #E6F1EE; }
+      /* 下面的颜色取自 style.css / skins.css 各皮肤的 --bg、--ink，src/__tests__/indexHtml.test.ts 会逐个比对 */
+      :where(html[data-skin="teal"].dark) { background: #0C1A18; color: #E6F1EE; }
+      :where(html[data-skin="teal"]:not(.dark)) { background: #EEF5F3; color: #0E2A26; }
+      :where(html[data-skin="zovo"].dark) { background: #0C0C11; color: #F4F1EA; }
+      :where(html[data-skin="zovo"]:not(.dark)) { background: #F3EEE3; color: #17130A; }
+      :where(html[data-skin="terracotta"].dark) { background: #17120E; color: #F1E8DB; }
+      :where(html[data-skin="terracotta"]:not(.dark)) { background: #F2EDE4; color: #2A2622; }
+      :where(html[data-skin="cyber"].dark) { background: #070B14; color: #E8F7FF; }
+      :where(html[data-skin="ocean"].dark) { background: #000000; color: #F5F5F7; }
+      :where(html[data-skin="ocean"]:not(.dark)) { background: #F5F5F7; color: #1D1D1F; }
+      :where(html[data-skin="ember"].dark) { background: #0F0806; color: #FFF3E8; }
+      :where(html[data-skin="forest"].dark) { background: #0C1612; color: #E6F4EC; }
+      :where(html[data-skin="forest"]:not(.dark)) { background: #EFFAF4; color: #14241C; }
+      :where(html[data-skin="violet"].dark) { background: #120E1C; color: #F0E9FF; }
+      :where(html[data-skin="violet"]:not(.dark)) { background: #F4F0FB; color: #1E1533; }
+      :where(html[data-skin="slate"].dark) { background: #0B0B0B; color: #F4F4F1; }
+      :where(html[data-skin="slate"]:not(.dark)) { background: #F7F7F4; color: #0D0D0D; }
+      :where(html[data-skin="rose"].dark) { background: #180A0E; color: #FDE8ED; }
+      :where(html[data-skin="rose"]:not(.dark)) { background: #FDF2F4; color: #2A1218; }
+      :where(html[data-skin="noir"].dark) { background: #000000; color: #F5F5F5; }
+      :where(html[data-skin="paper"].dark) { background: #1C1812; color: #F3ECDF; }
+      :where(html[data-skin="paper"]:not(.dark)) { background: #F7F3EA; color: #3D3428; }
     </style>
     <script>
       (function () {
+        var root = document.documentElement
+        // 读本机存储：被禁用或读失败就当没有，不影响后面的默认值
+        function read(k) { try { return localStorage.getItem(k) } catch (e) { return null } }
+        // 页面底纹只画在后台、代理商后台和登录页；用户端纯色。与 router/routes.ts 的 surfaceOf 同一规则（不依赖存储，先设）
+        var path = location.pathname
+        var consolePage = path === '/ops' || path.indexOf('/ops/') === 0 || path === '/agent' || path.indexOf('/agent/') === 0
+        root.setAttribute('data-surface', consolePage ? 'console' : 'user')
         try {
           // 默认：深青自助(teal) + 跟随系统。与 theme.ts、后端 /public/site 的默认值保持一致
-          var mode = localStorage.getItem('theme-mode')
-          if (mode !== 'light' && mode !== 'dark' && mode !== 'auto') mode = 'auto'
-          var skin = localStorage.getItem('site-skin') || 'teal'
+          // 访客自己的选择 > 上次记下的站点默认（site-theme-mode）> 跟随系统
+          var ok = function (v) { return v === 'light' || v === 'dark' || v === 'auto' }
+          var mode = read('theme-mode')
+          if (!ok(mode)) mode = read('site-theme-mode')
+          if (!ok(mode)) mode = 'auto'
+          var TC = {teal: ['#EEF5F3', '#0C1A18'], zovo: ['#F3EEE3', '#0C0C11'], terracotta: ['#F2EDE4', '#17120E'], cyber: ['#070B14', '#070B14'], ocean: ['#F5F5F7', '#000000'], ember: ['#0F0806', '#0F0806'], forest: ['#EFFAF4', '#0C1612'], violet: ['#F4F0FB', '#120E1C'], slate: ['#F7F7F4', '#0B0B0B'], rose: ['#FDF2F4', '#180A0E'], noir: ['#000000', '#000000'], paper: ['#F7F3EA', '#1C1812']}
+          var skin = read('site-skin')
+          if (!Object.prototype.hasOwnProperty.call(TC, skin)) skin = 'teal'
           var dark =
             mode === 'dark' ||
             (mode === 'auto' &&
               window.matchMedia &&
               window.matchMedia('(prefers-color-scheme: dark)').matches)
-          // preferDark 皮肤默认暗色，减少首屏闪白
+          // 只有暗色的皮肤（赛博、余烬、黑白）一律按暗色
           if (skin === 'cyber' || skin === 'ember' || skin === 'noir') dark = true
-          if (dark) document.documentElement.classList.add('dark')
-          // 浏览器地址栏颜色：meta 默认是深青暗色底，深青亮色时改成亮色底（其他皮肤不在首屏同步）
-          if (skin === 'teal' && !dark) {
-            var tc = document.querySelector('meta[name="theme-color"]')
-            if (tc) tc.setAttribute('content', '#EEF5F3')
-          }
-          document.documentElement.setAttribute('data-tone', dark ? 'dark' : 'light')
-          document.documentElement.setAttribute('data-skin', skin)
+          if (dark) root.classList.add('dark')
+          // 浏览器地址栏颜色：meta 默认是深青暗色底，按皮肤和明暗改成对应的底色
+          var tc = document.querySelector('meta[name="theme-color"]')
+          if (tc) tc.setAttribute('content', TC[skin][dark ? 1 : 0])
+          root.setAttribute('data-tone', dark ? 'dark' : 'light')
+          root.setAttribute('data-skin', skin)
         } catch (e) {}
       })()
     </script>

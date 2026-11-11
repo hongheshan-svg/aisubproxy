@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   adminErrorText, adjustOpenState, adjustPreview, classifyAdjust, matrixChanges, overrideChanges, validProductCode,
-  adjustPendings, adjustKeeperFor, USERNAME_TAKEN_HINT,
-  assemblePricing, adjustBegin, adjustFinish, adjustReopenBlock, adjustInflight,
+  adjustKeeperFor, USERNAME_TAKEN_HINT,
+  assemblePricing, adjustBegin, adjustReopenBlock, adjustRetry,
 } from '../agentAdmin'
 
 describe('matrixChanges', () => {
@@ -145,6 +145,11 @@ describe('adjustOpenState / 未决调账', () => {
     adjustPendings.clear()
   })
 })
+
+// 这几个别名已无业务引用（F1-10），测试直接用单例上的字段
+const adjustPendings = adjustRetry.pendings
+const adjustInflight = adjustRetry.inflight
+const adjustFinish = (id: number, p: Parameters<typeof adjustRetry.finish>[1], o: Parameters<typeof adjustRetry.finish>[2]) => adjustRetry.finish(id, p, o)
 
 describe('其他文案', () => {
   it('建号重名提示', () => {

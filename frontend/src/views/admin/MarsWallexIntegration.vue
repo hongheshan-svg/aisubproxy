@@ -1,14 +1,14 @@
 <template>
   <div class="space-y-4">
     <AdminPageHeader class="!mb-0" title="MarsWallex 接入配置" description="首次接入按 1 → 6 的顺序操作：选环境、填凭证、生成密钥对并把公钥交给 MarsWallex、把出口 IP 加进平台白名单、测试连接、配置 Webhook。" />
-    <div v-if="cfg && !cfg.master_key_ready" class="card warn-box">
+    <div v-if="cfg && !cfg.master_key_ready" class="alert alert-error font-semibold">
       服务器未配置 APP_MASTER_KEY，无法保存密钥（API Token、私钥）；地址、Developer ID、平台公钥仍可保存
       <span v-if="cfg.master_key_error" class="text-xs">（{{ cfg.master_key_error }}）</span>
     </div>
 
     <!-- 1. 环境与地址 -->
     <div class="card space-y-4">
-      <h3 class="step-title"><span class="step-no">1</span>环境与地址</h3>
+      <h3 class="ops-step-title"><span class="ops-step-no">1</span>环境与地址</h3>
       <div class="flex flex-wrap gap-2">
         <el-button
           v-for="p in cfg?.base_url_presets || []"
@@ -25,7 +25,7 @@
 
     <!-- 2. 凭证 -->
     <div class="card space-y-4">
-      <h3 class="step-title"><span class="step-no">2</span>凭证</h3>
+      <h3 class="ops-step-title"><span class="ops-step-no">2</span>凭证</h3>
       <el-form label-position="top" class="mw-field" @submit.prevent>
         <el-form-item label="Developer ID">
           <el-input v-model="form.developer_id" size="large" class="mono" />
@@ -80,7 +80,7 @@
 
     <!-- 3. 密钥对 -->
     <div class="card space-y-3">
-      <h3 class="step-title"><span class="step-no">3</span>密钥对</h3>
+      <h3 class="ops-step-title"><span class="ops-step-no">3</span>密钥对</h3>
       <div class="flex flex-wrap items-center gap-2">
         <el-button type="primary" :loading="generating" :disabled="!masterKeyReady" @click="generateKeypair">
           {{ cfg?.private_key_set ? '重新生成密钥对' : '生成密钥对' }}
@@ -110,7 +110,7 @@
     <!-- 4. IP 白名单 -->
     <div class="card space-y-3">
       <div class="flex flex-wrap items-center justify-between gap-2">
-        <h3 class="step-title"><span class="step-no">4</span>IP 白名单</h3>
+        <h3 class="ops-step-title"><span class="ops-step-no">4</span>IP 白名单</h3>
         <el-button type="primary" plain :loading="egressLoading" @click="checkEgress">检测出口 IP</el-button>
       </div>
       <p class="text-xs text-subtle">
@@ -135,7 +135,7 @@
     <!-- 5. 测试连接 -->
     <div class="card space-y-3">
       <div class="flex flex-wrap items-center justify-between gap-2">
-        <h3 class="step-title"><span class="step-no">5</span>测试连接</h3>
+        <h3 class="ops-step-title"><span class="ops-step-no">5</span>测试连接</h3>
         <el-button type="success" plain :loading="testing" @click="runTest">测试连接</el-button>
       </div>
       <div v-if="result" class="space-y-2">
@@ -165,7 +165,7 @@
 
     <!-- 6. Webhook -->
     <div class="card space-y-3">
-      <h3 class="step-title"><span class="step-no">6</span>Webhook</h3>
+      <h3 class="ops-step-title"><span class="ops-step-no">6</span>Webhook</h3>
       <div class="flex flex-wrap items-center gap-2">
         <el-input :model-value="cfg?.webhook_url || ''" readonly size="large" class="!flex-1 mono" />
         <el-button :disabled="!cfg?.webhook_url" @click="copyText(cfg?.webhook_url || '')">复制</el-button>
@@ -210,10 +210,12 @@
 </template>
 
 <script setup lang="ts">
+import { fmtBeijingAny } from '../../lib/mwwebhook'
 import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { authFetch } from '../../lib/api'
 import { dialog } from '../../lib/dialog'
+import { copyToClipboard } from '../../lib/clipboard'
 import { WEBHOOK_HINT, lastWebhookText, showWebhookHint } from '../../lib/mwwebhook'
 import {
   WEBHOOK_UNREACHABLE_HINT, accountTypeLabel, envProxyWarning, outcomeLabel, showTestReason, toOneLineBase64, webhookUnreachable,
@@ -323,17 +325,12 @@ const balanceRows = computed(() => {
 })
 
 function fmtTime(s: string) {
-  const d = new Date(s)
-  return isNaN(d.getTime()) ? s : d.toLocaleString()
+  return fmtBeijingAny(s)
 }
 
 async function copyText(t: string) {
-  try {
-    await navigator.clipboard.writeText(t)
-    dialog.toast('已复制', 'ok')
-  } catch {
-    dialog.toast('复制失败', 'err')
-  }
+  if (await copyToClipboard(t)) dialog.toast('已复制', 'ok')
+  else dialog.toast('复制失败', 'err')
 }
 
 function applyConfig(d: Config) {
@@ -345,13 +342,17 @@ function applyConfig(d: Config) {
 }
 
 async function loadConfig() {
-  const r = await authFetch('/api/v1/admin/marswallex/config')
-  const d = await r.json().catch(() => ({}))
-  if (!r.ok) {
-    dialog.toast(d.error || '加载配置失败', 'err')
-    return
+  try {
+    const r = await authFetch('/api/v1/admin/marswallex/config')
+    const d = await r.json().catch(() => ({}))
+    if (!r.ok) {
+      dialog.toast(d.error || '加载配置失败', 'err')
+      return
+    }
+    applyConfig(d)
+  } catch {
+    dialog.toast('网络错误，读取配置失败', 'err')
   }
-  applyConfig(d)
 }
 
 async function save() {
@@ -381,6 +382,8 @@ async function save() {
     result.value = null
     dialog.toast('已保存', 'ok')
     await loadConfig()
+  } catch {
+    dialog.toast('网络错误，不确定是否已保存，请刷新页面核对', 'err', 8000)
   } finally {
     saving.value = false
   }
@@ -399,6 +402,8 @@ async function checkEgress() {
       return
     }
     egress.value = d
+  } catch {
+    dialog.toast('网络错误，出口 IP 没有检测', 'err')
   } finally {
     egressLoading.value = false
   }
@@ -428,6 +433,9 @@ async function generateKeypair() {
     // 密钥已变，旧的测试结果不再代表当前配置。
     result.value = null
     dialog.toast('已生成，请复制下方公钥', 'ok')
+  } catch {
+    // 请求可能已到服务器、只是响应丢了：私钥也许已经换掉
+    dialog.toast('网络错误，不确定密钥是否已更换。请刷新页面核对公钥；公钥变了要到 MarsWallex 平台更新', 'err', 8000)
   } finally {
     generating.value = false
   }
@@ -443,6 +451,8 @@ async function runTest() {
       return
     }
     result.value = d
+  } catch {
+    dialog.toast('网络错误，没连上本站后台，测试没有做', 'err')
   } finally {
     testing.value = false
   }
@@ -458,6 +468,8 @@ async function loadEvents() {
       return
     }
     events.value = d.events || []
+  } catch {
+    dialog.toast('网络错误，读取 Webhook 事件失败', 'err')
   } finally {
     loadingEvents.value = false
   }
@@ -474,6 +486,8 @@ async function reprocess(row: WebhookEvent) {
     }
     dialog.toast('已提交重新处理', 'ok')
     await loadEvents()
+  } catch {
+    dialog.toast('网络错误，不确定是否已提交重新处理，请刷新事件列表核对', 'err', 8000)
   } finally {
     reprocessingId.value = null
   }
@@ -487,14 +501,6 @@ onMounted(() => {
 
 <style scoped>
 .mw-field { max-width: 720px; width: 100%; }
-.step-title { display: flex; align-items: center; gap: 10px; font-size: 15px; font-weight: 600; color: var(--ink); }
-.step-no { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; background: var(--primary-soft); color: var(--primary); font-size: 12px; font-weight: 700; }
-.warn-box {
-  color: #b91c1c;
-  background: #fef2f2;
-  border: 1px solid #fecaca;
-  font-weight: 600;
-}
 .pem {
   white-space: pre-wrap;
   word-break: break-all;
@@ -505,13 +511,9 @@ onMounted(() => {
   max-height: 200px;
   overflow: auto;
 }
-.text-warn {
-  color: #d97706;
-}
 .field-error {
   margin-top: 4px;
   font-size: 12px;
   line-height: 1.4;
-  color: #dc2626;
 }
 </style>

@@ -67,3 +67,20 @@ export function nextPollPlan(
   }
   return { delayMs: pollIntervalMs(inFlight), backoffMs: 0, notice: '' }
 }
+
+/**
+ * 一次只读查询最多等多久。超时就中止，算这一轮查询失败、下一轮再查；结果未知的照旧按 90 秒时限收尾，
+ * 一次挂住不返回的请求不会让查询（和查询期间锁住的重置按钮）一直停在那里。只给查询用，兑换请求不加超时。
+ */
+export const POLL_REQUEST_TIMEOUT_MS = 15_000
+
+/** 给一次请求加超时：到点用 AbortController 中止（run 要把 signal 交给 fetch），返回或出错时清掉计时器。 */
+export async function withAbortTimeout<T>(ms: number, run: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), ms)
+  try {
+    return await run(ctrl.signal)
+  } finally {
+    clearTimeout(timer)
+  }
+}

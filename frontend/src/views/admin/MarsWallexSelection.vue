@@ -244,7 +244,6 @@ onMounted(() => {
 .field-error {
   margin-bottom: 8px;
   font-size: 13px;
-  color: #dc2626;
 }
 .grid-form {
   display: grid;

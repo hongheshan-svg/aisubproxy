@@ -64,7 +64,7 @@
         <input class="input font-mono text-lg tracking-wide" :value="resultPass" readonly @focus="($event.target as HTMLInputElement).select()" />
       </div>
       <button class="btn-secondary w-full" type="button" @click="copyCreds">
-        {{ copied ? '已复制' : '复制账号密码' }}
+        {{ copied ? '已复制' : copyFailed ? '复制失败，请手动选中上面的密码复制' : '复制账号密码' }}
       </button>
       <label class="flex items-center gap-2 text-sm text-muted">
         <input v-model="saved" type="checkbox" /> 我已安全保存密码
@@ -85,6 +85,7 @@
 import { onMounted, ref } from 'vue'
 import { useAuthStore } from '../../stores/auth'
 import { clearSetupLeftovers } from '../../lib/session'
+import { copyToClipboard } from '../../lib/clipboard'
 import AuthCard from '../../components/AuthCard.vue'
 
 const authStore = useAuthStore()
@@ -105,6 +106,8 @@ const resultUser = ref('')
 const resultPass = ref('')
 const saved = ref(false)
 const copied = ref(false)
+// 用 http://IP:端口 打开时没有剪贴板接口，回退也可能失败：明说，让管理员手动选中复制（密码只显示一次）
+const copyFailed = ref(false)
 
 onMounted(async () => {
   try {
@@ -185,12 +188,9 @@ async function bootstrap(m: 'generate' | 'manual') {
 
 async function copyCreds() {
   const text = `username: ${resultUser.value}\npassword: ${resultPass.value}`
-  try {
-    await navigator.clipboard.writeText(text)
-    copied.value = true
-  } catch {
-    /* ignore */
-  }
+  const ok = await copyToClipboard(text)
+  copied.value = ok
+  copyFailed.value = !ok
 }
 
 function enterOps() {

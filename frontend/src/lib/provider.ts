@@ -4,8 +4,6 @@ import { ref } from 'vue'
 import { authFetch } from './api'
 import type { Resp } from './cardpool'
 
-export type ProviderId = string
-
 // ---------- 服务商注册表（GET /admin/providers） ----------
 
 export type ProviderKind = 'upstream' | 'card_supply' | string
@@ -82,11 +80,6 @@ export function productLabel(reg: Registry | null | undefined, key: string): str
 export function providerCodeList(reg: Registry | null | undefined, name: string): CodeListKind {
   const c = findProvider(reg, name)?.code_list
   return c === 'local' ? c : ''
-}
-
-/** 某产品下，全局默认或产品单独配置给出的服务商（接口的 effective 优先，缺失时自己算）。 */
-export function effectiveProvider(reg: Registry, product: string): string {
-  return reg.effective?.[product] || reg.by_product?.[product] || reg.default || ''
 }
 
 /**

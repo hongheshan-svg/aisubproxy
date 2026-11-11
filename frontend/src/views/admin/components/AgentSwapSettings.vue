@@ -18,7 +18,7 @@
           留空保存=不修改；
           <el-tag size="small" :type="configured ? 'success' : 'info'" effect="plain">{{ configured ? '已设置' : '未设置' }}</el-tag>
         </p>
-        <p v-if="weak" class="w-full text-xs mt-1" style="color: var(--err)" data-testid="swap-password-weak">
+        <p v-if="weak" class="w-full text-xs mt-1 text-err" data-testid="swap-password-weak">
           当前密码不足 12 位，仍可使用，但请尽快换成至少 12 位的新密码。
         </p>
       </el-form-item>
@@ -69,15 +69,20 @@ function apply(d: Record<string, any>) {
 }
 
 async function load() {
-  const r = await authFetch('/api/v1/admin/settings')
-  const d = await r.json().catch(() => ({}))
-  if (!r.ok) {
+  try {
+    const r = await authFetch('/api/v1/admin/settings')
+    const d = await r.json().catch(() => ({}))
+    if (!r.ok) {
+      loaded.value = false
+      dialog.toast(d.error || '读取代理换码设置失败，页面上显示的不是当前值，请刷新后再保存', 'err')
+      return
+    }
+    loaded.value = true
+    apply(d)
+  } catch {
     loaded.value = false
-    dialog.toast(d.error || '读取代理换码设置失败，页面上显示的不是当前值，请刷新后再保存', 'err')
-    return
+    dialog.toast('网络错误，读取代理换码设置失败，页面上显示的不是当前值，请刷新后再保存', 'err')
   }
-  loaded.value = true
-  apply(d)
 }
 
 async function save() {
@@ -111,6 +116,8 @@ async function save() {
     loaded.value = true
     password.value = ''
     dialog.toast('已保存', 'ok')
+  } catch {
+    dialog.toast('网络错误，不确定是否已保存，请刷新页面核对', 'err', 8000)
   } finally {
     saving.value = false
   }

@@ -1,68 +1,61 @@
 <template>
-  <div class="min-h-screen flex items-center justify-center px-4 py-10 agent-login">
-    <div class="w-full max-w-md card p-6 space-y-5">
-      <div>
-        <h1 class="text-xl font-semibold">代理商登录</h1>
-        <p v-if="!disabled" class="text-sm opacity-70 mt-1">{{ stepHint }}</p>
+  <AuthCard class="agent-login" title="代理商登录" :subtitle="disabled ? undefined : stepHint">
+  <!-- 代理商功能关闭时（后台「系统 → 功能开关」）只显示提示，不显示登录框 -->
+  <p v-if="disabled" class="text-sm" role="status">{{ AGENT_DISABLED_TEXT }}</p>
+  <template v-else>
+  <form v-if="step === 'password'" class="space-y-4" autocomplete="on" @submit.prevent="submitPassword">
+    <label class="block">
+      <span class="block text-sm mb-1">登录名</span>
+      <input v-model.trim="username" class="input w-full" type="text" name="username" autocomplete="username" autocapitalize="none" required />
+    </label>
+    <label class="block">
+      <span class="block text-sm mb-1">密码</span>
+      <input v-model="password" class="input w-full" type="password" name="password" autocomplete="current-password" required />
+    </label>
+    <button class="btn-primary w-full" type="submit" :disabled="busy">{{ busy ? '登录中…' : '登录' }}</button>
+  </form>
+
+  <form v-else-if="step === 'change_password'" class="space-y-4" @submit.prevent="submitNewPassword">
+    <label class="block">
+      <span class="block text-sm mb-1">新密码（至少 12 位）</span>
+      <input v-model="newPassword" class="input w-full" type="password" autocomplete="new-password" minlength="12" required />
+    </label>
+    <label class="block">
+      <span class="block text-sm mb-1">再输一次新密码</span>
+      <input v-model="newPassword2" class="input w-full" type="password" autocomplete="new-password" minlength="12" required />
+    </label>
+    <button class="btn-primary w-full" type="submit" :disabled="busy">{{ busy ? '提交中…' : '修改密码' }}</button>
+  </form>
+
+  <form v-else-if="step === 'setup_totp'" class="space-y-4" @submit.prevent="submitTotpSetup">
+    <p class="text-sm">用验证器 App（如 Google Authenticator）扫描二维码，再输入显示的 6 位动态码完成绑定。</p>
+    <div class="flex flex-col sm:flex-row gap-4 items-center">
+      <img v-if="qrDataUrl" :src="qrDataUrl" alt="两步验证二维码" width="180" height="180" class="bg-white p-2 rounded" />
+      <div v-else class="text-sm opacity-70">{{ setupLoading ? '正在生成二维码…' : '' }}</div>
+      <div class="min-w-0 text-sm">
+        <div class="mb-1">无法扫码时，手动输入密钥：</div>
+        <code class="break-all select-all">{{ secret }}</code>
       </div>
-
-      <!-- 代理商功能关闭时（后台「系统 → 功能开关」）只显示提示，不显示登录框 -->
-      <p v-if="disabled" class="text-sm" role="status">{{ AGENT_DISABLED_TEXT }}</p>
-      <template v-else>
-      <form v-if="step === 'password'" class="space-y-4" autocomplete="on" @submit.prevent="submitPassword">
-        <label class="block">
-          <span class="block text-sm mb-1">登录名</span>
-          <input v-model.trim="username" class="input w-full" type="text" name="username" autocomplete="username" autocapitalize="none" required />
-        </label>
-        <label class="block">
-          <span class="block text-sm mb-1">密码</span>
-          <input v-model="password" class="input w-full" type="password" name="password" autocomplete="current-password" required />
-        </label>
-        <button class="btn-primary w-full" type="submit" :disabled="busy">{{ busy ? '登录中…' : '登录' }}</button>
-      </form>
-
-      <form v-else-if="step === 'change_password'" class="space-y-4" @submit.prevent="submitNewPassword">
-        <label class="block">
-          <span class="block text-sm mb-1">新密码（至少 12 位）</span>
-          <input v-model="newPassword" class="input w-full" type="password" autocomplete="new-password" minlength="12" required />
-        </label>
-        <label class="block">
-          <span class="block text-sm mb-1">再输一次新密码</span>
-          <input v-model="newPassword2" class="input w-full" type="password" autocomplete="new-password" minlength="12" required />
-        </label>
-        <button class="btn-primary w-full" type="submit" :disabled="busy">{{ busy ? '提交中…' : '修改密码' }}</button>
-      </form>
-
-      <form v-else-if="step === 'setup_totp'" class="space-y-4" @submit.prevent="submitTotpSetup">
-        <p class="text-sm">用验证器 App（如 Google Authenticator）扫描二维码，再输入显示的 6 位动态码完成绑定。</p>
-        <div class="flex flex-col sm:flex-row gap-4 items-center">
-          <img v-if="qrDataUrl" :src="qrDataUrl" alt="两步验证二维码" width="180" height="180" class="bg-white p-2 rounded" />
-          <div v-else class="text-sm opacity-70">{{ setupLoading ? '正在生成二维码…' : '' }}</div>
-          <div class="min-w-0 text-sm">
-            <div class="mb-1">无法扫码时，手动输入密钥：</div>
-            <code class="break-all select-all">{{ secret }}</code>
-          </div>
-        </div>
-        <label class="block">
-          <span class="block text-sm mb-1">动态码</span>
-          <input v-model.trim="totpCode" class="input w-full" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required />
-        </label>
-        <button class="btn-primary w-full" type="submit" :disabled="busy || !secret">{{ busy ? '验证中…' : '确认绑定并登录' }}</button>
-      </form>
-
-      <form v-else class="space-y-4" @submit.prevent="submitTotp">
-        <label class="block">
-          <span class="block text-sm mb-1">动态码</span>
-          <input v-model.trim="totpCode" class="input w-full" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required />
-        </label>
-        <button class="btn-primary w-full" type="submit" :disabled="busy">{{ busy ? '验证中…' : '登录' }}</button>
-      </form>
-
-      <p v-if="errorText" class="text-sm text-red-500" role="alert">{{ errorText }}</p>
-      <button v-if="step !== 'password'" type="button" class="text-sm underline opacity-70" @click="restart">返回重新输入密码</button>
-      </template>
     </div>
-  </div>
+    <label class="block">
+      <span class="block text-sm mb-1">动态码</span>
+      <input v-model.trim="totpCode" class="input w-full" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required />
+    </label>
+    <button class="btn-primary w-full" type="submit" :disabled="busy || !secret">{{ busy ? '验证中…' : '确认绑定并登录' }}</button>
+  </form>
+
+  <form v-else class="space-y-4" @submit.prevent="submitTotp">
+    <label class="block">
+      <span class="block text-sm mb-1">动态码</span>
+      <input v-model.trim="totpCode" class="input w-full" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required />
+    </label>
+    <button class="btn-primary w-full" type="submit" :disabled="busy">{{ busy ? '验证中…' : '登录' }}</button>
+  </form>
+
+  <p v-if="errorText" class="text-sm text-red-500" role="alert">{{ errorText }}</p>
+  <button v-if="step !== 'password'" type="button" class="text-sm underline opacity-70" @click="restart">返回重新输入密码</button>
+  </template>
+  </AuthCard>
 </template>
 
 <script setup lang="ts">
@@ -71,6 +64,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { agentApi, agentErrorText, safeAgentRedirect } from '../../lib/agentApi'
 import { nextLoginStep, type LoginStep } from '../../lib/agentLoginFlow'
 import { AGENT_DISABLED_TEXT } from '../../lib/features'
+import AuthCard from '../../components/AuthCard.vue'
 
 type Step = LoginStep
 

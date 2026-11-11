@@ -1,37 +1,26 @@
 <template>
-  <div class="relative min-h-screen flex items-center justify-center px-6 py-10">
-    <div class="absolute right-5 top-5 flex items-center gap-3">
-      <ThemeToggle />
+  <AuthCard :title="t('login.title')" :subtitle="t('login.subtitle')">
+    <router-link to="/" class="text-sm app-link text-center">{{ t('common.backHome') }}</router-link>
+
+    <div class="form-group">
+      <label>{{ t('login.username') }}</label>
+      <input v-model="form.username" class="input" :placeholder="t('login.usernamePlaceholder')" autocomplete="username" @keyup.enter="submit" />
     </div>
-    <div class="w-full max-w-md animate-slideInUp">
-      <div class="card space-y-6 !p-7">
-        <div class="text-center">
-          <router-link to="/" class="text-sm app-link">{{ t('common.backHome') }}</router-link>
-          <h1 class="mt-4 text-3xl font-bold text-ink">{{ t('login.title') }}</h1>
-          <p class="mt-2 text-sm text-muted">{{ t('login.subtitle') }}</p>
-        </div>
 
-        <div class="form-group">
-          <label>{{ t('login.username') }}</label>
-          <input v-model="form.username" class="input" :placeholder="t('login.usernamePlaceholder')" autocomplete="username" @keyup.enter="submit" />
-        </div>
-
-        <div class="form-group">
-          <label>{{ t('login.password') }}</label>
-          <input v-model="form.password" class="input" type="password" :placeholder="t('login.passwordPlaceholder')" autocomplete="current-password" @keyup.enter="submit" />
-        </div>
-
-        <div v-if="errorMessage" class="alert alert-error">
-          {{ errorMessage }}
-        </div>
-
-        <button class="btn-primary w-full disabled:opacity-50" :disabled="loading" @click="submit">
-          <span v-if="!loading">{{ t('login.loginBtn') }}</span>
-          <span v-else class="flex items-center justify-center gap-2"><span class="spinner"></span>{{ t('login.loggingIn') }}</span>
-        </button>
-      </div>
+    <div class="form-group">
+      <label>{{ t('login.password') }}</label>
+      <input v-model="form.password" class="input" type="password" :placeholder="t('login.passwordPlaceholder')" autocomplete="current-password" @keyup.enter="submit" />
     </div>
-  </div>
+
+    <div v-if="errorMessage" class="alert alert-error">
+      {{ errorMessage }}
+    </div>
+
+    <button class="btn-primary w-full disabled:opacity-50" :disabled="loading" @click="submit">
+      <span v-if="!loading">{{ t('login.loginBtn') }}</span>
+      <span v-else class="flex items-center justify-center gap-2"><span class="spinner"></span>{{ t('login.loggingIn') }}</span>
+    </button>
+  </AuthCard>
 </template>
 
 <script setup lang="ts">
@@ -39,7 +28,7 @@ import { reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { clearSetupLeftovers, safeAdminRedirect } from '../../lib/session'
-import ThemeToggle from '../../components/ThemeToggle.vue'
+import AuthCard from '../../components/AuthCard.vue'
 import zh from '../../i18n/locales/zh'
 
 // 后台只做中文：直接从中文词条取值，不随用户端保存的语言变化，也不改全局语言

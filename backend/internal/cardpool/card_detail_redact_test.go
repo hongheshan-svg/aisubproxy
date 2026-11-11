@@ -55,4 +55,12 @@ func TestCardDetailErrorsRedactPAN(t *testing.T) {
 	l := mustAcquire(t, s, AcquireRequest{PlanKey: "gpt"})
 	_, err = s.Sensitive(ctx, l)
 	mustNotLeakPAN(t, "取卡号", err)
+
+	// 定时查卡状态：返回的错误只带结果分类和错误码（不带 message），错误码里夹带的长数字串也要打码
+	insertCard(t, Card{CardID: "s1", ProductID: "p2"})
+	mw.On("GET", detailPath("s1"), mwtest.Reply{Status: 400, Body: `{"code":"E4111111111111111","message":"card 4111111111111111 invalid"}`})
+	err = s.pollCard(ctx, mw.Client(), &Card{CardID: "s1"})
+	if err == nil || strings.Contains(err.Error(), "4111111111111111") || !strings.Contains(err.Error(), "code=E****") {
+		t.Fatalf("定时查卡状态的错误应打码: %v", err)
+	}
 }

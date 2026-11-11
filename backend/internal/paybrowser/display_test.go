@@ -1,6 +1,7 @@
 package paybrowser
 
 import (
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -115,5 +116,29 @@ func TestXvfbRetriesAfterFailure(t *testing.T) {
 	}
 	if starts, alerts := f.snapshot(); starts != 4 || len(alerts) != 2 {
 		t.Fatalf("恢复后再失败应再告警: starts=%d alerts=%v", starts, alerts)
+	}
+}
+
+// P2-05：Xvfb 只拿到 PATH，不继承服务进程的全部环境变量（主密钥、JWT 密钥、卡平台密钥等），同 Chrome 只拿白名单变量。
+func TestXvfbCmdOnlyPath(t *testing.T) {
+	t.Setenv("APP_MASTER_KEY", "fake-master")
+	t.Setenv("PATH", "/usr/local/bin:/usr/bin:/bin")
+	cmd := xvfbCmd()
+	if want := []string{"PATH=/usr/local/bin:/usr/bin:/bin"}; !reflect.DeepEqual(cmd.Env, want) {
+		t.Fatalf("Xvfb 的环境变量 = %q，期望只有 %q", cmd.Env, want)
+	}
+	if want := []string{"Xvfb", ":99", "-screen", "0", "1366x900x24"}; !reflect.DeepEqual(cmd.Args, want) {
+		t.Fatalf("Xvfb 的启动参数 = %q，期望 %q", cmd.Args, want)
+	}
+}
+
+// 服务进程没有 PATH 时给 Xvfb 空环境：Env 为 nil 会继承全部环境变量。
+func TestXvfbEnvWithoutPath(t *testing.T) {
+	env := xvfbEnv([]string{"APP_MASTER_KEY=x", "CARD_API_KEY=y", "PATHX=/x"})
+	if env == nil || len(env) != 0 {
+		t.Fatalf("没有 PATH 时应给空环境（非 nil），实际 %q", env)
+	}
+	if got := xvfbEnv([]string{"A=1", "PATH=/bin", "PATH=/evil"}); !reflect.DeepEqual(got, []string{"PATH=/bin"}) {
+		t.Fatalf("应只取第一个 PATH，实际 %q", got)
 	}
 }

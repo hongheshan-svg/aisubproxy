@@ -4,6 +4,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 
@@ -74,8 +75,27 @@ func sharedXvfb() bool {
 	return false
 }
 
-func startXvfb() bool {
+// xvfbCmd 是启动共享 Xvfb 的命令。环境变量只给 PATH（P2-05）：服务进程的环境里有主密钥、JWT 密钥、卡平台密钥等，
+// Xvfb 用不到；同 Chrome 只拿白名单变量（见 chromeEnv）。
+func xvfbCmd() *exec.Cmd {
 	cmd := exec.Command("Xvfb", xvfbDisplay, "-screen", "0", "1366x900x24")
+	cmd.Env = xvfbEnv(os.Environ())
+	return cmd
+}
+
+// xvfbEnv 从 environ 里只取第一个 PATH。没有 PATH 时返回空的环境，不是 nil：exec.Cmd 的 Env 为 nil 表示继承全部。
+func xvfbEnv(environ []string) []string {
+	out := []string{}
+	for _, kv := range environ {
+		if strings.HasPrefix(kv, "PATH=") {
+			return append(out, kv)
+		}
+	}
+	return out
+}
+
+func startXvfb() bool {
+	cmd := xvfbCmd()
 	if err := cmd.Start(); err != nil {
 		return false
 	}

@@ -60,6 +60,12 @@ describe('批量兑换页的提交不会进两次（FE2 审查重要 3）', () =
     // 第一次调用只同步取走前几张，剩下的还是「待凭证」；没有这一句，再进一次就会把后面的卡密再排一遍、各提交一次
     expect(firstStatement(src, 'handleAutoSubmitAll')).toBe('if (autoSubmitting.value || submitting.value || verifying.value) return')
   })
+  it('「提交下一张」「一键自动提交」两个按钮在提交中、自动提交中都禁用，整页只有这两个入口（FE2 审查次要 7）', () => {
+    expect(src).toMatch(/:disabled="!sessionInput\.trim\(\) \|\| submitting \|\| autoSubmitting"\s*@click="handleSubmitSession"/)
+    expect(src).toMatch(/:disabled="submitting \|\| autoSubmitting"\s*@click="handleAutoSubmitAll"/)
+    expect((src.match(/handleSubmitSession\b/g) || []).length).toBe(2) // 模板一处、定义一处
+    expect((src.match(/handleAutoSubmitAll\b/g) || []).length).toBe(2)
+  })
   it('置在途标志都在第一个 await 之前：两次调用之间没有空档', () => {
     const auto = fnBody(src, 'handleAutoSubmitAll')
     const firstAwait = auto.indexOf('await ')

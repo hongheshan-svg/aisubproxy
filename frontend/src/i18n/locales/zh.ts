@@ -27,6 +27,12 @@ export default {
     redeemTitle: 'CDK 兑换',
     billingSub: '用卡密查看本站开通记录，或粘贴登录信息查询 ChatGPT 的订阅状态与账单。',
   },
+  newVersion: {
+    banner: '系统已更新，点此刷新',
+  },
+  chunkError: {
+    failed: '页面文件加载失败，请稍后刷新页面',
+  },
   common: {
     back: '← 返回',
     backHome: '← 返回首页',

@@ -27,6 +27,12 @@ export default {
     redeemTitle: 'Redeem CDK',
     billingSub: "Look up this site's activation record with your code, or paste your login info to check your ChatGPT subscription and invoices.",
   },
+  newVersion: {
+    banner: 'A new version is available — click to refresh',
+  },
+  chunkError: {
+    failed: 'Failed to load page files. Please refresh the page in a moment.',
+  },
   common: {
     back: '← Back',
     backHome: '← Back to Home',

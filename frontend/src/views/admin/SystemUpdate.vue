@@ -113,6 +113,7 @@ import { authFetch } from '../../lib/api'
 import { dialog } from '../../lib/dialog'
 import { reloadPage } from '../../lib/pageReload'
 import { createReloadCountdown } from '../../lib/reloadCountdown'
+import { useBusy } from '../../lib/busyState'
 import { REQUEST_TIMEOUT_MS, createUpdateWatcher, withTimeout, type StatusResult, type UpdateState, type UpdateWatchDeps } from '../../lib/updateWatch'
 
 const versionLoading = ref(false)
@@ -121,7 +122,12 @@ const versionInfo = ref<any>({})
 // 后端 deploy_mode：docker 或 native
 const isDocker = computed(() => versionInfo.value.deploy_mode === 'docker')
 
+// 升级成功后的刷新倒计时（秒）；null 表示没在倒数
+const RELOAD_COUNTDOWN_S = 3
+const reloadCountdown = ref<number | null>(null)
 const updating = ref(false)
+// 更新进行中、倒计时刷新期间不弹「系统已更新，点此刷新」：这个页面自己管刷新
+useBusy('system-update', () => updating.value || reloadCountdown.value !== null)
 const updatePhase = ref('')
 const updateMessage = ref('')
 const updateProgress = ref(0)
@@ -133,6 +139,8 @@ let unmounted = false
 
 const canOneClickUpdate = computed(() => {
   if (updating.value) return false
+  // 倒计时刷新期间不再开始新一轮更新
+  if (reloadCountdown.value !== null) return false
   if (versionInfo.value.update_enabled === false) return false
   // 有新版本且有 bundle，或强制允许「重装最新」当 has_bundle
   if (versionInfo.value.one_click_ready) return true
@@ -202,12 +210,17 @@ function updateDeps(before: string | undefined): UpdateWatchDeps {
       updating.value = false
     },
     onRecovered: async () => {
-      // 服务已恢复、更新已结束：刷新版本
-      await loadVersion(true)
-      const after = versionInfo.value.current
+      // 服务已恢复、更新已结束：先不带 refresh 查版本（不访问 GitHub，只为拿 current，不会因 GitHub 不通而判错），
+      // 版本没变时再带 refresh 刷新远端信息
+      await loadVersion(false)
+      let after = versionInfo.value.current
+      const changed = !!after && after !== before
+      if (!changed) {
+        await loadVersion(true)
+        after = versionInfo.value.current || after
+      }
       updateProgress.value = 100
       updatePhase.value = 'done'
-      const changed = !!after && after !== before
       updateMessage.value = changed
         ? `已热更至 v${after}`
         : `服务已恢复（当前 v${after || before || '—'}）`
@@ -226,13 +239,15 @@ function updateDeps(before: string | undefined): UpdateWatchDeps {
   }
 }
 
-// 升级成功后的刷新倒计时（秒）；null 表示没在倒数
-const RELOAD_COUNTDOWN_S = 3
-const reloadCountdown = ref<number | null>(null)
 let countdown: ReturnType<typeof createReloadCountdown> | null = null
 
-function reloadNow() {
+function cancelCountdown() {
   countdown?.cancel()
+  reloadCountdown.value = null
+}
+
+function reloadNow() {
+  cancelCountdown()
   reloadPage()
 }
 
@@ -318,7 +333,7 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   unmounted = true
-  countdown?.cancel()
+  cancelCountdown()
   watcher?.stop()
 })
 </script>

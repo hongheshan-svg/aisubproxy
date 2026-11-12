@@ -40,15 +40,21 @@ describe('升级后的刷新倒计时', () => {
 describe('SystemUpdate 接线', () => {
   const src = readFileSync(fileURLToPath(new URL('../../views/admin/SystemUpdate.vue', import.meta.url)), 'utf8')
   const recovered = src.slice(src.indexOf('onRecovered:'), src.indexOf('onTimeout:'))
-  it('只有版本确实变了才开始倒计时', () => {
-    expect(recovered).toContain("const changed = !!after && after !== before")
+  it('先不带 refresh 查版本，没变再带 refresh；只有版本变了才开始倒计时', () => {
+    expect(recovered.indexOf('loadVersion(false)')).toBeGreaterThan(-1)
+    expect(recovered.indexOf('loadVersion(false)')).toBeLessThan(recovered.indexOf('loadVersion(true)'))
+    expect(recovered).toContain('const changed = !!after && after !== before')
     expect(recovered).toMatch(/if \(changed && !unmounted\) startReloadCountdown\(after\)/)
   })
-  it('文案、立即刷新按钮、到点刷新、离开页面取消', () => {
+  it('文案、立即刷新按钮、到点刷新、离开页面取消并置回 null', () => {
     expect(src).toContain('已更新到 v${version}，${left} 秒后自动刷新页面')
     expect(src).toContain('@click="reloadNow"')
-    expect(src).toContain('seconds: RELOAD_COUNTDOWN_S')
     expect(src).toContain('onDone: reloadNow')
-    expect(src).toMatch(/onBeforeUnmount\(\(\) => \{[^}]*countdown\?\.cancel\(\)/)
+    expect(src).toMatch(/function cancelCountdown\(\) \{\s*countdown\?\.cancel\(\)\s*reloadCountdown\.value = null/)
+    expect(src).toMatch(/onBeforeUnmount\(\(\) => \{[^}]*cancelCountdown\(\)/)
+  })
+  it('倒计时期间禁用一键更新，并登记忙碌（不弹提示条）', () => {
+    expect(src).toContain('if (reloadCountdown.value !== null) return false')
+    expect(src).toContain("useBusy('system-update', () => updating.value || reloadCountdown.value !== null)")
   })
 })

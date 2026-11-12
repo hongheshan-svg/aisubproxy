@@ -46,7 +46,10 @@ router.beforeEach((to, from) => {
   pendingHref = router.resolve(to).href
   if (shouldFullReload({ hasNew: hasNewVersion.value, initial: from === START_LOCATION, toPath: to.path, fromPath: from.path })) {
     assignPage(pendingHref)
-    return false
+    // 不能 return false：后退、前进触发的导航被中止时，vue-router 会 history.go(-delta) 把地址栏退回去，
+    // 这一步可能把刚发起的整页跳转取消掉。让这次导航一直挂着，页面马上就会被新页面替换；
+    // 如果整页跳转被 beforeunload 拦下（用户选了留下），下一次导航会取代这次挂着的导航，再走一遍这里。
+    return new Promise<never>(() => {})
   }
 })
 

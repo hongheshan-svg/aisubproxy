@@ -14,7 +14,9 @@ describe('路由守卫顺序与接线', () => {
     const head = src.slice(first, second)
     expect(head).toContain('shouldFullReload')
     expect(head).toContain('assignPage(')
-    expect(head).toContain('return false')
+    // 挂起而不是 return false：后退时被中止的导航会被 vue-router 用 history.go 退回，可能取消整页跳转
+    expect(head).toContain('return new Promise<never>(() => {})')
+    expect(head).not.toMatch(/^\s*return false/m)
     expect(head).toContain('START_LOCATION')
     expect(src.slice(second, second + 120)).toContain('async')
   })

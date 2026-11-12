@@ -449,6 +449,9 @@ func setupRoutes(r *gin.Engine) {
 					return
 				}
 			}
+			// index.html 每次都要向服务器核对：在线升级会整个换掉前端目录，旧分包随之消失；
+			// 不带缓存头时浏览器按 Last-Modified 启发式缓存，升级后可能拿到旧 HTML，引用的入口脚本已经不在，页面白屏。
+			c.Header("Cache-Control", "no-cache")
 			c.File(indexFile)
 		})
 	}

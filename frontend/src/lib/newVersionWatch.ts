@@ -1,6 +1,6 @@
 // 检测站点是否已在线升级（F: 升级后其他开着的页面不再取旧分包）。
 // 做法：后端在线升级会把前端目录整个换掉，index.html 里 Vite 入口脚本的文件名（带内容哈希）跟着变。
-// 拿「当前页面加载的入口」和「服务器现在的 index.html 里的入口」比，不一样就是有新版本。
+// 拿「当前页面加载的入口」和「服务器现在的 index.html（站点根路径）里的入口」比，不一样就是有新版本。
 // 不需要后端接口，也不对外暴露版本号。
 import { ref } from 'vue'
 import { withTimeout } from './updateWatch'
@@ -52,7 +52,8 @@ export async function checkNewVersionOnce(): Promise<boolean> {
   const mine = currentEntry()
   if (!mine) return false
   return withTimeout(async (signal) => {
-    const r = await fetch(import.meta.env.BASE_URL + 'index.html', { cache: 'no-store', signal })
+    // 直接取站点根路径：后端对 /index.html 会 301 到 /（http.ServeFile 的规范化），取根路径少绕一趟
+    const r = await fetch(import.meta.env.BASE_URL, { cache: 'no-store', signal })
     if (r.status !== 200) return false
     const theirs = entryScriptOf(await r.text())
     return !!theirs && theirs !== mine

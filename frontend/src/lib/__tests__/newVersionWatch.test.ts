@@ -41,11 +41,11 @@ describe('checkNewVersionOnce', () => {
     reply(200, page('/assets/index-OLD.js'))
     expect(await checkNewVersionOnce()).toBe(false)
   })
-  it('入口不同：有新版本，且用 no-store 取 index.html', async () => {
+  it('入口不同：有新版本，且用 no-store 取站点根路径（即 index.html）', async () => {
     reply(200, page('/assets/index-NEW.js'))
     expect(await checkNewVersionOnce()).toBe(true)
     const [url, init] = (fetch as any).mock.calls[0]
-    expect(String(url)).toMatch(/index\.html$/)
+    expect(String(url)).toBe(import.meta.env.BASE_URL)
     expect(init.cache).toBe('no-store')
   })
   it('fetch 抛错：没有新版本', async () => {

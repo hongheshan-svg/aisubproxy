@@ -63,7 +63,8 @@ export function isNewVersionHtml(mine: string, html: string): boolean {
  */
 export async function checkNewVersionOnce(mine: string): Promise<boolean> {
   return withTimeout(async (signal) => {
-    const r = await fetch(location.pathname, { cache: 'no-store', signal })
+    // 带上 origin：路径以 // 开头时（如 //evil.example/x），单独的 pathname 会被 fetch 当成协议相对地址发到别的域名
+    const r = await fetch(location.origin + location.pathname, { cache: 'no-store', signal })
     if (r.status !== 200) return false
     return isNewVersionHtml(mine, await r.text())
   }, FETCH_TIMEOUT_MS, false)
@@ -127,10 +128,12 @@ export const hasNewVersion = ref(false)
 export const showNewVersionBanner = computed(() => hasNewVersion.value && !isBusy.value)
 
 let started = false
+let watchedEntry = ''
 /** 只在生产构建里启用；整个页面生命周期只启动一次。 */
 export function startNewVersionWatch(entry: string): void {
   if (!import.meta.env.PROD || started || typeof document === 'undefined' || !entry) return
   started = true
+  watchedEntry = entry
   createVersionWatcher({
     check: () => checkNewVersionOnce(entry),
     isVisible: () => document.visibilityState === 'visible',
@@ -140,6 +143,11 @@ export function startNewVersionWatch(entry: string): void {
     },
     onFound: () => { hasNewVersion.value = true },
   }).start()
+}
+
+/** 立即核对一次（页内动态加载失败时用）；检测没启动（开发模式）时当作没有。 */
+export function checkNewVersionNow(): Promise<boolean> {
+  return watchedEntry ? checkNewVersionOnce(watchedEntry) : Promise.resolve(false)
 }
 
 /**

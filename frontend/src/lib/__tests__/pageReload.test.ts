@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { hardNavigate } from '../pageReload'
 
 function loc(href: string) {
-  return { href, reload: vi.fn(), assign: vi.fn() }
+  return { href, reload: vi.fn(), assign: vi.fn(), replace: vi.fn() }
 }
 
 describe('hardNavigate', () => {
@@ -24,9 +24,17 @@ describe('hardNavigate', () => {
     expect(l.reload).toHaveBeenCalledTimes(1)
     expect(l.assign).not.toHaveBeenCalled()
   })
-  it('只差 hash（当前没有 hash）：assign 不会重新加载文档，但这里不是「相同地址」，按 assign', () => {
+  it('只差 hash：先 replace 换掉 hash（不多压历史），再 reload', () => {
     const l = loc('http://h/')
     hardNavigate('/#help', l)
-    expect(l.assign).toHaveBeenCalledTimes(1)
+    expect(l.replace).toHaveBeenCalledWith('http://h/#help')
+    expect(l.reload).toHaveBeenCalledTimes(1)
+    expect(l.assign).not.toHaveBeenCalled()
+  })
+  it('当前有 hash、目标没有：同样 replace 后 reload', () => {
+    const l = loc('http://h/a#x')
+    hardNavigate('/a', l)
+    expect(l.replace).toHaveBeenCalledWith('http://h/a')
+    expect(l.reload).toHaveBeenCalledTimes(1)
   })
 })

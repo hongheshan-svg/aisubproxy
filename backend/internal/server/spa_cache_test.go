@@ -135,16 +135,19 @@ func TestSPAIndexETag(t *testing.T) {
 	}
 }
 
-// /assets/ 下不存在的文件回 404（不回退成 HTML）；/api、/health 的 404 不带 no-cache。
+// /assets/ 下不存在的文件回 404（不回退成 HTML），按清洗后的路径判断，带 no-store；/api、/health 的 404 不带缓存头。
 func TestSPAAssetsMissing404(t *testing.T) {
 	r, _ := newSPAServer(t, "INDEX")
-	w := doReq(r, http.MethodGet, "/assets/gone-abc.js", nil)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("/assets/ 下不存在的文件应 404，实际 %d", w.Code)
+	for _, target := range []string{"/assets/gone-abc.js", "//assets/gone-abc.js", "/./assets/gone-abc.js", "/assets//gone-abc.js"} {
+		w := doReq(r, http.MethodGet, target, nil)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("%s 应 404，实际 %d %q", target, w.Code, w.Body.String())
+		}
+		if got := w.Header().Get("Cache-Control"); got != "no-store" {
+			t.Errorf("%s 的 404 应带 no-store，实际 %q", target, got)
+		}
 	}
-	if w.Header().Get("Cache-Control") == "no-cache" {
-		t.Errorf("404 不该带 no-cache")
-	}
+	var w *httptest.ResponseRecorder
 	for _, target := range []string{"/api/v1/nothing", "/health/x"} {
 		w = doReq(r, http.MethodGet, target, nil)
 		if w.Code != http.StatusNotFound || w.Header().Get("Cache-Control") != "" {

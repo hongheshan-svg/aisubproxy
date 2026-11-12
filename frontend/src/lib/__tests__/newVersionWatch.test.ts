@@ -43,7 +43,7 @@ describe('isNewVersionHtml', () => {
 })
 
 describe('checkNewVersionOnce', () => {
-  beforeEach(() => { vi.stubGlobal('location', { pathname: '/ops/cdkeys', href: 'http://x/ops/cdkeys?a=1#h' }) })
+  beforeEach(() => { vi.stubGlobal('location', { origin: 'http://x', pathname: '/ops/cdkeys', href: 'http://x/ops/cdkeys?a=1#h' }) })
   afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers() })
 
   const reply = (status: number, body: string) =>
@@ -57,8 +57,15 @@ describe('checkNewVersionOnce', () => {
     reply(200, page('/assets/index-NEW.js'))
     expect(await checkNewVersionOnce(MINE)).toBe(true)
     const [url, init] = (fetch as any).mock.calls[0]
-    expect(url).toBe('/ops/cdkeys')
+    expect(url).toBe('http://x/ops/cdkeys')
     expect(init.cache).toBe('no-store')
+  })
+  it('路径以 // 开头：仍请求本站，不会被当成协议相对地址发到别的域名', async () => {
+    vi.stubGlobal('location', { origin: 'http://x', pathname: '//evil.example/x', href: 'http://x//evil.example/x' })
+    reply(200, page(MINE))
+    await checkNewVersionOnce(MINE)
+    const url = (fetch as any).mock.calls[0][0] as string
+    expect(new URL(url).host).toBe('x')
   })
   it('fetch 抛错：没有新版本', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('network') }))

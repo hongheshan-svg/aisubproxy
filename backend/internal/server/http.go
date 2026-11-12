@@ -455,7 +455,10 @@ func setupRoutes(r *gin.Engine) {
 			}
 			// 带内容哈希的前端分包都在 /assets/ 下：文件不存在就是不存在（升级后旧分包随目录一起消失），
 			// 直接回 404，不要回退成 200 的 index.html（浏览器、CDN 会把这份 HTML 当成 JS 缓存住，导致持续加载失败）
-			if strings.HasPrefix(p, "/assets/") {
+			// 用清洗后的路径判断：//assets/x、/./assets/x 这类非规范请求也要回 404（存在的文件上面也是按 clean 直出的）。
+			// 404 带 no-store：避免 CDN 按静态扩展名把 404 缓存住，回滚后同名分包重新存在时还取不到。
+			if strings.HasPrefix(clean, "/assets/") {
+				c.Header("Cache-Control", "no-store")
 				c.JSON(404, gin.H{"error": "not found"})
 				return
 			}

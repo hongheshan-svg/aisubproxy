@@ -5,7 +5,7 @@ import { agentGuardDecision } from '../lib/agentSession'
 import { setSkinFontsAllowed } from '../theme'
 import { hashScroll, prefersReducedMotion } from './scroll'
 import { OPS_BASE, isAdminPath, routes, surfaceOf } from './routes'
-import { hasNewVersion } from '../lib/newVersionWatch'
+import { checkNewVersionNow, hasNewVersion } from '../lib/newVersionWatch'
 import { hardNavigate } from '../lib/pageReload'
 import { installNewVersionGuard } from './newVersionGuard'
 import { dialog } from '../lib/dialog'
@@ -41,6 +41,7 @@ const isLoginPath = (path: string) => path === `${OPS_BASE}/login`
 installNewVersionGuard(router, {
   hasNew: () => hasNewVersion.value,
   setHasNew: () => { hasNewVersion.value = true },
+  checkNew: checkNewVersionNow,
   hardNavigate,
   storage: () => window.sessionStorage,
   toast: () => dialog.toast(i18n.global.t('chunkError.failed'), 'warn', 6000),

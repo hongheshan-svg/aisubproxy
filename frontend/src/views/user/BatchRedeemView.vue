@@ -474,8 +474,9 @@ type PollTarget = PollTargetState
 const pollTargets = ref<Record<string, PollTarget>>({})
 // 还有结果未知、正在查询的卡密：查完（查到记录或到时限）之前不能重置（F2-04b 裁定 3）
 const unknownQuerying = computed(() => hasUnknownQuerying(pollTargets.value))
-// 兑换进行中（「重新开始」被禁用的那个条件）不弹「系统已更新」提示条，免得点了丢掉进度
-useBusy('batch-redeem', () => submitting.value || autoSubmitting.value || unknownQuerying.value)
+// 整个批次期间（逐张填写的间隙、轮询结果、跑完还没导出）都不弹「系统已更新」提示条，免得点了丢掉批次表；
+// 点「重新开始」回到输入阶段后再出现
+useBusy('batch-redeem', () => phase.value === 'run')
 let pollTimer: ReturnType<typeof setTimeout> | null = null
 // 结果未知的时限计时器：按最早一张的时限另排，不跟着查询间隔、429 退避往后拖（FE2 审查次要 1）
 let expiryTimer: ReturnType<typeof setTimeout> | null = null

@@ -112,7 +112,7 @@ import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { authFetch } from '../../lib/api'
 import { dialog } from '../../lib/dialog'
 import { reloadPage } from '../../lib/pageReload'
-import { createReloadCountdown } from '../../lib/reloadCountdown'
+import { createReloadCountdown, resolveRecoveredVersion } from '../../lib/reloadCountdown'
 import { useBusy } from '../../lib/busyState'
 import { REQUEST_TIMEOUT_MS, createUpdateWatcher, withTimeout, type StatusResult, type UpdateState, type UpdateWatchDeps } from '../../lib/updateWatch'
 
@@ -210,15 +210,13 @@ function updateDeps(before: string | undefined): UpdateWatchDeps {
       updating.value = false
     },
     onRecovered: async () => {
-      // 服务已恢复、更新已结束：先不带 refresh 查版本（不访问 GitHub，只为拿 current，不会因 GitHub 不通而判错），
-      // 版本没变时再带 refresh 刷新远端信息
-      await loadVersion(false)
-      let after = versionInfo.value.current
-      const changed = !!after && after !== before
-      if (!changed) {
-        await loadVersion(true)
-        after = versionInfo.value.current || after
-      }
+      // 服务已恢复、更新已结束：查一次版本拿 current。不带 refresh——后端刚重载时内存缓存是空的，这次请求会顺带取一次 GitHub，
+      // 但 GitHub 不通时后端照样回 200 并带 current，不会因此判错；请求本身失败（网关还在回 502）再查一次。
+      const { changed, after } = await resolveRecoveredVersion({
+        before,
+        load: () => loadVersion(false),
+        current: () => versionInfo.value.current,
+      })
       updateProgress.value = 100
       updatePhase.value = 'done'
       updateMessage.value = changed
@@ -306,7 +304,8 @@ async function oneClickUpdate() {
   }
 }
 
-async function loadVersion(force = false) {
+/** 返回请求是否成功（拿到了版本信息）。 */
+async function loadVersion(force = false): Promise<boolean> {
   versionLoading.value = true
   versionError.value = ''
   try {
@@ -315,14 +314,16 @@ async function loadVersion(force = false) {
     const d = await r.json().catch(() => ({}))
     if (!r.ok) {
       versionError.value = d.error || '版本检查失败'
-      return
+      return false
     }
     versionInfo.value = d
     if (d.github_error && !d.latest) {
       versionError.value = `GitHub: ${d.github_error}`
     }
+    return true
   } catch (e: any) {
     versionError.value = e?.message || '网络错误'
+    return false
   } finally {
     versionLoading.value = false
   }

@@ -2,15 +2,32 @@
   <div class="space-y-4">
     <h1 class="text-xl font-semibold">订单</h1>
     <p v-if="err" class="text-sm text-red-500" role="alert">{{ err }}</p>
-    <div class="card p-2 overflow-x-auto">
+    <!-- 手机和平板（< 1024px）：一单一张卡片。表格在窄屏上会把备注挤成一字一行 -->
+    <ul class="card p-2 text-sm divide-y lg:hidden" data-agent-list>
+      <li v-for="o in items" :key="o.id" class="px-2 py-3 space-y-1">
+        <div class="flex items-baseline justify-between gap-3">
+          <router-link :to="`/agent/orders/${o.id}`" class="underline font-medium">#{{ o.id }}</router-link>
+          <span class="text-xs opacity-70 whitespace-nowrap">{{ fmtBeijing(o.created_at) }}</span>
+        </div>
+        <div class="flex items-baseline justify-between gap-3">
+          <span class="min-w-0">{{ o.product_name }} × {{ o.quantity }}</span>
+          <span class="font-semibold whitespace-nowrap">{{ fmtUsd(o.total_cents) }}</span>
+        </div>
+        <div v-if="sourceLabel(o.source)" class="text-xs opacity-70">来源 {{ sourceLabel(o.source) }}</div>
+        <p v-if="o.note" class="text-xs opacity-70 [overflow-wrap:anywhere]">备注：{{ o.note }}</p>
+      </li>
+      <li v-if="!items.length" class="p-3 opacity-70">暂无订单</li>
+    </ul>
+    <!-- 电脑（>= 1024px）：表格；备注列至少 10rem，长串只在本列折行 -->
+    <div class="card p-2 overflow-x-auto hidden lg:block">
       <table class="w-full text-sm">
         <thead><tr class="text-left"><th class="p-2">订单号</th><th class="p-2">商品</th><th class="p-2">数量</th><th class="p-2">总价</th><th class="p-2">来源</th><th class="p-2">备注</th><th class="p-2">时间</th></tr></thead>
         <tbody>
           <tr v-for="o in items" :key="o.id" class="border-t">
             <td class="p-2"><router-link :to="`/agent/orders/${o.id}`" class="underline">#{{ o.id }}</router-link></td>
-            <td class="p-2">{{ o.product_name }}</td><td class="p-2">{{ o.quantity }}</td><td class="p-2">{{ fmtUsd(o.total_cents) }}</td>
+            <td class="p-2">{{ o.product_name }}</td><td class="p-2">{{ o.quantity }}</td><td class="p-2 whitespace-nowrap">{{ fmtUsd(o.total_cents) }}</td>
             <td class="p-2 whitespace-nowrap">{{ sourceLabel(o.source) }}</td>
-            <td class="p-2 break-all">{{ o.note }}</td><td class="p-2 whitespace-nowrap">{{ fmtBeijing(o.created_at) }}</td>
+            <td class="p-2 min-w-[10rem] [overflow-wrap:anywhere]">{{ o.note }}</td><td class="p-2 whitespace-nowrap">{{ fmtBeijing(o.created_at) }}</td>
           </tr>
           <tr v-if="!items.length"><td colspan="7" class="p-3 opacity-70">暂无订单</td></tr>
         </tbody>

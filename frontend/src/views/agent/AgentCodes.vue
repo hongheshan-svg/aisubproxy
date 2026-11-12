@@ -19,17 +19,42 @@
     </form>
     <p v-if="err" class="text-sm text-red-500" role="alert">{{ err }}</p>
     <p v-if="msg" class="text-sm text-amber-600" role="status">{{ msg }}</p>
-    <div class="card p-2 overflow-x-auto">
+    <!-- 手机和平板（< 1024px）：一个码一张卡片，点卡片任意处勾选。表格在窄屏上会把邮箱挤成一字一行 -->
+    <div class="card p-2 text-sm lg:hidden" data-agent-list>
+      <label v-if="items.length" class="flex items-center gap-3 px-2 py-2"><input type="checkbox" :checked="allSelected" @change="toggleAll" />全选本页</label>
+      <ul class="divide-y" :class="{ 'border-t': items.length }">
+        <li v-for="c in items" :key="c.id">
+          <label class="flex items-start gap-3 px-2 py-3">
+            <input type="checkbox" class="mt-1" :checked="selected.has(c.id)" :aria-label="`选择 ${c.code_prefix}`" @change="toggle(c.id)" />
+            <span class="min-w-0 flex-1 space-y-1">
+              <span class="flex items-baseline justify-between gap-3">
+                <span class="font-mono">{{ c.code_prefix }}…</span>
+                <span class="whitespace-nowrap">{{ CODE_STATUS_LABELS[c.status] || c.status }}</span>
+              </span>
+              <span class="flex flex-wrap gap-x-4 text-xs opacity-70">
+                <span>{{ c.product_code }}</span>
+                <span v-if="c.order_id">订单 <router-link :to="`/agent/orders/${c.order_id}`" class="underline">#{{ c.order_id }}</router-link></span>
+                <span class="whitespace-nowrap">{{ fmtBeijing(c.created_at) }}</span>
+              </span>
+              <span v-if="c.email" class="block text-xs [overflow-wrap:anywhere]">{{ c.email }}</span>
+            </span>
+          </label>
+        </li>
+        <li v-if="!items.length" class="p-3 opacity-70">没有码</li>
+      </ul>
+    </div>
+    <!-- 电脑（>= 1024px）：表格；邮箱列至少 12rem，长串只在本列折行 -->
+    <div class="card p-2 overflow-x-auto hidden lg:block">
       <table class="w-full text-sm">
         <thead><tr class="text-left"><th class="p-2"><input type="checkbox" :checked="allSelected" aria-label="全选本页" @change="toggleAll" /></th><th class="p-2">码</th><th class="p-2">商品</th><th class="p-2">状态</th><th class="p-2">订单</th><th class="p-2">邮箱</th><th class="p-2">购买时间</th></tr></thead>
         <tbody>
           <tr v-for="c in items" :key="c.id" class="border-t">
             <td class="p-2"><input type="checkbox" :checked="selected.has(c.id)" :aria-label="`选择 ${c.code_prefix}`" @change="toggle(c.id)" /></td>
-            <td class="p-2 font-mono">{{ c.code_prefix }}…</td>
+            <td class="p-2 font-mono whitespace-nowrap">{{ c.code_prefix }}…</td>
             <td class="p-2">{{ c.product_code }}</td>
-            <td class="p-2">{{ CODE_STATUS_LABELS[c.status] || c.status }}</td>
+            <td class="p-2 whitespace-nowrap">{{ CODE_STATUS_LABELS[c.status] || c.status }}</td>
             <td class="p-2"><router-link v-if="c.order_id" :to="`/agent/orders/${c.order_id}`" class="underline">#{{ c.order_id }}</router-link></td>
-            <td class="p-2 break-all">{{ c.email || '' }}</td>
+            <td class="p-2 min-w-[12rem] [overflow-wrap:anywhere]">{{ c.email || '' }}</td>
             <td class="p-2 whitespace-nowrap">{{ fmtBeijing(c.created_at) }}</td>
           </tr>
           <tr v-if="!items.length"><td colspan="7" class="p-3 opacity-70">没有码</td></tr>

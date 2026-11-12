@@ -15,17 +15,37 @@
       <div class="card p-3"><div class="text-sm opacity-70">支出</div><div class="font-semibold">{{ fmtUsd(summary.expense_cents) }}</div></div>
       <div class="card p-3"><div class="text-sm opacity-70">期末余额</div><div class="font-semibold">{{ fmtUsd(summary.closing_cents) }}</div></div>
     </div>
-    <div class="card p-2 overflow-x-auto">
+    <!-- 手机和平板（< 1024px）：一条流水一张卡片。表格在窄屏上会把备注挤成一字一行，外部单号还会把来源列撑宽 -->
+    <ul class="card p-2 text-sm divide-y lg:hidden" data-agent-list>
+      <li v-for="l in items" :key="l.id" class="px-2 py-3 space-y-1">
+        <div class="flex items-baseline justify-between gap-3">
+          <span class="font-medium">{{ LEDGER_KIND_LABELS[l.kind] || l.kind }}</span>
+          <span class="font-semibold whitespace-nowrap">{{ fmtUsd(l.amount_cents) }}</span>
+        </div>
+        <div class="flex items-baseline justify-between gap-3 text-xs opacity-70">
+          <span class="whitespace-nowrap">{{ fmtBeijing(l.created_at) }}</span>
+          <span class="whitespace-nowrap">变动后余额 {{ fmtUsd(l.balance_after_cents) }}</span>
+        </div>
+        <div v-if="l.order_id || sourceLabel(l.source) || l.external_ref" class="flex flex-wrap gap-x-4 text-xs opacity-70">
+          <span v-if="l.order_id">订单 <router-link :to="`/agent/orders/${l.order_id}`" class="underline">#{{ l.order_id }}</router-link></span>
+          <span v-if="sourceLabel(l.source) || l.external_ref" class="min-w-0 [overflow-wrap:anywhere]">来源 {{ sourceLabel(l.source) }} {{ l.external_ref }}</span>
+        </div>
+        <p v-if="l.note" class="text-xs [overflow-wrap:anywhere]">{{ l.note }}</p>
+      </li>
+      <li v-if="!items.length" class="p-3 opacity-70">没有流水</li>
+    </ul>
+    <!-- 电脑（>= 1024px）：表格；来源和备注列至少 10rem，外部单号和长备注只在本列折行 -->
+    <div class="card p-2 overflow-x-auto hidden lg:block">
       <table class="w-full text-sm">
         <thead><tr class="text-left"><th class="p-2">时间</th><th class="p-2">类型</th><th class="p-2">金额</th><th class="p-2">变动后余额</th><th class="p-2">订单</th><th class="p-2">来源</th><th class="p-2">备注</th></tr></thead>
         <tbody>
           <tr v-for="l in items" :key="l.id" class="border-t">
             <td class="p-2 whitespace-nowrap">{{ fmtBeijing(l.created_at) }}</td>
-            <td class="p-2">{{ LEDGER_KIND_LABELS[l.kind] || l.kind }}</td>
-            <td class="p-2">{{ fmtUsd(l.amount_cents) }}</td><td class="p-2">{{ fmtUsd(l.balance_after_cents) }}</td>
+            <td class="p-2 whitespace-nowrap">{{ LEDGER_KIND_LABELS[l.kind] || l.kind }}</td>
+            <td class="p-2 whitespace-nowrap">{{ fmtUsd(l.amount_cents) }}</td><td class="p-2 whitespace-nowrap">{{ fmtUsd(l.balance_after_cents) }}</td>
             <td class="p-2"><router-link v-if="l.order_id" :to="`/agent/orders/${l.order_id}`" class="underline">#{{ l.order_id }}</router-link></td>
-            <td class="p-2 whitespace-nowrap">{{ sourceLabel(l.source) }}<span v-if="l.external_ref" class="opacity-70 break-all"> {{ l.external_ref }}</span></td>
-            <td class="p-2 break-all">{{ l.note }}</td>
+            <td class="p-2 min-w-[10rem]"><span class="whitespace-nowrap">{{ sourceLabel(l.source) }}</span><span v-if="l.external_ref" class="opacity-70 [overflow-wrap:anywhere]"> {{ l.external_ref }}</span></td>
+            <td class="p-2 min-w-[10rem] [overflow-wrap:anywhere]">{{ l.note }}</td>
           </tr>
           <tr v-if="!items.length"><td colspan="7" class="p-3 opacity-70">没有流水</td></tr>
         </tbody>

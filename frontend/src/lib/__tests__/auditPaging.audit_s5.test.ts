@@ -39,7 +39,9 @@ describe('审计日志读取失败', () => {
   it('页面用 loadError 区分「读取失败」和「暂无记录」，失败时不清空已有记录', () => {
     const src = readFileSync(resolve(__dirname, '../../views/admin/AuditLogs.vue'), 'utf8')
     expect(src).toContain('const loadError = ref(false)')
-    expect(src).toContain("{{ loadError ? '读取失败，请点刷新重试' : '暂无审计记录' }}")
+    // 卡片列表和表格共用 statusText
+    expect(src).toContain("if (logs.value.length === 0) return loadError.value ? '读取失败，请点刷新重试' : '暂无审计记录'")
+    expect(src.match(/\{\{ statusText \}\}/g)?.length).toBe(2)
     expect(src).toContain("dialog.toast('读取审计日志失败', 'err')")
     expect(src).toContain("dialog.toast('读取失败，请再点一次', 'err')")
     expect(src).not.toContain('logs.value = []')

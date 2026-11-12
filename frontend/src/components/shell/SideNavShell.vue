@@ -272,10 +272,11 @@ watch(() => route.path, () => { drawerOpen.value = false })
   width: min(280px, 84vw);
   transform: translateX(-100%);
   transition: transform .2s ease;
-  z-index: 9000;
+  /* 低于 Element Plus 弹出层（2001 起），否则抽屉里的用户菜单弹出来被抽屉自己盖住；高于顶栏和 --el-index-top（1000） */
+  z-index: 1500;
 }
 .is-mobile.is-drawer-open .sidenav { transform: translateX(0); box-shadow: var(--shadow); }
-.sn-mask { position: fixed; inset: 0; z-index: 8999; }
+.sn-mask { position: fixed; inset: 0; z-index: 1499; }
 .is-mobile .topbar { padding: 0 12px; }
 .is-mobile .page { padding: 16px 14px; }
 </style>

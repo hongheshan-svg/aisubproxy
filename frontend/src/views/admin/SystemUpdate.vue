@@ -53,7 +53,10 @@
       <!-- 热更进度 -->
       <div v-if="updating || updatePhase" class="rounded-xl p-3 space-y-2" style="background: var(--surface-2)">
         <div class="flex justify-between text-xs text-muted">
-          <span>{{ updateMessage || updatePhase }}</span>
+          <span>
+            {{ updateMessage || updatePhase }}
+            <button v-if="reloadCountdown !== null" type="button" class="ml-2 underline text-primary" @click="reloadNow">立即刷新</button>
+          </span>
           <span class="mono">{{ updateProgress }}%</span>
         </div>
         <div class="h-2 rounded-full overflow-hidden" style="background: var(--brd)">
@@ -108,6 +111,8 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { authFetch } from '../../lib/api'
 import { dialog } from '../../lib/dialog'
+import { reloadPage } from '../../lib/pageReload'
+import { createReloadCountdown } from '../../lib/reloadCountdown'
 import { REQUEST_TIMEOUT_MS, createUpdateWatcher, withTimeout, type StatusResult, type UpdateState, type UpdateWatchDeps } from '../../lib/updateWatch'
 
 const versionLoading = ref(false)
@@ -202,11 +207,14 @@ function updateDeps(before: string | undefined): UpdateWatchDeps {
       const after = versionInfo.value.current
       updateProgress.value = 100
       updatePhase.value = 'done'
-      updateMessage.value = after && after !== before
+      const changed = !!after && after !== before
+      updateMessage.value = changed
         ? `已热更至 v${after}`
         : `服务已恢复（当前 v${after || before || '—'}）`
       updating.value = false
       updateFailed.value = false
+      // 版本确实变了：浏览器里跑的还是旧前端，倒数后自动刷新；版本没变（只是服务恢复）不刷新
+      if (changed && !unmounted) startReloadCountdown(after)
     },
     onTimeout: () => {
       updateFailed.value = true
@@ -216,6 +224,29 @@ function updateDeps(before: string | undefined): UpdateWatchDeps {
       updating.value = false
     },
   }
+}
+
+// 升级成功后的刷新倒计时（秒）；null 表示没在倒数
+const RELOAD_COUNTDOWN_S = 3
+const reloadCountdown = ref<number | null>(null)
+let countdown: ReturnType<typeof createReloadCountdown> | null = null
+
+function reloadNow() {
+  countdown?.cancel()
+  reloadPage()
+}
+
+function startReloadCountdown(version: string) {
+  countdown?.cancel()
+  countdown = createReloadCountdown({
+    seconds: RELOAD_COUNTDOWN_S,
+    onTick: (left) => {
+      reloadCountdown.value = left
+      updateMessage.value = `已更新到 v${version}，${left} 秒后自动刷新页面`
+    },
+    onDone: reloadNow,
+  })
+  countdown.start()
 }
 
 async function oneClickUpdate() {
@@ -287,6 +318,7 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   unmounted = true
+  countdown?.cancel()
   watcher?.stop()
 })
 </script>

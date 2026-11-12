@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  FETCH_TIMEOUT_MS, MIN_GAP_MS, POLL_INTERVAL_MS, checkNewVersionOnce, createVersionWatcher, entryScriptOf, shouldFullReload,
+  FETCH_TIMEOUT_MS, MIN_GAP_MS, POLL_INTERVAL_MS, checkNewVersionOnce, createVersionWatcher, entryScriptOf, isNewVersionHtml, shouldFullReload,
 } from '../newVersionWatch'
 
 describe('entryScriptOf', () => {
@@ -23,57 +23,63 @@ describe('entryScriptOf', () => {
   })
 })
 
-function stubDocument(src: string | null) {
-  vi.stubGlobal('document', {
-    querySelector: () => (src === null ? null : { getAttribute: () => src }),
+const page = (...entries: string[]) => `<html>${entries.map((e) => `<script type="module" crossorigin src="${e}"></script>`).join('')}</html>`
+const MINE = '/assets/index-OLD.js'
+
+describe('isNewVersionHtml', () => {
+  it('仍包含我的入口：没有新版本（哪怕多出别处注入的脚本）', () => {
+    expect(isNewVersionHtml(MINE, page(MINE))).toBe(false)
+    expect(isNewVersionHtml(MINE, page('/ext/inject.js', MINE))).toBe(false)
   })
-}
-const page = (entry: string) => `<html><script type="module" crossorigin src="${entry}"></script></html>`
+  it('只包含新的同目录入口：有新版本', () => {
+    expect(isNewVersionHtml(MINE, page('/assets/index-NEW.js'))).toBe(true)
+  })
+  it('只有别的目录的脚本：没有新版本', () => {
+    expect(isNewVersionHtml(MINE, page('/ext/inject.js'))).toBe(false)
+  })
+  it('没有任何模块脚本：没有新版本', () => {
+    expect(isNewVersionHtml(MINE, '<html>maintenance</html>')).toBe(false)
+  })
+})
 
 describe('checkNewVersionOnce', () => {
-  beforeEach(() => { stubDocument('/assets/index-OLD.js') })
+  beforeEach(() => { vi.stubGlobal('location', { pathname: '/ops/cdkeys', href: 'http://x/ops/cdkeys?a=1#h' }) })
   afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers() })
 
   const reply = (status: number, body: string) =>
     vi.stubGlobal('fetch', vi.fn(async () => ({ status, ok: status === 200, text: async () => body })))
 
   it('入口相同：没有新版本', async () => {
-    reply(200, page('/assets/index-OLD.js'))
-    expect(await checkNewVersionOnce()).toBe(false)
+    reply(200, page(MINE))
+    expect(await checkNewVersionOnce(MINE)).toBe(false)
   })
-  it('入口不同：有新版本，且用 no-store 取站点根路径（即 index.html）', async () => {
+  it('入口不同：有新版本；请求的是当前路径（不带 query 和 hash），no-store', async () => {
     reply(200, page('/assets/index-NEW.js'))
-    expect(await checkNewVersionOnce()).toBe(true)
+    expect(await checkNewVersionOnce(MINE)).toBe(true)
     const [url, init] = (fetch as any).mock.calls[0]
-    expect(String(url)).toBe(import.meta.env.BASE_URL)
+    expect(url).toBe('/ops/cdkeys')
     expect(init.cache).toBe('no-store')
   })
   it('fetch 抛错：没有新版本', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('network') }))
-    expect(await checkNewVersionOnce()).toBe(false)
+    expect(await checkNewVersionOnce(MINE)).toBe(false)
   })
   it('超时：没有新版本', async () => {
     vi.useFakeTimers()
     vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})))
-    const p = checkNewVersionOnce()
+    const p = checkNewVersionOnce(MINE)
     await vi.advanceTimersByTimeAsync(FETCH_TIMEOUT_MS + 1)
     expect(await p).toBe(false)
   })
   it('非 200（含 404、502、304）：没有新版本', async () => {
     for (const st of [404, 502, 304]) {
       reply(st, page('/assets/index-NEW.js'))
-      expect(await checkNewVersionOnce()).toBe(false)
+      expect(await checkNewVersionOnce(MINE)).toBe(false)
     }
   })
   it('返回内容里找不到入口：没有新版本', async () => {
     reply(200, '<html>maintenance</html>')
-    expect(await checkNewVersionOnce()).toBe(false)
-  })
-  it('当前页面取不到入口：没有新版本，也不发请求', async () => {
-    stubDocument(null)
-    reply(200, page('/assets/index-NEW.js'))
-    expect(await checkNewVersionOnce()).toBe(false)
-    expect(fetch).not.toHaveBeenCalled()
+    expect(await checkNewVersionOnce(MINE)).toBe(false)
   })
 })
 

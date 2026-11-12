@@ -1,13 +1,13 @@
-import { START_LOCATION, createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { agentGuardDecision } from '../lib/agentSession'
 
 import { setSkinFontsAllowed } from '../theme'
 import { hashScroll, prefersReducedMotion } from './scroll'
 import { OPS_BASE, isAdminPath, routes, surfaceOf } from './routes'
-import { hasNewVersion, shouldFullReload } from '../lib/newVersionWatch'
-import { isChunkLoadError, recoverFromChunkError } from '../lib/chunkReload'
-import { assignPage, reloadPage } from '../lib/pageReload'
+import { hasNewVersion } from '../lib/newVersionWatch'
+import { hardNavigate } from '../lib/pageReload'
+import { installNewVersionGuard } from './newVersionGuard'
 import { dialog } from '../lib/dialog'
 import { i18n } from '../i18n'
 
@@ -37,20 +37,15 @@ async function ensureSetupStatus(): Promise<boolean> {
 
 const isLoginPath = (path: string) => path === `${OPS_BASE}/login`
 
-// 正在进行的导航目标：vite:preloadError 事件里拿不到目标页，靠它刷新到用户想去的页面
-let pendingHref: string | null = null
-
-// 必须最先注册（在鉴权守卫之前）：已检测到新版本时，换页就整页跳过去，拿新入口和新分包。
-// 组件的 onBeforeRouteLeave（批量兑换进行中、未保存提醒等）先于全局守卫执行，被它拦下的导航到不了这里，不会被刷新。
-router.beforeEach((to, from) => {
-  pendingHref = router.resolve(to).href
-  if (shouldFullReload({ hasNew: hasNewVersion.value, initial: from === START_LOCATION, toPath: to.path, fromPath: from.path })) {
-    assignPage(pendingHref)
-    // 不能 return false：后退、前进触发的导航被中止时，vue-router 会 history.go(-delta) 把地址栏退回去，
-    // 这一步可能把刚发起的整页跳转取消掉。让这次导航一直挂着，页面马上就会被新页面替换；
-    // 如果整页跳转被 beforeunload 拦下（用户选了留下），下一次导航会取代这次挂着的导航，再走一遍这里。
-    return new Promise<never>(() => {})
-  }
+// 必须最先注册（在鉴权守卫之前）：已检测到新版本时，换页就整页跳过去，拿新入口和新分包；同时接上分包加载失败的兜底
+installNewVersionGuard(router, {
+  hasNew: () => hasNewVersion.value,
+  setHasNew: () => { hasNewVersion.value = true },
+  hardNavigate,
+  storage: () => window.sessionStorage,
+  toast: () => dialog.toast(i18n.global.t('chunkError.failed'), 'warn', 6000),
+  isOnline: () => typeof navigator === 'undefined' || navigator.onLine !== false,
+  events: typeof window !== 'undefined' ? window : null,
 })
 
 router.beforeEach(async (to) => {
@@ -93,31 +88,8 @@ router.beforeEach(async (to) => {
 
 // Google 字体只在后台页面加载，用户端不拉
 router.afterEach((to) => {
-  pendingHref = null
   setSkinFontsAllowed(isAdminPath(to.path))
   document.documentElement.setAttribute('data-surface', surfaceOf(to.path))
 })
-
-// 兜底：取不到旧分包（升级后文件已换掉）时整页刷新一次；10 秒内刷过就只提示
-function recoverFromChunk(href: string | null) {
-  recoverFromChunkError({
-    now: () => Date.now(),
-    storage: () => window.sessionStorage,
-    reload: () => (href ? assignPage(href) : reloadPage()),
-    toast: () => dialog.toast(i18n.global.t('chunkError.failed'), 'warn', 6000),
-  })
-}
-
-router.onError((err, to) => {
-  if (isChunkLoadError(err)) recoverFromChunk(router.resolve(to).href)
-})
-
-if (typeof window !== 'undefined') {
-  // Vite 的动态导入预加载失败（含样式文件）会先派发这个事件；不拦截的话错误会继续抛出
-  window.addEventListener('vite:preloadError', (e) => {
-    e.preventDefault()
-    recoverFromChunk(pendingHref)
-  })
-}
 
 export default router

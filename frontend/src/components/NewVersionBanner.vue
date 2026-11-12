@@ -1,6 +1,6 @@
 <template>
   <Transition name="nv-banner">
-    <div v-if="hasNewVersion" class="nv-banner" role="status" aria-live="polite">
+    <div v-if="showNewVersionBanner" class="nv-banner" role="status" aria-live="polite">
       <button type="button" class="nv-btn" @click="reloadPage">
         <span class="nv-dot" aria-hidden="true"></span>
         {{ t('newVersion.banner') }}
@@ -11,7 +11,7 @@
 
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import { hasNewVersion } from '../lib/newVersionWatch'
+import { showNewVersionBanner } from '../lib/newVersionWatch'
 import { reloadPage } from '../lib/pageReload'
 
 const { t } = useI18n()

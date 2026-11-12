@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { RELOAD_GUARD_KEY, RELOAD_GUARD_MS, isChunkLoadError, recoverFromChunkError } from '../chunkReload'
+import { RELOAD_MARK_KEY, clearReloadMark, isChunkLoadError, recoverFromChunkError } from '../chunkReload'
 
 describe('isChunkLoadError', () => {
   it('认得各浏览器的分包加载失败', () => {
@@ -19,9 +19,9 @@ describe('isChunkLoadError', () => {
   })
 })
 
-describe('recoverFromChunkError', () => {
-  function setup(opts: { now?: number; store?: Record<string, string>; throwOn?: 'get' | 'set' | 'access' } = {}) {
-    const data: Record<string, string> = { ...(opts.store || {}) }
+describe('recoverFromChunkError（标记 + 换页成功后清掉）', () => {
+  function setup(opts: { throwOn?: 'get' | 'set' | 'access' | 'remove'; online?: boolean } = {}) {
+    const data: Record<string, string> = {}
     const reload = vi.fn()
     const toast = vi.fn()
     const storage = () => {
@@ -29,38 +29,51 @@ describe('recoverFromChunkError', () => {
       return {
         getItem: (k: string) => { if (opts.throwOn === 'get') throw new Error('x'); return k in data ? data[k] : null },
         setItem: (k: string, v: string) => { if (opts.throwOn === 'set') throw new Error('x'); data[k] = v },
+        removeItem: (k: string) => { if (opts.throwOn === 'remove') throw new Error('x'); delete data[k] },
       }
     }
-    const run = (now: number) => recoverFromChunkError({ now: () => now, storage, reload, toast })
-    return { data, reload, toast, run }
+    const run = (target = '/ops/audit') => recoverFromChunkError({ storage, reload, toast, target, isOnline: () => opts.online !== false })
+    return { data, reload, toast, run, storage }
   }
 
-  it('第一次：记录时间并刷新', () => {
+  it('第一次：写标记（目标地址）并刷新', () => {
     const s = setup()
-    expect(s.run(100_000)).toBe('reloaded')
+    expect(s.run('/ops/audit')).toBe('reloaded')
     expect(s.reload).toHaveBeenCalledTimes(1)
     expect(s.toast).not.toHaveBeenCalled()
-    expect(s.data[RELOAD_GUARD_KEY]).toBe('100000')
+    expect(s.data[RELOAD_MARK_KEY]).toBe('/ops/audit')
   })
-  it('10 秒内第二次：不刷新，只提示', () => {
+  it('标记还在（不管隔了多久）：不刷新，只提示', () => {
     const s = setup()
-    s.run(100_000)
-    expect(s.run(100_000 + RELOAD_GUARD_MS - 1)).toBe('toasted')
+    s.run()
+    expect(s.run()).toBe('toasted')
+    expect(s.run()).toBe('toasted')
     expect(s.reload).toHaveBeenCalledTimes(1)
-    expect(s.toast).toHaveBeenCalledTimes(1)
+    expect(s.toast).toHaveBeenCalledTimes(2)
   })
-  it('超过 10 秒再刷新', () => {
+  it('换页成功清掉标记后，下次失败又能刷新', () => {
     const s = setup()
-    s.run(100_000)
-    expect(s.run(100_000 + RELOAD_GUARD_MS)).toBe('reloaded')
+    s.run()
+    clearReloadMark(s.storage)
+    expect(s.data[RELOAD_MARK_KEY]).toBeUndefined()
+    expect(s.run()).toBe('reloaded')
     expect(s.reload).toHaveBeenCalledTimes(2)
   })
-  it('sessionStorage 读、写、访问抛错：不刷新，只提示', () => {
+  it('sessionStorage 读、写、访问抛错：不刷新，只提示；清标记抛错不外泄', () => {
     for (const throwOn of ['get', 'set', 'access'] as const) {
       const s = setup({ throwOn })
-      expect(s.run(1)).toBe('toasted')
+      expect(s.run()).toBe('toasted')
       expect(s.reload).not.toHaveBeenCalled()
       expect(s.toast).toHaveBeenCalledTimes(1)
     }
+    const s = setup({ throwOn: 'remove' })
+    expect(() => clearReloadMark(s.storage)).not.toThrow()
+  })
+  it('断网：不刷新、不写标记，只提示', () => {
+    const s = setup({ online: false })
+    expect(s.run()).toBe('toasted')
+    expect(s.reload).not.toHaveBeenCalled()
+    expect(s.data[RELOAD_MARK_KEY]).toBeUndefined()
+    expect(s.toast).toHaveBeenCalledTimes(1)
   })
 })

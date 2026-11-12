@@ -1,9 +1,10 @@
 // 检测站点是否已在线升级（F: 升级后其他开着的页面不再取旧分包）。
 // 做法：后端在线升级会把前端目录整个换掉，index.html 里 Vite 入口脚本的文件名（带内容哈希）跟着变。
-// 拿「当前页面加载的入口」和「服务器现在的 index.html（站点根路径）里的入口」比，不一样就是有新版本。
+// 拿「当前页面的入口（启动时固定下来）」和「服务器现在的 index.html（当前页面路径）里的入口」比，不一样就是有新版本。
 // 不需要后端接口，也不对外暴露版本号。
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { withTimeout } from './updateWatch'
+import { isBusy } from './busyState'
 
 /** 同一页面加载内两次检查至少间隔 */
 export const MIN_GAP_MS = 60_000
@@ -21,8 +22,9 @@ function normalizeSrc(src: string): string | null {
   }
 }
 
-/** 从 index.html 文本里找 Vite 的入口脚本（type="module" 且有 src），属性顺序不限。 */
-export function entryScriptOf(html: string): string | null {
+/** 从 index.html 文本里找所有 type="module" 且有 src 的脚本，返回规范化后的路径名（属性顺序不限）。 */
+export function moduleScriptsOf(html: string): string[] {
+  const out: string[] = []
   for (const tag of html.match(/<script\b[^>]*>/gi) || []) {
     const attr = (name: string) => {
       const m = new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i').exec(tag)
@@ -30,33 +32,40 @@ export function entryScriptOf(html: string): string | null {
     }
     if (attr('type')?.toLowerCase() !== 'module') continue
     const src = attr('src')
-    if (!src) continue
-    return normalizeSrc(src)
+    const n = src ? normalizeSrc(src) : null
+    if (n) out.push(n)
   }
-  return null
+  return out
 }
 
-/** 当前页面加载的入口脚本。 */
-export function currentEntry(): string | null {
-  try {
-    const el = document.querySelector('script[type="module"][src]')
-    const src = el?.getAttribute('src')
-    return src ? normalizeSrc(src) : null
-  } catch {
-    return null
-  }
+/** 从 index.html 文本里找 Vite 的入口脚本（第一个 type="module" 且有 src 的脚本）。 */
+export function entryScriptOf(html: string): string | null {
+  return moduleScriptsOf(html)[0] ?? null
 }
 
-/** 检查一次：只有两边都取到入口、而且不一样才返回 true；任何失败都当作没有新版本。 */
-export async function checkNewVersionOnce(): Promise<boolean> {
-  const mine = currentEntry()
-  if (!mine) return false
+const dirOf = (p: string) => p.slice(0, p.lastIndexOf('/') + 1)
+
+/**
+ * 服务器返回的 HTML 相对「我的入口」是不是新版本：
+ * 至少有一个和我的入口同目录（如 /assets/）的模块脚本，并且这些脚本里没有我的入口。
+ * 多出一个别处注入的脚本（别的目录），或者仍然包含我的入口，都不算。
+ */
+export function isNewVersionHtml(mine: string, html: string): boolean {
+  const scripts = moduleScriptsOf(html)
+  if (scripts.includes(mine)) return false
+  const dir = dirOf(mine)
+  return scripts.some((s) => dirOf(s) === dir)
+}
+
+/**
+ * 检查一次：取「当前页面的路径」（不带 query 和 hash），和启动时固定下来的入口比；任何失败都当作没有新版本。
+ * 取当前路径而不是固定取根路径：CDN、反向代理可能只缓存了其中一个。
+ */
+export async function checkNewVersionOnce(mine: string): Promise<boolean> {
   return withTimeout(async (signal) => {
-    // 直接取站点根路径：后端对 /index.html 会 301 到 /（http.ServeFile 的规范化），取根路径少绕一趟
-    const r = await fetch(import.meta.env.BASE_URL, { cache: 'no-store', signal })
+    const r = await fetch(location.pathname, { cache: 'no-store', signal })
     if (r.status !== 200) return false
-    const theirs = entryScriptOf(await r.text())
-    return !!theirs && theirs !== mine
+    return isNewVersionHtml(mine, await r.text())
   }, FETCH_TIMEOUT_MS, false)
 }
 
@@ -114,13 +123,16 @@ export function createVersionWatcher(deps: VersionWatchDeps) {
 /** 响应式状态：当前页面是否已有新版本。 */
 export const hasNewVersion = ref(false)
 
+/** 提示条是否显示：有新版本，并且页面不在忙（批量兑换进行中、更新进行中等）。 */
+export const showNewVersionBanner = computed(() => hasNewVersion.value && !isBusy.value)
+
 let started = false
 /** 只在生产构建里启用；整个页面生命周期只启动一次。 */
-export function startNewVersionWatch(): void {
-  if (!import.meta.env.PROD || started || typeof document === 'undefined') return
+export function startNewVersionWatch(entry: string): void {
+  if (!import.meta.env.PROD || started || typeof document === 'undefined' || !entry) return
   started = true
   createVersionWatcher({
-    check: checkNewVersionOnce,
+    check: () => checkNewVersionOnce(entry),
     isVisible: () => document.visibilityState === 'visible',
     onVisibilityChange: (cb) => {
       document.addEventListener('visibilitychange', cb)
@@ -132,7 +144,8 @@ export function startNewVersionWatch(): void {
 
 /**
  * 路由切换时要不要整页跳转：已有新版本、不是首次导航、真正换页（路径变了；只改 query / hash 不算）。
- * 注意：组件自己的 onBeforeRouteLeave 先于全局 beforeEach 执行，被它拦下的导航到不了这里，所以不会被强制刷新。
+ * 全站只有后台代理商详情页有离开确认（onBeforeRouteLeave，先于全局 beforeEach 执行，被它拦下的导航到不了这里）；
+ * 其他页面换页本来就会卸载，整页刷新和原来的换页一样。
  */
 export function shouldFullReload(o: { hasNew: boolean; initial: boolean; toPath: string; fromPath: string }): boolean {
   return o.hasNew && !o.initial && o.toPath !== o.fromPath

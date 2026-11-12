@@ -12,8 +12,10 @@ export interface NewVersionGuardDeps {
   storage: () => Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>
   toast: () => void
   isOnline: () => boolean
-  /** 派发 vite:preloadError 的对象，生产里是 window */
+  /** 派发 vite:preloadError、popstate 的对象，生产里是 window */
   events: Pick<EventTarget, 'addEventListener'> | null
+  /** 后退、前进导航失败后，等地址栏被退回去的最长时间（毫秒），默认 1000 */
+  revertWaitMs?: number
 }
 
 /**
@@ -22,6 +24,9 @@ export interface NewVersionGuardDeps {
  *   全站只有后台代理商详情页有离开确认（onBeforeRouteLeave，先于全局 beforeEach，被拦下的导航到不了这里）；
  *   其他页面换页本来就会卸载，整页刷新和原来的换页一样。断网时照常单页换页，免得整页跳到浏览器的断网页。
  * - 分包加载失败：换页进行中整页跳到目标地址；标记还在（上一次刷新后又失败）或断网只提示。
+ *
+ * - 后退、前进触发的导航因分包失败时，vue-router 会先 history.go(-delta) 把地址栏退回去，再调 onError；
+ *   这次历史跳转会取消紧接着发起的整页刷新。所以这种情况先等退回完成（popstate）再整页跳到目标地址，最多等 revertWaitMs。
  *
  * 已知限制：整页跳转若被 beforeunload 拦下且用户选了「留下」，这次导航会一直挂着，直到下一次导航取代它。
  * 只在代理商下单、管理员调账且浏览器存储不可用时才会注册 beforeunload，所以极少出现；跳转前先清掉 pendingHref，避免残留。
@@ -36,17 +41,38 @@ export function installNewVersionGuard(router: Router, deps: NewVersionGuardDeps
   // 重新序列化 query（%2F → /、%20 → +）会和 location.href 对不上，hardNavigate 就会多压一条历史。
   const hrefOf = (to: RouteLocationNormalized) => router.options.history.createHref(to.fullPath)
 
-  const go = (href: string) => {
+  // 正在进行的后退、前进导航（目标地址和步数）。history.listen 只在浏览器真正后退、前进时回调，
+  // vue-router 自己的 go(-delta, false) 退回不会触发它，所以不会留下错误的记录。
+  let pop: { href: string; delta: number } | null = null
+  router.options.history.listen((to, _from, info) => {
+    pop = { href: router.options.history.createHref(to), delta: info.delta }
+  })
+
+  // failed：这次导航是因为出错才要整页跳转（分包失败）。守卫主动整页跳转时导航挂着、不会被退回，不用等。
+  const go = (href: string, failed: boolean) => {
     leaving = true
     pendingHref = null
-    deps.hardNavigate(href)
+    const revert = failed && pop !== null && pop.href === href && pop.delta !== 0
+    pop = null
+    if (!revert) {
+      deps.hardNavigate(href)
+      return
+    }
+    let fired = false
+    const fire = () => {
+      if (fired) return
+      fired = true
+      deps.hardNavigate(href)
+    }
+    deps.events?.addEventListener('popstate', fire, { once: true })
+    setTimeout(fire, deps.revertWaitMs ?? 1000)
   }
 
   router.beforeEach((to, from) => {
     const href = hrefOf(to)
     const reload = shouldFullReload({ hasNew: deps.hasNew(), initial: from === START_LOCATION, toPath: to.path, fromPath: from.path })
     if (reload && deps.isOnline()) {
-      go(href)
+      go(href, false)
       // 不能 return false：后退、前进触发的导航被中止时，vue-router 会 history.go(-delta) 把地址栏退回去，
       // 这可能把刚发起的整页跳转取消掉。让这次导航一直挂着，页面马上就会被新页面替换。
       return new Promise<never>(() => {})
@@ -58,6 +84,7 @@ export function installNewVersionGuard(router: Router, deps: NewVersionGuardDeps
     // 被新导航取代（cancelled）时，新导航已经写好了自己的 pendingHref，不能清掉
     if (isNavigationFailure(failure, NavigationFailureType.cancelled)) return
     pendingHref = null
+    pop = null
     if (!failure) {
       leaving = false
       clearReloadMark(deps.storage)
@@ -65,7 +92,7 @@ export function installNewVersionGuard(router: Router, deps: NewVersionGuardDeps
   })
 
   const recover = (target: string) =>
-    recoverFromChunkError({ storage: deps.storage, reload: () => go(target), toast: deps.toast, target, isOnline: deps.isOnline })
+    recoverFromChunkError({ storage: deps.storage, reload: () => go(target, true), toast: deps.toast, target, isOnline: deps.isOnline })
 
   router.onError((err, to) => {
     pendingHref = null

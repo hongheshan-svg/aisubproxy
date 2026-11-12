@@ -11,7 +11,7 @@ const stub = { template: '<i/>' }
 function setup(
   opts: { hasNew?: boolean; online?: boolean; storageThrows?: boolean; data?: Record<string, string>; serverHasNew?: boolean } = {},
 ) {
-  const state = { hasNew: !!opts.hasNew, online: opts.online !== false }
+  const state = { hasNew: !!opts.hasNew, online: opts.online !== false, flakyFails: true }
   // 传入同一个 data 模拟「整页刷新后的新页面」：sessionStorage 跨刷新保留
   const data: Record<string, string> = opts.data ?? {}
   const listeners: Record<string, (e: any) => void> = {}
@@ -31,6 +31,7 @@ function setup(
       }
     },
     events: { addEventListener: (n: string, cb: any) => { listeners[n] = cb } },
+    revertWaitMs: 80,
   }
   const router = createRouter({
     history: createMemoryHistory(),
@@ -42,6 +43,11 @@ function setup(
       { path: '/boom', component: () => Promise.reject(new Error('Network Error')) },
       { path: '/redir', redirect: '/a' },
       { path: '/slow', component: stub, beforeEnter: () => new Promise<void>((r) => setTimeout(r, 30)) },
+      {
+        path: '/flaky',
+        component: () =>
+          state.flakyFails ? Promise.reject(new TypeError('Failed to fetch dynamically imported module: /assets/Flaky-1.js')) : Promise.resolve(stub),
+      },
     ],
   })
   installNewVersionGuard(router, deps as any)
@@ -180,6 +186,68 @@ describe('分包加载失败兜底', () => {
     await t.router.push('/bad').catch(() => {})
     expect(t.deps.hardNavigate).not.toHaveBeenCalled()
     expect(t.deps.toast).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('后退、前进导航的分包失败', () => {
+  // 构造历史 [/a, /flaky]，停在 /a，/flaky 的分包从没加载过；然后前进
+  async function forwardToFlaky(t: ReturnType<typeof setup>) {
+    await t.router.push('/a')
+    const h = t.router.options.history
+    h.push('/flaky')
+    h.go(-1, false)
+    h.go(1)
+    await tick()
+  }
+  it('等 vue-router 把地址栏退回去（popstate）后再整页跳到目标地址', async () => {
+    const t = setup()
+    await forwardToFlaky(t)
+    // vue-router 已经 go(-1, false) 退回 /a：这时整页刷新会被那次历史跳转取消，所以还不能跳
+    expect(t.router.options.history.location).toBe('/a')
+    expect(t.deps.hardNavigate).not.toHaveBeenCalled()
+    expect(t.data[RELOAD_MARK_KEY]).toBe('/flaky')
+    t.listeners['popstate']()
+    expect(t.deps.hardNavigate).toHaveBeenCalledWith('/flaky')
+    expect(t.deps.hardNavigate).toHaveBeenCalledTimes(1)
+  })
+  it('等不到 popstate：到时限照样整页跳转，且只跳一次', async () => {
+    const t = setup()
+    await forwardToFlaky(t)
+    await new Promise((r) => setTimeout(r, 120))
+    expect(t.deps.hardNavigate).toHaveBeenCalledWith('/flaky')
+    t.listeners['popstate']()
+    expect(t.deps.hardNavigate).toHaveBeenCalledTimes(1)
+  })
+  it('已检测到新版本时后退、前进：守卫立即整页跳转，不等（导航挂着，不会被退回）', async () => {
+    const t = setup()
+    t.state.flakyFails = false
+    await t.router.push('/a')
+    const h = t.router.options.history
+    h.push('/b')
+    h.go(-1, false)
+    t.state.hasNew = true
+    h.go(1)
+    await tick()
+    expect(t.deps.hardNavigate).toHaveBeenCalledWith('/b')
+  })
+  it('普通换页（push）的分包失败不等，立即跳转', async () => {
+    const t = setup()
+    await t.router.push('/a')
+    await t.router.push('/flaky').catch(() => {})
+    expect(t.deps.hardNavigate).toHaveBeenCalledWith('/flaky')
+  })
+  it('前进成功后再 push 到同一地址失败：不沿用旧的后退记录，立即跳转', async () => {
+    const t = setup()
+    t.state.flakyFails = false
+    await t.router.push('/a')
+    const h = t.router.options.history
+    h.push('/b')
+    h.go(-1, false)
+    h.go(1)
+    await tick()
+    expect(t.router.currentRoute.value.path).toBe('/b')
+    await t.router.push('/bad').catch(() => {})
+    expect(t.deps.hardNavigate).toHaveBeenCalledWith('/bad')
   })
 })
 

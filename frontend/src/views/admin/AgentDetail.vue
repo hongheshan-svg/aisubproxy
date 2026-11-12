@@ -155,6 +155,7 @@
 
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { useBusy } from '../../lib/busyState'
 import { onBeforeRouteLeave, onBeforeRouteUpdate, useRoute } from 'vue-router'
 import AgentPasswordDialog from './components/AgentPasswordDialog.vue'
 import AgentSharedPanel from './components/AgentSharedPanel.vue'
@@ -497,6 +498,8 @@ async function confirmLeave(): Promise<boolean> {
   if (!adjustLeaveWarning(id.value)) return true
   return dialog.confirm(ADJUST_LEAVE_TEXT, { title: '调账结果未知', okText: '仍然离开', danger: true })
 }
+// 调账对话框打开、提交中或结果未知时不弹「系统已更新」提示条（与 confirmLeave 保护的是同一类内容）
+useBusy('agent-detail-adjust', () => adjustOpen.value || adjBusy.value || adjLocked.value)
 onBeforeRouteLeave(async () => (await confirmLeave()) || false)
 onBeforeRouteUpdate(async () => (await confirmLeave()) || false)
 

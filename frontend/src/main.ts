@@ -9,6 +9,7 @@ import './styles/user-theme.css'
 import { useAuthStore } from './stores/auth'
 import { initTheme, setSiteBrand, setSkin, applySiteThemeMode, type SkinId, type ThemeMode } from './theme'
 import { i18n } from './i18n'
+import { startNewVersionWatch } from './lib/newVersionWatch'
 import { initLayoutMode } from './lib/layoutMode'
 
 initTheme()
@@ -45,3 +46,5 @@ authStore.restore()
 // 不等站点配置：先按本机缓存的皮肤渲染，配置返回后再原子切换（首屏不再被一次网络请求卡住）。
 app.mount('#app')
 void loadPublicSite()
+// 生产构建里 main.ts 打进入口分包，import.meta.url 就是入口文件的地址
+startNewVersionWatch(new URL(import.meta.url).pathname)

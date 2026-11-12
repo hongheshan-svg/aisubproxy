@@ -42,3 +42,16 @@ describe('窄屏抽屉层级', () => {
     for (const z of layers) expect(z).toBeGreaterThan(drawer)
   })
 })
+
+describe('新版本提示条层级', () => {
+  const banner = read('../../NewVersionBanner.vue')
+  const z = Number(banner.match(/z-index:\s*(\d+)/)?.[1])
+  it('高于手机侧栏抽屉，低于 Element Plus 弹出层', () => {
+    expect(z).toBeGreaterThan(drawer)
+    expect(z).toBeLessThan(EL_POPPER_START)
+  })
+  it('低于项目自己的确认框和提示', () => {
+    const host = read('../../DialogHost.vue')
+    for (const m of host.matchAll(/z-\[(\d+)\]/g)) expect(Number(m[1])).toBeGreaterThan(z)
+  })
+})

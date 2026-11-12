@@ -53,7 +53,10 @@
       <!-- 热更进度 -->
       <div v-if="updating || updatePhase" class="rounded-xl p-3 space-y-2" style="background: var(--surface-2)">
         <div class="flex justify-between text-xs text-muted">
-          <span>{{ updateMessage || updatePhase }}</span>
+          <span>
+            {{ updateMessage || updatePhase }}
+            <button v-if="reloadCountdown !== null" type="button" class="ml-2 underline text-primary" @click="reloadNow">立即刷新</button>
+          </span>
           <span class="mono">{{ updateProgress }}%</span>
         </div>
         <div class="h-2 rounded-full overflow-hidden" style="background: var(--brd)">
@@ -108,6 +111,9 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import AdminPageHeader from '../../components/AdminPageHeader.vue'
 import { authFetch } from '../../lib/api'
 import { dialog } from '../../lib/dialog'
+import { reloadPage } from '../../lib/pageReload'
+import { createReloadCountdown, resolveRecoveredVersion } from '../../lib/reloadCountdown'
+import { useBusy } from '../../lib/busyState'
 import { REQUEST_TIMEOUT_MS, createUpdateWatcher, withTimeout, type StatusResult, type UpdateState, type UpdateWatchDeps } from '../../lib/updateWatch'
 
 const versionLoading = ref(false)
@@ -116,7 +122,12 @@ const versionInfo = ref<any>({})
 // 后端 deploy_mode：docker 或 native
 const isDocker = computed(() => versionInfo.value.deploy_mode === 'docker')
 
+// 升级成功后的刷新倒计时（秒）；null 表示没在倒数
+const RELOAD_COUNTDOWN_S = 3
+const reloadCountdown = ref<number | null>(null)
 const updating = ref(false)
+// 更新进行中、倒计时刷新期间不弹「系统已更新，点此刷新」：这个页面自己管刷新
+useBusy('system-update', () => updating.value || reloadCountdown.value !== null)
 const updatePhase = ref('')
 const updateMessage = ref('')
 const updateProgress = ref(0)
@@ -128,6 +139,8 @@ let unmounted = false
 
 const canOneClickUpdate = computed(() => {
   if (updating.value) return false
+  // 倒计时刷新期间不再开始新一轮更新
+  if (reloadCountdown.value !== null) return false
   if (versionInfo.value.update_enabled === false) return false
   // 有新版本且有 bundle，或强制允许「重装最新」当 has_bundle
   if (versionInfo.value.one_click_ready) return true
@@ -197,16 +210,22 @@ function updateDeps(before: string | undefined): UpdateWatchDeps {
       updating.value = false
     },
     onRecovered: async () => {
-      // 服务已恢复、更新已结束：刷新版本
-      await loadVersion(true)
-      const after = versionInfo.value.current
+      // 服务已恢复、更新已结束：查一次版本拿 current。不带 refresh——后端刚重载时内存缓存是空的，这次请求会顺带取一次 GitHub，
+      // 但 GitHub 不通时后端照样回 200 并带 current，不会因此判错；请求本身失败（网关还在回 502）再查一次。
+      const { changed, after } = await resolveRecoveredVersion({
+        before,
+        load: () => loadVersion(false),
+        current: () => versionInfo.value.current,
+      })
       updateProgress.value = 100
       updatePhase.value = 'done'
-      updateMessage.value = after && after !== before
+      updateMessage.value = changed
         ? `已热更至 v${after}`
         : `服务已恢复（当前 v${after || before || '—'}）`
       updating.value = false
       updateFailed.value = false
+      // 版本确实变了：浏览器里跑的还是旧前端，倒数后自动刷新；版本没变（只是服务恢复）不刷新
+      if (changed && !unmounted) startReloadCountdown(after)
     },
     onTimeout: () => {
       updateFailed.value = true
@@ -216,6 +235,31 @@ function updateDeps(before: string | undefined): UpdateWatchDeps {
       updating.value = false
     },
   }
+}
+
+let countdown: ReturnType<typeof createReloadCountdown> | null = null
+
+function cancelCountdown() {
+  countdown?.cancel()
+  reloadCountdown.value = null
+}
+
+function reloadNow() {
+  cancelCountdown()
+  reloadPage()
+}
+
+function startReloadCountdown(version: string) {
+  countdown?.cancel()
+  countdown = createReloadCountdown({
+    seconds: RELOAD_COUNTDOWN_S,
+    onTick: (left) => {
+      reloadCountdown.value = left
+      updateMessage.value = `已更新到 v${version}，${left} 秒后自动刷新页面`
+    },
+    onDone: reloadNow,
+  })
+  countdown.start()
 }
 
 async function oneClickUpdate() {
@@ -260,7 +304,8 @@ async function oneClickUpdate() {
   }
 }
 
-async function loadVersion(force = false) {
+/** 返回请求是否成功（拿到了版本信息）。 */
+async function loadVersion(force = false): Promise<boolean> {
   versionLoading.value = true
   versionError.value = ''
   try {
@@ -269,14 +314,16 @@ async function loadVersion(force = false) {
     const d = await r.json().catch(() => ({}))
     if (!r.ok) {
       versionError.value = d.error || '版本检查失败'
-      return
+      return false
     }
     versionInfo.value = d
     if (d.github_error && !d.latest) {
       versionError.value = `GitHub: ${d.github_error}`
     }
+    return true
   } catch (e: any) {
     versionError.value = e?.message || '网络错误'
+    return false
   } finally {
     versionLoading.value = false
   }
@@ -287,6 +334,7 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   unmounted = true
+  cancelCountdown()
   watcher?.stop()
 })
 </script>

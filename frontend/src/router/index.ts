@@ -5,6 +5,11 @@ import { agentGuardDecision } from '../lib/agentSession'
 import { setSkinFontsAllowed } from '../theme'
 import { hashScroll, prefersReducedMotion } from './scroll'
 import { OPS_BASE, isAdminPath, routes, surfaceOf } from './routes'
+import { checkNewVersionNow, hasNewVersion } from '../lib/newVersionWatch'
+import { hardNavigate } from '../lib/pageReload'
+import { installNewVersionGuard } from './newVersionGuard'
+import { dialog } from '../lib/dialog'
+import { i18n } from '../i18n'
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
@@ -31,6 +36,18 @@ async function ensureSetupStatus(): Promise<boolean> {
 }
 
 const isLoginPath = (path: string) => path === `${OPS_BASE}/login`
+
+// 必须最先注册（在鉴权守卫之前）：已检测到新版本时，换页就整页跳过去，拿新入口和新分包；同时接上分包加载失败的兜底
+installNewVersionGuard(router, {
+  hasNew: () => hasNewVersion.value,
+  setHasNew: () => { hasNewVersion.value = true },
+  checkNew: checkNewVersionNow,
+  hardNavigate,
+  storage: () => window.sessionStorage,
+  toast: () => dialog.toast(i18n.global.t('chunkError.failed'), 'warn', 6000),
+  isOnline: () => typeof navigator === 'undefined' || navigator.onLine !== false,
+  events: typeof window !== 'undefined' ? window : null,
+})
 
 router.beforeEach(async (to) => {
   if (to.matched.some((r) => r.meta.requiresAgent)) {

@@ -1,7 +1,10 @@
 package server
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"html"
 	"log"
@@ -11,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tuzi/cdk-recharge-system/internal/cardpool"
@@ -448,6 +452,27 @@ func setupRoutes(r *gin.Engine) {
 					c.File(fp)
 					return
 				}
+			}
+			// 带内容哈希的前端分包都在 /assets/ 下：文件不存在就是不存在（升级后旧分包随目录一起消失），
+			// 直接回 404，不要回退成 200 的 index.html（浏览器、CDN 会把这份 HTML 当成 JS 缓存住，导致持续加载失败）
+			// 用清洗后的路径判断：//assets/x、/./assets/x 这类非规范请求也要回 404（存在的文件上面也是按 clean 直出的）。
+			// 404 带 no-store：避免 CDN 按静态扩展名把 404 缓存住，回滚后同名分包重新存在时还取不到。
+			if strings.HasPrefix(clean, "/assets/") {
+				c.Header("Cache-Control", "no-store")
+				c.JSON(404, gin.H{"error": "not found"})
+				return
+			}
+			// index.html 每次都要向服务器核对：在线升级会整个换掉前端目录，旧分包随之消失；
+			// 不带缓存头时浏览器按 Last-Modified 启发式缓存，升级后可能拿到旧 HTML，引用的入口脚本已经不在，页面白屏。
+			// 按内容算 ETag，且不发 Last-Modified（modtime 传零值，也不理会 If-Modified-Since）：
+			// 新旧 index.html 同一秒生成、或退回的旧镜像里文件时间更早时，都不会回 304 让浏览器继续用旧页面。
+			c.Header("Cache-Control", "no-cache")
+			if data, err := os.ReadFile(indexFile); err == nil {
+				sum := sha256.Sum256(data)
+				c.Header("ETag", `"`+hex.EncodeToString(sum[:])[:16]+`"`)
+				c.Header("Content-Type", "text/html; charset=utf-8")
+				http.ServeContent(c.Writer, c.Request, "index.html", time.Time{}, bytes.NewReader(data))
+				return
 			}
 			c.File(indexFile)
 		})

@@ -105,7 +105,8 @@ func isFile(p string) bool {
 
 // LaunchOptions 是启动浏览器的参数。
 type LaunchOptions struct {
-	// ProxyURL 是代理地址（http、https 或 socks5），可带账号密码；空表示直连。
+	// ProxyURL 是代理地址（http、https、socks5 或 socks5h），可带账号密码；空表示直连。
+	// 带账号密码的 socks5 经本机中转（见 socks_relay.go）。
 	ProxyURL string
 	// ShotDir 是截图目录。
 	ShotDir string
@@ -119,8 +120,9 @@ type Browser struct {
 	ctx         context.Context // 标签页的 chromedp 上下文，存活到 Close
 	cancelTab   context.CancelFunc
 	cancelAlloc context.CancelFunc
-	dir         string   // 临时用户目录（含会话 cookie）
-	lock        *os.File // 用户目录的主人锁（见 profile_lock.go），Close 删完目录才放；没拿到时为 nil
+	dir         string      // 临时用户目录（含会话 cookie）
+	lock        *os.File    // 用户目录的主人锁（见 profile_lock.go），Close 删完目录才放；没拿到时为 nil
+	relay       *socksRelay // 带账号密码的 socks5 代理用的本机中转（见 socks_relay.go）；没有时为 nil
 	mode        string
 	shotDir     string
 	started     bool // Chrome 已成功启动，Close 时可尝试正常关闭
@@ -156,7 +158,7 @@ func Launch(ctx context.Context, o LaunchOptions) (*Browser, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("启动 Chrome 失败: %w", err)
 	}
-	proxy, auth, err := parseProxy(o.ProxyURL)
+	proxy, auth, socks, err := parseProxy(o.ProxyURL)
 	if err != nil {
 		return nil, err
 	}
@@ -186,6 +188,15 @@ func Launch(ctx context.Context, o LaunchOptions) (*Browser, error) {
 	if err != nil {
 		removeProfile(dir, lock)
 		return nil, err
+	}
+	// 带账号密码的 socks5：Chrome 改走本机中转，认证用中转自己的随机口令
+	var relay *socksRelay
+	if socks != nil {
+		if relay, err = startSocksRelay(socks); err != nil {
+			removeProfile(dir, lock)
+			return nil, err
+		}
+		proxy, auth = relay.server(), relay.auth()
 	}
 
 	opts := []chromedp.ExecAllocatorOption{
@@ -223,7 +234,7 @@ func Launch(ctx context.Context, o LaunchOptions) (*Browser, error) {
 	tabCtx, cancelTab := chromedp.NewContext(allocCtx, chromedp.WithLogf(quiet), chromedp.WithErrorf(quiet))
 	b := &Browser{
 		ctx: tabCtx, cancelTab: cancelTab, cancelAlloc: func() { cancelAlloc(); abort() },
-		dir: dir, lock: lock, mode: mode, shotDir: o.ShotDir,
+		dir: dir, lock: lock, relay: relay, mode: mode, shotDir: o.ShotDir,
 	}
 
 	// 首次 Run 才真正拉起 Chrome，不能给它挂会取消的上下文（取消会杀掉浏览器），所以另起协程等待。
@@ -341,7 +352,10 @@ func (b *Browser) Close() {
 			cancel()
 		}
 		b.cancelTab()
-		b.cancelAlloc()              // 等 Chrome 进程退出
+		b.cancelAlloc() // 等 Chrome 进程退出
+		if b.relay != nil {
+			b.relay.Close()
+		}
 		removeProfile(b.dir, b.lock) // 删完目录才放锁：放早了，别的清理会以为主人不在
 	})
 }

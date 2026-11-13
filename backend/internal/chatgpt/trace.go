@@ -59,7 +59,10 @@ func classifyTraceErr(ctx context.Context, err error) error {
 	}
 	msg := strings.ToLower(err.Error())
 	switch {
-	case proxyAuthStatus.MatchString(msg) || strings.Contains(msg, "proxy authentication"):
+	// socks5 认证失败的原文：账号密码不对是 "username/password authentication failed"，
+	// 代理要账号密码而地址里没写是 "no acceptable authentication methods"
+	case proxyAuthStatus.MatchString(msg) || strings.Contains(msg, "proxy authentication") ||
+		strings.Contains(msg, "username/password") || strings.Contains(msg, "no acceptable authentication methods"):
 		return ErrTraceProxyAuth
 	case strings.Contains(msg, "timeout") || strings.Contains(msg, "deadline"):
 		return ErrTraceTimeout

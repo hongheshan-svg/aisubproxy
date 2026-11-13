@@ -44,7 +44,7 @@ type Client struct {
 	secrets  []string // 代理地址里的账号密码等，返回错误前换成 ***（见 scrubErr）
 }
 
-// New 创建客户端；proxyURL 为空则直连，仅接受 http、https、socks5。
+// New 创建客户端；proxyURL 为空则直连，仅接受 http、https、socks5、socks5h（两者都由代理端解析域名）。
 func New(proxyURL string) (*Client, error) {
 	opts := []tls_client.HttpClientOption{
 		tls_client.WithTimeoutSeconds(30),
@@ -60,9 +60,9 @@ func New(proxyURL string) (*Client, error) {
 			return nil, errors.New("代理地址格式无效")
 		}
 		switch u.Scheme {
-		case "http", "https", "socks5":
+		case "http", "https", "socks5", "socks5h":
 		default:
-			return nil, fmt.Errorf("不支持的代理协议 %q，仅支持 http、https、socks5", u.Scheme)
+			return nil, fmt.Errorf("不支持的代理协议 %q，仅支持 http、https、socks5、socks5h", u.Scheme)
 		}
 		opts = append(opts, tls_client.WithProxyUrl(p))
 	}

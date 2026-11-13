@@ -306,8 +306,13 @@ func TestPayProxiesWriteOnly(t *testing.T) {
 	if !strings.Contains(payAudit(t), "已清空") {
 		t.Fatal("清空应记入审计")
 	}
-	if w := payDo(AdminPayPutProxies, "PUT", "/proxies", "/proxies", `{"PH":"socks5://u:p@h:1080"}`); w.Code != 400 || strings.Contains(w.Body.String(), "h:1080") {
-		t.Fatalf("带认证 socks5 应 400 且不回显: %d %s", w.Code, w.Body.String())
+	if w := payDo(AdminPayPutProxies, "PUT", "/proxies", "/proxies", `{"PH":"socks5://u:secretpw@secret-host:1080"}`); w.Code != 200 ||
+		strings.Contains(w.Body.String(), "secret") {
+		t.Fatalf("带认证 socks5 应可保存且不回显: %d %s", w.Code, w.Body.String())
+	}
+	if w := payDo(AdminPayPutProxies, "PUT", "/proxies", "/proxies", `{"PH":"socks5://u:secretpw@secret-host"}`); w.Code != 400 ||
+		strings.Contains(w.Body.String(), "secret") {
+		t.Fatalf("socks5 不写端口应 400 且不回显: %d %s", w.Code, w.Body.String())
 	}
 }
 

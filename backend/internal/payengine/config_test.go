@@ -211,13 +211,20 @@ func TestProxiesWriteOnly(t *testing.T) {
 	if err == nil || strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "pw") {
 		t.Fatalf("协议非法应报错且不含原文: %v", err)
 	}
-	if err := SaveProxies(map[string]string{"PH": "socks5h://h:1080"}); err == nil {
-		t.Fatal("socks5h 应报错")
+	if err := SaveProxies(map[string]string{"PH": "socks5h://h:1080"}); err != nil {
+		t.Fatalf("socks5h 应可保存: %v", err)
 	}
-	err = SaveProxies(map[string]string{"US": "socks5://user:pw@h:1080"})
-	if err == nil || !strings.Contains(err.Error(), "socks5 代理不支持账号密码，请改用 http 代理") ||
-		strings.Contains(err.Error(), "user") || strings.Contains(err.Error(), "pw") {
-		t.Fatalf("带账号密码的 socks5 应报错且不含原文: %v", err)
+	if err := SaveProxies(map[string]string{"US": "socks5://user:pw@h:1080"}); err != nil {
+		t.Fatalf("带账号密码的 socks5 应可保存（付款浏览器经本机中转认证）: %v", err)
+	}
+	if px, _ := LoadProxies(); px["US"] != "socks5://user:pw@h:1080" {
+		t.Fatalf("socks5 应原样保存: %q", px["US"])
+	}
+	for _, bad := range []string{"socks5://user:secretpw@h", "socks5h://user:secretpw@h"} {
+		err = SaveProxies(map[string]string{"US": bad})
+		if err == nil || !strings.Contains(err.Error(), "socks5 要写端口") || strings.Contains(err.Error(), "secretpw") {
+			t.Fatalf("socks5 不写端口应报错且不含原文: %v", err)
+		}
 	}
 	if err := SaveProxies(map[string]string{"US": "socks5://h:1080"}); err != nil {
 		t.Fatalf("不带账号密码的 socks5 应可保存: %v", err)

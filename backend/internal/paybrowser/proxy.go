@@ -13,37 +13,47 @@ import (
 )
 
 // parseProxy 把代理地址拆成 --proxy-server 用的 scheme://host:port 与账号密码。
+// 带账号密码的 socks5 Chrome 认不了，这时返回 socks 非 nil（上游地址），由调用方起本机中转（见 socks_relay.go）。
+// socks5h 与 socks5 一样（Chrome 和中转都把域名交给代理端解析），交给 Chrome 时写成 socks5。
 // 错误消息不含原地址，避免泄露密码。
-func parseProxy(raw string) (string, *proxyAuth, error) {
+func parseProxy(raw string) (server string, auth *proxyAuth, socks *url.URL, err error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return "", nil, nil
+		return "", nil, nil, nil
 	}
-	bad := errors.New("代理地址格式无效，须为 http、https 或 socks5 地址")
+	bad := errors.New("代理地址格式无效，须为 http、https、socks5 或 socks5h 地址")
 	u, err := url.Parse(raw)
 	if err != nil || u.Hostname() == "" {
-		return "", nil, bad
+		return "", nil, nil, bad
 	}
 	scheme := strings.ToLower(u.Scheme)
 	switch scheme {
-	case "http", "https", "socks5":
+	case "http", "https":
+	case "socks5", "socks5h":
+		if u.Port() == "" {
+			return "", nil, nil, errors.New("socks5 代理地址要写端口")
+		}
+		scheme = "socks5"
 	default:
-		return "", nil, bad
+		return "", nil, nil, bad
 	}
-	server := scheme + "://" + u.Host
+	server = scheme + "://" + u.Host
 	if u.User == nil {
-		return server, nil, nil
+		return server, nil, nil, nil
 	}
 	user := u.User.Username()
 	pass, _ := u.User.Password()
 	if user == "" && pass == "" {
-		return server, nil, nil
+		return server, nil, nil, nil
 	}
 	if scheme == "socks5" {
-		//nolint:staticcheck // ST1005：Chrome 是产品名（专有名词），错误文本保持不变
-		return "", nil, errors.New("Chrome 不支持带账号密码的 socks5 代理，请改用 http 代理")
+		return "", nil, &url.URL{Scheme: scheme, Host: u.Host, User: u.User}, nil
 	}
-	return server, &proxyAuth{user: user, pass: pass, answered: map[fetch.RequestID]bool{}}, nil
+	return server, newProxyAuth(user, pass), nil, nil
+}
+
+func newProxyAuth(user, pass string) *proxyAuth {
+	return &proxyAuth{user: user, pass: pass, answered: map[fetch.RequestID]bool{}}
 }
 
 // proxyAuth 保存代理账号密码，并记下已应答过的请求，凭据被拒时不再重复提交。

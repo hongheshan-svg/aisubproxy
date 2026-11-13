@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   applyBuiltinPrice, failureLabel, failureText, floorProblem, formatMinor, formToPlan, fromMinor, isTerminal, pageOutcomeLabel, payBlockReason, planToForm,
-  orderAmountLabel, proxyTestText, regionWithName, stateLabel, toMinor, type PlanConf,
+  orderAmountLabel, proxyTestLines, proxyTestText, regionWithName, stateLabel, toMinor, type PlanConf,
 } from '../pay'
 
 describe('regionWithName', () => {
@@ -30,6 +30,39 @@ describe('proxyTestText', () => {
   it('失败显示中文原因', () => {
     expect(proxyTestText({ region: 'PH', proxy_configured: true, ok: false, error: '代理认证失败，请检查账号密码' }))
       .toEqual({ tone: 'err', text: '测试失败：代理认证失败，请检查账号密码' })
+  })
+})
+
+describe('proxyTestLines', () => {
+  const server = { region: 'PH', proxy_configured: true, ok: true, ip: '1.2.3.4', loc: 'PH', latency_ms: 320, matches_region: true }
+  it('没有浏览器结果（测直连）只有一行，不加前缀', () => {
+    expect(proxyTestLines({ ...server, proxy_configured: false })).toEqual([proxyTestText(server)])
+  })
+  it('两条路都通', () => {
+    const lines = proxyTestLines({ ...server, browser: { checked: true, ok: true, ip: '1.2.3.4', loc: 'PH', latency_ms: 4100, matches_region: true, same_ip: true } })
+    expect(lines).toEqual([
+      { tone: 'ok', text: '服务器请求：出口 IP 1.2.3.4，OpenAI 识别为 PH（菲律宾），耗时 320 ms' },
+      { tone: 'ok', text: '付款浏览器：出口 IP 1.2.3.4，识别为 PH（菲律宾），耗时 4100 ms' },
+    ])
+  })
+  it('浏览器那条路失败用错误色', () => {
+    const [, b] = proxyTestLines({ ...server, browser: { checked: true, ok: false, error: '代理认证失败，请检查账号密码' } })
+    expect(b).toEqual({ tone: 'err', text: '付款浏览器：失败，代理认证失败，请检查账号密码。付款时浏览器会打不开支付页' })
+  })
+  it('没测成用警告色', () => {
+    const [, b] = proxyTestLines({ ...server, browser: { checked: false, ok: false, note: '本机没有 Chrome，浏览器这条路没测' } })
+    expect(b.tone).toBe('warn')
+    expect(b.text).toContain('没测成（本机没有 Chrome')
+  })
+  it('出口 IP 与服务器请求不同提示轮换', () => {
+    const [, b] = proxyTestLines({ ...server, browser: { checked: true, ok: true, ip: '5.6.7.8', loc: 'PH', matches_region: true, same_ip: false } })
+    expect(b.tone).toBe('warn')
+    expect(b.text).toContain('与服务器请求的 1.2.3.4 不同')
+  })
+  it('服务器请求失败时不比较 IP', () => {
+    const [s, b] = proxyTestLines({ region: 'PH', proxy_configured: true, ok: false, error: 'HTTP 403', browser: { checked: true, ok: true, ip: '5.6.7.8', loc: 'PH', matches_region: true, same_ip: false } })
+    expect(s.tone).toBe('err')
+    expect(b.tone).toBe('ok')
   })
 })
 

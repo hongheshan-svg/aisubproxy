@@ -398,28 +398,26 @@ func ProxyStatus() (map[string]bool, error) {
 	return out, nil
 }
 
+// validProxy 检查代理地址：http、https、socks5、socks5h，socks5 要写端口。
+// 带账号密码的 socks5 也可以：付款浏览器经本机中转认证（见 paybrowser/socks_relay.go）。
 func validProxy(addr string) bool {
 	u, err := url.Parse(addr)
-	if err != nil || u.Host == "" {
+	if err != nil || u.Hostname() == "" {
 		return false
 	}
 	switch u.Scheme {
-	case "http", "https", "socks5":
+	case "http", "https":
 		return true
+	case "socks5", "socks5h":
+		return u.Port() != ""
 	}
 	return false
-}
-
-// socks5WithAuth 判断是否为带账号密码的 socks5 地址（Chrome 不支持 SOCKS 认证）。
-func socks5WithAuth(addr string) bool {
-	u, err := url.Parse(addr)
-	return err == nil && u.Scheme == "socks5" && u.User != nil
 }
 
 // saveProxiesMu 保护 SaveProxies 的读改写：两名管理员同时保存不同地区时，后写的不能覆盖先写的。
 var saveProxiesMu sync.Mutex
 
-// SaveProxies 合并保存地区代理：空串保持不变，"-" 清除，其余须为 http/https/socks5 地址（与 chatgpt.New 一致）。
+// SaveProxies 合并保存地区代理：空串保持不变，"-" 清除，其余须为 http/https/socks5/socks5h 地址（与 chatgpt.New 一致）。
 // 错误消息不含代理地址，也不回显输入的键（键可能被误填成带密码的地址）。
 func SaveProxies(in map[string]string) error {
 	for r, v := range in {
@@ -427,10 +425,7 @@ func SaveProxies(in map[string]string) error {
 			return fmt.Errorf("%w: 未知地区", ErrBadRequest)
 		}
 		if v != "" && v != "-" && !validProxy(v) {
-			return fmt.Errorf("%w: 地区 %s 的代理地址格式无效，须为 http、https 或 socks5 地址", ErrBadRequest, r)
-		}
-		if v != "" && v != "-" && socks5WithAuth(v) {
-			return fmt.Errorf("%w: 地区 %s 的 socks5 代理不支持账号密码，请改用 http 代理", ErrBadRequest, r)
+			return fmt.Errorf("%w: 地区 %s 的代理地址格式无效，须为 http、https、socks5 或 socks5h 地址，socks5 要写端口", ErrBadRequest, r)
 		}
 	}
 	saveProxiesMu.Lock()

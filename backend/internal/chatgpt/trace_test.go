@@ -84,6 +84,10 @@ func TestClassifyTraceErrProxyAuthBoundary(t *testing.T) {
 		{"failed to do request: 407 Proxy Authentication Required", ErrTraceProxyAuth},
 		{"Proxy Authentication Required", ErrTraceProxyAuth},
 		{"proxyconnect tcp: unexpected status 407", ErrTraceProxyAuth},
+		// socks5 的认证失败（golang.org/x/net/proxy 的原文）
+		{"socks connect tcp 1.2.3.4:1080->chatgpt.com:443: username/password authentication failed", ErrTraceProxyAuth},
+		{"socks connect tcp 1.2.3.4:1080->chatgpt.com:443: no acceptable authentication methods", ErrTraceProxyAuth},
+		{"socks connect tcp 1.2.3.4:1080->chatgpt.com:443: unknown error connection refused", ErrTraceConnect},
 	}
 	for _, c := range cases {
 		if got := classifyTraceErr(context.Background(), errors.New(c.msg)); got != c.want {

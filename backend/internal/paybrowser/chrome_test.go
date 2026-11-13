@@ -60,7 +60,7 @@ func TestLaunchHidesProxyPassword(t *testing.T) {
 	for _, p := range []string{
 		"http://alice:topsecret@127.0.0.1:notaport",
 		"ftp://alice:topsecret@127.0.0.1:21",
-		"socks5://alice:topsecret@127.0.0.1:1080",
+		"socks5://alice:topsecret@127.0.0.1", // socks5 不写端口
 	} {
 		b, err := paybrowser.Launch(context.Background(), paybrowser.LaunchOptions{ProxyURL: p})
 		if err == nil {

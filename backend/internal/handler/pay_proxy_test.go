@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,14 +12,31 @@ import (
 	"time"
 
 	"github.com/tuzi/cdk-recharge-system/internal/chatgpt"
+	"github.com/tuzi/cdk-recharge-system/internal/paybrowser"
 	"github.com/tuzi/cdk-recharge-system/internal/payengine"
 )
 
 const secretProxy = "http://user:pw-secret@px.secret-host.example:8080"
 
-// fakeTrace 把测试客户端指向假服务器，并记录收到的代理地址。
+// fakeBrowser 替换浏览器那条路的检测（不起真 Chrome），记录收到的代理地址与调用次数。
+func fakeBrowser(t *testing.T, fn func(ctx context.Context, proxy string) (string, error)) (*string, *int) {
+	t.Helper()
+	var got string
+	var calls int
+	old := browserTrace
+	browserTrace = func(ctx context.Context, proxy string) (string, error) {
+		got = proxy
+		calls++
+		return fn(ctx, proxy)
+	}
+	t.Cleanup(func() { browserTrace = old })
+	return &got, &calls
+}
+
+// fakeTrace 把测试客户端指向假服务器，并记录收到的代理地址。浏览器那条路默认当作本机没有 Chrome。
 func fakeTrace(t *testing.T, h http.HandlerFunc, timeout time.Duration) *string {
 	t.Helper()
+	fakeBrowser(t, func(context.Context, string) (string, error) { return "", paybrowser.ErrNoChrome })
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	var got string
@@ -117,6 +136,9 @@ func TestProxyTestConnectErrorNoLeak(t *testing.T) {
 	oldF := traceClientFactory
 	t.Cleanup(func() { traceClientFactory = oldF })
 	traceClientFactory = func(proxy string) (*chatgpt.Client, error) { return chatgpt.New("http://127.0.0.1:1") }
+	fakeBrowser(t, func(context.Context, string) (string, error) {
+		return "", errors.New("浏览器打不开检测页（net::ERR_PROXY_CONNECTION_FAILED）")
+	})
 	code, m, body := traceDo(`{"region":"PH"}`)
 	if code != 200 || m["ok"] != false || m["error"] == "" || strings.Contains(body, "127.0.0.1") || strings.Contains(body, "secret-host") {
 		t.Fatalf("%d %s", code, body)
@@ -155,5 +177,86 @@ func TestProxyTestBusy409(t *testing.T) {
 	wg.Wait()
 	if code, _, _ := traceDo(`{"region":"PH"}`); code != 200 {
 		t.Errorf("结束后应可再测: %d", code)
+	}
+}
+
+// 配了代理时，浏览器那条路也要测，结果放在 browser 里，并核对两条路的出口 IP 是否一致。
+func TestProxyTestBrowserPath(t *testing.T) {
+	payEnv(t)
+	const socks = "socks5://user:pw-secret@px.secret-host.example:1080"
+	if err := payengine.SaveProxies(map[string]string{"PH": socks}); err != nil {
+		t.Fatal(err)
+	}
+	fakeTrace(t, traceOK("PH"), 5*time.Second)
+	got, _ := fakeBrowser(t, func(context.Context, string) (string, error) { return "fl=1\nip=1.2.3.4\nloc=PH\n", nil })
+	code, m, body := traceDo(`{"region":"PH"}`)
+	b, _ := m["browser"].(map[string]any)
+	if code != 200 || m["ok"] != true || b == nil || b["checked"] != true || b["ok"] != true || b["ip"] != "1.2.3.4" ||
+		b["loc"] != "PH" || b["matches_region"] != true || b["same_ip"] != true {
+		t.Fatalf("%d %s", code, body)
+	}
+	if *got != socks {
+		t.Error("浏览器那条路应使用已配置的代理")
+	}
+	a := payAudit(t)
+	if !strings.Contains(a, "浏览器:成功，出口地区一致") || strings.Contains(a, "secret") {
+		t.Errorf("审计: %s", a)
+	}
+}
+
+func TestProxyTestBrowserPathFailures(t *testing.T) {
+	cases := []struct {
+		name  string
+		trace func(context.Context, string) (string, error)
+		check func(b map[string]any) bool
+		audit string
+	}{
+		{"认证失败", func(context.Context, string) (string, error) {
+			return "", errors.New("代理认证失败，请检查账号密码")
+		},
+			func(b map[string]any) bool {
+				return b["checked"] == true && b["ok"] == false && b["error"] == "代理认证失败，请检查账号密码"
+			},
+			"浏览器:失败 代理认证失败"},
+		{"没有 Chrome", func(context.Context, string) (string, error) { return "", paybrowser.ErrNoChrome },
+			func(b map[string]any) bool {
+				return b["checked"] == false && strings.Contains(b["note"].(string), "没有 Chrome")
+			},
+			"浏览器:未测"},
+		{"出口 IP 不同", func(context.Context, string) (string, error) { return "ip=5.6.7.8\nloc=PH\n", nil },
+			func(b map[string]any) bool { return b["ok"] == true && b["same_ip"] == false && b["ip"] == "5.6.7.8" },
+			"浏览器:成功"},
+		{"不是 trace", func(context.Context, string) (string, error) { return "Just a moment...", nil },
+			func(b map[string]any) bool {
+				return b["checked"] == true && b["ok"] == false && strings.Contains(b["error"].(string), "Cloudflare")
+			},
+			"浏览器:失败"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			payEnv(t)
+			_ = payengine.SaveProxies(map[string]string{"PH": secretProxy})
+			fakeTrace(t, traceOK("PH"), 5*time.Second)
+			fakeBrowser(t, tc.trace)
+			code, m, body := traceDo(`{"region":"PH"}`)
+			b, _ := m["browser"].(map[string]any)
+			if code != 200 || m["ok"] != true || b == nil || !tc.check(b) {
+				t.Fatalf("%d %s", code, body)
+			}
+			if a := payAudit(t); !strings.Contains(a, tc.audit) {
+				t.Errorf("审计应含 %q: %s", tc.audit, a)
+			}
+		})
+	}
+}
+
+// 没配代理（测直连）不起浏览器：浏览器同样直连，出口与服务器一致。
+func TestProxyTestDirectSkipsBrowser(t *testing.T) {
+	payEnv(t)
+	fakeTrace(t, traceOK("PH"), 5*time.Second)
+	_, calls := fakeBrowser(t, func(context.Context, string) (string, error) { return "", errors.New("不该调用") })
+	code, m, body := traceDo(`{"region":"PH"}`)
+	if _, has := m["browser"]; code != 200 || has || *calls != 0 {
+		t.Fatalf("直连不应测浏览器: %d %s（调用 %d 次）", code, body, *calls)
 	}
 }

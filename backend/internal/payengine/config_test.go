@@ -211,13 +211,20 @@ func TestProxiesWriteOnly(t *testing.T) {
 	if err == nil || strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "pw") {
 		t.Fatalf("协议非法应报错且不含原文: %v", err)
 	}
-	if err := SaveProxies(map[string]string{"PH": "socks5h://h:1080"}); err == nil {
-		t.Fatal("socks5h 应报错")
+	if err := SaveProxies(map[string]string{"PH": "socks5h://h:1080"}); err != nil {
+		t.Fatalf("socks5h 应可保存: %v", err)
 	}
-	err = SaveProxies(map[string]string{"US": "socks5://user:pw@h:1080"})
-	if err == nil || !strings.Contains(err.Error(), "socks5 代理不支持账号密码，请改用 http 代理") ||
-		strings.Contains(err.Error(), "user") || strings.Contains(err.Error(), "pw") {
-		t.Fatalf("带账号密码的 socks5 应报错且不含原文: %v", err)
+	if err := SaveProxies(map[string]string{"US": "socks5://user:pw@h:1080"}); err != nil {
+		t.Fatalf("带账号密码的 socks5 应可保存（付款浏览器经本机中转认证）: %v", err)
+	}
+	if px, _ := LoadProxies(); px["US"] != "socks5://user:pw@h:1080" {
+		t.Fatalf("socks5 应原样保存: %q", px["US"])
+	}
+	for _, bad := range []string{"socks5://user:secretpw@h", "socks5h://user:secretpw@h"} {
+		err = SaveProxies(map[string]string{"US": bad})
+		if err == nil || !strings.Contains(err.Error(), "socks5 要写端口") || strings.Contains(err.Error(), "secretpw") {
+			t.Fatalf("socks5 不写端口应报错且不含原文: %v", err)
+		}
 	}
 	if err := SaveProxies(map[string]string{"US": "socks5://h:1080"}); err != nil {
 		t.Fatalf("不带账号密码的 socks5 应可保存: %v", err)
@@ -600,4 +607,55 @@ func TestPlanTableAllowZero(t *testing.T) {
 			}
 		}
 	})
+}
+
+// 静态 IP 服务商导出的几种写法都要认，统一成标准 socks5 地址；带协议头的原样保留，只修密码后多出的冒号。
+func TestNormalizeProxy(t *testing.T) {
+	const want = "socks5://dEmUser:Pw123@103.62.1.151:443"
+	for _, in := range []string{
+		"103.62.1.151:443:dEmUser:Pw123",
+		"dEmUser:Pw123@103.62.1.151:443",
+		"103.62.1.151:443:dEmUser:Pw123{}",
+		"103.62.1.151:443:dEmUser:Pw123{备注}",
+		"socks5://dEmUser:Pw123:@103.62.1.151:443", // 服务商导出的 socks5 列，密码后多一个冒号
+		"103.62.1.151:443@dEmUser:Pw123",
+		"  socks5://dEmUser:Pw123@103.62.1.151:443 ",
+	} {
+		if got := NormalizeProxy(in); got != want {
+			t.Errorf("NormalizeProxy(%q) = %q", in, got)
+		}
+	}
+	for in, want := range map[string]string{
+		"103.62.1.151:443":                "socks5://103.62.1.151:443",
+		"px.example.com:1080:u:p@ss/w:rd": "socks5://u:p%40ss%2Fw%3Ard@px.example.com:1080", // 特殊符号自动编码，密码里的冒号保留
+		"u:p@ss@px.example.com:1080":      "socks5://u:p%40ss@px.example.com:1080",
+		"http://u:p@h:8080":               "http://u:p@h:8080",
+		"socks5://u:p%3A@h:1080":          "socks5://u:p%3A@h:1080", // 密码确实以冒号结尾：编码后不动
+		"socks5://u:@h:1080":              "socks5://u:@h:1080",     // 空密码不是多出来的冒号
+		"ftp://x":                         "ftp://x",
+		"随便写的":                            "随便写的",
+		"h:99999:u:p":                     "h:99999:u:p",
+	} {
+		if got := NormalizeProxy(in); got != want {
+			t.Errorf("NormalizeProxy(%q) = %q，期望 %q", in, got, want)
+		}
+	}
+}
+
+func TestSaveProxiesAcceptsVendorFormats(t *testing.T) {
+	dbtest.Open(t)
+	dbtest.SetMasterKey(t)
+	if err := SaveProxies(map[string]string{"US": "103.62.1.151:443:dEmUser:Pw123", "PH": "socks5://dEmUser:Pw123:@103.62.1.151:443"}); err != nil {
+		t.Fatal(err)
+	}
+	px, _ := LoadProxies()
+	for _, r := range []string{"US", "PH"} {
+		if px[r] != "socks5://dEmUser:Pw123@103.62.1.151:443" {
+			t.Errorf("%s 应存成标准地址: %q", r, px[r])
+		}
+	}
+	err := SaveProxies(map[string]string{"US": "secrethost:port:user:secretpw"})
+	if err == nil || strings.Contains(err.Error(), "secret") {
+		t.Fatalf("认不出的写法应报错且不含原文: %v", err)
+	}
 }

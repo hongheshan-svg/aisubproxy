@@ -26,7 +26,7 @@ func TestNewRejectsBadProxy(t *testing.T) {
 	if _, err := New("ftp://x"); err == nil {
 		t.Error("ftp 代理应报错")
 	}
-	for _, p := range []string{"socks5://u:p@127.0.0.1:1080", ""} {
+	for _, p := range []string{"socks5://u:p@127.0.0.1:1080", "socks5h://u:p@127.0.0.1:1080", ""} {
 		if _, err := New(p); err != nil {
 			t.Errorf("New(%q) 不应报错: %v", p, err)
 		}

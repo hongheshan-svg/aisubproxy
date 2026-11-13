@@ -145,7 +145,7 @@
 
           <div class="mt-6 space-y-2">
             <div class="font-semibold">各地区代理</div>
-            <p class="text-sm text-muted">代理地址只写不读：已配置只显示「已配置」，留空表示不修改。socks5 不支持账号密码，需要账号密码请用 http 代理。</p>
+            <p class="text-sm text-muted">代理地址只写不读：已配置只显示「已配置」，留空表示不修改。支持 http、https、socks5（可带账号密码）。可以直接贴服务商给的写法：socks5://用户名:密码@主机:端口、主机:端口:用户名:密码、用户名:密码@主机:端口，没写协议的按 socks5 处理。带协议头的地址里，密码有 @ : / # ? % 等符号要先做 URL 编码（如 @ 写成 %40）。</p>
             <div v-if="proxiesFailed" class="text-sm text-warn">
               代理状态读取失败，下面的状态不可信。<el-button size="small" link type="primary" @click="loadProxies">重试</el-button>
             </div>
@@ -155,13 +155,16 @@
               <el-tag v-else size="small" :type="proxies[r] ? 'success' : 'info'">{{ proxies[r] ? '已配置' : '未配置' }}</el-tag>
               <el-input
                 v-model="proxyInputs[r]" type="password" autocomplete="new-password" style="width: 320px" size="small"
-                :placeholder="proxies[r] ? '留空不修改，填写则覆盖' : '如 http://user:pass@host:port'"
+                :placeholder="proxies[r] ? '留空不修改，填写则覆盖' : '如 socks5://user:pass@host:port 或 host:port:user:pass'"
               />
               <el-button v-if="proxies[r]" size="small" type="danger" plain :loading="proxySaving" @click="clearProxy(r)">清除</el-button>
               <el-button size="small" :loading="proxyTesting === r" :disabled="!!proxyTesting && proxyTesting !== r" @click="testProxy(r)">
-                {{ proxies[r] ? '测试' : '测试直连' }}
+                {{ proxyTesting === r ? (proxies[r] ? '测试中（含浏览器）' : '测试中') : (proxies[r] ? '测试' : '测试直连') }}
               </el-button>
-              <div v-if="proxyTestResults[r]" class="basis-full pl-[88px] text-sm" :class="'text-' + proxyTestResults[r].tone">{{ proxyTestResults[r].text }}</div>
+              <div
+                v-for="(line, i) in proxyTestResults[r] || []" :key="i"
+                class="basis-full pl-[88px] text-sm" :class="'text-' + line.tone"
+              >{{ line.text }}</div>
             </div>
             <el-button type="primary" :loading="proxySaving" :disabled="!hasProxyInput" @click="saveProxies">保存代理</el-button>
           </div>
@@ -321,8 +324,8 @@ import { authFetch } from '../../lib/api'
 import { dialog } from '../../lib/dialog'
 import { errText, fmtTs } from '../../lib/cardpool'
 import {
-  STATES, failureText, formToPlan, formatMinor, isTerminal, orderAmountLabel, pageOutcomeLabel, payApi, planToForm, proxyTestText, regionWithName, stateLabel,
-  payBlockReason, RESOLVE_FAILED_HINT, resolveConfirmText, type BuiltinPrices, type FormPlan, type PlanConf, type ProxyTestResult,
+  STATES, failureText, formToPlan, formatMinor, isTerminal, orderAmountLabel, pageOutcomeLabel, payApi, planToForm, proxyTestLines, regionWithName, stateLabel,
+  payBlockReason, RESOLVE_FAILED_HINT, resolveConfirmText, type BuiltinPrices, type FormPlan, type PlanConf, type ProxyTestLine, type ProxyTestResult,
 } from '../../lib/pay'
 import { loadRegistry, providerLabel, registry } from '../../lib/provider'
 
@@ -403,7 +406,7 @@ async function loadProxies() {
 
 // 测试代理：同一时刻只测一个（后端也限制）；结果里没有代理地址
 const proxyTesting = ref('')
-const proxyTestResults = reactive<Record<string, { tone: 'ok' | 'warn' | 'err'; text: string }>>({})
+const proxyTestResults = reactive<Record<string, ProxyTestLine[]>>({})
 
 async function testProxy(r: string) {
   proxyTesting.value = r
@@ -411,8 +414,8 @@ async function testProxy(r: string) {
   const res = await payApi<ProxyTestResult>('/proxies/test', 'POST', { region: r })
   proxyTesting.value = ''
   proxyTestResults[r] = res.ok
-    ? proxyTestText(res.data)
-    : { tone: 'err', text: `测试失败：${errText(res, '请求失败')}` }
+    ? proxyTestLines(res.data)
+    : [{ tone: 'err', text: `测试失败：${errText(res, '请求失败')}` }]
 }
 
 async function putProxies(body: Record<string, string>): Promise<boolean> {

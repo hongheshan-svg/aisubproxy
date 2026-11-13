@@ -296,3 +296,8 @@ func ReloadFrame(ctx context.Context, b *Browser, sel string) error {
 		return chromedp.Evaluate(js, &ok, func(p *runtime.EvaluateParams) *runtime.EvaluateParams { return p.WithAwaitPromise(true) }).Do(ctx)
 	})
 }
+
+// TraceLoopback 同 Trace，但回环地址也走代理，测试用本机代理与本机仿造的 trace 页。
+func TraceLoopback(ctx context.Context, proxyURL string) (string, error) {
+	return trace(ctx, LoopbackProxy(LaunchOptions{ProxyURL: proxyURL}))
+}

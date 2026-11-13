@@ -25,6 +25,7 @@ import (
 	"github.com/tuzi/cdk-recharge-system/internal/paybrowser"
 	"github.com/tuzi/cdk-recharge-system/internal/payengine"
 	"github.com/tuzi/cdk-recharge-system/internal/provider"
+	"github.com/tuzi/cdk-recharge-system/internal/safego"
 )
 
 // payEngine 为运行中的付款引擎；未启动时为 nil。
@@ -479,14 +480,66 @@ func payConfigAudit(plans []payengine.PlanConf, concurrency int) string {
 	return fmt.Sprintf("enabled=[%s] zero=[%s] concurrency=%d", strings.Join(on, ","), strings.Join(zero, ","), concurrency)
 }
 
-// traceClientFactory 与 traceTimeout 供测试注入假服务器与短超时。
+// traceClientFactory 与 traceTimeout 供测试注入假服务器与短超时；browserTrace 供测试替换，不起真 Chrome。
 var (
 	traceClientFactory = chatgpt.New
 	traceTimeout       = 20 * time.Second
+	browserTrace       = paybrowser.Trace
 	proxyTestBusy      atomic.Bool
 )
 
+// proxyBrowserResult 是付款浏览器那条路的出口检测结果。错误与说明都是固定文案，不含代理地址。
+type proxyBrowserResult struct {
+	Checked       bool   `json:"checked"` // false：没测成（本机没有 Chrome 等，见 note）
+	OK            bool   `json:"ok"`
+	IP            string `json:"ip"`
+	Loc           string `json:"loc"`
+	LatencyMs     int64  `json:"latency_ms"`
+	MatchesRegion bool   `json:"matches_region"`
+	SameIP        bool   `json:"same_ip"` // 与服务器请求的出口 IP 一致
+	Error         string `json:"error,omitempty"`
+	Note          string `json:"note,omitempty"`
+}
+
+// testBrowserEgress 用付款时一样的方式起 Chrome（带账号密码的 socks5 经本机中转）读 trace。
+func testBrowserEgress(ctx context.Context, proxy, region string) *proxyBrowserResult {
+	r := &proxyBrowserResult{}
+	start := time.Now()
+	text, err := browserTrace(ctx, proxy)
+	r.LatencyMs = time.Since(start).Milliseconds()
+	if errors.Is(err, paybrowser.ErrNoChrome) {
+		r.Note = "本机没有 Chrome，浏览器这条路没测"
+		return r
+	}
+	r.Checked = true
+	if err != nil {
+		r.Error = err.Error()
+		return r
+	}
+	info := chatgpt.ParseTrace(text)
+	if info.IP == "" && info.Loc == "" {
+		r.Error = "浏览器打开的不是有效的 trace 结果，可能被 Cloudflare 挑战"
+		return r
+	}
+	r.OK, r.IP, r.Loc, r.MatchesRegion = true, info.IP, info.Loc, info.Loc == region
+	return r
+}
+
+// browserAuditText 是审计里浏览器那条路的一句话。
+func browserAuditText(b *proxyBrowserResult) string {
+	switch {
+	case !b.Checked:
+		return "未测（" + b.Note + "）"
+	case !b.OK:
+		return "失败 " + b.Error
+	case !b.MatchesRegion:
+		return "成功，出口地区不一致（" + b.Loc + "）"
+	}
+	return "成功，出口地区一致"
+}
+
 // AdminPayTestProxy 用某地区已配置的代理（没配则直连）访问 /cdn-cgi/trace，确认可用与出口国家。
+// 配了代理时同时用付款浏览器那条路再测一次（结果在 browser 里）：服务器请求通了，不代表浏览器那条路也通。
 // 失败也回 200（ok:false，error 为不含代理地址的中文说明）；地区非法 400；已有测试在跑 409。
 func AdminPayTestProxy(c *gin.Context) {
 	payRoute(func(c *gin.Context, s *payengine.Service) {
@@ -518,6 +571,19 @@ func AdminPayTestProxy(c *gin.Context) {
 		}
 		proxy := px[region]
 		res := gin.H{"region": region, "proxy_configured": proxy != "", "ok": false, "ip": "", "loc": "", "colo": "", "latency_ms": 0, "matches_region": false}
+
+		// 浏览器那条路要起 Chrome，比服务器请求慢，两条同时测
+		var br *proxyBrowserResult
+		var wg sync.WaitGroup
+		if proxy != "" {
+			reqCtx := c.Request.Context()
+			wg.Add(1)
+			safego.Go("代理测试浏览器出口", func() {
+				defer wg.Done()
+				br = testBrowserEgress(reqCtx, proxy, region)
+			})
+		}
+
 		var failMsg string
 		cl, err := traceClientFactory(proxy)
 		if err != nil {
@@ -535,15 +601,27 @@ func AdminPayTestProxy(c *gin.Context) {
 				res["matches_region"] = info.Loc == region
 			}
 		}
+		wg.Wait()
+
+		var audit string
 		switch {
 		case failMsg != "":
 			res["error"] = failMsg
-			auditAdmin(c, "pay_proxy_test", region+":失败 "+failMsg)
+			audit = region + ":失败 " + failMsg
 		case res["matches_region"] == true:
-			auditAdmin(c, "pay_proxy_test", region+":成功，出口地区一致")
+			audit = region + ":成功，出口地区一致"
 		default:
-			auditAdmin(c, "pay_proxy_test", fmt.Sprintf("%s:成功，出口地区不一致（%v）", region, res["loc"]))
+			audit = fmt.Sprintf("%s:成功，出口地区不一致（%v）", region, res["loc"])
 		}
+		if proxy != "" {
+			if br == nil { // 检测协程崩溃（safego 已记录）
+				br = &proxyBrowserResult{Checked: true, Error: "浏览器检测内部错误"}
+			}
+			br.SameIP = br.OK && res["ok"] == true && br.IP == res["ip"]
+			res["browser"] = br
+			audit += "；浏览器:" + browserAuditText(br)
+		}
+		auditAdmin(c, "pay_proxy_test", audit)
 		c.JSON(http.StatusOK, res)
 	})(c)
 }

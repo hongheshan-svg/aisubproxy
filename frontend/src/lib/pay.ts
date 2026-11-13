@@ -221,7 +221,23 @@ export interface ProxyTestResult {
   latency_ms?: number
   matches_region?: boolean
   error?: string
+  /** 付款浏览器那条路的检测（配了代理才有）：服务器请求通了，不代表浏览器那条路也通 */
+  browser?: ProxyBrowserResult
 }
+
+export interface ProxyBrowserResult {
+  checked: boolean
+  ok: boolean
+  ip?: string
+  loc?: string
+  latency_ms?: number
+  matches_region?: boolean
+  same_ip?: boolean
+  error?: string
+  note?: string
+}
+
+export type ProxyTestLine = { tone: 'ok' | 'warn' | 'err'; text: string }
 
 const COUNTRY_NAME: Record<string, string> = { PH: '菲律宾', US: '美国', JP: '日本', CL: '智利', EG: '埃及', SG: '新加坡' }
 
@@ -240,6 +256,32 @@ export function proxyTestText(r: ProxyTestResult): { tone: 'ok' | 'warn' | 'err'
   }
   const name = COUNTRY_NAME[loc] ? `（${COUNTRY_NAME[loc]}）` : ''
   return { tone: 'ok', text: `出口 IP ${r.ip}，OpenAI 识别为 ${loc}${name}，耗时 ${r.latency_ms ?? 0} ms` }
+}
+
+/** 付款浏览器那条路的一行结果。 */
+export function proxyBrowserText(region: string, b: ProxyBrowserResult, serverIP?: string): ProxyTestLine {
+  const head = '付款浏览器：'
+  if (!b.checked) return { tone: 'warn', text: `${head}没测成（${b.note || '原因未知'}），付款时浏览器能不能走这个代理还不确定` }
+  if (!b.ok) return { tone: 'err', text: `${head}失败，${b.error || '原因未知'}。付款时浏览器会打不开支付页` }
+  const loc = b.loc || '未知'
+  if (b.matches_region === false) {
+    return { tone: 'warn', text: `${head}出口 IP ${b.ip}，识别为 ${loc}，与 ${region} 不一致（耗时 ${b.latency_ms ?? 0} ms）` }
+  }
+  if (b.same_ip === false && serverIP) {
+    return { tone: 'warn', text: `${head}出口 IP ${b.ip}，与服务器请求的 ${serverIP} 不同；静态 IP 应当一致，请检查代理是否在轮换出口（耗时 ${b.latency_ms ?? 0} ms）` }
+  }
+  const name = COUNTRY_NAME[loc] ? `（${COUNTRY_NAME[loc]}）` : ''
+  return { tone: 'ok', text: `${head}出口 IP ${b.ip}，识别为 ${loc}${name}，耗时 ${b.latency_ms ?? 0} ms` }
+}
+
+/** 代理测试的全部结果行：有浏览器那条路时分两行，第一行标明是服务器请求。 */
+export function proxyTestLines(r: ProxyTestResult): ProxyTestLine[] {
+  const server = proxyTestText(r)
+  if (!r.browser) return [server]
+  return [
+    { tone: server.tone, text: `服务器请求：${server.text}` },
+    proxyBrowserText(r.region, r.browser, r.ok ? r.ip : undefined),
+  ]
 }
 
 /**

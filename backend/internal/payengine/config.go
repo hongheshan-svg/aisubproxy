@@ -3,6 +3,7 @@ package payengine
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -414,18 +415,79 @@ func validProxy(addr string) bool {
 	return false
 }
 
+// proxyHostPort 判断 s 是不是「主机:端口」（端口 1~65535，主机不含 @ 和空白）。
+func proxyHostPort(s string) bool {
+	host, port, err := net.SplitHostPort(s)
+	if err != nil || host == "" || strings.ContainsAny(host, "@ \t") {
+		return false
+	}
+	n, err := strconv.Atoi(port)
+	return err == nil && n >= 1 && n <= 65535
+}
+
+// NormalizeProxy 把静态 IP 服务商常见的几种写法统一成标准代理地址，认不出的原样返回（交给 validProxy 报错）：
+//
+//	主机:端口:用户名:密码      用户名:密码@主机:端口      主机:端口@用户名:密码      主机:端口
+//
+// 这些写法没有协议头，一律当 socks5；账号密码里的特殊符号在这里做 URL 编码。末尾的 {备注} 会去掉。
+// 带协议头的地址只修一种服务商导出的毛病：密码后面多出一个冒号（socks5://用户名:密码:@主机:端口）。
+// 密码确实以冒号结尾的，请把冒号写成 %3A。
+func NormalizeProxy(raw string) string {
+	v := strings.TrimSpace(raw)
+	if i := strings.Index(v, "{"); i > 0 && strings.HasSuffix(v, "}") {
+		v = strings.TrimSpace(v[:i])
+	}
+	if i := strings.Index(v, "://"); i >= 0 {
+		rest := v[i+3:]
+		if at := strings.LastIndex(rest, "@"); at > 0 && strings.HasSuffix(rest[:at], ":") && strings.Count(rest[:at], ":") >= 2 {
+			v = v[:i+3] + rest[:at-1] + rest[at:]
+		}
+		return v
+	}
+	build := func(hostport, user, pass string) string {
+		u := url.URL{Scheme: "socks5", Host: hostport}
+		if user != "" || pass != "" {
+			u.User = url.UserPassword(user, pass)
+		}
+		return u.String()
+	}
+	if at := strings.LastIndex(v, "@"); at > 0 && proxyHostPort(v[at+1:]) { // 用户名:密码@主机:端口
+		user, pass, _ := strings.Cut(v[:at], ":")
+		return build(v[at+1:], user, pass)
+	}
+	if at := strings.Index(v, "@"); at > 0 && proxyHostPort(v[:at]) { // 主机:端口@用户名:密码
+		user, pass, _ := strings.Cut(v[at+1:], ":")
+		return build(v[:at], user, pass)
+	}
+	if proxyHostPort(v) { // 主机:端口
+		return build(v, "", "")
+	}
+	if p := strings.SplitN(v, ":", 4); len(p) == 4 && proxyHostPort(p[0]+":"+p[1]) { // 主机:端口:用户名:密码
+		return build(p[0]+":"+p[1], p[2], p[3])
+	}
+	return v
+}
+
 // saveProxiesMu 保护 SaveProxies 的读改写：两名管理员同时保存不同地区时，后写的不能覆盖先写的。
 var saveProxiesMu sync.Mutex
 
 // SaveProxies 合并保存地区代理：空串保持不变，"-" 清除，其余须为 http/https/socks5/socks5h 地址（与 chatgpt.New 一致）。
 // 错误消息不含代理地址，也不回显输入的键（键可能被误填成带密码的地址）。
 func SaveProxies(in map[string]string) error {
+	norm := make(map[string]string, len(in))
+	for r, v := range in {
+		if v != "" && v != "-" {
+			v = NormalizeProxy(v)
+		}
+		norm[r] = v
+	}
+	in = norm
 	for r, v := range in {
 		if !contains(Regions, r) {
 			return fmt.Errorf("%w: 未知地区", ErrBadRequest)
 		}
 		if v != "" && v != "-" && !validProxy(v) {
-			return fmt.Errorf("%w: 地区 %s 的代理地址格式无效，须为 http、https、socks5 或 socks5h 地址，socks5 要写端口", ErrBadRequest, r)
+			return fmt.Errorf("%w: 地区 %s 的代理地址格式无效，须为 http、https、socks5 或 socks5h 地址，socks5 要写端口；也可以直接贴「主机:端口:用户名:密码」", ErrBadRequest, r)
 		}
 	}
 	saveProxiesMu.Lock()

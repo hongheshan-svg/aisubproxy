@@ -59,14 +59,64 @@ jobs:
           working-directory: backend
 
       - name: Test
-        # paybrowser 要跑约 9 分钟，放在 backend-browser 里并行
+        # paybrowser 每条用例都真的启动 Chrome，放在 browser-shard 里分片并行
         run: |
           mapfile -t pkgs < <(go list ./... | grep -v '/internal/paybrowser')
           go test -race "${pkgs[@]}"
 
-  backend-browser:
+  changes:
+    # 判断这次要不要跑浏览器测试（paybrowser，每条用例都真的启动一次 Chrome，是最慢的一项）。
+    # PR、推送到 master：只有 backend/ 或本文件有改动才跑，只改 VERSION、CHANGELOG、前端、文档的不跑。
+    # 发版（release.yml 经 workflow_call 调用，ref 是标签）：一律跑，发版闸门不放松。
+    # 判断不出来（取不到对比的提交等）时按要跑处理。
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 5
+    outputs:
+      browser: ${{ steps.diff.outputs.browser }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Diff
+        id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          run=true
+          base=""
+          if [[ "$REF" == refs/tags/* ]]; then
+            echo "发版：浏览器测试照常跑"
+          elif [ "$EVENT" = "pull_request" ]; then
+            # PR 检出的是合并提交，第一个父提交就是目标分支
+            base="$(git rev-parse --verify --quiet 'HEAD^1' || true)"
+          elif [ "$EVENT" = "push" ] && [[ "$BEFORE" =~ ^[0-9a-f]{40}$ ]] && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            base="$BEFORE"
+          fi
+          if [ -n "$base" ]; then
+            if files="$(git diff --name-only "$base" HEAD)"; then
+              echo "$files"
+              if ! grep -Eq '^(backend/|\.github/workflows/ci\.yml$)' <<<"$files"; then
+                run=false
+              fi
+            fi
+          fi
+          echo "browser=$run" >> "$GITHUB_OUTPUT"
+          echo "跑浏览器测试：$run"
+
+  browser-shard:
+    # paybrowser 的用例按序号分成 4 份并行跑；串行一轮约 19 分钟。
+    needs: changes
+    if: needs.changes.outputs.browser == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     defaults:
       run:
         working-directory: backend
@@ -83,8 +133,48 @@ jobs:
       - name: Allow Chrome sandbox
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
 
-      - name: Test paybrowser
-        run: go test -race -timeout 30m ./internal/paybrowser/...
+      - name: Test paybrowser (shard ${{ matrix.shard }} of 4)
+        env:
+          SHARD: ${{ matrix.shard }}
+          SHARDS: 4
+        run: |
+          # 按名字排序后取 序号 % 份数 == 本份 的用例，四份合起来正好是全部
+          go test -race -list '.*' ./internal/paybrowser/ > "$RUNNER_TEMP/all.txt"
+          mapfile -t all < <(grep -E '^(Test|Example|Fuzz|Benchmark)' "$RUNNER_TEMP/all.txt" | sort)
+          mapfile -t mine < <(printf '%s\n' "${all[@]}" | grep '^Test' | awk -v n="$SHARDS" -v i="$SHARD" '(NR - 1) % n == i')
+          tests="$(printf '%s\n' "${all[@]}" | grep -c '^Test' || true)"
+          if [ "${#all[@]}" -ne "$tests" ]; then
+            echo "paybrowser 里有不是 Test 开头的用例（Example、Fuzz、Benchmark），分片不会跑它们，请改这里的分片办法" >&2
+            exit 1
+          fi
+          if [ "${#mine[@]}" -eq 0 ]; then
+            echo "这一份没有分到用例（共 $tests 条），分片办法有问题" >&2
+            exit 1
+          fi
+          echo "共 $tests 条，本份 ${#mine[@]} 条"
+          pattern="^($(IFS='|'; echo "${mine[*]}"))\$"
+          go test -race -timeout 25m -run "$pattern" ./internal/paybrowser/
+
+  backend-browser:
+    # 分支保护里的必过项就是这个名字：四份都过，或者这次不用跑（见 changes），才算过。
+    needs: [changes, browser-shard]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Result
+        env:
+          CHANGES: ${{ needs.changes.result }}
+          WANTED: ${{ needs.changes.outputs.browser }}
+          SHARDS: ${{ needs.browser-shard.result }}
+        run: |
+          echo "changes=$CHANGES 要跑=$WANTED 分片=$SHARDS"
+          [ "$CHANGES" = "success" ] || { echo "没判断出要不要跑浏览器测试" >&2; exit 1; }
+          if [ "$WANTED" = "false" ] && [ "$SHARDS" = "skipped" ]; then
+            echo "这次没有改后端，不跑浏览器测试"
+            exit 0
+          fi
+          [ "$SHARDS" = "success" ] || { echo "浏览器测试没有全部通过" >&2; exit 1; }
 
   frontend:
     runs-on: ubuntu-latest

@@ -1428,6 +1428,12 @@ func TestEmbeddedFinalCheckSeesPageChange(t *testing.T) {
 			b.disabled = true
 			b.setAttribute('aria-busy', 'true')
 		})()`, "支付按钮不可点击（可能有字段未通过页面校验），没有点击", "存在但不可点击（最后检查时忙）"},
+		// 账号有已存卡：填完卡之后选中的标签换成了别的（卡号框还在），点下去扣的不是我们填的卡
+		{"银行卡标签不再选中", `(() => {
+			const tabs = document.querySelectorAll('[role="tab"]')
+			tabs[0].setAttribute('aria-selected', 'false')
+			tabs[1].setAttribute('aria-selected', 'true')
+		})()`, "「银行卡」标签在填表之后不再被选中（可能换成了已保存的付款方式），没有点击", "「银行卡」标签在填表之后不再被选中（可能换成了已保存的付款方式）"},
 	}
 	for _, c := range cases {
 		for _, dry := range []bool{false, true} {

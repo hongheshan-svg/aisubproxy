@@ -63,7 +63,9 @@ const embeddedAmountJS = `(() => {
 		if (!/^\s*Payment amount:/.test(t.data)) continue
 		const el = t.parentElement
 		if (!el || el.closest('script, style')) continue
-		return textOf(el.parentElement || el)
+		// 切到「银行卡」标签后，这段读屏文字和「Currency:」可能落在不同父元素里，所以返回整个 frame 的文字，
+		// 由 embeddedAmountRe 从中取金额与币种；frame 里的文字很少，这样做不会误认别的金额。
+		return textOf(root)
 	}
 	return ''
 })()`
@@ -98,17 +100,18 @@ const leftCheckoutMsg = "页面已离开结账页"
 // embeddedSeen 是一轮里看到的内嵌页就绪情况，三样同时成立才算打开成功。
 type embeddedSeen struct {
 	card    bool // 某个 frame 里有可见的卡号框
+	tabs    bool // 某个 frame 里有「银行卡」标签（账号已存卡时页面先显示已存卡，卡号框要点这个标签才会出现）
 	amount  bool // 某个 frame 里有 Payment amount 读屏文字
 	buttons int  // 主页面可见的支付按钮个数；读不出时为 -1
 }
 
-func (s embeddedSeen) ready() bool { return s.card && s.amount && s.buttons == 1 }
+func (s embeddedSeen) ready() bool { return s.amount && s.buttons == 1 && (s.card || s.tabs) }
 
 // problem 说明哪几样没成立。
 func (s embeddedSeen) problem() string {
 	var p []string
-	if !s.card {
-		p = append(p, "支付页上没有找到卡号框")
+	if !s.card && !s.tabs {
+		p = append(p, "支付页上没有找到卡号框或「银行卡」标签")
 	}
 	if !s.amount {
 		p = append(p, "支付页上没有找到 Payment amount")
@@ -161,6 +164,7 @@ func (b *Browser) seeEmbedded(ctx context.Context, frames []frameRef) embeddedSe
 	}
 	return embeddedSeen{
 		card:    b.find(ctx, frames, Sel.CardNumber, false) != nil,
+		tabs:    b.cardTab(ctx, frames) != nil,
 		amount:  b.embeddedAmountText(ctx, frames) != "",
 		buttons: n,
 	}
@@ -453,6 +457,9 @@ type fillMark struct {
 	mainLoader cdp.LoaderID
 	cardFrame  cdp.FrameID
 	cardLoader cdp.LoaderID
+	// cardTab 是「银行卡」标签的 aria-selected 原值；页面没有这个标签或标签不带这个属性时为空。
+	// 账号有已存卡时页面还有「已保存」标签：填完卡之后选中的标签要是换成了它，点支付扣的就是客户的已存卡。
+	cardTab string
 }
 
 // readFillMark 读此刻的主页面文档，和装着可见卡号框的 iframe 及其文档；找不到卡号框时 cardFrame 为空。只读页面。
@@ -468,6 +475,11 @@ func (b *Browser) readFillMark(ctx context.Context) (fillMark, error) {
 	}
 	if e := b.find(ctx, frames, Sel.CardNumber, false); e != nil {
 		m.cardFrame, m.cardLoader = e.frame.id, loaderOf(tree, e.frame.id)
+	}
+	if tab := b.cardTab(ctx, frames); tab != nil {
+		if err := callOn(ctx, tab.obj, `function () { return this.getAttribute('aria-selected') || '' }`, &m.cardTab); err != nil {
+			return fillMark{}, fmt.Errorf("读「银行卡」标签的选中状态失败: %w", err)
+		}
 	}
 	return m, nil
 }
@@ -500,7 +512,8 @@ func (b *Browser) markFill(ctx context.Context) error {
 	return nil
 }
 
-// checkFillMark 核对此刻的页面还是 Fill 时那一份（fillMark）：主页面文档没换、卡号框还在同一个 iframe 的同一个文档里。
+// checkFillMark 核对此刻的页面还是 Fill 时那一份（fillMark）：主页面文档没换、卡号框还在同一个 iframe 的同一个文档里、
+// 填表时选中的「银行卡」标签仍然选中。
 // 变了返回 pageChanged。没记过（没填过表、只读按钮状态）时不核对；内嵌页 Fill 成功就一定记下了，Submit 要求先 Fill 成功。
 func (b *Browser) checkFillMark(ctx context.Context) error {
 	b.mu.Lock()
@@ -517,6 +530,9 @@ func (b *Browser) checkFillMark(ctx context.Context) error {
 		return pageChanged{msg: "页面在填表之后重新加载过"}
 	case got.cardFrame != want.cardFrame || got.cardLoader != want.cardLoader:
 		return pageChanged{msg: "卡号输入框在填表之后换过（卡片 iframe 重新挂载或重新加载）"}
+	case want.cardTab == "true" && got.cardTab != "true":
+		// 只在填表时确实读到「选中」才核对：标签不带 aria-selected 的页面读到的是空，靠上面卡号框那一条兜底
+		return pageChanged{msg: "「银行卡」标签在填表之后不再被选中（可能换成了已保存的付款方式）"}
 	}
 	return nil
 }
@@ -551,6 +567,39 @@ func (b *Browser) embeddedAmountText(ctx context.Context, frames []frameRef) str
 		}
 	}
 	return ""
+}
+
+// cardTabTexts 是内嵌页「银行卡」标签的可见文字。中文账号是「银行卡」，英文账号是「Card」。
+// 只按 role=tab 或 button 的完整文字匹配，避免把「卡号」等标签当成标签页点。
+var cardTabTexts = []string{"银行卡", "Card", "Credit or debit card", "Debit or credit card"}
+
+// cardTabJS 在本 frame 里找可见的「银行卡」标签，返回命中的元素或 null（null 没有对象句柄，便于判断）。
+const cardTabJS = `((wants, visible) => {
+	const els = document.querySelectorAll('[role="tab"], button')
+	for (const e of els) {
+		const t = (e.innerText || '').trim()
+		if (!wants.includes(t)) continue
+		if (!visible(e)) continue
+		return e
+	}
+	return null
+})(%s, %s)`
+
+// cardTab 在各 frame 里找「银行卡」标签；找不到返回 nil。读不出的 frame 跳过。
+func (b *Browser) cardTab(ctx context.Context, frames []frameRef) *elem {
+	expr := fmt.Sprintf(cardTabJS, mustJSON(cardTabTexts), visibleJS)
+	for _, f := range frames {
+		r, exc, err := runtime.Evaluate(expr).WithContextID(f.ctx).WithObjectGroup(objectGroup).Do(ctx)
+		if err != nil {
+			b.forgetWorld(f.id)
+			continue
+		}
+		if exc != nil || r.ObjectID == "" {
+			continue
+		}
+		return &elem{frame: f, obj: r.ObjectID}
+	}
+	return nil
 }
 
 // waitCardVisible 等卡号框可见，最多 max；等不到返回 false。

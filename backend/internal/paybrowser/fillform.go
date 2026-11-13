@@ -594,6 +594,7 @@ func (b *Browser) checkAbsent(ctx context.Context, absent []field) error {
 // 报告和错误写明入口找到了但没点，以及原因（refusedNote），不说成「页面上没有」。
 func (b *Browser) revealCardForm(ctx context.Context) error {
 	newCard, skippedLink, found := false, false, false
+	tabClicked := false
 	var linkSeen time.Time
 	var skipWhy, newCardWhy string // 内嵌页上入口找到了但没点的原因
 	_, err := b.poll(ctx, formWait, func(frames []frameRef) bool {
@@ -615,6 +616,16 @@ func (b *Browser) revealCardForm(ctx context.Context) error {
 				skipWhy = b.refusedNote(err)
 			}
 			return time.Since(linkSeen) >= linkSkipWait // 验证框挡着，卡号框不会自己出现，不必等满
+		}
+		// 账号已存卡时页面默认选中「已保存」，卡号框要点一次「银行卡」标签才会出现；点一次就够，之后继续等卡号框
+		if !tabClicked {
+			if tab := b.cardTab(ctx, frames); tab != nil {
+				if err := b.clickEntry(ctx, frames, tab); err == nil {
+					tabClicked = true
+				} else {
+					newCardWhy = b.refusedNote(err)
+				}
+			}
 		}
 		if !newCard {
 			if opt := b.findText(ctx, frames, Sel.NewCardOption); opt != nil {

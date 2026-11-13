@@ -4,8 +4,12 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/tuzi/cdk-recharge-system/internal/socks5test"
 )
 
 func TestParseTrace(t *testing.T) {
@@ -93,5 +97,36 @@ func TestClassifyTraceErrProxyAuthBoundary(t *testing.T) {
 		if got := classifyTraceErr(context.Background(), errors.New(c.msg)); got != c.want {
 			t.Errorf("%q 应归为 %v，得到 %v", c.msg, c.want, got)
 		}
+	}
+}
+
+// 服务器请求那条路带账号密码走 socks5：真实握手，账号密码对了能通，错了报代理认证失败且不带地址和密码。
+func TestTraceThroughSocks5WithAuth(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("fl=1\nip=9.9.9.9\nloc=PH\n"))
+	}))
+	t.Cleanup(srv.Close)
+	up := socks5test.New(t, "alice", "p@ss/word")
+	for _, scheme := range []string{"socks5", "socks5h"} {
+		c, err := New(scheme + "://alice:p%40ss%2Fword@" + up.Addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.BaseURL = srv.URL
+		info, err := c.Trace(context.Background())
+		if err != nil || info.IP != "9.9.9.9" || info.Loc != "PH" {
+			t.Fatalf("%s: %+v %v", scheme, info, err)
+		}
+	}
+	if up.AuthOK.Load() < 2 || up.AuthFail.Load() != 0 {
+		t.Fatalf("上游认证次数不符：成功 %d，失败 %d", up.AuthOK.Load(), up.AuthFail.Load())
+	}
+	c, err := New("socks5://alice:topsecret-wrong@" + up.Addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.BaseURL = srv.URL
+	if _, err := c.Trace(context.Background()); !errors.Is(err, ErrTraceProxyAuth) || strings.Contains(err.Error(), "topsecret") {
+		t.Fatalf("密码不对应报代理认证失败: %v", err)
 	}
 }

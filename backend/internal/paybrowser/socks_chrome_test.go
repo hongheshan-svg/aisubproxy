@@ -8,13 +8,14 @@ import (
 	"testing"
 
 	"github.com/tuzi/cdk-recharge-system/internal/paybrowser"
+	"github.com/tuzi/cdk-recharge-system/internal/socks5test"
 )
 
 // 带账号密码的 socks5：Chrome 经本机中转打开支付页，上游 SOCKS5 收到正确的账号密码。
 func TestSocks5ProxyAuth(t *testing.T) {
 	needChrome(t)
 	f := newFakeCheckout(t)
-	up := paybrowser.NewFakeSOCKS5(t, "alice", "s3cret")
+	up := socks5test.New(t, "alice", "s3cret")
 	b := launch(t, paybrowser.LoopbackProxy(paybrowser.LaunchOptions{ProxyURL: "socks5://alice:s3cret@" + up.Addr}))
 	if err := b.Open(openCtx(t), f.url(""), paybrowser.PageHosted, nil); err != nil {
 		t.Fatalf("经 socks5 代理 Open 失败: %v", err)
@@ -28,7 +29,7 @@ func TestSocks5ProxyAuth(t *testing.T) {
 func TestSocks5hProxyNoAuth(t *testing.T) {
 	needChrome(t)
 	f := newFakeCheckout(t)
-	up := paybrowser.NewFakeSOCKS5(t, "", "")
+	up := socks5test.New(t, "", "")
 	b := launch(t, paybrowser.LoopbackProxy(paybrowser.LaunchOptions{ProxyURL: "socks5h://" + up.Addr}))
 	if err := b.Open(openCtx(t), f.url(""), paybrowser.PageHosted, nil); err != nil {
 		t.Fatalf("经 socks5h 代理 Open 失败: %v", err)
@@ -49,7 +50,7 @@ func TestTraceThroughSocks5(t *testing.T) {
 	old := paybrowser.TraceURL
 	paybrowser.TraceURL = site.URL + "/cdn-cgi/trace"
 	t.Cleanup(func() { paybrowser.TraceURL = old })
-	up := paybrowser.NewFakeSOCKS5(t, "alice", "s3cret")
+	up := socks5test.New(t, "alice", "s3cret")
 
 	text, err := paybrowser.TraceLoopback(openCtx(t), "socks5://alice:s3cret@"+up.Addr)
 	if err != nil || !strings.Contains(text, "ip=9.9.9.9") || !strings.Contains(text, "loc=PH") {

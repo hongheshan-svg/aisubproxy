@@ -1,4 +1,5 @@
-package paybrowser
+// Package socks5test 提供测试用的假 SOCKS5 服务端，只给测试用。
+package socks5test
 
 import (
 	"encoding/binary"
@@ -10,8 +11,8 @@ import (
 	"testing"
 )
 
-// FakeSOCKS5 是测试用的最小 SOCKS5 服务端（RFC 1928 CONNECT + RFC 1929 账号密码），只转发到回环地址或 localhost。
-type FakeSOCKS5 struct {
+// Server 是测试用的最小 SOCKS5 服务端（RFC 1928 CONNECT + RFC 1929 账号密码），只转发到回环地址或 localhost。
+type Server struct {
 	Addr       string
 	user, pass string
 	AuthOK     atomic.Int32 // 账号密码正确的握手次数
@@ -20,14 +21,14 @@ type FakeSOCKS5 struct {
 	targets    []string // 收到的 CONNECT 目标，域名原样记录（用来确认域名交给代理端解析）
 }
 
-// NewFakeSOCKS5 起一个要求 user/pass 的假 SOCKS5 服务；user 为空表示不要认证。测试结束自动关闭。
-func NewFakeSOCKS5(t testing.TB, user, pass string) *FakeSOCKS5 {
+// New 起一个要求 user/pass 的假 SOCKS5 服务；user 为空表示不要认证。测试结束自动关闭。
+func New(t testing.TB, user, pass string) *Server {
 	t.Helper()
 	ln, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := &FakeSOCKS5{Addr: ln.Addr().String(), user: user, pass: pass}
+	s := &Server{Addr: ln.Addr().String(), user: user, pass: pass}
 	var wg sync.WaitGroup
 	var conns sync.Map
 	t.Cleanup(func() {
@@ -57,13 +58,13 @@ func NewFakeSOCKS5(t testing.TB, user, pass string) *FakeSOCKS5 {
 }
 
 // Targets 返回收到过的 CONNECT 目标。
-func (s *FakeSOCKS5) Targets() []string {
+func (s *Server) Targets() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.targets...)
 }
 
-func (s *FakeSOCKS5) serve(c net.Conn, conns *sync.Map) {
+func (s *Server) serve(c net.Conn, conns *sync.Map) {
 	head := make([]byte, 2)
 	if _, err := io.ReadFull(c, head); err != nil || head[0] != 5 {
 		return

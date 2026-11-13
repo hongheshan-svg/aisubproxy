@@ -296,12 +296,14 @@ func (r *socksRelay) failReason() string {
 const socksAuthFailed = "代理认证失败，请检查账号密码"
 
 // socksFailReason 把 SOCKS5 拨号错误归成不含地址的固定说明。
+// 错误原文里带着目标域名，所以只认库里固定的认证报错，不能看到 authentication、timeout 这样的词就算。
 func socksFailReason(err error) string {
 	msg := strings.ToLower(err.Error())
+	var ne net.Error
 	switch {
-	case strings.Contains(msg, "username/password") || strings.Contains(msg, "authentication"):
+	case strings.Contains(msg, "username/password") || strings.Contains(msg, "no acceptable authentication methods"):
 		return socksAuthFailed
-	case errors.Is(err, context.DeadlineExceeded) || strings.Contains(msg, "timeout"):
+	case errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &ne) && ne.Timeout()):
 		return "连接超时，代理可能不通或太慢"
 	}
 	return "连不上代理或目标站点"

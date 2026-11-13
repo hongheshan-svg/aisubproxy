@@ -2,6 +2,8 @@ package paybrowser
 
 import (
 	"bufio"
+	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -10,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/tuzi/cdk-recharge-system/internal/socks5test"
 )
 
 func startTestRelay(t *testing.T, upstream string) *socksRelay {
@@ -60,7 +64,7 @@ func TestParseProxySocks(t *testing.T) {
 }
 
 func TestSocksRelayForwardsThroughUpstream(t *testing.T) {
-	up := NewFakeSOCKS5(t, "alice", "s3cret")
+	up := socks5test.New(t, "alice", "s3cret")
 	r := startTestRelay(t, "socks5://alice:s3cret@"+up.Addr)
 	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		if req.Header.Get("Proxy-Authorization") != "" {
@@ -108,7 +112,7 @@ func TestSocksRelayForwardsThroughUpstream(t *testing.T) {
 
 // 中转只认自己的随机口令：没带、带错都回 407，不会经上游出去。
 func TestSocksRelayRequiresItsOwnCredentials(t *testing.T) {
-	up := NewFakeSOCKS5(t, "alice", "s3cret")
+	up := socks5test.New(t, "alice", "s3cret")
 	r := startTestRelay(t, "socks5://alice:s3cret@"+up.Addr)
 	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) { io.WriteString(w, "x") }))
 	t.Cleanup(site.Close)
@@ -148,7 +152,7 @@ func TestSocksRelayRequiresItsOwnCredentials(t *testing.T) {
 
 // 上游账号密码不对：Chrome 收到 502，中转记下不含地址的原因。
 func TestSocksRelayUpstreamAuthFailure(t *testing.T) {
-	up := NewFakeSOCKS5(t, "alice", "s3cret")
+	up := socks5test.New(t, "alice", "s3cret")
 	r := startTestRelay(t, "socks5://alice:wrong-pw@"+up.Addr)
 	site := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) { io.WriteString(w, "x") }))
 	t.Cleanup(site.Close)
@@ -170,7 +174,7 @@ func TestSocksRelayUpstreamAuthFailure(t *testing.T) {
 
 // Close 要关掉进行中的隧道并等协程退出，之后不再接受连接。
 func TestSocksRelayCloseEndsTunnels(t *testing.T) {
-	up := NewFakeSOCKS5(t, "", "")
+	up := socks5test.New(t, "", "")
 	echo, err := net.Listen("tcp4", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -222,4 +226,22 @@ func TestSocksRelayCloseEndsTunnels(t *testing.T) {
 		t.Fatal("Close 后不应再接受连接")
 	}
 	r.Close() // 可重复调用
+}
+
+// 失败原因只认库里固定的认证报错：目标域名里碰巧带 authentication、timeout 的连接错误不能误报。
+func TestSocksFailReason(t *testing.T) {
+	for msg, want := range map[string]string{
+		"socks connect tcp 1.2.3.4:1080->x.com:443: username/password authentication failed":             socksAuthFailed,
+		"socks connect tcp 1.2.3.4:1080->x.com:443: no acceptable authentication methods":                socksAuthFailed,
+		"socks connect tcp 1.2.3.4:1080->x.com:443: invalid username/password":                           socksAuthFailed,
+		"socks connect tcp 1.2.3.4:1080->authentication.example.com:443: unknown error host unreachable": "连不上代理或目标站点",
+		"socks connect tcp 1.2.3.4:1080->timeout.example.com:443: unknown error connection refused":      "连不上代理或目标站点",
+	} {
+		if got := socksFailReason(errors.New(msg)); got != want {
+			t.Errorf("%q → %q，期望 %q", msg, got, want)
+		}
+	}
+	if got := socksFailReason(context.DeadlineExceeded); got != "连接超时，代理可能不通或太慢" {
+		t.Errorf("超时 → %q", got)
+	}
 }

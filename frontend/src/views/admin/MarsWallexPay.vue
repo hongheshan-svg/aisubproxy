@@ -145,7 +145,7 @@
 
           <div class="mt-6 space-y-2">
             <div class="font-semibold">各地区代理</div>
-            <p class="text-sm text-muted">代理地址只写不读：已配置只显示「已配置」，留空表示不修改。支持 http、https、socks5（可带账号密码，如 socks5://用户名:密码@主机:端口）；密码里有 @ : / # ? 等符号要先做 URL 编码。</p>
+            <p class="text-sm text-muted">代理地址只写不读：已配置只显示「已配置」，留空表示不修改。支持 http、https、socks5（可带账号密码，如 socks5://用户名:密码@主机:端口）；密码里有 @ : / # ? % 等符号要先做 URL 编码（如 @ 写成 %40）。</p>
             <div v-if="proxiesFailed" class="text-sm text-warn">
               代理状态读取失败，下面的状态不可信。<el-button size="small" link type="primary" @click="loadProxies">重试</el-button>
             </div>

@@ -62,11 +62,12 @@ jobs:
         # paybrowser 每条用例都真的启动 Chrome，放在 browser-shard 里分片并行
         run: |
           mapfile -t pkgs < <(go list ./... | grep -v '/internal/paybrowser')
-          go test -race "${pkgs[@]}"
+          # Chrome 启动卡死时把失败的用例重跑一次，见脚本开头的说明
+          ../scripts/ci-go-test.sh -race "${pkgs[@]}"
 
   changes:
     # 判断这次要不要跑浏览器测试（paybrowser，每条用例都真的启动一次 Chrome，是最慢的一项）。
-    # PR、推送到 master：只有 backend/ 或本文件有改动才跑，只改 VERSION、CHANGELOG、前端、文档的不跑。
+    # PR、推送到 master：只有 backend/、本文件或 scripts/ci-go-test.sh 有改动才跑，只改 VERSION、CHANGELOG、前端、文档的不跑。
     # 发版（release.yml 经 workflow_call 调用，ref 是标签）：一律跑，发版闸门不放松。
     # 判断不出来（取不到对比的提交等）时按要跑处理。
     runs-on: ubuntu-latest
@@ -99,7 +100,7 @@ jobs:
           if [ -n "$base" ]; then
             if files="$(git diff --name-only "$base" HEAD)"; then
               echo "$files"
-              if ! grep -Eq '^(backend/|\.github/workflows/ci\.yml$)' <<<"$files"; then
+              if ! grep -Eq '^(backend/|\.github/workflows/ci\.yml$|scripts/ci-go-test\.sh$)' <<<"$files"; then
                 run=false
               fi
             fi
@@ -153,7 +154,8 @@ jobs:
           fi
           echo "共 $tests 条，本份 ${#mine[@]} 条"
           pattern="^($(IFS='|'; echo "${mine[*]}"))\$"
-          go test -race -timeout 25m -run "$pattern" ./internal/paybrowser/
+          # Chrome 启动卡死时把失败的用例重跑一次，见脚本开头的说明
+          ../scripts/ci-go-test.sh -race -timeout 25m -run "$pattern" ./internal/paybrowser/
 
   backend-browser:
     # 分支保护里的必过项就是这个名字：四份都过，或者这次不用跑（见 changes），才算过。

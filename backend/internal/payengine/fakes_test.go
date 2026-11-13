@@ -324,10 +324,11 @@ type browserFactory struct {
 	notices     func() []string // 未设置时没有提示
 	openErr     error           // 非 nil 时 Open 返回它
 	report      paybrowser.FillReport
-	diagnose    func(context.Context) []string // 未设置时返回一行固定文字
-	lockSubmit  func() bool                    // 未设置时返回 true：不能证明没点击，这是安全方向
-	savePayment func() (string, error)         // EnsureNoSavePayment 的结果；未设置时为「页面没有」
-	notRendered bool                           // true 时 WaitRendered 返回 false（页面一直没显示完整）
+	diagnose    func(context.Context) []string                                      // 未设置时返回一行固定文字
+	lockSubmit  func() bool                                                         // 未设置时返回 true：不能证明没点击，这是安全方向
+	checkout    func(paybrowser.CheckoutRequest) (paybrowser.CheckoutResult, error) // 浏览器建会话的结果
+	savePayment func() (string, error)                                              // EnsureNoSavePayment 的结果；未设置时为「页面没有」
+	notRendered bool                                                                // true 时 WaitRendered 返回 false（页面一直没显示完整）
 
 	mu         sync.Mutex
 	proxies    []string
@@ -386,6 +387,15 @@ type fakeBrowser struct {
 	callLog
 	f        *browserFactory
 	openKind paybrowser.PageKind // 最近一次 Open 收到的页面类型
+}
+
+// CreateCheckout 是浏览器建会话的替身；工厂没配 checkout 时返回 errFakeUnset。
+func (b *fakeBrowser) CreateCheckout(_ context.Context, req paybrowser.CheckoutRequest, _ []paybrowser.Cookie) (paybrowser.CheckoutResult, error) {
+	b.hit("CreateCheckout", req.PlanName, req.Country, req.Currency)
+	if b.f.checkout == nil {
+		return paybrowser.CheckoutResult{}, errFakeUnset
+	}
+	return b.f.checkout(req)
 }
 
 func (b *fakeBrowser) Open(ctx context.Context, url string, kind paybrowser.PageKind, cookies []paybrowser.Cookie) error {

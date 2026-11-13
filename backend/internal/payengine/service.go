@@ -133,8 +133,11 @@ type Options struct {
 	Pools   map[string]Pool
 	ChatGPT func(proxyURL string) (ChatGPT, error)                               // nil → chatgpt.New
 	Browser func(ctx context.Context, proxyURL, shotDir string) (Browser, error) // nil → paybrowser.Launch
-	Now     func() time.Time                                                     // nil → time.Now；提交时间、确认时限与截图清理都用它
-	Alert   func(string)                                                         // nil → log.Printf
+	// BrowserCheckout 为 true 时，订阅单先在真实浏览器里按网页流程建结账会话（纯接口已被 OpenAI 风控 400 拦），
+	// 失败直接放弃，不退回接口。默认在使用内置浏览器工厂时为 true；测试与自备浏览器工厂保持接口路径。
+	BrowserCheckout bool
+	Now             func() time.Time // nil → time.Now；提交时间、确认时限与截图清理都用它
+	Alert           func(string)     // nil → log.Printf
 	// ShotDir 是截图根目录，每单一个子目录；空则为 DB_PATH 所在目录下的 pay-shots。
 	ShotDir  string
 	Timeouts *Timeouts // nil → DefaultTimeouts()
@@ -180,6 +183,7 @@ func New(o Options) *Service {
 	realBrowser := o.Browser == nil
 	if realBrowser {
 		o.Browser = launchBrowser
+		o.BrowserCheckout = true
 	}
 	if o.Now == nil {
 		o.Now = time.Now

@@ -578,6 +578,11 @@ func (s *Service) createLink(ctx context.Context, j *job) error {
 	if j.o.Kind == KindCredit {
 		return s.createCreditLink(ctx, j)
 	}
+	if s.opts.BrowserCheckout {
+		if done, err := s.createLinkInBrowser(ctx, j, plan); done {
+			return err
+		}
+	}
 	co, err := j.gpt.CreateCheckout(ctx, j.sess, plan.ChatGPTPlanName, j.o.Region, j.o.Currency)
 	if err != nil {
 		return s.chatgptAbort(j, "checkout_failed", "创建支付会话失败", err)
@@ -590,6 +595,53 @@ func (s *Service) createLink(ctx context.Context, j *job) error {
 		}
 	}
 	return s.acceptCheckoutURL(ctx, j, co.SessionID, link)
+}
+
+// CheckoutBrowser 是能在页面里建订阅结账会话的浏览器（见 paybrowser.Browser.CreateCheckout）。
+type CheckoutBrowser interface {
+	CreateCheckout(context.Context, paybrowser.CheckoutRequest, []paybrowser.Cookie) (paybrowser.CheckoutResult, error)
+}
+
+// checkoutLinkTimeout 是浏览器里建会话的总时限：打开页面、等 Cloudflare 放行、等 Sentinel 令牌、发请求。
+const checkoutLinkTimeout = 2 * time.Minute
+
+// createLinkInBrowser 是订阅单的步骤 3：在真实浏览器里按网页流程建结账会话，返回 done=false 表示浏览器不支持，
+// 由调用方退回接口路径。2026-11-13 起纯接口建会话被 OpenAI 风控 400 unusual activity（换号、换出口 IP 都一样），
+// 只有网页自己的请求（Sentinel 令牌 + 网页头 + checkout_ui_mode=custom）能拿到会话。
+// 浏览器在这一步启动，openPage 复用同一个实例；会话没建成时由 end() 关闭。
+func (s *Service) createLinkInBrowser(ctx context.Context, j *job, plan PlanConf) (bool, error) {
+	b, err := s.ensureBrowser(ctx, j)
+	if err != nil {
+		return true, err
+	}
+	cb, ok := b.(CheckoutBrowser)
+	if !ok {
+		return false, nil
+	}
+	s.event(ctx, j, "info", "在网页里建支付会话", "")
+	qctx, cancel := context.WithTimeout(ctx, checkoutLinkTimeout)
+	defer cancel()
+	res, err := cb.CreateCheckout(qctx, paybrowser.CheckoutRequest{
+		PlanName: plan.ChatGPTPlanName, Country: j.o.Region, Currency: j.o.Currency,
+	}, sessionCookies(j.sess))
+	if err != nil {
+		switch {
+		case errors.Is(err, paybrowser.ErrCheckoutBlocked):
+			s.opts.Alert(fmt.Sprintf("付款单 %s（地区 %s）在浏览器里建支付会话被 Cloudflare 拦截，请检查该地区代理的出口 IP；换会话没有用。", j.o.OrderNo, j.o.Region))
+			return true, abort("cf_challenge", "在浏览器里建支付会话被 Cloudflare 拦截，请检查该地区代理的出口 IP")
+		case errors.Is(err, paybrowser.ErrUnauthorizedSession):
+			return true, abort("session_invalid", "在浏览器里建支付会话：会话已失效，请重新获取会话")
+		}
+		return true, abort("checkout_failed", "在浏览器里建支付会话失败：%s", truncate(j.scrub(err.Error()), errorMessageLimit))
+	}
+	j.note("checkout_session_id", res.SessionID)
+	link := res.URL
+	if strings.TrimSpace(link) == "" && strings.TrimSpace(res.Tag) == chatgpt.CheckoutTagCustom {
+		if link, err = embeddedCheckoutURL(res.ProcessorEntity, res.SessionID); err != nil {
+			return true, err
+		}
+	}
+	return true, s.acceptCheckoutURL(ctx, j, res.SessionID, link)
 }
 
 // acceptCheckoutURL 先去掉链接首尾空白，再校验并推进到 link_created。链接为空记 checkout_failed；
@@ -715,9 +767,11 @@ func embeddedCheckoutLink(u *url.URL, raw string) bool {
 // pageRenderWait 是打开支付页后、截图前最多等页面显示完整的时间。Stripe 先放金额再淡入，通常一两秒内完成。
 const pageRenderWait = 10 * time.Second
 
-func (s *Service) openPage(ctx context.Context, j *job) error {
-	if err := s.advance(ctx, j, StateOpening, "启动浏览器，打开支付页", nil); err != nil {
-		return err
+// ensureBrowser 返回单据的浏览器，没有就按地区代理启动一个。启动失败按 browser_failed 放弃并告警。
+// 订阅单建会话时先启动，openPage 复用同一个实例，不重复启动。
+func (s *Service) ensureBrowser(ctx context.Context, j *job) (Browser, error) {
+	if j.browser != nil {
+		return j.browser, nil
 	}
 	// 启动 Chrome 加时限：卡住时不能一直占着付款名额。浏览器工厂只用这个 ctx 约束启动过程，返回后浏览器照常存活到 Close。
 	lctx, cancelLaunch := context.WithTimeout(ctx, s.t.Launch)
@@ -733,11 +787,22 @@ func (s *Service) openPage(ctx context.Context, j *job) error {
 			}
 		}
 		s.opts.Alert(fmt.Sprintf("付款单 %s 浏览器无法启动：%s", j.o.OrderNo, msg))
-		return abort("browser_failed", "浏览器无法启动：%s", msg)
+		return nil, abort("browser_failed", "浏览器无法启动：%s", msg)
 	}
 	j.browser = b
 	if j.o.DryRun {
 		b.LockSubmit() // 试运行单：浏览器对象本身拒绝点击，不只靠流程分支
+	}
+	return b, nil
+}
+
+func (s *Service) openPage(ctx context.Context, j *job) error {
+	if err := s.advance(ctx, j, StateOpening, "启动浏览器，打开支付页", nil); err != nil {
+		return err
+	}
+	b, err := s.ensureBrowser(ctx, j)
+	if err != nil {
+		return err
 	}
 	// 建链接时已经校验过；打开之前再拦一次，不让任何别的路径带进来的链接被打开
 	if err := s.checkOrderURL(j, j.o.CheckoutURL); err != nil {

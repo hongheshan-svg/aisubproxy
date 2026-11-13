@@ -506,3 +506,33 @@ A 设计与点数设计的全部资金规则继续有效，包括：
   - 完整卡号要经我们的服务器发给 Stripe；
   - 3DS 仍要浏览器；
   - 同样绕开了页面风控。
+
+## 10. 2026-11-13 变更：建会话改到浏览器里
+
+2026-11-13 实测：纯接口调 `POST /backend-api/payments/checkout` 现在会被 OpenAI 风控直接拒：`HTTP 400 {"detail":"Our systems have detected unusual activity. Please try again later."}`。换账号、换出口 IP、补齐设备号与 Cookie、改用 `checkout_ui_mode:"redirect"` 都一样；反复重试还会变成 429。
+
+网页自己的请求能成功（200，返回 `custom_checkout_session`）。抓到的成功请求比我们多这几样：
+
+- 头 `openai-sentinel-token`：官方 Sentinel SDK 在页面里按 `chatgpt_checkout` 流程生成的令牌；
+- 头 `oai-telemetry`、`originator: Codex Browser`、`x-openai-web-frontend: codex_webview`、`x-openai-checkout-source: chatgpt_web_merged`、`x-openai-codex-window-type: browser`、`x-openai-rate-limit-join-workspace: 1`、`x-openai-rejoin-pro-cta: 1`；
+- 请求体带 `checkout_source:"chatgpt_web_merged"`、`entry_point`、`supports_saved_payment_link`、`checkout_ui_mode:"custom"`、`checkout_appearance`、`cancel_url`、`purchase_attempt_id`。
+
+实现：
+
+- `paybrowser.Browser.CreateCheckout`：打开 `chatgpt.com`，等 Cloudflare 放行，用页面里的官方 Sentinel SDK 生成令牌，再按网页的请求头与请求体发一次 `fetch`；只建会话，不填卡、不付款。令牌由官方 SDK 生成，**不伪造**；页面停在检查页就返回 `ErrCheckoutBlocked`。
+- `payengine`：订阅单在 `createLink` 阶段先启动浏览器、在页面里建会话（`Options.BrowserCheckout`，用内置浏览器工厂时默认开），链接用 `processor_entity` 与会话号拼成内嵌结账页；同一个浏览器留给 `openPage` 复用。浏览器不支持这一能力（测试替身、自备工厂）时退回接口路径。
+
+约束与未做：
+
+- **账单国家必须与账号一致**：传 PH/PHP 给美国账号会 400 `Billing country must match request country.`。订单地区必须与该账号的账单国家一致，否则在注资前放弃。
+- 账号已有已存卡时，内嵌页默认选中「已保存」。`waitEmbedded` 现在把「银行卡」标签也算就绪；`Fill` 在等卡号框时先点一次该标签，卡号框出现后再填。实测已存卡账号能正常打开、读金额、填表，填表后复核金额一致。
+- 纯 `--headless=new` 会被 Cloudflare 卡在检查页（本机实测 72 秒没过，连建会话都进不去）。服务器上用 Xvfb + 有界面 Chrome：安装脚本的 `--browser-deps` 会装 Xvfb，`pickDisplay` 自动用它，不需要真实显示器，这是项目原本的部署方式。
+- 不做任何伪造令牌、绕过 Cloudflare 或页面风控的事。
+
+2026-11-13 本机用真实有头 Chrome 验证：建会话成功，链接 `https://chatgpt.com/checkout/openai_llc/oaics_…` 打开后读到金额 `20.00 USD`。
+
+同日补充：
+
+- 点支付前的核对（`checkFillMark`）多核一条：填表时「银行卡」标签是选中的（`aria-selected="true"`），点之前不再选中就不点、不置位。账号有已存卡时，选中的标签换回「已保存」，点下去扣的是客户的已存卡。实页的标签是 Stripe iframe 里的 `button[role=tab]`，带 `aria-selected`。
+- 本机真机试运行（已存卡账号、Stripe 测试卡号、支付点击全程锁死）：建会话 → 打开内嵌页 → 自动切到「银行卡」→ 9 个字段核对一致 → 填表前后金额都是 `20.00 USD` →「保存付款信息」自动取消 → 按钮只读检查通过。没有点支付。
+- 还没验证：服务器环境（Xvfb + 机房出口或地区代理 + Debian chromium）下建会话是否同样放行；从取卡、注资到真正扣款的一整单。

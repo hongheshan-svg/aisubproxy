@@ -1,11 +1,10 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-brand-title="后台登录">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>后台登录 | KC GPT自动充值系统</title>
+    <title>后台登录 | GW-LINK</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
             --primary: #2563eb;
@@ -122,9 +121,12 @@
         }
         .hint { margin-top: 12px; font-size: 12px; color: var(--text-dim); line-height: 1.55; }
     </style>
+    <link rel="stylesheet" href="/workspace.css?v=20261116-logo2">
+    <script defer src="/branding.js?v=20261116-logo2"></script>
 </head>
 <body>
     <main class="card">
+        <a class="login-brand" href="/"><span data-brand-logo data-brand-size="56">GW</span><span data-brand-name>GW-LINK</span></a>
         <div id="stepLogin" class="step active">
             <h1>后台登录</h1>
             <p>使用管理员邮箱和密码登录。若已启用二次验证，登录后还需验证。</p>
@@ -168,7 +170,7 @@
 
         async function loadAdminPaths() {
             try {
-                const response = await fetch('/api/public/admin-paths');
+                const response = await fetch('/api/public/admin-paths', { signal: AbortSignal.timeout(15000) });
                 const data = await response.json();
                 if (data.success) {
                     adminPanelPath = data.panelUrl || `/${data.panelPath || 'admin'}`;
@@ -260,6 +262,7 @@
             if (!token) return;
             try {
                 const response = await fetch('/api/admin/session', {
+                    signal: AbortSignal.timeout(15000),
                     headers: { Authorization: `Bearer ${token}` }
                 });
                 if (!response.ok) {
@@ -279,6 +282,7 @@
         }
 
         async function login() {
+            if (document.getElementById('loginBtn').disabled) return;
             const email = document.getElementById('email').value.trim();
             const password = document.getElementById('password').value;
             if (!email || !password) {
@@ -290,6 +294,7 @@
             setMessage('');
             try {
                 const response = await fetch('/api/admin/login', {
+                    signal: AbortSignal.timeout(30000),
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ email, password, fingerprint: getBrowserFingerprint() })
@@ -324,6 +329,7 @@
         }
 
         async function sendTelegramCode() {
+            if (document.getElementById('sendTgBtn').disabled) return;
             if (state.selectedMethod !== 'telegram') {
                 setMessage('请先切换到 Telegram 验证码');
                 return;
@@ -332,6 +338,7 @@
             btn.disabled = true;
             try {
                 const response = await fetch('/api/admin/login/send-tg-code', {
+                    signal: AbortSignal.timeout(30000),
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ challengeToken: state.challengeToken })
@@ -346,6 +353,7 @@
         }
 
         async function verify2fa() {
+            if (document.getElementById('verifyBtn').disabled) return;
             const code = document.getElementById('code').value.trim();
             if (!code) {
                 setMessage('请输入验证码');
@@ -360,6 +368,7 @@
             setMessage('');
             try {
                 const response = await fetch('/api/admin/login/verify-2fa', {
+                    signal: AbortSignal.timeout(30000),
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({

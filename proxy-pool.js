@@ -47,6 +47,24 @@ function normalizeProxyLines(input) {
     return [...new Set(lines.map((line) => String(line || '').trim()).filter(Boolean))];
 }
 
+// 通过同一代理查询出口 IP 的国家码（ISO alpha-2，大写），用于给代理打地区标签。
+// 失败返回 ''（未知），不影响代理检测本身。
+async function lookupProxyRegion(agent, timeout) {
+    try {
+        const resp = await axios.get('http://ip-api.com/json/?fields=status,countryCode', {
+            httpsAgent: agent,
+            httpAgent: agent,
+            proxy: false,
+            timeout: Math.min(Math.max(3000, Number(timeout) || 8000), 8000),
+            validateStatus: () => true
+        });
+        if (resp.status === 200 && resp.data && resp.data.status === 'success') {
+            return String(resp.data.countryCode || '').trim().toUpperCase();
+        }
+    } catch (_) { /* 地区探测失败不影响检测结果 */ }
+    return '';
+}
+
 async function testProxyUrl(raw, options = {}) {
     const proxyUrl = substituteProxySession(String(raw || '').trim());
     const t0 = Date.now();
@@ -74,9 +92,11 @@ async function testProxyUrl(raw, options = {}) {
             });
             if (response.status === 200) {
                 const ip = String(response.data || '').trim().split(/\s+/)[0];
+                const region = await lookupProxyRegion(agent, timeout);
                 return {
                     ok: true,
                     ip,
+                    region,
                     latencyMs: Date.now() - t0,
                     probedVia: probeUrl
                 };
@@ -101,5 +121,6 @@ module.exports = {
     hashProxyUrl,
     parseProxyMeta,
     normalizeProxyLines,
-    testProxyUrl
+    testProxyUrl,
+    lookupProxyRegion
 };

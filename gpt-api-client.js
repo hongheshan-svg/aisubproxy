@@ -31,7 +31,7 @@ function maskApiKey(key) {
  * 统一请求封装，始终返回 { success, status?, data?, error? }
  */
 async function request(method, path, cfg, { body, headers: extraHeaders, timeoutMs } = {}) {
-    const base = normalizeBaseUrl(cfg?.base_url) || DEFAULT_BASE_URL;
+    const base = normalizeBaseUrl(cfg?.base_url || DEFAULT_BASE_URL);
     const apiKey = String(cfg?.api_key || '').trim();
     if (!apiKey) {
         return { success: false, error: '缺少 API Key' };
@@ -278,11 +278,22 @@ async function queryBalance(cfg) {
 
 function extractStatus(data) {
     if (!data || typeof data !== 'object') return '';
+    if (data.result?.ok === false) return 'failed';
     const resultStatus = data.result && typeof data.result === 'object' ? data.result.status : '';
     if (resultStatus) return resultStatus;
     const outer = data.status ?? data.state ?? data.order?.status ?? data.task?.status ?? '';
     if (String(outer).toLowerCase() === 'done' && data.result && data.result.ok === false) return 'failed';
     return outer;
+}
+
+const SUCCESS_STATUSES = new Set(['success', 'succeeded', 'completed', 'paid', 'active', '开通成功', '成功']);
+const FAILED_STATUSES = new Set(['failed', 'declined', 'canceled', 'cancelled', 'error', 'expired', 'rejected', '失败', '取消']);
+
+function classifyStatus(status) {
+    const value = String(status || '').trim().toLowerCase();
+    if (SUCCESS_STATUSES.has(value)) return 'success';
+    if (FAILED_STATUSES.has(value)) return 'failed';
+    return 'running';
 }
 
 /**
@@ -335,5 +346,6 @@ module.exports = {
     extractOrderId,
     extractTaskId,
     extractTopupCode,
-    extractStatus
+    extractStatus,
+    classifyStatus
 };

@@ -78,6 +78,7 @@ CREATE TABLE IF NOT EXISTS task_logs (
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uniq_task_logs_job_key (job_key),
     KEY idx_task_logs_created (created_at),
+    KEY idx_task_logs_cdk_id (cdk_code, id),
     KEY idx_task_logs_status_created (status, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
@@ -149,6 +150,7 @@ CREATE TABLE IF NOT EXISTS proxy_assets (
     label VARCHAR(128) NOT NULL DEFAULT '' COMMENT '可选备注',
     protocol VARCHAR(16) NOT NULL DEFAULT '' COMMENT 'http/socks5 等',
     host VARCHAR(255) NOT NULL DEFAULT '' COMMENT '代理主机',
+    region VARCHAR(4) NOT NULL DEFAULT '' COMMENT '代理出口地区 ISO alpha-2(US/PH 等)，检测时自动回填',
     is_active TINYINT(1) NOT NULL DEFAULT 1 COMMENT '1=启用参与任务抽取',
     last_check_at TIMESTAMP NULL DEFAULT NULL,
     last_check_ok TINYINT(1) NULL DEFAULT NULL COMMENT '1=通过 0=失败 NULL=未测',
@@ -160,7 +162,8 @@ CREATE TABLE IF NOT EXISTS proxy_assets (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     UNIQUE KEY uk_proxy_url_hash (proxy_url_hash),
-    KEY idx_proxy_active (is_active, sort_order)
+    KEY idx_proxy_active (is_active, sort_order),
+    KEY idx_proxy_region (region, is_active)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS billing_records (

@@ -1,19 +1,22 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-brand-title="订阅与发票">
 
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>发票助手 | AI 自助充值中心</title>
+    <title>订阅与发票 | GW-LINK</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
     <link rel="stylesheet" href="style.css">
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
-    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="/icons.js"></script>
+    <script src="/client.js"></script>
+    <link rel="stylesheet" href="/workspace.css?v=20261116-logo2">
+    <script defer src="/branding.js?v=20261116-logo2"></script>
 </head>
 
 <body class="recharge-page subscription-page">
     <div class="page-shell">
         <header class="site-hero compact-hero">
+            <a class="subscription-brand" href="/"><span data-brand-logo data-brand-size="56">GW</span><span data-brand-name>GW-LINK</span></a>
             <a href="/" class="back-home-link"><i data-lucide="arrow-left"></i> 返回充值中心</a>
             <h1>发票助手</h1>
             <p class="hero-subtitle">粘贴 Session 即可查询当前订阅状态，并跳转 OpenAI 官方账单页面下载发票。</p>
@@ -43,7 +46,7 @@
                 </div>
             </section>
 
-            <div id="statusMessage" class="status-message"></div>
+            <div id="statusMessage" class="status-message" role="status" aria-live="polite"></div>
 
             <section id="resultSection" class="subscription-result" style="display: none;">
                 <div class="subscription-result-head">
@@ -191,25 +194,6 @@
             return { valid: true, session: content };
         }
 
-        async function readJsonResponse(response) {
-            const text = await response.text();
-            if (!text) {
-                return { ok: false, message: `服务器返回空响应 (${response.status})` };
-            }
-            try {
-                return { ok: true, data: JSON.parse(text) };
-            } catch (_) {
-                const snippet = text.replace(/\s+/g, ' ').slice(0, 120);
-                if (response.status === 404) {
-                    return { ok: false, message: '接口不存在 (404)，请确认服务已重启并更新到最新版本' };
-                }
-                return {
-                    ok: false,
-                    message: `服务器响应异常 (${response.status})${snippet ? `：${snippet}` : ''}`
-                };
-            }
-        }
-
         function showStatus(message, type = 'info') {
             statusMessage.textContent = message;
             if (!message) {
@@ -218,14 +202,15 @@
             }
             const className = type === 'success'
                 ? 'status-success'
-                : (type === 'error' ? 'status-error' : 'status-success');
+                : (type === 'error' ? 'status-error' : 'status-info');
             statusMessage.className = `status-message ${className}`;
             statusMessage.style.display = 'block';
         }
 
         function renderRow(label, value, valueClass = '') {
             const strongClass = valueClass ? ` class="${valueClass}"` : '';
-            return `<div class="query-row"><span>${label}</span><strong${strongClass}>${value}</strong></div>`;
+            const escaped = String(value).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+            return `<div class="query-row"><span>${label}</span><strong${strongClass}>${escaped}</strong></div>`;
         }
 
         function renderResult(data) {
@@ -253,6 +238,7 @@
         }
 
         async function checkSubscription() {
+            if (checkBtn.disabled) return;
             const sessionCheck = validateSessionInput(sessionInput.value);
             if (!sessionCheck.valid) {
                 showStatus(sessionCheck.message, 'error');
@@ -264,7 +250,8 @@
             resultSection.style.display = 'none';
 
             try {
-                const response = await fetch('/api/public/subscription/check', {
+                const payload = await AppClient.requestJson('/api/public/subscription/check', {
+                    timeoutMs: 60000,
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
@@ -272,14 +259,7 @@
                         timezone_offset_min: -new Date().getTimezoneOffset()
                     })
                 });
-                const parsed = await readJsonResponse(response);
-                if (!parsed.ok) {
-                    throw new Error(parsed.message);
-                }
-                const payload = parsed.data;
-                if (!response.ok || !payload.success) {
-                    throw new Error(payload.message || '查询失败');
-                }
+                if (!payload.success) throw new Error(payload.message || '查询失败');
                 showStatus('', 'info');
                 renderResult(payload.data);
             } catch (error) {

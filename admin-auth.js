@@ -1,6 +1,8 @@
 'use strict';
 
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 
 const BASE32_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 
@@ -17,11 +19,27 @@ const TG_CODE_MAX_ATTEMPTS = 5;
 const loginAttempts = new Map();
 const tgLoginCodes = new Map();
 
+let persistedTokenSecret = '';
 function resolveAdminTokenSecret() {
-    return process.env.ADMIN_TOKEN_SECRET || crypto
-        .createHash('sha256')
-        .update(`web_redeem:${process.cwd()}:admin-token-secret`)
-        .digest('hex');
+    if (process.env.ADMIN_TOKEN_SECRET) return process.env.ADMIN_TOKEN_SECRET;
+    if (persistedTokenSecret) return persistedTokenSecret;
+    // A deterministic fallback lets anyone with the source forge administrator sessions.
+    // Persist a random secret in the mounted data directory so restarts keep sessions valid.
+    const secretFile = process.env.ADMIN_TOKEN_SECRET_FILE || path.join(__dirname, 'data', 'admin-token-secret');
+    fs.mkdirSync(path.dirname(secretFile), { recursive: true, mode: 0o700 });
+    if (!fs.existsSync(secretFile)) {
+        const temporary = `${secretFile}.${process.pid}.${crypto.randomBytes(8).toString('hex')}`;
+        fs.writeFileSync(temporary, crypto.randomBytes(32).toString('hex'), { flag: 'wx', mode: 0o600 });
+        try {
+            // Publish only after the complete secret is written; another process may win.
+            try { fs.linkSync(temporary, secretFile); }
+            catch (error) { if (error.code !== 'EEXIST') throw error; }
+        } finally { fs.unlinkSync(temporary); }
+    }
+    const secret = fs.readFileSync(secretFile, 'utf8').trim();
+    if (secret.length < 32) throw new Error('后台会话签名密钥文件无效，请配置 ADMIN_TOKEN_SECRET');
+    persistedTokenSecret = secret;
+    return secret;
 }
 
 function encodeBase64Url(input) {
@@ -161,9 +179,7 @@ function verifySecondaryToken(token) {
 }
 
 function getClientMeta(req) {
-    const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
-    const ip = forwarded
-        || String(req.headers['x-real-ip'] || '').trim()
+    const ip = req.ip
         || req.socket?.remoteAddress
         || '';
     return {

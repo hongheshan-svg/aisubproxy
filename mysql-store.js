@@ -493,6 +493,12 @@ async function ensureReady() {
     const schemaSql = fs.readFileSync(SCHEMA_PATH, 'utf8');
     await runQuery(schemaSql);
     await ensureLegacyColumns();
+    const indexes = await runQuery(
+        `SELECT 1 FROM information_schema.STATISTICS
+         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'task_logs' AND INDEX_NAME = 'idx_task_logs_cdk_id' LIMIT 1`,
+        [DB_NAME]
+    );
+    if (!indexes.length) await runQuery('ALTER TABLE task_logs ADD INDEX idx_task_logs_cdk_id (cdk_code, id)');
     await ensureGptApiColumns();
     await initializeBaseData();
     await ensureAdminSecurityDefaults();
@@ -1753,6 +1759,7 @@ function formatProxyAssetRow(row) {
         label: String(row.label || ''),
         protocol: String(row.protocol || ''),
         host: String(row.host || ''),
+        region: String(row.region || ''),
         is_active: Number(row.is_active) === 1,
         last_check_at: row.last_check_at || null,
         last_check_ok: row.last_check_ok === null || row.last_check_ok === undefined
@@ -1842,19 +1849,24 @@ async function setProxyAssetActive(id, isActive) {
 
 async function updateProxyAssetCheck(id, checkResult) {
     const ok = Boolean(checkResult?.ok);
+    // 检测成功且探测到地区时，回填 region（COALESCE：探测不到则保留原值）
+    const region = ok ? String(checkResult.region || '').trim().toUpperCase().slice(0, 4) : '';
     await runExecute(
         `UPDATE proxy_assets
          SET last_check_at = CURRENT_TIMESTAMP,
              last_check_ok = ?,
              last_check_ip = ?,
              last_check_latency_ms = ?,
-             last_check_error = ?
+             last_check_error = ?,
+             region = CASE WHEN ? <> '' THEN ? ELSE region END
          WHERE id = ?`,
         [
             ok ? 1 : 0,
             ok ? String(checkResult.ip || '') : '',
             ok ? Number(checkResult.latencyMs || 0) : null,
             ok ? '' : String(checkResult.error || '检测失败').slice(0, 512),
+            region,
+            region,
             Number(id)
         ]
     );
@@ -1901,14 +1913,30 @@ async function migrateLegacyProxyConfig() {
 
 // 只取代理，不占用手机/卡资产；适合注册/协议提取这种只用代理的子流程
 // 支持 {session} 占位符；每次调用替换为新的随机 sticky session ID
-async function getActiveProxy() {
-    const rows = await runQuery(
-        `SELECT proxy_url
-         FROM proxy_assets
-         WHERE is_active = 1
-         ORDER BY RAND()
-         LIMIT 1`
-    );
+/**
+ * 取一个激活代理。
+ * @param {string} [region] ISO alpha-2 国家码（如 US/PH）。传入时只取该地区代理，
+ *        取不到返回 ''（调用方据此阻止异地访问，避免 ChatGPT 账号跨地区登出）；
+ *        不传则按旧行为在全部激活代理里随机取（兼容无地区信息的场景）。
+ */
+async function getActiveProxy(region = '') {
+    const reg = String(region || '').trim().toUpperCase();
+    const rows = reg
+        ? await runQuery(
+            `SELECT proxy_url
+             FROM proxy_assets
+             WHERE is_active = 1 AND region = ?
+             ORDER BY RAND()
+             LIMIT 1`,
+            [reg]
+        )
+        : await runQuery(
+            `SELECT proxy_url
+             FROM proxy_assets
+             WHERE is_active = 1
+             ORDER BY RAND()
+             LIMIT 1`
+        );
     if (!rows.length) {
         return '';
     }
@@ -1917,6 +1945,15 @@ async function getActiveProxy() {
         [rows[0].proxy_url]
     ).catch(() => { });
     return substituteProxySession(String(rows[0].proxy_url || ''));
+}
+
+/** 回填/更新某代理的地区标签（ISO alpha-2）。供一次性回填脚本与检测流程使用。 */
+async function updateProxyRegion(id, region) {
+    const reg = String(region || '').trim().toUpperCase().slice(0, 4);
+    await runExecute(
+        `UPDATE proxy_assets SET region = ? WHERE id = ?`,
+        [reg, Number(id)]
+    );
 }
 
 // 兼容旧调用：仅返回代理 + 资源快照，不再锁定（防止误用阻塞资产池）
@@ -2593,7 +2630,7 @@ async function updateAdminPassword(password) {
     };
 }
 
-async function createTaskLog({ tokenPreview, sessionPayload, cdkCode, phone, cardLast4, status, progress = 0 }) {
+async function createTaskLog({ tokenPreview, sessionPayload, cdkCode, phone, cardLast4, status, progress = 0 }, options = {}) {
     const now = new Date();
     const displayTime = now.toLocaleString('zh-CN', { hour12: false });
     const jobKey = `${now.getTime()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -2613,10 +2650,50 @@ async function createTaskLog({ tokenPreview, sessionPayload, cdkCode, phone, car
             message,
             Number(progress || 0),
             displayTime
-        ]
+        ],
+        options
     );
 
     return { jobKey, displayTime };
+}
+
+// Reserve the code and persist the job together: a failed INSERT must not consume a CDK.
+async function createActivationTask(details) {
+    return withTransaction(async (connection) => {
+        const options = { connection };
+        const rows = await runQuery(
+            'SELECT used_at, is_active, type FROM cdk_codes WHERE cdk_code = ? FOR UPDATE',
+            [details.cdkCode], options
+        );
+        const code = rows[0];
+        if (!code || !code.is_active || code.type !== '自助') return null;
+        const running = await runQuery(
+            "SELECT job_key FROM task_logs WHERE cdk_code = ? AND status = 'running' ORDER BY id DESC LIMIT 1",
+            [details.cdkCode], options
+        );
+        if (running.length) return { jobKey: running[0].job_key, existing: true };
+        if (code.used_at) return null;
+        await runExecute('UPDATE cdk_codes SET used_at = CURRENT_TIMESTAMP WHERE cdk_code = ?', [details.cdkCode], options);
+        return createTaskLog(details, options);
+    });
+}
+
+async function getLatestTaskByCdk(cdk) {
+    const rows = await runQuery(
+        `SELECT job_key, status, message, progress FROM task_logs
+         WHERE cdk_code = ? ORDER BY id DESC LIMIT 1`, [String(cdk)]
+    );
+    return rows[0] || null;
+}
+
+// This service owns its workers in one Node process. A restart cannot prove payment failure.
+async function recoverInterruptedActivationTasks() {
+    return runExecute(
+        `UPDATE task_logs SET status = 'manual',
+             message = '服务重启，开通结果待核实；请联系管理员核对订单，勿重复提交'
+         WHERE status = 'running' AND cdk_code IS NOT NULL
+           AND cdk_code NOT LIKE 'ADMIN_PRODUCT_GEN:%'`
+    );
 }
 
 async function getTaskStatus(jobKey) {
@@ -3512,7 +3589,7 @@ async function listRecentGptApiOrders(limit = 10) {
                 gpt_api_order_id, gpt_api_task_id, gpt_api_topup_code, gpt_api_raw
          FROM task_logs
          WHERE (gpt_api_order_id IS NOT NULL OR gpt_api_task_id IS NOT NULL)
-           AND status = 'failed'
+           AND status IN ('failed', 'manual')
          ORDER BY updated_at DESC, id DESC
          LIMIT ?`,
         [safeLimit]
@@ -3546,6 +3623,9 @@ module.exports = {
     verifyCdkDetails,
     markCdkUsed,
     markCdkUnused,
+    createActivationTask,
+    getLatestTaskByCdk,
+    recoverInterruptedActivationTasks,
     recordCdkFailure,
     resetCdkFailure,
     getActivationAttemptLimit,
@@ -3566,6 +3646,7 @@ module.exports = {
     releaseStaleAssetLocks,
     resetAllAssetLocks,
     getActiveProxy,
+    updateProxyRegion,
     listProxyAssets,
     addProxyAssets,
     deleteProxyAsset,

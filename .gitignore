@@ -16,7 +16,13 @@ _server.err.log
 debug_screenshots/
 product_files/
 data/hcaptcha-config.json
+data/branding/
+data/admin-token-secret
+data/admin-token-secret.*
 data/browser-pool/
+data/ota/
+dist/
+output/
 scratch/
 mail.txt
 
@@ -47,3 +53,6 @@ sentinel-capture*.json
 
 # Sister project (kept as a separate repo)
 plus_gopay/
+
+# Browser verification artifacts
+.playwright-mcp/

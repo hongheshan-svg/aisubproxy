@@ -1,5 +1,6 @@
 const express = require('express');
-const { spawn, execFileSync } = require('child_process');
+const { spawn, execFile } = require('child_process');
+const execFileAsync = require('util').promisify(execFile);
 const path = require('path');
 const crypto = require('crypto');
 const fs = require('fs');
@@ -22,8 +23,14 @@ const browserPool = require('./browser-pool');
 const { buildWorkerRuntimeEnv } = require('./browser-runtime');
 const { querySubscriptionBySession, validateSessionTokenForQuery, cancelAutoRenew, resumeAutoRenew } = require('./subscription-check');
 const gptApi = require('./gpt-api-client');
+const { createBrandingService, MAX_LOGO_BYTES } = require('./branding');
+const { createCdks, createCdkRateLimiter } = require('./cdk-security');
+const { UpdateService } = require('./ota/service');
+const branding = createBrandingService(store, process.env.BRANDING_DIR || undefined);
+const cdkRateLimiter = createCdkRateLimiter();
 
 const app = express();
+if (process.env.TRUST_PROXY) app.set('trust proxy', process.env.TRUST_PROXY.split(',').map(value => value.trim()).filter(Boolean));
 const PORT = Number(process.env.PORT || 3000);
 const ADMIN_TOKEN_TTL_MS = adminAuth.ADMIN_TOKEN_TTL_MS;
 const ADMIN_REFRESH_AFTER_MS = adminAuth.ADMIN_REFRESH_AFTER_MS;
@@ -53,8 +60,10 @@ function cleanupProcesses() {
 
 // WebSocket 客户端映射: jobKey -> Set<WebSocket>
 const taskClients = new Map();
-const TERMINAL_TASK_STATUSES = new Set(['success', 'failed', 'maintenance']);
+const TERMINAL_TASK_STATUSES = new Set(['success', 'failed', 'maintenance', 'manual']);
 const activeForegroundJobs = new Set();
+let activeAdminWrites = 0;
+const updater = new UpdateService({ store, activeJobs: () => activeForegroundJobs.size + activeProcesses.size + activeAdminWrites });
 
 let systemMetricsCache = {
     ts: 0,
@@ -102,7 +111,7 @@ async function getSystemMetrics() {
             drive: '/'
         };
         try {
-            const dfOut = execFileSync('df', ['-kP', '/'], { encoding: 'utf8' });
+            const { stdout: dfOut } = await execFileAsync('df', ['-kP', '/'], { encoding: 'utf8', timeout: 3000 });
             const lines = dfOut.trim().split('\n');
             if (lines.length >= 2) {
                 const parts = lines[1].trim().split(/\s+/);
@@ -142,8 +151,7 @@ async function getSystemMetrics() {
 }
 
 function getClientIp(req) {
-    const forwarded = String(req.headers['x-forwarded-for'] || '').trim();
-    const rawIp = forwarded ? forwarded.split(',')[0].trim() : (req.ip || req.socket?.remoteAddress || '');
+    const rawIp = req.ip || req.socket?.remoteAddress || '';
     return String(rawIp || '')
         .replace(/^::ffff:/, '')
         .replace(/^::1$/, '127.0.0.1')
@@ -534,30 +542,6 @@ async function authenticateAdmin(req, res, next) {
     req.admin = payload;
     req.adminToken = token;
     return next();
-}
-
-const CDK_PREFIX = 'KC-';
-const CDK_RANDOM_LENGTH = 15; // KC- + 15 = 18 位
-const CDK_CHARSET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // 去掉易混淆 0/O/1/I/L
-
-function randomCdkSuffix(length = CDK_RANDOM_LENGTH) {
-    const bytes = crypto.randomBytes(length);
-    let out = '';
-    for (let i = 0; i < length; i += 1) {
-        out += CDK_CHARSET[bytes[i] % CDK_CHARSET.length];
-    }
-    return out;
-}
-
-function createCdks(count) {
-    const results = new Set();
-    const target = Math.max(1, Math.min(Number(count) || 1, 100));
-
-    while (results.size < target) {
-        results.add(`${CDK_PREFIX}${randomCdkSuffix()}`);
-    }
-
-    return [...results];
 }
 
 function extractScreenshotsFromOutput(output) {
@@ -1146,6 +1130,8 @@ function runCheckoutScript(jobKey, scriptPath, env, attempt = 1, onProgress = nu
         let idleTimer = null;
         let finished = false;
         let timedOut = false;
+        let progressWrites = Promise.resolve();
+        let lastReportedProgress = -1;
 
         activeProcesses.add(child);
         const cleanup = () => {
@@ -1159,7 +1145,8 @@ function runCheckoutScript(jobKey, scriptPath, env, attempt = 1, onProgress = nu
             }
             finished = true;
             cleanup();
-            resolve({ attempt, ...result });
+            // Drain running updates before the worker persists its terminal status.
+            progressWrites.then(() => resolve({ attempt, ...result }));
         };
 
         const resetIdleTimer = () => {
@@ -1178,8 +1165,13 @@ function runCheckoutScript(jobKey, scriptPath, env, attempt = 1, onProgress = nu
             const text = chunk.toString();
             output += text;
             logTaskChunk(jobKey, attempt, source, text);
-            if (onProgress) {
-                onProgress(getCheckoutProgress(output), output).catch((error) => console.error('[Progress Update Error]', error));
+            const progress = getCheckoutProgress(output);
+            if (onProgress && (progress !== lastReportedProgress || /SCREENSHOT|VIDEO|\.png|\.webm|\.mp4/.test(text))) {
+                lastReportedProgress = progress;
+                const snapshot = output;
+                progressWrites = progressWrites
+                    .then(() => onProgress(progress, snapshot))
+                    .catch((error) => console.error('[Progress Update Error]', error));
             }
             resetIdleTimer();
         };
@@ -1545,6 +1537,21 @@ app.post('/api/external/cards/push', async (req, res) => {
 });
 
 /** 公开 API：必须挂在 app.use('/api/admin', authenticateAdmin) 之前，否则部分环境下会 404 */
+app.get('/api/public/branding', async (req, res) => {
+    try {
+        await ensureStoreReady();
+        res.set('Cache-Control', 'no-store').json({ success: true, branding: await branding.get() });
+    } catch (_) { res.status(503).json({ success: false, message: '暂时无法读取品牌设置' }); }
+});
+
+app.get('/api/public/brand-logo/:file', (req, res) => {
+    if (!/^[a-f0-9]{64}\.png$/.test(req.params.file)) return res.sendStatus(404);
+    res.set('X-Content-Type-Options', 'nosniff');
+    res.sendFile(req.params.file, { root: branding.directory, dotfiles: 'deny', maxAge: '1y', immutable: true }, error => {
+        if (error && !res.headersSent) res.sendStatus(error.statusCode || 404);
+    });
+});
+
 app.get('/api/public/admin-paths', async (req, res) => {
     try {
         await ensureStoreReady();
@@ -1596,6 +1603,51 @@ app.post('/api/public/subscription/check', async (req, res) => {
 });
 
 app.use('/api/admin', authenticateAdmin);
+app.use('/api/admin', (req, res, next) => {
+    if (['GET', 'HEAD', 'OPTIONS'].includes(req.method) || ['/system/update', '/system/restart', '/system/rollback'].includes(req.path)) return next();
+    if (updater.gate) return res.status(503).json({ success: false, message: '系统正在切换版本，请稍后再试' });
+    activeAdminWrites++;
+    let finished = false;
+    const release = () => { if (!finished) { finished = true; activeAdminWrites--; } };
+    res.once('finish', release);
+    res.once('close', release);
+    next();
+});
+
+app.get('/api/public/version', (req, res) => {
+    res.set('Cache-Control', 'no-store').json({ version: updater.currentVersion, runId: process.env.OTA_RUN_ID || '' });
+});
+app.get('/api/admin/system/status', (req, res) => {
+    res.set('Cache-Control', 'no-store').json({ success: true, ...updater.status() });
+});
+app.get('/api/admin/system/check-updates', async (req, res) => {
+    try { res.set('Cache-Control', 'no-store').json({ success: true, ...await updater.check(req.query.force === '1') }); }
+    catch (error) { res.status(500).json({ success: false, message: error.message }); }
+});
+for (const action of ['update', 'restart', 'rollback']) {
+    app.post(`/api/admin/system/${action}`, (req, res) => {
+        try {
+            const status = action === 'update' ? updater.startUpdate(req.body?.version) : updater.startSwitch(action === 'rollback' ? 'rollback' : 'update');
+            res.status(202).json({ success: true, ...status });
+        } catch (error) { res.status(error.status || 500).json({ success: false, message: error.message }); }
+    });
+}
+
+app.post('/api/admin/branding/logo', express.raw({ type: 'image/png', limit: MAX_LOGO_BYTES }), async (req, res) => {
+    try {
+        const logoUrl = await branding.upload(req.body);
+        res.json({ success: true, logoUrl });
+    } catch (error) { res.status(400).json({ success: false, message: error.message }); }
+}, (error, req, res, next) => {
+    if (error.type === 'entity.too.large') return res.status(413).json({ success: false, message: 'Logo 文件不能超过 512 KB' });
+    next(error);
+});
+
+app.post('/api/admin/branding', async (req, res) => {
+    try {
+        res.json({ success: true, branding: await branding.save(req.body) });
+    } catch (error) { res.status(400).json({ success: false, message: error.message }); }
+});
 
 app.get('/subscription', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'subscription.html'));
@@ -1620,12 +1672,15 @@ app.get('/api/public/payment-region', async (req, res) => {
 app.get('/api/public/runtime', async (req, res) => {
     try {
         await ensureStoreReady();
-        const maxConcurrentActivations = await store.getMaxConcurrentActivations();
+        const [maxConcurrentActivations, maintenance] = await Promise.all([
+            store.getMaxConcurrentActivations(), store.getMaintenanceModeState()
+        ]);
         return res.json({
             success: true,
             runtime: {
                 active_foreground_jobs: activeForegroundJobs.size,
-                max_foreground_jobs: Math.max(1, Number(maxConcurrentActivations || 1))
+                max_foreground_jobs: Math.max(1, Number(maxConcurrentActivations || 1)),
+                maintenance: Boolean(maintenance.enabled)
             }
         });
     } catch (error) {
@@ -2571,6 +2626,7 @@ app.get('/api/admin/checkout/plans', async (req, res) => {
 });
 
 app.post('/api/admin/checkout/generate', async (req, res) => {
+    let admissionKey = null;
     try {
         await ensureStoreReady();
         const body = req.body || {};
@@ -2599,6 +2655,9 @@ app.post('/api/admin/checkout/generate', async (req, res) => {
 
         const storedSession = buildStoredSessionPayload(rawSession, sessionJson, token);
         const email = extractEmailFromSession(sessionJson);
+        if (updater.gate) return res.status(503).json({ success: false, message: '系统正在切换版本，请稍后再试' });
+        admissionKey = `checkout-admission-${crypto.randomUUID()}`;
+        reserveForegroundSlot(admissionKey);
         const task = await store.createTaskLog({
             tokenPreview: extractSessionPreview(storedSession),
             sessionPayload: storedSession,
@@ -2634,7 +2693,7 @@ app.post('/api/admin/checkout/generate', async (req, res) => {
         });
     } catch (error) {
         res.status(500).json({ success: false, error: error.message });
-    }
+    } finally { if (admissionKey) releaseForegroundSlot(admissionKey); }
 });
 
 app.get('/api/admin/checkout/status/:jobKey', async (req, res) => {
@@ -3273,6 +3332,8 @@ async function runGptApiWorker({ task, token, session, cdk, planType }) {
     const accountEmail = task.tokenPreview || '';
     let shouldRollbackCdk = true;
     let reservedCard = null;
+    let confirmedStatus = '';
+    let submissionStarted = false;
 
     const setProgress = async (status, progress, message, extra = {}) => {
         await store.updateTaskLog(jobKey, { status, progress, message, ...extra });
@@ -3337,6 +3398,9 @@ async function runGptApiWorker({ task, token, session, cdk, planType }) {
         // 套餐从 CDK 的 plan_type 同步；国家币种使用协议默认值（PH / PHP）
         await setProgress('running', 20, '正在提交代充订单...');
         const idempotencyKey = `cdk-${cdk}`;
+        // Once submission starts, a transport failure cannot prove that no payment occurred.
+        submissionStarted = true;
+        shouldRollbackCdk = false;
         const submit = await gptApi.submitPay(cfg, {
             planKey: apiPlanKey,
             session: sessionPayload,
@@ -3349,19 +3413,21 @@ async function runGptApiWorker({ task, token, session, cdk, planType }) {
         });
 
         if (!submit.success) {
+            shouldRollbackCdk = submit.status >= 400 && submit.status < 500
+                && ![408, 409, 429].includes(submit.status);
             const statusText = submit.status ? ` (HTTP ${submit.status})` : '';
             const detail = submit.error
                 || (submit.data && typeof submit.data === 'object' ? JSON.stringify(submit.data).slice(0, 300) : '');
             throw new Error(`代充提交失败${statusText}: ${detail || '未知错误'}`);
         }
 
-        const orderId = submit.orderId || submit.taskId || submit.id;
+        const orderId = submit.orderId || null;
         const taskId = submit.taskId || null;
-        if (!orderId) {
+        if (!orderId && !taskId) {
             throw new Error(`代充提交成功但未返回订单号: ${JSON.stringify(submit.data).slice(0, 300)}`);
         }
 
-        await setProgress('running', 35, `代充订单已创建 ${orderId}，正在等待上游处理...`, {
+        await setProgress('running', 35, `代充订单已创建 ${orderId || taskId}，正在等待上游处理...`, {
             gptApiOrderId: orderId,
             gptApiTaskId: taskId,
             gptApiRaw: JSON.stringify(submit.data),
@@ -3372,25 +3438,31 @@ async function runGptApiWorker({ task, token, session, cdk, planType }) {
         let finalStatus = 'running';
         let finalMessage = '第三方代充进行中';
         let lastRaw = submit.data;
-        const maxPolls = Number(process.env.GPT_API_MAX_POLLS || 120);
-        const pollIntervalMs = Number(process.env.GPT_API_POLL_INTERVAL_MS || 5000);
+        const maxPolls = Math.max(1, Math.min(720, Number(process.env.GPT_API_MAX_POLLS) || 120));
+        const pollIntervalMs = Math.max(1000, Math.min(60000, Number(process.env.GPT_API_POLL_INTERVAL_MS) || 5000));
+        const pollDeadline = Date.now() + Math.max(30000, Number(process.env.GPT_API_POLL_TIMEOUT_MS) || 600000);
+        let pollFailures = 0;
 
         for (let poll = 1; poll <= maxPolls; poll += 1) {
-            await sleep(pollIntervalMs);
+            if (Date.now() >= pollDeadline) break;
+            await sleep(Math.min(pollIntervalMs * 2 ** pollFailures, 60000, pollDeadline - Date.now()));
+            if (Date.now() >= pollDeadline) break;
 
             let queryRes = null;
             if (taskId) {
                 queryRes = await gptApi.queryTask(cfg, taskId);
             }
-            if (!queryRes || !queryRes.success || !queryRes.rawStatus) {
+            if (orderId && (!queryRes || !queryRes.success || !queryRes.rawStatus || String(queryRes.rawStatus).trim().toLowerCase() === 'done')) {
                 queryRes = await gptApi.queryOrder(cfg, orderId);
             }
 
             if (!queryRes || !queryRes.success) {
+                pollFailures = Math.min(pollFailures + 1, 4);
                 logTask(jobKey, `状态轮询第 ${poll} 次失败: ${queryRes?.error || '未知错误'}`, 'warn');
                 continue;
             }
 
+            pollFailures = 0;
             lastRaw = queryRes.data;
             const rawStatus = String(queryRes.rawStatus || '').toLowerCase();
             const progress = Math.min(95, 40 + poll);
@@ -3400,6 +3472,8 @@ async function runGptApiWorker({ task, token, session, cdk, planType }) {
                 const succeeded = businessResult.ok === false ? false : isSuccessGptApiStatus(rawStatus);
                 const failureDetail = businessResult.error || lastRaw?.error || businessResult.status || rawStatus || 'unknown';
                 finalStatus = succeeded ? 'success' : 'failed';
+                confirmedStatus = finalStatus;
+                shouldRollbackCdk = !succeeded;
                 finalMessage = succeeded ? '第三方代充开通成功' : `第三方代充失败: ${failureDetail}`;
                 await setProgress(
                     finalStatus,
@@ -3417,8 +3491,8 @@ async function runGptApiWorker({ task, token, session, cdk, planType }) {
         }
 
         if (finalStatus === 'running') {
-            finalStatus = 'failed';
-            finalMessage = '第三方代充超时未完成，请稍后在第三方平台查询订单状态';
+            finalStatus = 'manual';
+            finalMessage = '订单结果待核实，卡密已保留，请联系管理员核对上游订单，勿重复提交';
             await setProgress(finalStatus, 99, finalMessage, {
                 gptApiRaw: JSON.stringify(lastRaw),
                 gptApiTopupCode: gptApi.extractTopupCode(lastRaw)
@@ -3439,21 +3513,25 @@ async function runGptApiWorker({ task, token, session, cdk, planType }) {
         console.error(`[GPT API Task Error] ${jobKey}:`, error);
         logTask(jobKey, `第三方代充任务异常: ${error.message}`, 'error');
         await store.releaseCard(reservedCard?.id).catch(() => { });
+        const status = confirmedStatus || (submissionStarted && !shouldRollbackCdk ? 'manual' : 'failed');
+        const message = status === 'manual'
+            ? '订单结果暂未确认，卡密已保留，请联系管理员核实，勿重复提交'
+            : status === 'success' ? '开通成功，后续记录同步异常，请联系管理员核对' : error.message;
         await store.updateTaskLog(jobKey, {
-            status: 'failed',
-            message: error.message,
+            status,
+            message,
             progress: 0,
             cdkCode: cdk
         });
         broadcastToTask(jobKey, {
             type: 'status',
             jobKey,
-            status: 'failed',
-            message: error.message,
+            status,
+            message,
             cdkCode: cdk,
             progress: 0
         });
-        notifyTaskOutcome({ event: 'failure', email: accountEmail, cdk, jobKey, message: error.message });
+        notifyTaskOutcome({ event: status === 'success' ? 'success' : 'failure', email: accountEmail, cdk, jobKey, message });
     } finally {
         releaseForegroundSlot(jobKey);
         if (shouldRollbackCdk) {
@@ -3479,23 +3557,16 @@ function maskProxyForLog(proxyUrl) {
     }
 }
 
-const GPT_API_TERMINAL_SUCCESS = new Set(['success', 'succeeded', 'completed', 'paid', 'active', '开通成功', '成功']);
-const GPT_API_TERMINAL_FAILED = new Set(['failed', 'declined', 'canceled', 'cancelled', 'error', 'expired', 'rejected', '失败', '取消']);
-
 function isSuccessGptApiStatus(rawStatus) {
-    const s = String(rawStatus || '').toLowerCase().trim();
-    return [...GPT_API_TERMINAL_SUCCESS].some((kw) => s.includes(kw.toLowerCase()));
+    return gptApi.classifyStatus(rawStatus) === 'success';
 }
 
 function isTerminalGptApiStatus(rawStatus) {
-    const s = String(rawStatus || '').toLowerCase().trim();
-    if (!s) return false;
-    if (isSuccessGptApiStatus(s)) return true;
-    return [...GPT_API_TERMINAL_FAILED].some((kw) => s.includes(kw.toLowerCase()));
+    return gptApi.classifyStatus(rawStatus) !== 'running';
 }
 
 function spawnActivationWorker({ task, token, sessionRaw, cdk, cdkDetails, clientIp }) {
-    (async () => {
+    return (async () => {
         const checkoutScript = path.join(__dirname, 'index.js');
         let finalRun = null;
         const allOutputs = [];
@@ -3577,6 +3648,7 @@ function spawnActivationWorker({ task, token, sessionRaw, cdk, cdkDetails, clien
                 finalRun = { ...run, output: allOutputs.join('\n\n') };
 
                 const currentStatus = run.analysis.status === 'success' ? 'success' : 'running';
+                if (currentStatus === 'success') shouldRollbackCdk = false;
                 const currentProgress = normalizeTaskProgress(
                     getCheckoutProgress(run.output, currentStatus),
                     currentStatus,
@@ -3674,11 +3746,6 @@ function spawnActivationWorker({ task, token, sessionRaw, cdk, cdkDetails, clien
                 });
             }
 
-            if (finalStatus !== 'success') {
-                await store.markCdkUnused(cdk);
-                logTask(task.jobKey, `CDK ${cdk} 已回滚为未使用`);
-            }
-
             if (isNoActivationEligibilityMessage(normalizedAnalysis?.message)) {
                 const cdkCooledDown = await store.recordCdkFailure(cdk);
                 const ipCooledDown = clientIp
@@ -3716,33 +3783,36 @@ function spawnActivationWorker({ task, token, sessionRaw, cdk, cdkDetails, clien
         } catch (bgError) {
             console.error(`[Background Task Error] ${task.jobKey}:`, bgError);
             logTask(task.jobKey, `后台任务异常: ${bgError.message}`, 'error');
+            const status = shouldRollbackCdk ? 'failed' : 'success';
+            const message = shouldRollbackCdk ? bgError.message : '开通成功，后续记录同步异常，请联系管理员核对';
             await store.updateTaskLog(task.jobKey, {
-                status: 'failed',
-                message: bgError.message,
+                status,
+                message,
                 rawOutput: bgError.message,
                 cdkCode: cdk,
-                progress: normalizeTaskProgress(lastProgress, 'failed', lastProgress)
+                progress: normalizeTaskProgress(lastProgress, status, lastProgress)
             });
             broadcastToTask(task.jobKey, {
                 type: 'status',
                 jobKey: task.jobKey,
-                status: 'failed',
-                message: bgError.message,
+                status,
+                message,
                 cdkCode: cdk,
-                progress: normalizeTaskProgress(lastProgress, 'failed', lastProgress)
+                progress: normalizeTaskProgress(lastProgress, status, lastProgress)
             });
             notifyTaskOutcome({
-                event: 'failure',
+                event: status === 'success' ? 'success' : 'failure',
                 email: accountEmail,
                 cdk,
                 jobKey: task.jobKey,
-                message: bgError.message
+                message
             });
-            if (shouldRollbackCdk) {
-                await store.markCdkUnused(cdk);
-                logTask(task.jobKey, `CDK ${cdk} 已回滚为未使用`);
-            }
         } finally {
+            if (shouldRollbackCdk) {
+                await store.markCdkUnused(cdk).catch((error) => {
+                    console.error(`[CDK rollback] ${task.jobKey}:`, error);
+                });
+            }
             releaseForegroundSlot(task.jobKey);
             if (getTotalActiveJobs() === 0) {
                 const maintenanceModeState = await store.getMaintenanceModeState();
@@ -3755,6 +3825,8 @@ function spawnActivationWorker({ task, token, sessionRaw, cdk, cdkDetails, clien
 }
 
 async function handleActivationRequest(req, res) {
+    if (updater.gate) return res.status(503).json({ success: false, message: '系统正在更新，请稍后再试' });
+    let admissionKey = null;
     const rawSession = String(req.body?.session || req.body?.token || '').trim();
     const sessionJson = parseSessionJson(rawSession);
     const token = normalizeSessionToken(rawSession);
@@ -3778,11 +3850,6 @@ async function handleActivationRequest(req, res) {
         if (maintenanceModeState.enabled) {
             return res.status(503).json({ success: false, message: '系统维护中，请稍后再试' });
         }
-        const maxConcurrentActivations = await store.getMaxConcurrentActivations();
-        if (activeForegroundJobs.size >= maxConcurrentActivations) {
-            return res.status(429).json({ success: false, message: '当前任务过多，请稍后再试' });
-        }
-
         const cdkDetails = await store.verifyCdkDetails(cdk);
         const runningTask = cdkDetails ? await store.getRunningTaskByCdk(cdk) : null;
         if (runningTask) {
@@ -3835,13 +3902,16 @@ async function handleActivationRequest(req, res) {
             }
         }
 
-        const lockSuccess = await store.markCdkUsed(cdk);
-        if (!lockSuccess) {
-            return res.status(403).json({ success: false, message: 'CDK 不可用或正在被他人使用' });
-        }
-
         const storedSession = buildStoredSessionPayload(rawSession, sessionJson, token);
-        const task = await store.createTaskLog({
+        const maxConcurrentActivations = await store.getMaxConcurrentActivations();
+        if (updater.gate) return res.status(503).json({ success: false, message: '系统正在更新，请稍后再试' });
+        // No await between checking capacity and reserving it, including pending DB writes.
+        if (activeForegroundJobs.size >= maxConcurrentActivations) {
+            return res.status(429).json({ success: false, message: '当前任务已满，请稍后再试；已提交的任务可在查询状态中恢复' });
+        }
+        admissionKey = `admission-${crypto.randomUUID()}`;
+        reserveForegroundSlot(admissionKey);
+        const task = await store.createActivationTask({
             tokenPreview: extractSessionPreview(storedSession),
             sessionPayload: storedSession,
             cdkCode: cdk,
@@ -3851,15 +3921,26 @@ async function handleActivationRequest(req, res) {
             progress: 3
         });
 
+        if (!task) {
+            return res.status(403).json({ success: false, message: 'CDK 不可用或已使用，请查询状态' });
+        }
+        if (task.existing) {
+            return res.json({ success: true, jobKey: task.jobKey, message: '已恢复现有任务' });
+        }
+
         logTask(task.jobKey, `任务已创建，CDK=${cdk} mode=${useGptApi ? 'gpt-api' : 'local'}`);
         reserveForegroundSlot(task.jobKey);
+        releaseForegroundSlot(admissionKey);
+        admissionKey = null;
 
         if (useGptApi) {
             runGptApiWorker({ task, token, session: JSON.parse(storedSession), cdk, planType: cdkDetails.plan_type || 'plus' }).catch((error) => {
                 console.error(`[GPT API Worker] ${task.jobKey}:`, error);
             });
         } else {
-            spawnActivationWorker({ task, token, sessionRaw: storedSession, cdk, cdkDetails, clientIp });
+            spawnActivationWorker({ task, token, sessionRaw: storedSession, cdk, cdkDetails, clientIp }).catch((error) => {
+                console.error(`[Activation Worker] ${task.jobKey}:`, error);
+            });
         }
 
         return res.json({
@@ -3868,16 +3949,17 @@ async function handleActivationRequest(req, res) {
             message: '任务已启动，正在为您开通中...'
         });
     } catch (error) {
-        try { await store.markCdkUnused(cdk); } catch (_) { }
         return res.status(500).json({ success: false, message: error.message });
+    } finally {
+        if (admissionKey) releaseForegroundSlot(admissionKey);
     }
 }
 
-app.post('/api/run-process', handleActivationRequest);
+app.post('/api/run-process', cdkRateLimiter, handleActivationRequest);
 
 app.post('/api/admin/trigger-activation', handleActivationRequest);
 
-app.post('/api/verify-cdk', async (req, res) => {
+app.post('/api/verify-cdk', cdkRateLimiter, async (req, res) => {
     const cdk = String(req.body?.cdk || '').trim();
     const clientIp = getClientIp(req);
     if (!cdk) {
@@ -3937,7 +4019,7 @@ app.post('/api/verify-cdk', async (req, res) => {
     }
 });
 
-app.get('/api/cdk/query', async (req, res) => {
+app.get('/api/cdk/query', cdkRateLimiter, async (req, res) => {
     const cdk = String(req.query.cdk || '').trim();
     if (!cdk) {
         return res.status(400).json({ success: false, message: '请输入查询激活码' });
@@ -3950,10 +4032,11 @@ app.get('/api/cdk/query', async (req, res) => {
             return res.status(404).json({ success: false, message: '未找到该激活码记录' });
         }
 
-        const runningTask = await store.getRunningTaskByCdk(cdk);
+        const latestTask = await store.getLatestTaskByCdk(cdk);
+        const runningTask = latestTask?.status === 'running' ? latestTask : null;
         const cdkStatus = runningTask
             ? '开通中'
-            : (cdkData.used_at ? '已使用' : '未使用');
+            : (latestTask?.status === 'manual' ? '待核实' : (cdkData.used_at ? '已使用' : '未使用'));
 
         res.json({
             success: true,
@@ -3961,7 +4044,13 @@ app.get('/api/cdk/query', async (req, res) => {
                 status: cdkStatus,
                 type: cdkData.type || '自助',
                 createdAt: cdkData.created_at,
-                jobKey: runningTask?.job_key || null,
+                jobKey: latestTask?.job_key || null,
+                task: latestTask ? {
+                    jobKey: latestTask.job_key,
+                    status: latestTask.status,
+                    progress: Number(latestTask.progress || 0),
+                    message: latestTask.message || ''
+                } : null,
                 usedAt: cdkData.used_at
                     ? new Date(cdkData.used_at).toLocaleString('zh-CN', { hour12: false }).replace(/\//g, '-')
                     : null
@@ -3978,6 +4067,7 @@ app.get('/api/cdk/download', async (req, res) => {
 
 async function start() {
     await ensureStoreReady();
+    await store.recoverInterruptedActivationTasks();
 
     try {
         const poolInfo = await syncBrowserPoolModeFromStore();
@@ -4073,7 +4163,11 @@ async function start() {
     });
 }
 
-if (process.env.IS_PRODUCT_FLOW === 'true') {
+module.exports = { app, handleActivationRequest, runGptApiWorker, spawnActivationWorker, activeForegroundJobs, updater };
+
+if (require.main !== module) {
+    // Imported by checks without starting database migrations or a listener.
+} else if (process.env.IS_PRODUCT_FLOW === 'true') {
     console.log('[系统] 检测到成品子流程环境，跳过 Web 服务监听。');
 } else {
     start().catch((error) => {

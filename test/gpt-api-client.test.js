@@ -102,3 +102,18 @@ describe('gpt api client', () => {
     });
 
 });
+
+describe('conservative upstream status parsing', () => {
+    afterEach(() => vi.restoreAllMocks());
+    it('joins the default base URL without duplicate slashes', async () => {
+        const spy = vi.spyOn(axios, 'request').mockResolvedValue({ status: 200, data: {} });
+        await client.queryBalance({ api_key: 'test' });
+        expect(spy.mock.calls[0][0].url).toBe('https://kc.vpss.eu.cc/balance');
+    });
+    it.each(['unsuccessful', 'inactive', 'unpaid', 'not_completed', 'done'])('does not treat %s as payment success', status => {
+        expect(client.classifyStatus(status)).toBe('running');
+    });
+    it('gives an explicit negative business result priority', () => {
+        expect(client.extractStatus({ status: 'success', result: { status: 'success', ok: false } })).toBe('failed');
+    });
+});

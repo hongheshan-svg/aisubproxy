@@ -1,6 +1,6 @@
 {
   "name": "kc-gpt-pay",
-  "version": "1.0.0",
+  "version": "0.0.1",
   "description": "ChatGPT Plus 自动化开通工具（Stripe 信用卡直付）：注册 → Stripe Checkout → 信用卡卡池支付 → 协议 token 入库",
   "license": "MIT",
   "main": "server.js",
@@ -8,7 +8,9 @@
     "start": "node server.js",
     "start:headful": "cross-env HEADFUL=1 node server.js",
     "test": "vitest --run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "start:ota": "node ota/launcher.js",
+    "build:ota": "node scripts/build-ota.js"
   },
   "engines": {
     "node": ">=20"

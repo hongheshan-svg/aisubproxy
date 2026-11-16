@@ -15,7 +15,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 # 系统依赖：Playwright Chromium + Python3 + OpenCV 运行时库
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    wget curl ca-certificates fonts-liberation fonts-noto-cjk \
+    wget curl ca-certificates fonts-liberation fonts-noto-cjk default-mysql-client \
     python3 python3-pip python-is-python3 \
     libatk-bridge2.0-0 libatk1.0-0 libcups2 libdbus-1-3 \
     libdrm2 libgbm1 libgtk-3-0 libnspr4 libnss3 \

@@ -1,13 +1,12 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-brand-title="运营控制台">
 
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>KC GPT自动充值系统 | 控制台</title>
+    <title>运营控制台 | GW-LINK</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="/icons.js"></script>
     <style>
         /* ============================================================
          * Enterprise Blue SaaS Theme — 后台控制台
@@ -1697,9 +1696,24 @@
             flex-wrap: wrap;
         }
     </style>
+    <link rel="stylesheet" href="/workspace.css?v=20261116-logo2">
+    <script defer src="/branding.js?v=20261116-logo2"></script>
+    <script defer src="/admin-branding.js?v=20261116-logo2"></script>
+    <link rel="stylesheet" href="/ota.css?v=0.0.1">
+    <script defer src="/ota.js?v=0.0.1"></script>
 </head>
 
-<body>
+<body class="admin-workspace">
+    <div class="admin-mobile-header"><button type="button" id="adminMenuButton" aria-controls="adminSidebar" aria-expanded="false" onclick="toggleAdminMenu()">菜单</button><strong><span data-brand-name>GW-LINK</span> 控制台</strong><button type="button" class="ota-badge" data-ota-toggle aria-controls="otaPanel" aria-expanded="false" aria-label="查看系统版本和更新"><span data-app-version>v0.0.1</span></button></div>
+    <button type="button" class="admin-menu-shade" aria-label="关闭导航菜单" onclick="toggleAdminMenu(false)"></button>
+    <section id="otaPanel" class="ota-panel" role="dialog" aria-label="系统版本与更新" hidden>
+        <header><h2>系统更新</h2><button type="button" id="otaClose" class="ota-close" aria-label="关闭版本面板">×</button></header>
+        <div class="ota-versions"><span>当前版本<strong id="otaCurrent">v0.0.1</strong></span><span>最新版本<strong id="otaLatest">待检查</strong></span></div>
+        <p id="otaMessage" class="ota-message" role="status" aria-live="polite">正在获取版本信息…</p>
+        <details id="otaNotesSection" hidden><summary>更新说明</summary><pre id="otaNotes" class="ota-notes"></pre><a id="otaReleaseLink" class="ota-release-link" target="_blank" rel="noopener noreferrer">在 GitHub 查看版本 ↗</a></details>
+        <div class="ota-actions"><button type="button" id="otaCheck">检查更新</button><button type="button" id="otaDownload" class="ota-primary" hidden>下载更新</button><button type="button" id="otaApply" class="ota-primary" hidden>重启并应用</button><button type="button" id="otaRollback" hidden>回滚版本</button></div>
+        <p id="otaHint" class="ota-hint">切换前自动备份数据库；有开通任务运行时暂停切换。</p>
+    </section>
     <div class="bg-glow"></div>
     <div id="message_container" class="message-container"></div>
 
@@ -1745,10 +1759,10 @@
         </div>
     </div>
 
-    <aside class="sidebar">
+    <aside class="sidebar" id="adminSidebar" aria-label="后台导航">
         <div class="sidebar-brand">
-            <div class="brand-logo"><i data-lucide="zap" color="white" fill="white"></i></div>
-            <span class="brand-name">KC GPT自动充值系统</span>
+            <div class="brand-logo" data-brand-logo data-brand-size="38">GW</div>
+            <div class="brand-identity"><span class="brand-name" data-brand-name>GW-LINK</span><button type="button" class="ota-badge" data-ota-toggle aria-controls="otaPanel" aria-expanded="false" aria-label="查看系统版本和更新"><span data-app-version>v0.0.1</span></button></div>
         </div>
 
         <nav class="nav-menu">
@@ -1837,7 +1851,7 @@
         <div id="dashboard" class="page-view active">
             <div class="page-header">
                 <h1>概览中心</h1>
-                <p>实时监控任务执行状态与资源分配情况</p>
+                <p>实时监控任务执行状态与资源分配情况</p><div id="adminSyncStatus" class="admin-sync-status" role="status">正在同步数据…</div>
             </div>
 
             <div class="stat-grid">
@@ -1984,6 +1998,32 @@
                 <p>自助开通并发与维护模式（保存后立即生效，无需重启服务）。Telegram / hCaptcha 需分别点各自区域的「保存」按钮；配置写入 MySQL，重启容器不会丢失（请勿使用 <code>docker compose down -v</code>）。</p>
             </div>
 
+            <div class="panel">
+                <h2 class="panel-title">网站品牌</h2>
+                <p class="branding-hint">自定义网站名称与 Logo，应用到首页、后台、登录页和浏览器图标。</p>
+                <form id="brandingForm">
+                    <div class="branding-fields">
+                        <div>
+                            <div class="form-group">
+                                <label for="brandName">品牌名称</label>
+                                <input id="brandName" class="asset-input" type="text" maxlength="40" required placeholder="例如 GW-LINK" autocomplete="off">
+                            </div>
+                            <div class="form-group" style="margin-top:18px">
+                                <label for="brandLogoFile">上传网站 Logo</label>
+                                <input id="brandLogoFile" type="file" accept="image/png,image/jpeg,image/webp">
+                                <p class="branding-hint">支持 PNG、JPG、WebP，最大 5 MB。自动缩小到 512 像素，建议使用透明背景的正方形图片。</p>
+                            </div>
+                        </div>
+                        <div class="branding-preview"><img id="brandLogoPreview" alt="网站 Logo 预览" width="120" height="120" style="object-fit:contain" hidden></div>
+                    </div>
+                    <div class="branding-actions">
+                        <button id="saveBrandingButton" type="submit" class="btn btn-primary">保存品牌设置</button>
+                        <button id="removeBrandLogo" type="button" class="btn btn-outline">移除 Logo</button>
+                    </div>
+                    <p id="brandingStatus" role="status" aria-live="polite"></p>
+                </form>
+            </div>
+
             <!-- 第三方代充 API 设置 -->
             <div class="panel">
                 <h2 class="panel-title">第三方代充 API（协议对接）</h2>
@@ -2021,7 +2061,7 @@
                         <div><div style="font-size:12px;color:var(--text-dim)">可用 GPT 套餐</div><div id="gpt_api_plans" style="font-size:13px;margin-top:5px">—</div></div>
                         <div><div style="font-size:12px;color:var(--text-dim)">積分套餐</div><div id="gpt_api_credit_plans" style="font-size:13px;margin-top:5px">—</div></div>
                     </div>
-                    <div style="margin-top:14px; font-size:12px; color:var(--text-dim)">最近失敗代充（僅顯示供應商回傳的卡密前綴）</div>
+                    <div style="margin-top:14px; font-size:12px; color:var(--text-dim)">失敗與待核實訂單（僅顯示供應商回傳的卡密前綴）</div>
                     <div id="gpt_api_recent_orders" style="font-size:13px; margin-top:7px; overflow-x:auto">尚未查詢</div>
                     <div id="gpt_api_status_hint" style="font-size:12px;color:var(--text-dim); margin-top:10px"></div>
                 </div>
@@ -2390,6 +2430,7 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
                                 <th width="72px" style="text-align:center">启用</th>
                                 <th width="96px" style="text-align:center">活跃检测</th>
                                 <th width="140px">出口 IP</th>
+                                <th width="72px" style="text-align:center">地区</th>
                                 <th width="88px" style="text-align:center">延迟</th>
                                 <th width="88px" style="text-align:center">协议</th>
                                 <th>代理地址</th>
@@ -2397,7 +2438,7 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
                             </tr>
                         </thead>
                         <tbody id="proxy_pool_body">
-                            <tr><td colspan="7">加载中...</td></tr>
+                            <tr><td colspan="8">加载中...</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -2823,7 +2864,7 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
                         支持每行一条，或使用逗号、空格分隔。系统会自动去重并忽略空行。
                     </div>
                     <textarea id="cdk_import_text" class="import-textarea"
-                        placeholder="KC-ABCDEFGHJK23456&#10;KC-MNPQRSTUVW56789"></textarea>
+                        placeholder="GW-ABCDEFGHJKLMNPQRST234&#10;GW-MNPQRSTUVWXYZ23456789"></textarea>
                     <div class="import-actions">
                         <button class="btn btn-success" onclick="importCDKs()">
                             <i data-lucide="check-check"></i>
@@ -2998,7 +3039,7 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
                         <i data-lucide="refresh-cw"></i>
                         立即刷新
                     </button>
-                    <span class="log-page-toolbar-hint">默认每 3 秒自动拉取概览与下方表格；停止后仅在你点击「立即刷新」时更新。可在表格中删除单条任务记录。前台自助开通由子进程执行，无法在此强制杀进程，可开维护模式拒绝新单。</span>
+                    <span class="log-page-toolbar-hint">默认每 10 秒自动拉取概览与下方表格；停止后仅在你点击「立即刷新」时更新。可在表格中删除单条任务记录。前台自助开通由子进程执行，无法在此强制杀进程，可开维护模式拒绝新单。</span>
                 </div>
                 <div class="table-container">
                     <table>
@@ -3389,11 +3430,14 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
             }
         }
 
+        let runtimeLogInFlight = false;
         async function fetchRuntimeLogsIncremental() {
+            if (runtimeLogInFlight || document.hidden) return;
             const pause = document.getElementById('runtime_log_pause');
             if (pause && pause.checked) {
                 return;
             }
+            runtimeLogInFlight = true;
             try {
                 const res = await authFetch(`/api/admin/runtime-logs?after=${runtimeLogAfter}&limit=1000`);
                 const data = await res.json();
@@ -3406,7 +3450,9 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
                 appendRuntimeLogEntries(data.entries);
                 runtimeLogAfter = Number(data.nextAfter || runtimeLogAfter);
             } catch (_) {
-                /* 静默失败，下一轮再试 */
+                /* 下一轮重试 */
+            } finally {
+                runtimeLogInFlight = false;
             }
         }
 
@@ -3451,8 +3497,8 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
             updateAdminDataRefreshButton();
             showMessage(
                 adminDataRefreshPaused
-                    ? '已停止自动刷新：概览与各列表（含任务管理）不再每 3 秒更新'
-                    : '已恢复每 3 秒自动刷新',
+                    ? '已停止自动刷新：概览与各列表（含任务管理）不再每 10 秒更新'
+                    : '已恢复每 10 秒自动刷新',
                 'success'
             );
         }
@@ -3628,7 +3674,7 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
             }
 
             const headers = { ...(options.headers || {}), Authorization: `Bearer ${token}` };
-            const response = await fetch(url, { ...options, headers });
+            const response = await fetch(url, { ...options, headers, signal: options.signal || AbortSignal.timeout(60000), cache: 'no-store' });
             if (response.status === 401) {
                 redirectToLogin();
                 throw new Error('登录已失效');
@@ -5108,9 +5154,13 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
             updateMaintenanceModeUI(cfg, window.__adminRuntime || { active_activation_jobs: 0 });
         }
 
+        let adminDataInFlight = false;
         async function loadData(isInitial = false) {
+            if (adminDataInFlight || (!isInitial && document.hidden)) return;
+            adminDataInFlight = true;
             try {
                 const res = await authFetch('/api/admin/data');
+                if (!res.ok) throw new Error('数据同步失败');
                 const data = await res.json();
                 document.getElementById('stat_cpu_percent').innerText = `${Number(data.runtime?.system?.cpu?.percent || 0)}%`;
                 document.getElementById('stat_cpu_meta').innerText = data.runtime?.system?.cpu?.text || '实时 CPU 使用率';
@@ -5155,14 +5205,18 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
                 renderAutomationTable(window.__adminLogs);
 
                 try {
-                    await loadCdkList();
+                    if (isInitial || document.getElementById('cdks').classList.contains('active')) await loadCdkList();
                 } catch (cdkError) {
                     console.error('Failed to load CDK list in loadData', cdkError);
                 }
 
+                document.getElementById('adminSyncStatus').textContent = `最近同步 ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`;
                 lucide.createIcons();
             } catch (error) {
                 console.error('Failed to load data', error);
+                document.getElementById('adminSyncStatus').textContent = '同步暂不可用，将自动重试';
+            } finally {
+                adminDataInFlight = false;
             }
         }
 
@@ -5465,7 +5519,7 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
             if (!tbody) return;
 
             if (!proxyPoolList.length) {
-                tbody.innerHTML = '<tr><td colspan="7">暂无代理，请在上方粘贴 URL 后点击「保存到代理池」</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="8">暂无代理，请在上方粘贴 URL 后点击「保存到代理池」</td></tr>';
                 if (summary) summary.textContent = '共 0 条，启用 0 条';
                 return;
             }
@@ -5486,6 +5540,7 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
                         </td>
                         <td style="text-align:center;" id="proxy_check_${item.id}">${renderProxyCheckBadge(item)}</td>
                         <td id="proxy_ip_${item.id}">${ipCell}</td>
+                        <td style="text-align:center;" id="proxy_region_${item.id}">${item.region ? `<code>${escapeHtml(item.region)}</code>` : '<span style="color:#9ca3af;">—</span>'}</td>
                         <td style="text-align:center;" id="proxy_lat_${item.id}">${latency}</td>
                         <td style="text-align:center;"><code>${escapeHtml(item.protocol || '-')}</code></td>
                         <td><code style="font-size:12px; word-break:break-all;">${escapeHtml(item.proxy_url_masked || item.proxy_url || '')}</code></td>
@@ -5746,6 +5801,12 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
             }
             if (latCell) {
                 latCell.textContent = result.ok ? `${result.latencyMs || 0}ms` : '—';
+            }
+            const regionCell = document.getElementById(`proxy_region_${id}`);
+            if (result.ok && result.region) {
+                const reg = String(result.region).toUpperCase();
+                if (rowItem) rowItem.region = reg;
+                if (regionCell) regionCell.innerHTML = `<code>${escapeHtml(reg)}</code>`;
             }
         }
 
@@ -7622,9 +7683,37 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
             if (panel) panel.style.display = 'none';
         }
 
+        const adminMobileLayout = matchMedia('(max-width: 760px)');
+        function syncAdminNavigation() {
+            const open = document.body.classList.contains('menu-open');
+            document.getElementById('adminSidebar').inert = adminMobileLayout.matches && !open;
+            document.querySelector('.main-content').inert = adminMobileLayout.matches && open;
+        }
+        adminMobileLayout.addEventListener('change', syncAdminNavigation);
+        syncAdminNavigation();
+        function toggleAdminMenu(open = !document.body.classList.contains('menu-open')) {
+            document.body.classList.toggle('menu-open', open);
+            syncAdminNavigation();
+            document.getElementById('adminMenuButton').setAttribute('aria-expanded', String(open));
+            if (open) document.querySelector('.sidebar .nav-item')?.focus();
+            else document.getElementById('adminMenuButton').focus();
+        }
+        document.querySelectorAll('.nav-item').forEach(item => {
+            item.setAttribute('role', 'button');
+            item.tabIndex = 0;
+            item.addEventListener('keydown', event => {
+                if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); item.click(); }
+            });
+            item.addEventListener('click', () => {
+                if (!item.classList.contains('nav-group-toggle') && document.body.classList.contains('menu-open')) toggleAdminMenu(false);
+            });
+        });
+        document.addEventListener('keydown', event => { if (event.key === 'Escape' && document.body.classList.contains('menu-open')) toggleAdminMenu(false); });
+        document.addEventListener('visibilitychange', () => { if (!document.hidden && !adminDataRefreshPaused) loadData(false); });
+
         async function bootAdmin() {
             try {
-                const res = await fetch('/api/public/admin-paths');
+                const res = await fetch('/api/public/admin-paths', { signal: AbortSignal.timeout(15000) });
                 const data = await res.json();
                 if (data.success && data.loginUrl) {
                     adminLoginPath = data.loginUrl;
@@ -7648,10 +7737,10 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
                     clearInterval(adminDataRefreshTimer);
                 }
                 adminDataRefreshTimer = setInterval(() => {
-                    if (!adminDataRefreshPaused) {
+                    if (!adminDataRefreshPaused && !document.hidden && navigator.onLine) {
                         loadData(false).catch(() => { });
                     }
-                }, 3000);
+                }, 10000);
                 updateAdminDataRefreshButton();
                 lucide.createIcons();
             } catch (error) {

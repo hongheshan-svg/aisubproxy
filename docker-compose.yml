@@ -52,6 +52,10 @@ services:
       HEADFUL: ${HEADFUL:-1}
       PROXY: ${PROXY:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin}
+      ADMIN_TOKEN_SECRET: ${ADMIN_TOKEN_SECRET:-}
+      TRUST_PROXY: ${TRUST_PROXY:-}
+      OTA_GITHUB_REPO: ${OTA_GITHUB_REPO:-hongheshan-svg/aisubproxy}
+      OTA_GITHUB_TOKEN: ${OTA_GITHUB_TOKEN:-}
       HCAPTCHA_CONFIG_FILE: /app/data/hcaptcha-config.json
       HCAPTCHA_VLM_API_KEY: ${HCAPTCHA_VLM_API_KEY:-}
       HCAPTCHA_VLM_BASE_URL: ${HCAPTCHA_VLM_BASE_URL:-https://api.openai.com/v1}

@@ -27,4 +27,4 @@ else
     echo "[entrypoint] HEADFUL=0，使用 headless Chromium"
 fi
 
-exec node server.js
+exec node ota/launcher.js

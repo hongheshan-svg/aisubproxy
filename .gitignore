@@ -35,6 +35,11 @@ Thumbs.db
 /[A-F0-9][A-F0-9]*.jpeg
 /[A-F0-9][A-F0-9]*.webp
 
+# ChatGPT session / cookie dumps (live credentials — never commit)
+*sess*.json
+*cookie*.json
+sentinel-capture*.json
+
 # Local DB dumps & exports
 *.sql.gz
 *.sqlite

@@ -85,7 +85,15 @@ async function executePaymentWithRetry(page, options) {
     const lastUsedIdRaw = await store.getAppConfigValue('last_used_address_id', null);
     const lastUsedId = lastUsedIdRaw ? Number(lastUsedIdRaw) : null;
 
-    const address = await pickBillingAddressForRegion(region, lastUsedId);
+    let address;
+    try {
+        address = await pickBillingAddressForRegion(region, lastUsedId);
+    } catch (error) {
+        // 仅 US 会自动生成地址；其他地区只用地址池，池空即失败
+        const message = `${region} 账单地址不可用: ${error.message}`;
+        progress(message);
+        return { success: false, error: message };
+    }
     const addressSource = address.generated ? '随机生成' : `地址池 #${address.id}`;
     const addressLabel = region === 'US' ? '美国免税账单地址' : `${region} 账单地址`;
     progress(`已选取${addressLabel} (${addressSource}): ${address.line1}, ${address.city}, ${address.state}, ${address.country}`);
@@ -98,7 +106,7 @@ async function executePaymentWithRetry(page, options) {
     const declinedLast4s = [];
     let lastError = '';
     let lastCardLast4 = '';
-    let billingHolderName = String(address.holder_name || '');
+    let billingHolderName = '';
 
     let billedAmount = 0;
     let billedCurrency = currency;

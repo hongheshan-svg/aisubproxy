@@ -1,6 +1,6 @@
 {
   "name": "kc-gpt-pay",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "ChatGPT Plus 自动化开通工具（Stripe 信用卡直付）：注册 → Stripe Checkout → 信用卡卡池支付 → 协议 token 入库",
   "license": "MIT",
   "main": "server.js",

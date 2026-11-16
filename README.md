@@ -304,7 +304,7 @@ sudo certbot --nginx -d your-domain.com
 1. 打开后台 → **系统配置**：填写代理、支付地区（默认菲律宾 PHP）、邮箱通道、hCaptcha 等
 2. **卡池管理** → 批量导入信用卡（格式：`卡号|有效期|CVC|持卡人姓名`）
 3. **免税地址** → 确认当前地区有足够地址模板（默认已预置）
-4. **CDK 管理** → 生成 Plus / Pro 5x / Pro 20x 激活码
+4. **CDK 管理** → 生成 Plus / Pro 100 / Pro 200 / Pro 500 激活码
 5. 用户访问前台 → 输入 CDK → 粘贴 Session JSON → 提交，约 3–5 分钟自动开通
 6. 在 **任务管理** / **运行日志** 查看进度与结果
 
@@ -314,7 +314,7 @@ sudo certbot --nginx -d your-domain.com
 
 | 模块 | 说明 |
 |------|------|
-| **CDK 兑换** | Plus / Pro 5x / Pro 20x 三档套餐，一卡一充 |
+| **CDK 兑换** | Plus / Pro 100 / Pro 200 / Pro 500 四档套餐，一卡一充 |
 | **信用卡卡池** | 批量导入、智能选卡、冷却机制、Stripe 拒卡自动报废、失败换卡重试 |
 | **支付地区** | PH / US / SG / MY 可切换，配套免税地址池 |
 | **账单审计** | 自动记录每笔支付，支持筛选与 CSV 导出 |
@@ -487,3 +487,13 @@ A: 管理员 PowerShell 执行：`Set-ExecutionPolicy -Scope CurrentUser RemoteS
 ## 在线更新（OTA）
 
 GW-LINK 从 v0.0.1 开始发布。后台左上角版本号支持检查更新、查看更新说明、下载校验、重启应用和回滚。运行中的开通任务会阻止版本切换，切换前自动备份数据库，新版本启动失败自动恢复旧代码。部署要求、发布步骤和兼容范围见 [OTA.md](OTA.md)。
+
+### Pro 套餐标识
+
+| 显示名称 | CDK 内部类型 | Checkout plan_name |
+| --- | --- | --- |
+| Pro 100 | pro_5x（兼容已发出的 CDK） | chatgptpro100 |
+| Pro 200 | pro_20x（兼容已发出的 CDK） | chatgptpro200 |
+| Pro 500 | pro_500 | chatgptpro500 |
+
+Pro 500 支持 CDK 生成、导入、兑换、筛选及账单显示。本地支付使用上述精确标识，失败时不回退到通用 Pro 按钮。第三方代充模式会从已配置服务的 `/plans` 中查找 `plan_name=chatgptpro500` 且已启用的唯一套餐，再使用其实际 `key`；缺失、停用或查询失败时不消费兑换码。

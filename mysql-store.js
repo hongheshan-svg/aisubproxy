@@ -54,22 +54,7 @@ function getPool() {
 const ASSET_LOCK_STALE_MS = Number(process.env.ASSET_LOCK_STALE_MS || 15 * 60 * 1000);
 
 // CDK 套餐类型 → OpenAI plan_name 映射（custom checkout API）
-const PLAN_NAME_MAP = {
-    plus: 'chatgptplusplan',
-    pro_5x: 'chatgptprolite',
-    pro_20x: 'chatgptpro'
-};
-
-const VALID_PLAN_TYPES = new Set(Object.keys(PLAN_NAME_MAP));
-
-/**
- * 将 plan_type 解析为 OpenAI plan_name
- * @param {string} planType - 'plus' | 'pro_5x' | 'pro_20x'
- * @returns {string} 对应的 plan_name，未知值默认返回 'chatgptplusplan'
- */
-function resolvePlanName(planType) {
-    return PLAN_NAME_MAP[planType] || PLAN_NAME_MAP.plus;
-}
+const { PLAN_NAME_MAP, resolvePlanName, planType: validatePlanType } = require('./plan-config');
 
 function createPasswordHash(password) {
     const salt = crypto.randomBytes(16).toString('hex');
@@ -1237,7 +1222,7 @@ async function insertCdks(cdks, options = {}) {
     }
 
     const type = options.type || '自助';
-    const planType = VALID_PLAN_TYPES.has(options.plan_type) ? options.plan_type : 'plus';
+    const planType = validatePlanType(options.plan_type || 'plus');
     const values = normalized.map((cdk) => [cdk, 1, type, planType]);
     console.log(`正在插入 ${values.length} 个 CDK, 类型: ${type}, 套餐: ${planType}`);
 

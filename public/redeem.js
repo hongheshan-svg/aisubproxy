@@ -3,7 +3,7 @@
     const $ = id => document.getElementById(id);
     const { requestJson, createPoller } = window.AppClient;
     const visible = () => !document.hidden && navigator.onLine;
-    const PLAN_LABELS = { plus: 'ChatGPT Plus', pro_5x: 'ChatGPT Pro 5x', pro_20x: 'ChatGPT Pro 20x' };
+    const PLAN_LABELS = { plus: 'ChatGPT Plus', pro_5x: 'ChatGPT Pro 100', pro_20x: 'ChatGPT Pro 200', pro_500: 'ChatGPT Pro 500' };
     const STORAGE_KEY = 'kc.pendingActivation';
     const terminal = new Set(['success', 'failed', 'manual', 'maintenance']);
     let verifiedCdk = '', jobKey = '', busy = false, completed = false, uncertain = false;

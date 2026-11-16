@@ -71,7 +71,7 @@ async function createHostedCheckoutLink({ accessToken, planType = 'plus', planNa
 
     const region = String(country || 'PH').toUpperCase();
     const billingCurrency = String(currency || getRegionConfig(region)?.currency || 'PHP').toUpperCase();
-    const planNameResolved = String(planName || store.resolvePlanName(planType)).trim();
+    const planNameResolved = require('./plan-config').resolveCheckoutPlan(planType, planName);
     const payload = buildCheckoutPayload(planNameResolved, region, billingCurrency);
 
     const response = await axios.post(
@@ -171,7 +171,7 @@ class ChatGPTService {
 
     /**
      * 创建 Stripe Checkout Session，根据 plan_type 选择对应 plan_name
-     * @param {string} planType - 'plus' | 'pro_5x' | 'pro_20x'
+     * @param {string} planType - 'plus' | 'pro_5x' | 'pro_20x' | 'pro_500'
      * @param {string} country - ISO 3166-1 alpha-2 国家代码
      * @param {string} currency - 币种代码 (USD/SGD/MYR)
      * @param {string} [planNameOverride] - 可选，覆盖默认 plan_name
@@ -179,7 +179,7 @@ class ChatGPTService {
      */
     async createCheckoutSession(planType, country, currency, planNameOverride) {
         try {
-            const planName = String(planNameOverride || store.resolvePlanName(planType)).trim();
+            const planName = require('./plan-config').resolveCheckoutPlan(planType, planNameOverride);
             const payload = buildCheckoutPayload(planName, country, currency);
             console.log(`[ChatGPT] 创建 Checkout Session: plan_name=${planName}, country=${country}, currency=${currency}, checkout_ui_mode=${payload.checkout_ui_mode}`);
 
@@ -237,7 +237,7 @@ class ChatGPTService {
      *
      * @param {import('playwright').Page} page - Playwright Page 实例
      * @param {object} options
-     * @param {string} options.planType - 'plus' | 'pro_5x' | 'pro_20x'
+     * @param {string} options.planType - 'plus' | 'pro_5x' | 'pro_20x' | 'pro_500'
      * @param {string} [options.cdkCode] - 关联的 CDK 码
      * @param {string} [options.email] - 关联的邮箱
      * @returns {Promise<{ success: boolean, error?: string, status?: string }>}
@@ -263,7 +263,7 @@ class ChatGPTService {
     /**
      * 根据 plan_type 和 currency 获取预估金额
      * 用于外部调用方查询参考价格
-     * @param {string} planType - 'plus' | 'pro_5x' | 'pro_20x'
+     * @param {string} planType - 'plus' | 'pro_5x' | 'pro_20x' | 'pro_500'
      * @param {string} currency - 币种代码
      * @returns {number} 预估金额
      */
@@ -272,7 +272,8 @@ class ChatGPTService {
         const baseAmounts = {
             plus: 20.00,
             pro_5x: 100.00,
-            pro_20x: 200.00
+            pro_20x: 200.00,
+            pro_500: 500.00
         };
         const amount = baseAmounts[planType] || baseAmounts.plus;
 
@@ -293,7 +294,7 @@ class ChatGPTService {
  * @param {object} params
  * @param {import('playwright').Page} params.page - Playwright Page 实例
  * @param {string} params.accessToken - OpenAI Bearer Token（用于创建 checkout session）
- * @param {string} params.planType - 'plus' | 'pro_5x' | 'pro_20x'
+ * @param {string} params.planType - 'plus' | 'pro_5x' | 'pro_20x' | 'pro_500'
  * @param {string} [params.cdkCode] - 关联的 CDK 码
  * @param {string} [params.email] - 关联的邮箱
  * @param {function} [params.onProgress] - 进度回调 (message: string) => void

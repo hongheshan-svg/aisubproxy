@@ -692,6 +692,7 @@ async function run() {
                 checkoutOpened = true;
             } catch (apiError) {
                 console.warn(`[Warn] API Checkout 失败: ${apiError.message}`);
+                if (planType === 'pro_500') throw apiError;
                 if (debugOnly) {
                     console.warn('[调试] API 路径不可用（Checkout 接口新增 Sentinel 风控校验），改走 UI 定价页生成支付链接...');
                 } else if (checkoutMode === 'api') {
@@ -703,6 +704,7 @@ async function run() {
         }
 
         if (!checkoutOpened) {
+            if (planType === 'pro_500') throw new Error('Pro 500 仅支持已配置的 Checkout API，不能回退到其他档位');
             console.log('🧭 [步骤] 正在打开定价页并选择升级套餐...');
             await openPricingCheckout(page, {
                 region: billingCountry,

@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS cdk_codes (
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     type VARCHAR(16) NOT NULL DEFAULT '自助',
-    plan_type VARCHAR(16) NOT NULL DEFAULT 'plus' COMMENT 'plus/pro_5x/pro_20x',
+    plan_type VARCHAR(16) NOT NULL DEFAULT 'plus' COMMENT 'plus/pro_5x/pro_20x/pro_500',
     fail_count INT DEFAULT 0,
     cooldown_until TIMESTAMP NULL DEFAULT NULL,
     UNIQUE KEY uniq_cdk_codes_code (cdk_code)
@@ -173,7 +173,7 @@ CREATE TABLE IF NOT EXISTS billing_records (
     card_number VARCHAR(32) NULL COMMENT '完整卡号',
     amount DECIMAL(10,2) NOT NULL DEFAULT 0.00 COMMENT '支付金额',
     currency VARCHAR(8) NOT NULL DEFAULT 'USD' COMMENT '币种',
-    plan_type VARCHAR(16) NOT NULL DEFAULT 'plus' COMMENT 'plus/pro_5x/pro_20x',
+    plan_type VARCHAR(16) NOT NULL DEFAULT 'plus' COMMENT 'plus/pro_5x/pro_20x/pro_500',
     stripe_session_id VARCHAR(128) NULL COMMENT 'Stripe Session ID',
     cdk_code VARCHAR(32) NULL COMMENT '关联 CDK',
     email VARCHAR(255) NULL COMMENT '关联邮箱',

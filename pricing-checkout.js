@@ -669,6 +669,7 @@ async function selectPricingRegion(page, regionCode) {
  */
 async function clickPlanUpgrade(page, planType) {
     const plan = String(planType || 'plus').toLowerCase();
+    if (plan === 'pro_500') throw new Error('Pro 500 必须使用已确认的 Checkout API 套餐，禁止通用 Pro 按钮回退');
     const patterns = PLAN_UPGRADE_PATTERNS[plan] || PLAN_UPGRADE_PATTERNS.plus;
     console.log(`📦 [步骤] 正在点击升级按钮 (套餐: ${plan})...`);
 

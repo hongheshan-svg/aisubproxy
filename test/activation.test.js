@@ -35,6 +35,13 @@ beforeEach(() => {
 afterEach(() => { updater.gate = false; vi.restoreAllMocks(); vi.useRealTimers(); vi.unstubAllEnvs(); activeForegroundJobs.clear(); });
 
 describe('activation admission', () => {
+    it('does not consume a Pro 500 CDK if the provider has no enabled matching plan', async () => {
+        store.verifyCdkDetails.mockResolvedValue({ type: '自助', plan_type: 'pro_500' });
+        vi.spyOn(api, 'fetchPlans').mockResolvedValue({ success: true, plans: [{ key: 'pro20x', plan_name: 'chatgptpro200', enabled: 1 }] });
+        const res = response(); await handleActivationRequest(request(), res);
+        expect(res.code).toBe(503); expect(store.createActivationTask).not.toHaveBeenCalled();
+        expect(store.markCdkUnused).not.toHaveBeenCalled(); expect(activeForegroundJobs.size).toBe(0);
+    });
     it('rejects new admissions while OTA is switching versions', async () => {
         updater.gate = true;
         const res = response(); await handleActivationRequest(request(), res);

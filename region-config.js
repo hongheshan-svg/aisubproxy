@@ -19,8 +19,9 @@ const DEFAULT_REGION = 'PH';
 
 const PLAN_TYPE_LABELS = {
     plus: 'ChatGPT Plus',
-    pro_5x: 'ChatGPT Pro 5x',
-    pro_20x: 'ChatGPT Pro 20x'
+    pro_5x: 'ChatGPT Pro 100',
+    pro_20x: 'ChatGPT Pro 200',
+    pro_500: 'ChatGPT Pro 500'
 };
 
 /**

@@ -1696,19 +1696,19 @@
             flex-wrap: wrap;
         }
     </style>
-    <link rel="stylesheet" href="/workspace.css?v=20261116-logo2">
+    <link rel="stylesheet" href="/workspace.css?v=0.0.2">
     <script defer src="/branding.js?v=20261116-logo2"></script>
     <script defer src="/admin-branding.js?v=20261116-logo2"></script>
-    <link rel="stylesheet" href="/ota.css?v=0.0.1">
-    <script defer src="/ota.js?v=0.0.1"></script>
+    <link rel="stylesheet" href="/ota.css?v=0.0.2">
+    <script defer src="/ota.js?v=0.0.2"></script>
 </head>
 
 <body class="admin-workspace">
-    <div class="admin-mobile-header"><button type="button" id="adminMenuButton" aria-controls="adminSidebar" aria-expanded="false" onclick="toggleAdminMenu()">菜单</button><strong><span data-brand-name>GW-LINK</span> 控制台</strong><button type="button" class="ota-badge" data-ota-toggle aria-controls="otaPanel" aria-expanded="false" aria-label="查看系统版本和更新"><span data-app-version>v0.0.1</span></button></div>
+    <div class="admin-mobile-header"><button type="button" id="adminMenuButton" aria-controls="adminSidebar" aria-expanded="false" onclick="toggleAdminMenu()">菜单</button><strong><span data-brand-name>GW-LINK</span> 控制台</strong><button type="button" class="ota-badge" data-ota-toggle aria-controls="otaPanel" aria-expanded="false" aria-label="查看系统版本和更新"><span data-app-version>v0.0.2</span></button></div>
     <button type="button" class="admin-menu-shade" aria-label="关闭导航菜单" onclick="toggleAdminMenu(false)"></button>
     <section id="otaPanel" class="ota-panel" role="dialog" aria-label="系统版本与更新" hidden>
         <header><h2>系统更新</h2><button type="button" id="otaClose" class="ota-close" aria-label="关闭版本面板">×</button></header>
-        <div class="ota-versions"><span>当前版本<strong id="otaCurrent">v0.0.1</strong></span><span>最新版本<strong id="otaLatest">待检查</strong></span></div>
+        <div class="ota-versions"><span>当前版本<strong id="otaCurrent">v0.0.2</strong></span><span>最新版本<strong id="otaLatest">待检查</strong></span></div>
         <p id="otaMessage" class="ota-message" role="status" aria-live="polite">正在获取版本信息…</p>
         <details id="otaNotesSection" hidden><summary>更新说明</summary><pre id="otaNotes" class="ota-notes"></pre><a id="otaReleaseLink" class="ota-release-link" target="_blank" rel="noopener noreferrer">在 GitHub 查看版本 ↗</a></details>
         <div class="ota-actions"><button type="button" id="otaCheck">检查更新</button><button type="button" id="otaDownload" class="ota-primary" hidden>下载更新</button><button type="button" id="otaApply" class="ota-primary" hidden>重启并应用</button><button type="button" id="otaRollback" hidden>回滚版本</button></div>
@@ -1762,7 +1762,7 @@
     <aside class="sidebar" id="adminSidebar" aria-label="后台导航">
         <div class="sidebar-brand">
             <div class="brand-logo" data-brand-logo data-brand-size="38">GW</div>
-            <div class="brand-identity"><span class="brand-name" data-brand-name>GW-LINK</span><button type="button" class="ota-badge" data-ota-toggle aria-controls="otaPanel" aria-expanded="false" aria-label="查看系统版本和更新"><span data-app-version>v0.0.1</span></button></div>
+            <div class="brand-identity"><span class="brand-name" data-brand-name>GW-LINK</span><button type="button" class="ota-badge" data-ota-toggle aria-controls="otaPanel" aria-expanded="false" aria-label="查看系统版本和更新"><span data-app-version>v0.0.2</span></button></div>
         </div>
 
         <nav class="nav-menu">
@@ -2674,8 +2674,9 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
                         <label style="margin-bottom: 6px;">套餐类型</label>
                         <select id="checkout_plan_type" class="asset-input" onchange="syncCheckoutPlanName()">
                             <option value="plus">Plus — chatgptplusplan</option>
-                            <option value="pro_5x">Pro 5x — chatgptprolite</option>
-                            <option value="pro_20x">Pro 20x — chatgptpro</option>
+                            <option value="pro_5x">Pro 100 — chatgptpro100</option>
+                            <option value="pro_20x">Pro 200 — chatgptpro200</option>
+                            <option value="pro_500">Pro 500 — chatgptpro500</option>
                         </select>
                     </div>
                     <div class="form-group" style="margin-bottom: 0;">
@@ -2845,8 +2846,9 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
                             style="width: 220px;" oninput="handleCdkSearch(this.value)">
                         <select id="cdk_plan_type" class="asset-input" style="width: 130px;">
                             <option value="plus" selected>Plus</option>
-                            <option value="pro_5x">Pro 5x</option>
-                            <option value="pro_20x">Pro 20x</option>
+                            <option value="pro_5x">Pro 100</option>
+                            <option value="pro_20x">Pro 200</option>
+                            <option value="pro_500">Pro 500</option>
                         </select>
                         <input type="number" id="cdk_count" value="1" min="1" max="100" class="asset-input"
                             style="width: 80px;">
@@ -2891,8 +2893,9 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
                         <div id="filter_menu_cdk_plan_type_filter" class="filter-menu">
                             <button class="filter-option active" onclick="selectCdkPlanTypeFilter('all', '全部套餐')">全部套餐</button>
                             <button class="filter-option" onclick="selectCdkPlanTypeFilter('plus', 'Plus')">Plus</button>
-                            <button class="filter-option" onclick="selectCdkPlanTypeFilter('pro_5x', 'Pro 5x')">Pro 5x</button>
-                            <button class="filter-option" onclick="selectCdkPlanTypeFilter('pro_20x', 'Pro 20x')">Pro 20x</button>
+                            <button class="filter-option" onclick="selectCdkPlanTypeFilter('pro_5x', 'Pro 100')">Pro 100</button>
+                            <button class="filter-option" onclick="selectCdkPlanTypeFilter('pro_20x', 'Pro 200')">Pro 200</button>
+                            <button class="filter-option" onclick="selectCdkPlanTypeFilter('pro_500', 'Pro 500')">Pro 500</button>
                         </div>
                     </div>
                     <button class="btn btn-success" onclick="togglePageSelection('cdk')">
@@ -3140,8 +3143,9 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
                         <select id="billing_plan_type" class="asset-input">
                             <option value="">全部</option>
                             <option value="plus">Plus</option>
-                            <option value="pro_5x">Pro 5x</option>
-                            <option value="pro_20x">Pro 20x</option>
+                            <option value="pro_5x">Pro 100</option>
+                            <option value="pro_20x">Pro 200</option>
+                            <option value="pro_500">Pro 500</option>
                         </select>
                     </div>
                     <div class="form-group" style="margin-bottom:0;">
@@ -6071,9 +6075,9 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
                 const usedAt = typeof cdk === 'string' ? null : cdk.used_at;
                 const sessionPreview = typeof cdk === 'string' ? null : (cdk.session_preview || null);
 
-                const planTypeLabel = { plus: 'Plus', pro_5x: 'Pro 5x', pro_20x: 'Pro 20x' }[planType] || 'Plus';
-                const planTypeColor = { plus: '#2563eb', pro_5x: '#8b5cf6', pro_20x: '#ec4899' }[planType] || '#2563eb';
-                const planTypeBg = { plus: 'rgba(37, 99, 235, 0.12)', pro_5x: 'rgba(139, 92, 246, 0.12)', pro_20x: 'rgba(236, 72, 153, 0.12)' }[planType] || 'rgba(37, 99, 235, 0.12)';
+                const planTypeLabel = { plus: 'Plus', pro_5x: 'Pro 100', pro_20x: 'Pro 200', pro_500: 'Pro 500' }[planType] || 'Plus';
+                const planTypeColor = { plus: '#2563eb', pro_5x: '#8b5cf6', pro_20x: '#ec4899', pro_500: '#b87916' }[planType] || '#2563eb';
+                const planTypeBg = { plus: 'rgba(37, 99, 235, 0.12)', pro_5x: 'rgba(139, 92, 246, 0.12)', pro_20x: 'rgba(236, 72, 153, 0.12)', pro_500: 'rgba(184, 121, 22, 0.12)' }[planType] || 'rgba(37, 99, 235, 0.12)';
 
                 return `
                 <tr>
@@ -7488,7 +7492,7 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
                 tbody.innerHTML = `<tr><td colspan="9" style="text-align:center; color:var(--text-dim); padding:32px;">暂无账单记录</td></tr>`;
                 return;
             }
-            const planLabels = { plus: 'Plus', pro_5x: 'Pro 5x', pro_20x: 'Pro 20x' };
+            const planLabels = { plus: 'Plus', pro_5x: 'Pro 100', pro_20x: 'Pro 200', pro_500: 'Pro 500' };
             tbody.innerHTML = records.map(r => {
                 const time = r.payment_time ? new Date(r.payment_time).toLocaleString('zh-CN') : '-';
                 const statusClass = r.status === 'success' ? 'status-success' : 'status-failed';
@@ -7764,7 +7768,7 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
         // ─── Region & Address Management ───────────────────────────────────────────
         let regionAddressList = [];
         let currentRegion = 'PH';
-        let checkoutPlanMap = { plus: 'chatgptplusplan', pro_5x: 'chatgptprolite', pro_20x: 'chatgptpro' };
+        let checkoutPlanMap = { plus: 'chatgptplusplan', pro_5x: 'chatgptpro100', pro_20x: 'chatgptpro200', pro_500: 'chatgptpro500' };
         let checkoutDebugJobKey = '';
         let checkoutDebugLogAfter = 0;
         let checkoutDebugLogText = '';
@@ -8021,7 +8025,7 @@ http://USER-session-{session}:PASS@proxy.example.com:1000"></textarea>
         function renderCheckoutPlanTypeOptions() {
             const sel = document.getElementById('checkout_plan_type');
             if (!sel) return;
-            const labels = { plus: 'Plus', pro_5x: 'Pro 5x', pro_20x: 'Pro 20x' };
+            const labels = { plus: 'Plus', pro_5x: 'Pro 100', pro_20x: 'Pro 200', pro_500: 'Pro 500' };
             const current = sel.value || 'plus';
             sel.innerHTML = Object.keys(checkoutPlanMap).map((key) => {
                 const name = checkoutPlanMap[key] || checkoutPlanMap.plus;

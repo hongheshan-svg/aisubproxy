@@ -51,6 +51,13 @@ it('retains the CDK if persisting an observed payment success fails once', async
     expect(store.markCdkUnused).not.toHaveBeenCalled();
     expect(store.updateTaskLog).toHaveBeenLastCalledWith('local-job', expect.objectContaining({ status: 'success' }));
 });
+it('passes the Pro 500 checkout identifier and API mode to the payment worker', async () => {
+    spawnSpy.mockClear();
+    await worker({ task: { jobKey: 'local-job' }, token: 'fake', sessionRaw: '{}', cdk: 'local-code', cdkDetails: { plan_type: 'pro_500' } });
+    const env = spawnSpy.mock.calls[0][2].env;
+    expect(env).toMatchObject({ CDK_PLAN_TYPE: 'pro_500', PLAN_NAME_OVERRIDE: 'chatgptpro500', CHECKOUT_MODE: 'api' });
+    expect(activeJobs.size).toBe(0);
+});
 it('does not downgrade success when clearing failure counters fails', async () => {
     store.resetCdkFailure.mockRejectedValue(new Error('database unavailable'));
     await run();

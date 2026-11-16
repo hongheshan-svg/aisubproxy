@@ -26,6 +26,7 @@ const gptApi = require('./gpt-api-client');
 const { createBrandingService, MAX_LOGO_BYTES } = require('./branding');
 const { createCdks, createCdkRateLimiter } = require('./cdk-security');
 const { UpdateService } = require('./ota/service');
+const plans = require('./plan-config');
 const branding = createBrandingService(store, process.env.BRANDING_DIR || undefined);
 const cdkRateLimiter = createCdkRateLimiter();
 
@@ -2614,7 +2615,8 @@ app.get('/api/admin/checkout/plans', async (req, res) => {
             resolved: {
                 plus: store.resolvePlanName('plus'),
                 pro_5x: store.resolvePlanName('pro_5x'),
-                pro_20x: store.resolvePlanName('pro_20x')
+                pro_20x: store.resolvePlanName('pro_20x'),
+                pro_500: store.resolvePlanName('pro_500')
             },
             region: regionCode,
             currency: config.currency,
@@ -2647,7 +2649,7 @@ app.post('/api/admin/checkout/generate', async (req, res) => {
 
         const planType = String(body.plan_type || 'plus').trim();
         const planNameOverride = body.plan_name ? String(body.plan_name).trim() : '';
-        const resolvedPlanName = planNameOverride || store.resolvePlanName(planType);
+        const resolvedPlanName = plans.resolveCheckoutPlan(planType, planNameOverride);
         const regionCode = String(body.country || body.region || await store.getPaymentRegion()).toUpperCase();
         if (!isSupportedRegion(regionCode)) {
             return res.status(400).json({ success: false, error: `不支持的地区: ${regionCode}` });
@@ -2692,7 +2694,7 @@ app.post('/api/admin/checkout/generate', async (req, res) => {
             message: '浏览器调试任务已启动，请查看下方运行日志'
         });
     } catch (error) {
-        res.status(500).json({ success: false, error: error.message });
+        res.status(error.status || 500).json({ success: false, error: error.message });
     } finally { if (admissionKey) releaseForegroundSlot(admissionKey); }
 });
 
@@ -3014,6 +3016,7 @@ app.post('/api/admin/cdks/generate', requireSecondaryAuth, async (req, res) => {
         await ensureStoreReady();
         const count = req.body?.count;
         const planType = req.body?.plan_type || 'plus';
+        await plans.resolvePaymentPlan(gptApi, planType, planType === 'pro_500' ? await store.getGptApiConfig() : null);
         const newCdks = createCdks(count);
         const result = await store.insertCdks(newCdks, { type: '自助', plan_type: planType });
         res.json({
@@ -3024,7 +3027,7 @@ app.post('/api/admin/cdks/generate', requireSecondaryAuth, async (req, res) => {
             plan_type: planType
         });
     } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
+        res.status(error.status || 500).json({ success: false, message: error.message });
     }
 });
 
@@ -3037,6 +3040,7 @@ app.post('/api/admin/cdks/import', requireSecondaryAuth, async (req, res) => {
     try {
         await ensureStoreReady();
         const planType = req.body?.plan_type || 'plus';
+        await plans.resolvePaymentPlan(gptApi, planType, planType === 'pro_500' ? await store.getGptApiConfig() : null);
         const summary = await store.insertCdks(cdks, { plan_type: planType });
         res.json({
             success: true,
@@ -3044,7 +3048,7 @@ app.post('/api/admin/cdks/import', requireSecondaryAuth, async (req, res) => {
             ...summary
         });
     } catch (error) {
-        res.status(500).json({ success: false, message: error.message });
+        res.status(error.status || 500).json({ success: false, message: error.message });
     }
 });
 
@@ -3311,12 +3315,6 @@ function spawnCheckoutDebugWorker({ task, token, sessionRaw, planType, region, p
  * 4. 轮询订单/任务状态，直到终态（success / failed）
  * 5. 将结果写回 task_logs（含 gpt_api_order_id / gpt_api_task_id / gpt_api_raw）
  */
-const GPT_API_PLAN_MAP = Object.freeze({ plus: 'plus', pro_5x: 'pro5x', pro_20x: 'pro20x' });
-
-function mapGptApiPlanKey(planType) {
-    return GPT_API_PLAN_MAP[String(planType || '').trim()] || 'plus';
-}
-
 function parseCardExpiry(value) {
     const match = String(value || '').trim().match(/^(0?[1-9]|1[0-2])\s*\/?\s*(\d{2}|\d{4})$/);
     if (!match) throw new Error('银行卡有效期格式错误，应为 MMYY、MM/YY 或 MM/YYYY');
@@ -3324,7 +3322,7 @@ function parseCardExpiry(value) {
     return { month: Number(match[1]), year };
 }
 
-async function runGptApiWorker({ task, token, session, cdk, planType }) {
+async function runGptApiWorker({ task, token, session, cdk, planType, paymentPlan }) {
     const { jobKey } = task;
     const sessionPayload = session && typeof session === 'object'
         ? session
@@ -3356,7 +3354,9 @@ async function runGptApiWorker({ task, token, session, cdk, planType }) {
             throw new Error('第三方代充 API Key 未配置');
         }
 
-        const apiPlanKey = mapGptApiPlanKey(planType);
+        const resolvedPlan = paymentPlan || await plans.resolvePaymentPlan(gptApi, planType, cfg);
+        const apiPlanKey = resolvedPlan.apiPlanKey;
+        if (!apiPlanKey) throw new Error('代充套餐未配置');
         await setProgress('running', 10, '正在检查 Session 格式...');
         const inspect = await gptApi.inspectPay(cfg, {
             planKey: apiPlanKey,
@@ -3565,7 +3565,7 @@ function isTerminalGptApiStatus(rawStatus) {
     return gptApi.classifyStatus(rawStatus) !== 'running';
 }
 
-function spawnActivationWorker({ task, token, sessionRaw, cdk, cdkDetails, clientIp }) {
+function spawnActivationWorker({ task, token, sessionRaw, cdk, cdkDetails, clientIp, paymentPlan }) {
     return (async () => {
         const checkoutScript = path.join(__dirname, 'index.js');
         let finalRun = null;
@@ -3575,6 +3575,7 @@ function spawnActivationWorker({ task, token, sessionRaw, cdk, cdkDetails, clien
         const accountEmail = extractEmailFromSession(sessionRaw) || task.tokenPreview || '';
 
         try {
+            const resolvedPlan = paymentPlan || await plans.resolvePaymentPlan(gptApi, cdkDetails.plan_type || 'plus', null);
             for (let attempt = 1; attempt <= MAX_PROCESS_ATTEMPTS; attempt += 1) {
                 logTask(task.jobKey, `开始第 ${attempt}/${MAX_PROCESS_ATTEMPTS} 次尝试`);
 
@@ -3602,6 +3603,7 @@ function spawnActivationWorker({ task, token, sessionRaw, cdk, cdkDetails, clien
                     CHATGPT_SESSION_JSON: String(sessionRaw || '').startsWith('{') ? sessionRaw : '',
                     CDK_CODE: cdk,
                     CDK_PLAN_TYPE: cdkDetails.plan_type || 'plus',
+                    ...(cdkDetails.plan_type === 'pro_500' ? { PLAN_NAME_OVERRIDE: resolvedPlan.planName, CHECKOUT_MODE: 'api' } : {}),
                     PROXY: proxy
                 };
 
@@ -3885,6 +3887,9 @@ async function handleActivationRequest(req, res) {
         // 判断是否走第三方代充 API 模式（后台「系统配置」开启后生效）
         const gptApiConfig = await store.getGptApiConfig();
         const useGptApi = gptApiConfig.enabled && Boolean(gptApiConfig.api_key);
+        let paymentPlan;
+        try { paymentPlan = await plans.resolvePaymentPlan(gptApi, cdkDetails.plan_type || 'plus', gptApiConfig); }
+        catch (error) { return res.status(error.status || 503).json({ success: false, message: error.message }); }
 
         if (!useGptApi) {
             const hasCard = await store.hasAvailableCard();
@@ -3934,11 +3939,11 @@ async function handleActivationRequest(req, res) {
         admissionKey = null;
 
         if (useGptApi) {
-            runGptApiWorker({ task, token, session: JSON.parse(storedSession), cdk, planType: cdkDetails.plan_type || 'plus' }).catch((error) => {
+            runGptApiWorker({ task, token, session: JSON.parse(storedSession), cdk, planType: cdkDetails.plan_type || 'plus', paymentPlan }).catch((error) => {
                 console.error(`[GPT API Worker] ${task.jobKey}:`, error);
             });
         } else {
-            spawnActivationWorker({ task, token, sessionRaw: storedSession, cdk, cdkDetails, clientIp }).catch((error) => {
+            spawnActivationWorker({ task, token, sessionRaw: storedSession, cdk, cdkDetails, clientIp, paymentPlan }).catch((error) => {
                 console.error(`[Activation Worker] ${task.jobKey}:`, error);
             });
         }

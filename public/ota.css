@@ -1,6 +1,5 @@
 .brand-identity { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; min-width: 0; }
-.app-version, .ota-badge { font: 500 11px/1.35 ui-monospace, SFMono-Regular, Consolas, monospace; color: #667085; letter-spacing: .02em; }
-.app-version { display: block; margin-top: 3px; }
+.ota-badge { font: 500 11px/1.35 ui-monospace, SFMono-Regular, Consolas, monospace; color: #667085; letter-spacing: .02em; }
 .ota-badge { display: inline-flex; align-items: center; gap: 6px; padding: 3px 7px; background: #f2f4f7; border: 1px solid #e4e7ec; border-radius: 6px; cursor: pointer; }
 .ota-badge::after { content: '⌄'; font-family: sans-serif; }
 .ota-badge.has-update { color: #945800; background: #fff7e7; border-color: #f0d8a8; }

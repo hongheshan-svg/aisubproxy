@@ -504,9 +504,16 @@ async function waitForCheckoutTaxRecalculation(page, options = {}) {
     return { ok: true, due: finalDue };
 }
 
+// 非 US 支付地区不适用“美国免税州”优化：跳过免税金额校验，按当前应付继续提交。
+let skipTaxFreeForRegion = false;
+
 async function ensureCheckoutTaxFreeAmount(page, address, baselineAmount) {
     const due = await readCheckoutDueAmount(page);
     if (!baselineAmount || !due?.amount) {
+        return { ok: true, due };
+    }
+    if (skipTaxFreeForRegion) {
+        console.log(`  [Stripe] 支付地区非 US：跳过美国免税校验，按当前应付 ${due.currency || ''} ${due.amount} 继续提交`);
         return { ok: true, due };
     }
 
@@ -587,6 +594,11 @@ async function completeStripeCardPayment(page, cardInfo, address, options = {}) 
     const ELEMENT_TIMEOUT = 45000;
     const cardAttempt = Number(options.cardAttempt) || 1;
     const isCardRetry = cardAttempt > 1;
+    const paymentRegion = String(options.paymentRegion || '').trim().toUpperCase();
+    skipTaxFreeForRegion = Boolean(paymentRegion && paymentRegion !== 'US');
+    if (skipTaxFreeForRegion) {
+        console.log(`[Stripe] 支付地区 ${paymentRegion} 非 US：本次不执行美国免税优化，按页面当前金额提交`);
+    }
     let holderName = String(options.holderName || '').trim();
     let checkoutDue = null;
 
@@ -1635,18 +1647,21 @@ async function fillOpenAiBillingDirect(page, address, fullName, baselineAmount =
     const directWait = 2500;
     console.log('  [Stripe] 税区优先：国家 → 州 → 邮编 → 街道/城市 → 姓名');
 
+    const countryOptions = countryCode === 'PH'
+        ? ['Philippines', '菲律宾', 'PH']
+        : ['United States', '美国', 'US', countryCode];
+    const targetCountryLabel = countryCode === 'PH' ? /philippines|菲律宾/i : /united states|美国/i;
     const currentCountry = await getCurrentBillingCountryValue(page);
-    const alreadyUs = currentCountry.value === 'US'
-        || /united states/i.test(currentCountry.label)
-        || /美国/.test(currentCountry.label);
-    if (alreadyUs) {
+    const alreadyTarget = currentCountry.value === countryCode
+        || targetCountryLabel.test(currentCountry.label);
+    if (alreadyTarget) {
         filled.country = true;
-        console.log('  [Stripe] ✅ 国家已是 United States');
+        console.log(`  [Stripe] ✅ 国家已是 ${countryCode}`);
     } else {
         filled.country = await selectFirstVisibleSelect(
             page,
             OPENAI_BILLING_FIELD_SELECTORS.country,
-            ['United States', '美国', 'US', countryCode],
+            countryOptions,
             '国家',
             directWait
         );
@@ -1656,6 +1671,17 @@ async function fillOpenAiBillingDirect(page, address, fullName, baselineAmount =
         await page.waitForTimeout(1500);
         await blurActiveBillingField(page);
         await waitForCheckoutTaxRecalculation(page, { baselineAmount });
+        // 国家切换后，页面可能仍保留旧国家的城市/邮编/街道；强制清空再填，
+        // 避免出现“菲律宾街道 + 美国城市/邮编”的混合地址。
+        if (countryCode !== 'US') {
+            for (const label of [/^city$/i, /^postal code$|^zip/i, /^address line 1$|^street/i]) {
+                const field = page.getByLabel(label).first();
+                if (await field.isVisible({ timeout: 800 }).catch(() => false)) {
+                    await field.fill('').catch(() => {});
+                }
+            }
+            await page.waitForTimeout(400);
+        }
         const line1Deadline = Date.now() + 10000;
         while (Date.now() < line1Deadline) {
             const line1Input = await locateBillingLine1Input(page).catch(() => null);
@@ -1718,7 +1744,10 @@ async function fillOpenAiBillingDirect(page, address, fullName, baselineAmount =
 
 async function fillOpenAiBillingBySectionMeta(page, address, fullName) {
     const stateFullName = normalizeStateFullName(address.state);
-    const countryOptions = ['United States', '美国', 'US'];
+    const countryCode = String(address.country || 'US').trim().toUpperCase() || 'US';
+    const countryOptions = countryCode === 'PH'
+        ? ['Philippines', '菲律宾', 'PH']
+        : ['United States', '美国', 'US', countryCode];
     const filled = { name: false, country: false, line1: false, city: false, postal: false, state: false };
 
     await focusOpenAiBillingSection(page);
@@ -1740,12 +1769,13 @@ async function fillOpenAiBillingBySectionMeta(page, address, fullName) {
     const afterName = nameIndex >= 0 ? items.slice(nameIndex + 1) : items;
     const countryItem = await pickBillingItem(afterName, [/country/, /region/, /国家/, /地区/])
         || afterName.find((item) => item.meta.tag === 'select' || item.meta.role === 'combobox');
-    const countryAlreadyUs = await page.getByText(/^United States$|^美国$/).first()
+    const countryLabelPattern = countryCode === 'PH' ? /^Philippines$|^菲律宾$/ : /^United States$|^美国$/;
+    const countryAlreadyTarget = await page.getByText(countryLabelPattern).first()
         .isVisible({ timeout: 600 })
         .catch(() => false);
-    if (countryAlreadyUs) {
+    if (countryAlreadyTarget) {
         filled.country = true;
-        console.log('  [Stripe] ✅ 国家已是 United States');
+        console.log(`  [Stripe] ✅ 国家已是 ${countryCode}`);
     } else if (countryItem) {
         filled.country = await selectBillingComboboxItem(page, countryItem, countryOptions, '国家');
         if (filled.country) {
@@ -2108,7 +2138,12 @@ async function fillOpenAiCheckoutBilling(page, address, fullName) {
             filled.name = await fillBillingFullNameStrict(page, fullName);
         }
         if (!status.country) {
-            filled.country = await selectBillingCountry(page, ['United States', '美国', 'US']);
+            const fallbackCountry = String(address.country || 'US').trim().toUpperCase() || 'US';
+            const fallbackCountryLabels = fallbackCountry === 'PH'
+                ? ['Philippines', '菲律宾', 'PH']
+                : ['United States', '美国', 'US', fallbackCountry];
+            console.log(`  [Stripe] 补填国家: ${fallbackCountry} (${fallbackCountryLabels[0]})`);
+            filled.country = await selectBillingCountry(page, fallbackCountryLabels);
             if (filled.country) await page.waitForTimeout(800);
         }
         if (!status.line1) {

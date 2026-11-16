@@ -233,6 +233,59 @@ function generateRandomUsTaxFreeAddress() {
     };
 }
 
+// ─── 菲律宾地址（非 US 地区不使用美国免税优化） ───────────────────────────────
+const PH_LOCATIONS = [
+    { city: 'Makati City', state: 'Metro Manila', postalCodes: ['1200', '1226'] },
+    { city: 'Quezon City', state: 'Metro Manila', postalCodes: ['1100', '1101'] },
+    { city: 'Cebu City', state: 'Cebu', postalCodes: ['6000'] },
+    { city: 'Davao City', state: 'Davao del Sur', postalCodes: ['8000'] }
+];
+const PH_STREETS = ['Ayala Avenue', 'Makati Avenue', 'Quezon Avenue', 'Osmeña Boulevard', 'Roxas Avenue', 'EDSA'];
+const PH_FIRST_NAMES = ['Miguel', 'Jose', 'Maria', 'Angelica', 'Carlos', 'Liza'];
+const PH_LAST_NAMES = ['Santos', 'Reyes', 'Cruz', 'Garcia', 'Mendoza', 'Bautista'];
+
+function generateRandomPhAddress() {
+    const loc = PH_LOCATIONS[Math.floor(Math.random() * PH_LOCATIONS.length)];
+    const streetNum = Math.floor(Math.random() * 900) + 10;
+    const street = PH_STREETS[Math.floor(Math.random() * PH_STREETS.length)];
+    const postal_code = loc.postalCodes[Math.floor(Math.random() * loc.postalCodes.length)];
+    const first = PH_FIRST_NAMES[Math.floor(Math.random() * PH_FIRST_NAMES.length)];
+    const last = PH_LAST_NAMES[Math.floor(Math.random() * PH_LAST_NAMES.length)];
+    const phone = `+63 917 ${Math.floor(Math.random() * 900) + 100} ${Math.floor(Math.random() * 9000) + 1000}`;
+    return {
+        line1: `${streetNum} ${street}`,
+        city: loc.city,
+        state: loc.state,
+        postal_code,
+        country: 'PH',
+        holder_name: `${first} ${last}`,
+        phone,
+        generated: true
+    };
+}
+
+/**
+ * 按支付地区选择账单地址：
+ * - US：沿用美国免税地址池；
+ * - 其他地区（当前支持 PH）：优先用该地区地址池，没有则自动生成一个菲律宾地址。
+ */
+async function pickBillingAddressForRegion(region, lastUsedId = null) {
+    const code = String(region || 'US').trim().toUpperCase();
+    if (code === 'US') {
+        return pickBillingAddressForCheckout(lastUsedId);
+    }
+    try {
+        const picked = await pickTaxFreeAddress(code, lastUsedId);
+        if (picked) {
+            return {
+                ...picked,
+                holder_name: picked.holder_name || generateRandomPhAddress().holder_name
+            };
+        }
+    } catch (_) { /* 该地区没有地址池，使用自动生成 */ }
+    return { id: 0, ...generateRandomPhAddress() };
+}
+
 /**
  * 批量生成美国免税地址并写入地址池
  * @param {number} count - 生成数量 (1-100)
@@ -361,6 +414,8 @@ module.exports = {
     deleteAddress,
     pickTaxFreeAddress,
     generateRandomUsTaxFreeAddress,
+    generateRandomPhAddress,
+    pickBillingAddressForRegion,
     batchGenerateUsAddresses,
     pickBillingAddressForCheckout,
     normalizeUsStateName,

@@ -12,7 +12,7 @@
 
 const store = require('./mysql-store');
 const { completeStripeCardPayment, readCheckoutDueAmount, estimateTaxFreeAmount } = require('./stripe-payment');
-const { pickBillingAddressForCheckout, markAddressBound } = require('./tax-free-address');
+const { pickBillingAddressForRegion, markAddressBound } = require('./tax-free-address');
 const { getRegionConfig } = require('./region-config');
 
 const MAX_CARD_ATTEMPTS = Number(process.env.PAYMENT_MAX_CARD_ATTEMPTS) || 3;
@@ -85,9 +85,10 @@ async function executePaymentWithRetry(page, options) {
     const lastUsedIdRaw = await store.getAppConfigValue('last_used_address_id', null);
     const lastUsedId = lastUsedIdRaw ? Number(lastUsedIdRaw) : null;
 
-    const address = await pickBillingAddressForCheckout(lastUsedId);
+    const address = await pickBillingAddressForRegion(region, lastUsedId);
     const addressSource = address.generated ? '随机生成' : `地址池 #${address.id}`;
-    progress(`已选取美国免税账单地址 (${addressSource}): ${address.line1}, ${address.city}, ${address.state}`);
+    const addressLabel = region === 'US' ? '美国免税账单地址' : `${region} 账单地址`;
+    progress(`已选取${addressLabel} (${addressSource}): ${address.line1}, ${address.city}, ${address.state}, ${address.country}`);
 
     const ownerKey = cdkCode
         ? `payment_${cdkCode}_${Date.now()}`
@@ -97,7 +98,7 @@ async function executePaymentWithRetry(page, options) {
     const declinedLast4s = [];
     let lastError = '';
     let lastCardLast4 = '';
-    let billingHolderName = '';
+    let billingHolderName = String(address.holder_name || '');
 
     let billedAmount = 0;
     let billedCurrency = currency;
@@ -149,7 +150,8 @@ async function executePaymentWithRetry(page, options) {
         try {
             const paymentResult = await completeStripeCardPayment(page, cardInfo, address, {
                 cardAttempt,
-                holderName: billingHolderName
+                holderName: billingHolderName,
+                paymentRegion: region
             });
 
             if (paymentResult.holderName) {

@@ -3116,11 +3116,67 @@ async function spawnWorkerWithBrowser({ jobKey, runtimeEnv, runScript }) {
     });
 }
 
+/**
+ * 从 session（JSON 字符串或已解析对象）解析账号导出地区（ISO alpha-2，如 US/PH）。
+ * 用于为该账号选取"同地区代理"，避免跨地区访问触发 ChatGPT 账号登出（会话已过期）。
+ */
+function resolveSessionRegion(sessionRaw) {
+    let data = sessionRaw;
+    if (typeof sessionRaw === 'string') {
+        const raw = sessionRaw.trim();
+        if (!raw.startsWith('{')) return '';
+        try { data = JSON.parse(raw); } catch (_) { return ''; }
+    }
+    if (!data || typeof data !== 'object') return '';
+    const env = data.__env || data.clientEnv || data.environment || {};
+    const statsig = data.statsigContext || {};
+    return String(env.country || statsig.country || '').trim().toUpperCase();
+}
+
+/**
+ * 校验账号地区与所选代理的一致性。无同地区代理时：
+ * - 账号地区 == 本机直连出口地区（DEFAULT_EGRESS_REGION，默认 US）→ 允许直连
+ *   （proxy 为空即走 VPS 本机 IP，与账号同地区，不会异地登出）；
+ * - 否则 → 抛错阻止异地访问，避免 ChatGPT 账号跨地区登出。
+ */
+function assertProxyRegionOk(sessionRegion, proxy, logFn) {
+    if (!sessionRegion || proxy) return;
+    const defaultRegion = String(process.env.DEFAULT_EGRESS_REGION || 'US').trim().toUpperCase();
+    if (sessionRegion === defaultRegion) {
+        if (typeof logFn === 'function') {
+            logFn(`账号地区 ${sessionRegion} 无专用代理，使用本机直连出口（默认 ${defaultRegion}，与账号同地区）`);
+        }
+        return;
+    }
+    throw new Error(`账号地区 ${sessionRegion} 无可用同地区代理，已阻止异地访问以防 ChatGPT 账号登出；请在「代理池」补充 ${sessionRegion} 地区代理后重试`);
+}
+
+/**
+ * 优先按支付地区选代理，找不到再回退 Session 地区。
+ * 支付地区来自：调试请求的 region / 激活订单的后台 payment_region / 第三方 API 的 country。
+ */
+async function resolveTaskProxy(sessionRegion, paymentRegion, logFn) {
+    const payRegion = String(paymentRegion || '').trim().toUpperCase();
+    if (payRegion) {
+        const byPayment = await store.getActiveProxy(payRegion);
+        if (byPayment) {
+            if (typeof logFn === 'function') logFn(`按支付地区 ${payRegion} 选择代理`);
+            return byPayment;
+        }
+        if (typeof logFn === 'function') logFn(`支付地区 ${payRegion} 无可用代理，回退 Session 地区 ${sessionRegion || '未知'}`);
+    }
+    const bySession = await store.getActiveProxy(sessionRegion);
+    if (bySession && typeof logFn === 'function') logFn(`按 Session 地区 ${sessionRegion || '未知'} 选择代理`);
+    return bySession;
+}
+
 function spawnCheckoutDebugWorker({ task, token, sessionRaw, planType, region, planNameOverride, email }) {
     (async () => {
         const checkoutScript = path.join(__dirname, 'index.js');
         try {
-            const proxy = await store.getActiveProxy();
+            const sessionRegion = resolveSessionRegion(sessionRaw);
+            const proxy = await resolveTaskProxy(sessionRegion, region, (m) => logTask(task.jobKey, m));
+            assertProxyRegionOk(sessionRegion, proxy, (m) => logTask(task.jobKey, m));
             const hcaptchaCfg = await store.getHcaptchaConfig();
             const { env: hcaptchaEnv } = buildHcaptchaEnvFromConfig(hcaptchaCfg);
             const runtimeEnv = {
@@ -3252,9 +3308,13 @@ async function runGptApiWorker({ task, token, session, cdk, planType }) {
         }
         logTask(jobKey, 'Session 本機格式／有效期檢查通過；上游將於代充任務中驗證登入狀態');
 
-        const proxy = await store.getActiveProxy();
+        const sessionRegion = resolveSessionRegion(session);
+        const proxy = await resolveTaskProxy(sessionRegion, cfg.country, (m) => logTask(jobKey, m));
+        if (sessionRegion && !proxy) {
+            logTask(jobKey, `⚠️ 账号地区 ${sessionRegion} 无同地区代理，将交由第三方平台代理池处理（可能异地，建议补充 ${sessionRegion} 代理）`, 'warn');
+        }
         logTask(jobKey, proxy
-            ? `第三方 API 协议代理 ${maskProxyForLog(proxy)}`
+            ? `第三方 API 协议代理 ${maskProxyForLog(proxy)}（地区 ${sessionRegion || '未知'}）`
             : '第三方 API 使用平台启用代理池');
 
         // 本機检查通过后才从卡池预留一张卡，避免无效 Session 占用资产。
@@ -3457,7 +3517,10 @@ function spawnActivationWorker({ task, token, sessionRaw, cdk, cdkDetails, clien
                     cdkCode: cdk
                 });
 
-                const proxy = await store.getActiveProxy();
+                const sessionRegion = resolveSessionRegion(sessionRaw);
+                const paymentRegion = process.env.PAYMENT_REGION_OVERRIDE || await store.getPaymentRegion();
+                const proxy = await resolveTaskProxy(sessionRegion, paymentRegion, (m) => logTask(task.jobKey, m));
+                assertProxyRegionOk(sessionRegion, proxy, (m) => logTask(task.jobKey, m));
                 const hcaptchaCfg = await store.getHcaptchaConfig();
                 const { env: hcaptchaEnv } = buildHcaptchaEnvFromConfig(hcaptchaCfg);
                 const runtimeEnv = {

@@ -4,6 +4,7 @@ const axios = require('axios');
 const store = require('./mysql-store');
 const { getRegionConfig } = require('./region-config');
 const { executePaymentWithRetry } = require('./payment-retry');
+const { buildSessionApiHeaders } = require('./session-environment');
 
 function buildCheckoutPayload(planName, country, currency) {
     const uiMode = String(process.env.CHECKOUT_UI_MODE || 'custom').trim() || 'custom';
@@ -125,13 +126,15 @@ class ChatGPTService {
      * @param {object} request - Playwright context.request 实例
      * @param {string} token - OpenAI Bearer Token
      */
-    constructor(request, token) {
+    constructor(request, token, clientEnv = null) {
         this.request = request;
         this.token = token;
         this.headers = {
             "Authorization": `Bearer ${this.token}`,
             "Content-Type": "application/json",
-            "Accept": "application/json"
+            "Accept": "application/json",
+            // 与前端同款的身份头：账号 ID / 设备 ID / 语言
+            ...buildSessionApiHeaders(clientEnv)
         };
     }
 
@@ -380,7 +383,7 @@ async function assertCheckoutPageReady(page) {
 /**
  * 通过 API 注入 billing_details 创建 Checkout，并打开 chatgpt.com/checkout
  */
-async function openApiCheckout(page, { accessToken, planType, country, currency, planNameOverride, verifyPage = true }) {
+async function openApiCheckout(page, { accessToken, planType, country, currency, planNameOverride, clientEnv = null, verifyPage = true }) {
     const { assertChatGptLoggedIn } = require('./session-auth');
     const token = String(accessToken || '').trim();
     if (!token) {
@@ -391,7 +394,7 @@ async function openApiCheckout(page, { accessToken, planType, country, currency,
     const billingCurrency = String(currency || getRegionConfig(region)?.currency || 'PHP').toUpperCase();
     console.log(`🧭 [步骤] 正在通过 API 创建 Checkout (country=${region}, currency=${billingCurrency}, plan=${planType})...`);
 
-    const gpt = new ChatGPTService(page.context().request, token);
+    const gpt = new ChatGPTService(page.context().request, token, clientEnv);
     const checkout = await gpt.createCheckoutSession(planType, region, billingCurrency, planNameOverride);
     if (!checkout.checkoutUrl) {
         throw new Error(`API 创建 Checkout 失败: ${checkout.error || '未返回 data.url'}`);

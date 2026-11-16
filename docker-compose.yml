@@ -10,6 +10,7 @@ services:
     container_name: kc-gpt-pay2-mysql
     restart: unless-stopped
     environment:
+      TZ: Asia/Shanghai
       MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:-your_mysql_password}
       MYSQL_DATABASE: ${DB_NAME:-plus_papay}
       MYSQL_CHARSET: utf8mb4
@@ -40,6 +41,7 @@ services:
     ports:
       - "${PORT:-3100}:3000"
     environment:
+      TZ: Asia/Shanghai
       PORT: 3000
       DB_HOST: mysql
       DB_PORT: 3306
@@ -47,7 +49,7 @@ services:
       DB_PASSWORD: ${DB_PASSWORD:-your_mysql_password}
       DB_NAME: ${DB_NAME:-plus_papay}
       DB_POOL_LIMIT: 60
-      HEADFUL: 0
+      HEADFUL: ${HEADFUL:-1}
       PROXY: ${PROXY:-}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin}
       HCAPTCHA_CONFIG_FILE: /app/data/hcaptcha-config.json
@@ -103,3 +105,5 @@ services:
 
 volumes:
   mysql_data:
+    # 固定卷名，避免与其他 compose 项目/旧实例的数据卷冲突
+    name: kc_gpt_pay_mysql_data

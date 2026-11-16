@@ -1,5 +1,7 @@
 'use strict';
 
+const fs = require('fs');
+
 const CHATGPT_ORIGIN = 'https://chatgpt.com';
 const {
     isLoginRedirectUrl,
@@ -336,9 +338,17 @@ function collectCookieSpecs(sessionData, sessionJson) {
         push('__Host-next-auth.csrf-token', csrfToken);
     }
 
-    const deviceId = String(sessionData?.deviceId || sessionData?.device_id || sessionData?.['oai-did'] || '').trim();
+    const statsigContext = sessionData?.statsigContext || sessionJson?.statsigContext || {};
+    const deviceId = String(
+        sessionData?.deviceId
+        || sessionData?.device_id
+        || sessionData?.['oai-did']
+        || statsigContext.deviceId
+        || ''
+    ).trim();
     if (deviceId && !seenNames.has('oai-did')) {
         push('oai-did', deviceId);
+        console.log(`[Session] 已注入 oai-did（数据来自 session 设备指纹，长度 ${deviceId.length}）`);
     }
 
     return specs;
@@ -347,6 +357,13 @@ function collectCookieSpecs(sessionData, sessionJson) {
 async function verifyRealSessionApi(context) {
     const probe = await context.newPage();
     try {
+        // Cloudflare 对“首次直接访问 /api/auth/session”会返回空 403；
+        // 先打开一次首页（即使首页本身 403）拿 cf_clearance，再查 session 即可 200。
+        await probe.goto(CHATGPT_COOKIE_URL, {
+            waitUntil: 'domcontentloaded',
+            timeout: 60000
+        }).catch(() => {});
+        await probe.waitForTimeout(2500);
         const response = await probe.goto(`${CHATGPT_COOKIE_URL}/api/auth/session`, {
             waitUntil: 'domcontentloaded',
             timeout: 60000
@@ -476,10 +493,135 @@ function attachLoginRedirectGuard(page) {
 }
 
 /**
+ * 解析单条 Set-Cookie：取 cookie 名/值，并判断是否为"清除"动作
+ * （跨 IP 风控登出的典型表现：空值 / Max-Age=0 / 过期时间置于 1970）。
+ */
+function parseSetCookieLine(setCookieLine) {
+    const line = String(setCookieLine || '').trim();
+    if (!line) return null;
+    const eq = line.indexOf('=');
+    if (eq <= 0) return null;
+    const name = line.slice(0, eq).trim();
+    const semi = line.indexOf(';', eq);
+    const value = (semi === -1 ? line.slice(eq + 1) : line.slice(eq + 1, semi)).trim();
+    const attrs = line.toLowerCase();
+    const maxAgeNonPositive = /(?:^|;)\s*max-age\s*=\s*(?:0+|-\d+)\s*(?:;|$)/.test(attrs);
+    const expiredDate = /expires\s*=\s*[^;]*(?:1970|1969)/.test(attrs);
+    const cleared = value === '' || maxAgeNonPositive || expiredDate;
+    return { name, value, cleared };
+}
+
+/**
+ * 把分块 session-token（.0/.1/...）按序拼回完整字符串。
+ */
+function joinSessionTokenChunks(pinnedMap) {
+    const entries = [...pinnedMap.entries()];
+    const single = entries.find(([n]) => n === SESSION_TOKEN_BASE);
+    if (single && entries.length === 1) {
+        return single[1];
+    }
+    return entries
+        .filter(([n]) => n.startsWith(`${SESSION_TOKEN_BASE}.`))
+        .sort((a, b) => Number(a[0].split('.').pop()) - Number(b[0].split('.').pop()))
+        .map(([, v]) => v)
+        .join('');
+}
+
+/**
+ * 跨 IP 的 session Cookie 守卫。
+ *
+ * ChatGPT/Cloudflare 在检测到出口 IP 与导出 IP 不一致时，会用 Set-Cookie 清除
+ * __Secure-next-auth.session-token，浏览器随即丢弃原本有效的 Cookie 并跳转登录页
+ * （表现为"账号退出"）。本守卫在每次 ChatGPT 响应后检查该 Cookie：
+ *   - 被清除 → 用注入时的原值重新钉回，阻断登出；
+ *   - 被服务端轮换成新的有效值 → 采纳为新基准，并回调持久化以供下次同账号复用。
+ *
+ * @returns {{active:boolean, getSessionToken:()=>string, stats:()=>object}}
+ */
+function installSessionCookieGuard(context, cookieSpecs, options = {}) {
+    const onRotate = typeof options.onRotate === 'function' ? options.onRotate : null;
+    const pinnedSpecs = (cookieSpecs || []).filter((s) => s && isSessionTokenCookieName(s.name) && s.value);
+    if (!pinnedSpecs.length) {
+        return { active: false, getSessionToken: () => '', stats: () => ({ restoreCount: 0, rotateCount: 0 }) };
+    }
+
+    const pinned = new Map(pinnedSpecs.map((s) => [s.name, String(s.value || '')]));
+    const specByName = new Map(pinnedSpecs.map((s) => [s.name, s]));
+    let restoreCount = 0;
+    let rotateCount = 0;
+    let busy = false;
+
+    const getSessionToken = () => joinSessionTokenChunks(pinned);
+
+    const isChatGptHost = (url) => {
+        try {
+            return /(^|\.)(chatgpt\.com|openai\.com)$/i.test(new URL(url).hostname);
+        } catch (_) {
+            return false;
+        }
+    };
+
+    const handle = async (response) => {
+        if (busy) return;
+        let url = '';
+        try { url = response.url(); } catch (_) { return; }
+        if (!isChatGptHost(url)) return;
+
+        let headers = [];
+        try { headers = await response.headersArray(); } catch (_) { return; }
+        const sessionSetCookies = headers
+            .filter((h) => String(h.name || '').toLowerCase() === 'set-cookie')
+            .map((h) => parseSetCookieLine(h.value))
+            .filter((c) => c && isSessionTokenCookieName(c.name));
+        if (!sessionSetCookies.length) return;
+
+        const cleared = sessionSetCookies.filter((c) => c.cleared);
+        const rotated = sessionSetCookies.filter(
+            (c) => !c.cleared && pinned.has(c.name) && c.value && c.value !== pinned.get(c.name)
+        );
+        if (!cleared.length && !rotated.length) return;
+
+        busy = true;
+        try {
+            if (cleared.length) {
+                for (const [name, spec] of specByName) {
+                    const good = pinned.get(name);
+                    if (!good) continue;
+                    const cookie = toPlaywrightCookie({ ...spec, value: good });
+                    if (cookie) await addCookieSafe(context, cookie);
+                }
+                restoreCount += 1;
+                console.warn(
+                    `⚠️ [Session] 检测到 session-token 被清除（疑似跨 IP 风控登出），已重新钉回原 Cookie（第 ${restoreCount} 次）`
+                );
+            } else if (rotated.length) {
+                for (const c of rotated) {
+                    pinned.set(c.name, c.value);
+                }
+                rotateCount += 1;
+                console.log(`[Session] 服务端轮换了 session-token，已采纳新值（第 ${rotateCount} 次）`);
+                if (onRotate) {
+                    try { await onRotate(getSessionToken()); } catch (_) { /* 持久化失败不阻断 */ }
+                }
+            }
+        } catch (err) {
+            console.warn(`[Session] Cookie 守卫处理失败: ${err.message}`);
+        } finally {
+            busy = false;
+        }
+    };
+
+    context.on('response', (response) => { handle(response).catch(() => {}); });
+    console.log(`[Session] 已启用跨 IP session-token Cookie 守卫（守护 ${pinnedSpecs.length} 个分块）`);
+
+    return { active: true, getSessionToken, stats: () => ({ restoreCount, rotateCount }) };
+}
+
+/**
  * 在浏览器上下文安装 Session：拦截 auth API + 注入 fetch 补丁
  * 注意：__Secure-next-auth.session-token 是加密 cookie，不能用 accessToken 冒充
  */
-async function installChatGptSession(context, sessionRaw) {
+async function installChatGptSession(context, sessionRaw, options = {}) {
     const resolved = resolveSessionInput(sessionRaw);
     if (!resolved?.accessToken) {
         throw new Error('缺少 Session：请粘贴完整 Session JSON（来自 chatgpt.com/api/auth/session）');
@@ -540,6 +682,22 @@ async function installChatGptSession(context, sessionRaw) {
             console.warn(`[Session] Cookie 在线校验跳过: ${apiCheck.error || 'unknown'}`);
         }
     }
+
+    // 跨 IP 风控登出防护：监听 Set-Cookie，清除时重新钉回、轮换时采纳并持久化
+    const persistPath = String(options.sessionPersistPath || process.env.CHATGPT_SESSION_PERSIST_PATH || '').trim();
+    const onRotate = typeof options.onSessionRotate === 'function'
+        ? options.onSessionRotate
+        : (persistPath
+            ? async (newToken) => {
+                try {
+                    await fs.promises.writeFile(persistPath, newToken, 'utf8');
+                    console.log(`[Session] 已将轮换后的 session-token 持久化到 ${persistPath}`);
+                } catch (err) {
+                    console.warn(`[Session] session-token 持久化失败: ${err.message}`);
+                }
+            }
+            : null);
+    const sessionGuard = installSessionCookieGuard(context, cookieSpecs, { onRotate });
 
     await context.addInitScript((payload) => {
         const sessionStr = JSON.stringify(payload);
@@ -606,7 +764,7 @@ async function installChatGptSession(context, sessionRaw) {
         await route.continue();
     });
 
-    return { sessionData, cookieVerified };
+    return { sessionData, cookieVerified, sessionGuard };
 }
 
 /**
@@ -619,6 +777,45 @@ function setupChatGptSessionAuth(context, accessToken) {
 /**
  * 打开 ChatGPT 并验证 Session 在浏览器 UI 中生效
  */
+
+/**
+ * 校验 OAuth accessToken 是否仍有效（未被吊销）。
+ * 说明：NextAuth 的 /api/auth/session 在 token 被吊销后仍可能返回 200 JSON，
+ * 必须用 /backend-api/me 才能真正验证，否则会一直卡到 Checkout 超时。
+ * @param {import('playwright').APIRequestContext} requestContext
+ * @param {string} accessToken
+ * @returns {Promise<{ok: boolean, revoked?: boolean, status?: number, error?: string}>}
+ */
+async function assertAccessTokenActive(requestContext, accessToken) {
+    const token = String(accessToken || '').trim();
+    if (!token) {
+        return { ok: false, error: 'Session 缺少 accessToken，请重新导出完整 Session JSON' };
+    }
+    try {
+        const resp = await requestContext.get(`${CHATGPT_ORIGIN}/backend-api/me`, {
+            headers: { Authorization: `Bearer ${token}`, Accept: 'application/json' },
+            timeout: 20000
+        });
+        const status = resp.status();
+        if (status === 200) {
+            return { ok: true };
+        }
+        const text = await resp.text().catch(() => '');
+        if (/token_revoked|invalidated oauth token/i.test(text)) {
+            return {
+                ok: false,
+                revoked: true,
+                status,
+                error: 'Session 的 OAuth accessToken 已被吊销（token_revoked）：请在浏览器重新登录该 ChatGPT 账号，'
+                    + '重新导出完整 Session JSON（新的 session-token Cookie），并尽量在同一代理/IP 下导出与使用'
+            };
+        }
+        return { ok: false, status, error: `accessToken 校验失败 HTTP ${status}: ${text.slice(0, 150)}` };
+    } catch (error) {
+        return { ok: false, error: `accessToken 校验请求失败: ${error.message}` };
+    }
+}
+
 async function bootstrapChatGptSession(page, sessionRaw, options = {}) {
     const resolved = resolveSessionInput(sessionRaw);
     if (!resolved?.accessToken) {
@@ -640,6 +837,26 @@ async function bootstrapChatGptSession(page, sessionRaw, options = {}) {
         timeout: 90000
     });
     await page.waitForTimeout(2500);
+
+    // 深度校验：/api/auth/session 在 token 被吊销后仍可能返回 200，
+    // 必须尽早用 /backend-api/me 验证，避免后续卡在定价页/Checkout 超时
+    let liveToken = resolved.accessToken;
+    try {
+        const sessResp = await page.context().request.get(`${CHATGPT_ORIGIN}/api/auth/session`, { timeout: 20000 });
+        if (sessResp.ok()) {
+            const sessData = await sessResp.json().catch(() => null);
+            if (sessData && sessData.accessToken) {
+                liveToken = sessData.accessToken;
+            }
+        }
+    } catch (_) { /* 使用原始 token 继续校验 */ }
+
+    const tokenCheck = await assertAccessTokenActive(page.context().request, liveToken);
+    if (!tokenCheck.ok) {
+        // accessToken 校验失败（如异地触发的间歇性 token_revoked）不中止：
+        // checkout 走 UI + session-token cookie + 前端 Sentinel，不依赖 OAuth accessToken。
+        console.warn(`[Session] accessToken 校验未通过，继续走 UI 流程（checkout 不依赖 accessToken）：${String(tokenCheck.error || '').slice(0, 80)}`);
+    }
 
     const { clearHumanVerification } = require('./human-verification');
     const captchaResult = await clearHumanVerification(page, {
@@ -718,8 +935,10 @@ function extractEmailFromSession(raw) {
 module.exports = {
     CHATGPT_ORIGIN,
     installChatGptSession,
+    installSessionCookieGuard,
     setupChatGptSessionAuth,
     bootstrapChatGptSession,
+    assertAccessTokenActive,
     assertChatGptLoggedIn,
     parseSessionJson,
     resolveSessionInput,

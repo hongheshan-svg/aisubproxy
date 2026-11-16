@@ -7,7 +7,9 @@
 const { chromium } = require('playwright-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 
-chromium.use(StealthPlugin());
+const _stealth = StealthPlugin();
+_stealth.enabledEvasions.delete('user-agent-override'); // 不让 stealth 用默认 UA 覆盖 session 里的 UA
+chromium.use(_stealth);
 
 const DEFAULT_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36';
 
@@ -37,11 +39,12 @@ async function connectStandaloneBrowser(options = {}) {
 
     const launchArgs = [
         '--disable-blink-features=AutomationControlled',
-        `--remote-debugging-port=${cdpPort}`
+        `--remote-debugging-port=${cdpPort}`,
+        // 容器内以 root 运行，headful/headless 都需要关闭 sandbox
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage'
     ];
-    if (!headful) {
-        launchArgs.push('--no-sandbox', '--disable-setuid-sandbox');
-    }
 
     const launchOptions = {
         headless: !headful,

@@ -14,21 +14,21 @@ const REGION_UI_LABELS = {
 };
 
 const REGION_CURRENCY_HINTS = {
-    PH: ['₱'],
+    PH: ['₱', 'PHP'],
     US: ['$20', '$ 20'],
     SG: ['S$', 'SGD'],
     MY: ['RM', 'MYR']
 };
 
 const REGION_PRICE_PATTERNS = {
-    PH: [/₱\s*[\d,.]+/, /[\d,.]+\s*₱/],
+    PH: [/₱\s*[\d,.]+/, /[\d,.]+\s*₱/, /PHP\s*[\d,.]+/i, /[\d,.]+\s*PHP/i],
     US: [/\$\s*20(?:\.00)?/, /USD\s*20/i, /\$\s*[\d,.]+(?:\s*\/)?\s*(?:month|mo)/i],
     SG: [/S\$\s*[\d,.]+/, /[\d,.]+\s*SGD/i],
     MY: [/RM\s*[\d,.]+/, /[\d,.]+\s*MYR/i]
 };
 
 const REGION_WRONG_CURRENCY = {
-    PH: [/£\s*[\d,.]+/, /[\d,.]+\s*£/, /\bGBP\b/i, /United Kingdom/i, /Great Britain/i, /€\s*[\d,.]+/, /[\d,.]+\s*€/, /\bEUR\b/i],
+    PH: [/£\s*[\d,.]+/, /[\d,.]+\s*£/, /\bGBP\b/i, /United Kingdom/i, /Great Britain/i, /€\s*[\d,.]+/, /[\d,.]+\s*€/, /\bEUR\b/i, /US\$\s*[\d,.]+/, /\bUSD\b/i],
     US: [/£\s*[\d,.]+/, /₱\s*[\d,.]+/, /\bGBP\b/i, /\bPHP\b/i, /S\$\s*[\d,.]+/, /RM\s*[\d,.]+/],
     SG: [/£\s*[\d,.]+/, /₱\s*[\d,.]+/, /\$\s*20(?:\.00)?\s*(?:USD|\/)/i, /RM\s*[\d,.]+/],
     MY: [/£\s*[\d,.]+/, /₱\s*[\d,.]+/, /S\$\s*[\d,.]+/, /\$\s*20(?:\.00)?/]
@@ -44,7 +44,9 @@ const REGION_CURRENT_COUNTRY_HINTS = {
 const SKIP_REGION_BUTTON_TEXT = /^(Upgrade|Personal|Business|Free|Plus|Pro|Subscribe|Close|Your current plan|升级|订阅|关闭)$/i;
 
 const PLAN_UPGRADE_PATTERNS = {
-    plus: [/升级至\s*Plus/i, /Upgrade to Plus/i, /Get Plus/i, /Subscribe to Plus/i, /^Upgrade$/i],
+    // 新版定价页 Plus 卡片按钮文案已改为 “Buy now”，旧文案保留兼容；
+    // Pro 不放全局 Buy now，避免误点 Plus 卡片，Pro 走卡片内范围匹配
+    plus: [/升级至\s*Plus/i, /Upgrade to Plus/i, /Get Plus/i, /Subscribe to Plus/i, /^Buy now$/i, /^Upgrade$/i, /^立即购买$/, /^立即升级$/, /^订阅$/],
     pro_5x: [/升级至\s*Pro/i, /Upgrade to Pro/i, /Get Pro/i, /^Upgrade$/i],
     pro_20x: [/升级至\s*Pro/i, /Upgrade to Pro/i, /Get Pro/i, /^Upgrade$/i]
 };
@@ -78,18 +80,30 @@ async function isPersonalPlanView(page) {
         return false;
     }
 
+    // 新版定价页 Plus 卡片按钮是 “Buy now”，旧逻辑只认 Upgrade/Subscribe，导致反复点击 Personal
     const plusCard = await page.locator('[role="dialog"]').locator('div').filter({
         hasText: /ChatGPT Plus|^Plus$/
     }).filter({
-        has: page.getByRole('button', { name: /Upgrade|升级|Subscribe|Get/i })
+        has: page.getByRole('button', { name: /Upgrade|升级|Subscribe|Get|Buy now|立即购买/i })
     }).first().isVisible({ timeout: 1000 }).catch(() => false);
 
     if (plusCard) {
         return true;
     }
 
+    // 个人/商业切换本身就是 tab：Personal 已选中即可认定在个人视图
+    const personalTab = page.getByRole('tab', { name: /^Personal$/i }).first();
+    const personalTabVisible = await personalTab.isVisible({ timeout: 500 }).catch(() => false);
+    if (personalTabVisible) {
+        const selected = await personalTab.getAttribute('aria-selected').catch(() => null);
+        const state = await personalTab.getAttribute('data-state').catch(() => null);
+        if (selected === 'true' || state === 'active') {
+            return true;
+        }
+    }
+
     const plusTitle = await page.getByText(/^ChatGPT Plus$/i).first().isVisible({ timeout: 800 }).catch(() => false);
-    const plusBtn = await page.getByRole('button', { name: /Upgrade to Plus|升级至\s*Plus|Get Plus|Subscribe to Plus/i })
+    const plusBtn = await page.getByRole('button', { name: /Upgrade to Plus|升级至\s*Plus|Get Plus|Subscribe to Plus|Buy now/i })
         .first()
         .isVisible({ timeout: 800 })
         .catch(() => false);
@@ -167,7 +181,16 @@ async function getPricingSurface(page) {
 
 async function readPricingSurfaceText(page) {
     const surface = await getPricingSurface(page);
-    return String(await surface.innerText({ timeout: 5000 }).catch(() => '') || '');
+    let text = String(await surface.innerText({ timeout: 5000 }).catch(() => '') || '');
+    // 某些布局下定价容器只包含左侧免费版，价格在右侧 Plus 卡片里；
+    // 若容器文本里没有任何价格/货币符号，回退读取整页文本。
+    if (!/(?:US\$|S\$|HK\$|RM|₱|\$\s*\d)/.test(text)) {
+        const bodyText = String(await page.locator('body').innerText({ timeout: 5000 }).catch(() => '') || '');
+        if (bodyText.length > text.length) {
+            text = bodyText;
+        }
+    }
+    return text;
 }
 
 async function scrollPricingSurface(page) {
@@ -183,8 +206,20 @@ async function scrollPricingSurface(page) {
 
 async function pageShowsTargetRegionPricing(page, regionCode) {
     const code = String(regionCode || 'PH').toUpperCase();
-    const text = await readPricingSurfaceText(page);
+    const normalize = (value) => String(value || '')
+        .replace(/[\u00a0\u2009\u202f]/g, ' ')
+        .replace(/(US\$|S\$|HK\$|RM|₱|\$)\s+(?=\d)/g, '$1');
+    // 统一不同排版：US$ 20 / US$20 / 全角空格 / 窄空格，避免因空格导致误判
+    let text = normalize(await readPricingSurfaceText(page));
     const positive = REGION_PRICE_PATTERNS[code] || [];
+    // 定价容器可能只包含左侧免费版（US$0），右侧 Plus 卡片价格在容器外；
+    // 表面文本匹配不到目标价格时，回退读取整页文本。
+    if (!positive.some((pattern) => pattern.test(text))) {
+        const bodyText = normalize(await page.locator('body').innerText({ timeout: 5000 }).catch(() => ''));
+        if (bodyText.length > text.length) {
+            text = bodyText;
+        }
+    }
     const negative = REGION_WRONG_CURRENCY[code] || [];
     const countryHints = REGION_CURRENT_COUNTRY_HINTS[code] || [];
 
@@ -656,7 +691,7 @@ async function clickPlanUpgrade(page, planType) {
     const cardTitle = plan === 'plus' ? /ChatGPT Plus/i : /ChatGPT Pro/i;
     try {
         const card = page.locator('div').filter({ hasText: cardTitle }).filter({ has: page.getByRole('button') }).first();
-        const btn = card.getByRole('button').filter({ hasText: /升级|Upgrade|Subscribe|Get/i }).first();
+        const btn = card.getByRole('button').filter({ hasText: /升级|Upgrade|Subscribe|Get|Buy now|购买/i }).first();
         if (await btn.isVisible({ timeout: 3000 })) {
             await btn.scrollIntoViewIfNeeded().catch(() => {});
             await btn.click({ timeout: 10000 });
@@ -668,9 +703,9 @@ async function clickPlanUpgrade(page, planType) {
     if (plan === 'plus') {
         try {
             const plusCard = page.locator('div').filter({ has: page.getByText(/ChatGPT Plus|^Plus$/i) }).filter({
-                has: page.getByRole('button', { name: /^Upgrade$|^升级$/i })
+                has: page.getByRole('button', { name: /^Upgrade$|^升级$|^Buy now$|^立即购买$/i })
             }).first();
-            const upgradeBtn = plusCard.getByRole('button', { name: /^Upgrade$|^升级$/i }).first();
+            const upgradeBtn = plusCard.getByRole('button', { name: /^Upgrade$|^升级$|^Buy now$|^立即购买$/i }).first();
             if (await upgradeBtn.isVisible({ timeout: 3000 })) {
                 await upgradeBtn.scrollIntoViewIfNeeded().catch(() => {});
                 await upgradeBtn.click({ timeout: 10000 });
@@ -684,12 +719,14 @@ async function clickPlanUpgrade(page, planType) {
         ? [
             'button:has-text("升级至 Plus")',
             'button:has-text("Upgrade to Plus")',
+            'button:has-text("Buy now")',
             '[role="dialog"] >> text=ChatGPT Plus >> .. >> .. >> button:has-text("Upgrade")',
             'text=ChatGPT Plus >> xpath=ancestor::div[.//button[contains(., "Upgrade") or contains(., "升级")]][1] >> button'
         ]
         : [
             'button:has-text("升级至 Pro")',
             'button:has-text("Upgrade to Pro")',
+            'text=ChatGPT Pro >> xpath=ancestor::div[.//button[contains(., "Buy now")]][1] >> button',
             'text=ChatGPT Pro >> xpath=ancestor::div[.//button[contains(., "Upgrade") or contains(., "升级")]][1] >> button'
         ];
 

@@ -10,7 +10,9 @@ const path = require('path');
 const { chromium } = require('playwright-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 
-chromium.use(StealthPlugin());
+const _poolStealth = StealthPlugin();
+_poolStealth.enabledEvasions.delete('user-agent-override'); // 不让 stealth 用默认 UA 覆盖 session 里的 UA
+chromium.use(_poolStealth);
 
 const DEFAULT_POOL_SIZE = 2;
 const BASE_PORT = Number(process.env.BROWSER_POOL_BASE_PORT || 19222);
@@ -125,11 +127,12 @@ async function collectSlotDetail(slot) {
 function buildLaunchArgs(port) {
     const args = [
         '--disable-blink-features=AutomationControlled',
-        `--remote-debugging-port=${port}`
+        `--remote-debugging-port=${port}`,
+        // 容器内以 root 运行，headful/headless 都需要关闭 sandbox
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage'
     ];
-    if (process.env.HEADFUL !== '1') {
-        args.push('--no-sandbox', '--disable-setuid-sandbox');
-    }
     return args;
 }
 

@@ -210,6 +210,130 @@ async function prepareCheckoutCardSection(page) {
     }
 }
 
+/**
+ * OpenAI custom checkout：若账号存在已保存卡（Saved）或当前不在 Card 输入模式，
+ * 主动点击 “Card” 标签，切换为输入卡池新卡，避免误用已保存的卡。
+ * 标签位于 Stripe elements-inner-accessory-target iframe 内。
+ * @param {import('playwright').Page} page
+ * @returns {Promise<boolean>} 是否确认处于 Card 输入模式
+ */
+async function ensureCardPaymentTabSelected(page) {
+    const deadline = Date.now() + 20000;
+
+    while (Date.now() < deadline) {
+        for (const frame of page.frames()) {
+            let tabs;
+            try {
+                tabs = await frame.evaluate(() => Array.from(
+                    document.querySelectorAll('button,[role="tab"],[role="radio"]')
+                ).map((el) => ({
+                    text: (el.innerText || '').replace(/\s+/g, ' ').trim(),
+                    selected: el.getAttribute('aria-selected') === 'true'
+                        || el.getAttribute('aria-checked') === 'true'
+                })));
+            } catch (_) {
+                continue;
+            }
+
+            const cardTab = tabs.find((t) => /^Card$/i.test(t.text));
+            if (!cardTab) continue;
+
+            if (cardTab.selected) {
+                console.log('[Stripe] 支付方式已是 Card 标签，直接填写卡池卡');
+                return true;
+            }
+
+            const hasSaved = tabs.some((t) => /^Saved$/i.test(t.text));
+            const handle = await frame.evaluateHandle(() => Array.from(
+                document.querySelectorAll('button,[role="tab"],[role="radio"]')
+            ).find((el) => (el.innerText || '').replace(/\s+/g, ' ').trim() === 'Card') || null);
+            const el = handle.asElement();
+            if (!el) continue;
+
+            await el.scrollIntoViewIfNeeded().catch(() => {});
+            await el.click({ timeout: 8000 }).catch(() => {});
+            await page.waitForTimeout(1200);
+
+            const ok = await frame.evaluate(() => {
+                const card = Array.from(document.querySelectorAll('button,[role="tab"],[role="radio"]'))
+                    .find((node) => (node.innerText || '').replace(/\s+/g, ' ').trim() === 'Card');
+                return Boolean(card && (card.getAttribute('aria-selected') === 'true'
+                    || card.getAttribute('aria-checked') === 'true'));
+            }).catch(() => false);
+
+            console.log(ok
+                ? `[Stripe] ${hasSaved ? '检测到已保存卡（Saved），' : ''}已切换到 Card 标签`
+                : '[Stripe] 已点击 Card 标签，但未确认选中状态，继续尝试填卡');
+            return ok;
+        }
+        await page.waitForTimeout(500);
+    }
+
+    console.log('[Stripe] 未发现 Saved/Card 支付方式标签，按默认方式填卡');
+    return false;
+}
+
+/**
+ * 取消勾选「Save payment details to OpenAI OpCo, LLC for future purchases.」
+ * 卡池卡通常只用一次，避免把一次性卡保存到账号。
+ * 控件：主文档内 button[role="checkbox"]，伴随隐藏 input[name="save_payment_method_for_reuse"]。
+ * @param {import('playwright').Page} page
+ * @param {number} [timeout]
+ * @returns {Promise<boolean>} 是否确认未勾选
+ */
+async function uncheckSavePaymentDetails(page, timeout = 8000) {
+    const deadline = Date.now() + timeout;
+
+    while (Date.now() < deadline) {
+        const handle = await page.evaluateHandle(() => {
+            const input = document.querySelector('input[name="save_payment_method_for_reuse"]');
+            if (!input) return null;
+            let node = input.parentElement;
+            for (let i = 0; i < 5 && node; i += 1) {
+                const btn = node.querySelector('button[role="checkbox"]');
+                if (btn) return btn;
+                node = node.parentElement;
+            }
+            return null;
+        }).catch(() => null);
+
+        const el = handle && handle.asElement();
+        if (el) {
+            const state = await el.getAttribute('aria-checked').catch(() => null);
+            const inputChecked = await page.evaluate(() => {
+                const input = document.querySelector('input[name="save_payment_method_for_reuse"]');
+                return input ? input.checked : null;
+            }).catch(() => null);
+
+            if (state !== 'true' && inputChecked !== true) {
+                console.log('[Stripe] 「保存支付方式」未勾选，无需处理');
+                return true;
+            }
+
+            await el.scrollIntoViewIfNeeded().catch(() => {});
+            await el.click({ timeout: 5000 }).catch(() => {});
+            await page.waitForTimeout(600);
+
+            const after = await el.getAttribute('aria-checked').catch(() => null);
+            const afterInput = await page.evaluate(() => {
+                const input = document.querySelector('input[name="save_payment_method_for_reuse"]');
+                return input ? input.checked : null;
+            }).catch(() => null);
+
+            const ok = after === 'false' || afterInput === false;
+            console.log(ok
+                ? '[Stripe] ✅ 已取消「保存支付方式」勾选（卡不落库）'
+                : '[Stripe] ⚠️ 取消「保存支付方式」勾选失败，请检查页面结构');
+            return ok;
+        }
+
+        await page.waitForTimeout(400);
+    }
+
+    console.log('[Stripe] 未发现「保存支付方式」勾选项，跳过');
+    return false;
+}
+
 async function typeIntoFrameLocator(frameLocator, text) {
     const input = frameLocator.locator('input:not([type="hidden"])').first();
     await input.waitFor({ state: 'visible', timeout: 15000 });
@@ -533,7 +657,10 @@ async function completeStripeCardPayment(page, cardInfo, address, options = {}) 
             }
             await page.waitForTimeout(800);
         } else {
-            console.log('[Stripe] OpenAI checkout 页面，跳过支付方式选择，直接填卡');
+            console.log('[Stripe] OpenAI checkout 页面，检查支付方式标签（Saved/Card）...');
+            await ensureCardPaymentTabSelected(page);
+            await page.waitForTimeout(1200);
+            await uncheckSavePaymentDetails(page);
         }
 
         console.log('[Stripe] Step 2: 填写信用卡字段（iframe 自动识别）...');
@@ -2469,6 +2596,8 @@ async function fillBillingLine1Strict(page, value) {
 }
 
 async function clickCheckoutSubmitButton(page) {
+    // 提交前兜底：确保一次性卡不会被保存到账号
+    await uncheckSavePaymentDetails(page, 2500);
     await dismissAddressAutocomplete(page);
     await page.keyboard.press('Escape').catch(() => {});
     await page.evaluate(() => {
@@ -2811,6 +2940,9 @@ module.exports = {
     fillOpenAiCheckoutBilling,
     discoverCardInputs,
     prepareCheckoutCardSection,
+    ensureCardPaymentTabSelected,
+    uncheckSavePaymentDetails,
+    fillCardFieldsOpenAiCheckout,
     readCheckoutDueAmount,
     estimateTaxFreeAmount,
     waitForCheckoutTaxRecalculation,

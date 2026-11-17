@@ -8,7 +8,12 @@ const { chromium } = require('playwright-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const { probeUserAgent, DEFAULT_UA } = require('./browser-standalone');
 
-chromium.use(StealthPlugin());
+const _clientStealth = StealthPlugin();
+// 环境由 browser-environment 统一设置；禁止插件填入另一套 UA/硬件值。
+for (const key of ['user-agent-override', 'navigator.hardwareConcurrency', 'navigator.languages', 'webgl.vendor', 'window.outerdimensions']) {
+    _clientStealth.enabledEvasions.delete(key);
+}
+chromium.use(_clientStealth);
 
 /**
  * @param {object} options

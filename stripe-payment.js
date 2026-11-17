@@ -12,6 +12,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { ensureCardEntryReady } = require('./card-entry');
 const {
     isHumanVerificationVisible,
     clearHumanVerification,
@@ -217,60 +218,10 @@ async function prepareCheckoutCardSection(page) {
  * @param {import('playwright').Page} page
  * @returns {Promise<boolean>} 是否确认处于 Card 输入模式
  */
-async function ensureCardPaymentTabSelected(page) {
-    const deadline = Date.now() + 20000;
-
-    while (Date.now() < deadline) {
-        for (const frame of page.frames()) {
-            let tabs;
-            try {
-                tabs = await frame.evaluate(() => Array.from(
-                    document.querySelectorAll('button,[role="tab"],[role="radio"]')
-                ).map((el) => ({
-                    text: (el.innerText || '').replace(/\s+/g, ' ').trim(),
-                    selected: el.getAttribute('aria-selected') === 'true'
-                        || el.getAttribute('aria-checked') === 'true'
-                })));
-            } catch (_) {
-                continue;
-            }
-
-            const cardTab = tabs.find((t) => /^Card$/i.test(t.text));
-            if (!cardTab) continue;
-
-            if (cardTab.selected) {
-                console.log('[Stripe] 支付方式已是 Card 标签，直接填写卡池卡');
-                return true;
-            }
-
-            const hasSaved = tabs.some((t) => /^Saved$/i.test(t.text));
-            const handle = await frame.evaluateHandle(() => Array.from(
-                document.querySelectorAll('button,[role="tab"],[role="radio"]')
-            ).find((el) => (el.innerText || '').replace(/\s+/g, ' ').trim() === 'Card') || null);
-            const el = handle.asElement();
-            if (!el) continue;
-
-            await el.scrollIntoViewIfNeeded().catch(() => {});
-            await el.click({ timeout: 8000 }).catch(() => {});
-            await page.waitForTimeout(1200);
-
-            const ok = await frame.evaluate(() => {
-                const card = Array.from(document.querySelectorAll('button,[role="tab"],[role="radio"]'))
-                    .find((node) => (node.innerText || '').replace(/\s+/g, ' ').trim() === 'Card');
-                return Boolean(card && (card.getAttribute('aria-selected') === 'true'
-                    || card.getAttribute('aria-checked') === 'true'));
-            }).catch(() => false);
-
-            console.log(ok
-                ? `[Stripe] ${hasSaved ? '检测到已保存卡（Saved），' : ''}已切换到 Card 标签`
-                : '[Stripe] 已点击 Card 标签，但未确认选中状态，继续尝试填卡');
-            return ok;
-        }
-        await page.waitForTimeout(500);
-    }
-
-    console.log('[Stripe] 未发现 Saved/Card 支付方式标签，按默认方式填卡');
-    return false;
+async function ensureCardPaymentTabSelected(page, options = {}) {
+    await ensureCardEntryReady(page, options);
+    console.log('[Stripe] Card 新卡表单已就绪：卡号、有效期、安全码均可填写');
+    return true;
 }
 
 /**
@@ -608,6 +559,7 @@ async function completeStripeCardPayment(page, cardInfo, address, options = {}) 
             await dismissCheckoutPaymentError(page);
             await prepareCheckoutCardSection(page);
             await page.waitForTimeout(800);
+            await ensureCardPaymentTabSelected(page);
             console.log('[Stripe] Step 2 (重试): 填写新信用卡...');
             const retryFill = await fillCardFieldsOpenAiCheckout(page, cardInfo, ELEMENT_TIMEOUT);
             if (!retryFill.ok) {
@@ -642,38 +594,10 @@ async function completeStripeCardPayment(page, cardInfo, address, options = {}) 
         await prepareCheckoutCardSection(page);
         await page.waitForTimeout(1000);
 
+        console.log('[Stripe] Step 1: 确认 Card 新卡表单...');
         const openAiCheckout = isOpenAiCustomCheckout(page);
-        if (!openAiCheckout) {
-            // 仅 Stripe hosted 页需要选择支付方式 tab
-            console.log('[Stripe] Step 1: 选择信用卡支付方式...');
-            try {
-                const cardMethodSelectors = [
-                    '[data-testid="card-tab"]',
-                    '[data-testid="CARD-tab"]',
-                    'button:has-text("Credit or debit card")',
-                    'button:has-text("信用卡")',
-                    '[data-testid="payment-method-card"]'
-                ];
-                for (const sel of cardMethodSelectors) {
-                    try {
-                        const el = page.locator(sel).first();
-                        if (await el.isVisible({ timeout: 1500 })) {
-                            await el.click();
-                            console.log(`[Stripe] ✅ 已选择信用卡支付方式 (${sel})`);
-                            break;
-                        }
-                    } catch (_) { /* next */ }
-                }
-            } catch (e) {
-                console.log('[Stripe] 支付方式选择跳过:', e.message);
-            }
-            await page.waitForTimeout(800);
-        } else {
-            console.log('[Stripe] OpenAI checkout 页面，检查支付方式标签（Saved/Card）...');
-            await ensureCardPaymentTabSelected(page);
-            await page.waitForTimeout(1200);
-            await uncheckSavePaymentDetails(page);
-        }
+        await ensureCardPaymentTabSelected(page);
+        await uncheckSavePaymentDetails(page);
 
         console.log('[Stripe] Step 2: 填写信用卡字段（iframe 自动识别）...');
         const fillResult = await fillCardFieldsOpenAiCheckout(page, cardInfo, ELEMENT_TIMEOUT);

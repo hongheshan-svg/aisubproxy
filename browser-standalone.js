@@ -8,7 +8,10 @@ const { chromium } = require('playwright-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 
 const _stealth = StealthPlugin();
-_stealth.enabledEvasions.delete('user-agent-override'); // 不让 stealth 用默认 UA 覆盖 session 里的 UA
+// 环境由 browser-environment 统一设置；禁止插件填入另一套 UA/硬件值。
+for (const key of ['user-agent-override', 'navigator.hardwareConcurrency', 'navigator.languages', 'webgl.vendor', 'window.outerdimensions']) {
+    _stealth.enabledEvasions.delete(key);
+}
 chromium.use(_stealth);
 
 const DEFAULT_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36';

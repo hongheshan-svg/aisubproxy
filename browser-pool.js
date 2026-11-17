@@ -11,7 +11,10 @@ const { chromium } = require('playwright-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 
 const _poolStealth = StealthPlugin();
-_poolStealth.enabledEvasions.delete('user-agent-override'); // 不让 stealth 用默认 UA 覆盖 session 里的 UA
+// 环境由 browser-environment 统一设置；禁止插件填入另一套 UA/硬件值。
+for (const key of ['user-agent-override', 'navigator.hardwareConcurrency', 'navigator.languages', 'webgl.vendor', 'window.outerdimensions']) {
+    _poolStealth.enabledEvasions.delete(key);
+}
 chromium.use(_poolStealth);
 
 const DEFAULT_POOL_SIZE = 2;

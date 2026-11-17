@@ -467,55 +467,40 @@ async function isCloudflareWallPage(page) {
 
 /** Checkout 支付表单是否已真正加载（不仅是 URL 对了） */
 async function hasVisibleStripeCardInputs(page) {
-    const iframeCount = await page.locator('iframe').count().catch(() => 0);
-    for (let i = 0; i < iframeCount; i += 1) {
-        const src = await page.locator('iframe').nth(i).getAttribute('src').catch(() => '') || '';
-        if (isInvisibleStripeHcaptchaUrl(src)) {
-            continue;
+    const selectors = 'input[autocomplete="cc-number"], input[name="cardnumber"], input[name="number"], '
+        + 'input[autocomplete="cc-exp"], input[autocomplete="cc-csc"]';
+    for (const frame of page.frames()) {
+        if (frame !== page.mainFrame()) {
+            try {
+                const url = new URL(frame.url());
+                if (!/(^|\.)stripe\.com$/i.test(url.hostname) || isInvisibleStripeHcaptchaUrl(frame.url())) continue;
+            } catch (_) { continue; }
         }
-        const fl = page.frameLocator('iframe').nth(i);
-        try {
-            const input = fl.locator('input:not([type="hidden"])').first();
-            if (await input.isVisible({ timeout: 500 })) {
-                return true;
-            }
-        } catch (_) { /* next iframe */ }
+        if (await frame.locator(selectors).first().isVisible({ timeout: 500 }).catch(() => false)) return true;
     }
     return false;
 }
 
 async function isCheckoutPaymentReady(page) {
-    if (await hasVisibleStripeCardInputs(page)) {
-        return true;
-    }
-
-    const probes = [
-        () => page.getByText(/^Card number$/i).first().isVisible({ timeout: 1200 }),
-        () => page.getByText(/Configure your plan/i).first().isVisible({ timeout: 1200 }),
-        () => page.getByText(/Due today/i).first().isVisible({ timeout: 1200 }),
-        () => page.getByText(/Plus plan|Pro plan|Monthly subscription/i).first().isVisible({ timeout: 1200 }),
-        () => page.getByRole('button', { name: /subscribe|订阅|pay/i }).first().isVisible({ timeout: 1200 }),
-        () => page.locator('input[autocomplete="cc-number"]').first().isVisible({ timeout: 1200 })
-    ];
-    for (const probe of probes) {
-        if (await probe().catch(() => false)) {
-            return true;
-        }
-    }
-
+    if (await hasVisibleStripeCardInputs(page)) return true;
+    // 已保存的支付方式可能不展示新卡输入框，但必须有可选择的支付方式控件。
+    const savedMethods = '[data-testid="saved-payment-method"], input[type="radio"][name*="payment"], '
+        + '[role="radio"][data-payment-method]';
     for (const frame of page.frames()) {
-        if (isInvisibleStripeHcaptchaUrl(frame.url())) {
-            continue;
+        if (frame !== page.mainFrame()) {
+            try {
+                if (!/(^|\.)stripe\.com$/i.test(new URL(frame.url()).hostname)
+                    || isInvisibleStripeHcaptchaUrl(frame.url())) continue;
+            } catch (_) { continue; }
         }
-        if (!/js\.stripe\.com|stripe\.com|elements-inner/i.test(frame.url())) {
-            continue;
-        }
-        try {
-            const input = frame.locator('input[autocomplete="cc-number"], input[name="cardnumber"], input[name="number"]').first();
-            if (await input.isVisible({ timeout: 500 })) {
-                return true;
-            }
-        } catch (_) { /* next frame */ }
+        if (await frame.locator(savedMethods).first().isVisible({ timeout: 500 }).catch(() => false)) return true;
+        const hasPaymentTabs = await frame.locator('button,[role="tab"],[role="radio"]').evaluateAll(nodes => {
+            const visible = nodes.filter(el => el.getClientRects().length > 0)
+                .map(el => (el.textContent || '').replace(/\s+/g, ' ').trim());
+            return visible.some(text => /^(Saved|已保存|已儲存)$/i.test(text))
+                && visible.some(text => /^(Card|银行卡|信用卡)$/i.test(text));
+        }).catch(() => false);
+        if (hasPaymentTabs) return true;
     }
     return false;
 }

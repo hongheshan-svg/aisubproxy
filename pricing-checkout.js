@@ -765,6 +765,13 @@ async function waitForCheckoutPage(page, timeout = 90000) {
             await page.waitForLoadState('domcontentloaded', { timeout: 15000 }).catch(() => {});
             await page.waitForTimeout(2000);
             await assertChatGptLoggedIn(page, 'Checkout');
+            const { waitForCheckoutPaymentReady } = require('./human-verification');
+            const ready = await waitForCheckoutPaymentReady(page, Number(process.env.CHECKOUT_READY_WAIT_MS || 60000));
+            if (ready !== true) {
+                throw new Error(ready === 'login_required' || ready === 'login_redirect'
+                    ? 'Checkout 需要重新登录，请重新导出完整 Session'
+                    : 'Checkout 地址已生成，但支付页面尚未加载完成，请稍后重试');
+            }
             console.log(`✅ [步骤] Checkout 页面已打开: ${url.slice(0, 80)}...`);
             return url;
         }

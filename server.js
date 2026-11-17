@@ -21,6 +21,7 @@ const { checkHcaptchaSolverHealth, testVlmConnectivity, listSolverLogFiles, read
 const { testCaptchaPlatformConnectivity, normalizeCaptchaPlatformApiUrl, resolveCaptchaPlatformCredentials } = require('./captcha-platform');
 const browserPool = require('./browser-pool');
 const { buildWorkerRuntimeEnv } = require('./browser-runtime');
+const { resolveClientEnvironment } = require('./session-environment');
 const { querySubscriptionBySession, validateSessionTokenForQuery, cancelAutoRenew, resumeAutoRenew } = require('./subscription-check');
 const gptApi = require('./gpt-api-client');
 const { createBrandingService, MAX_LOGO_BYTES } = require('./branding');
@@ -2632,7 +2633,8 @@ app.post('/api/admin/checkout/generate', async (req, res) => {
     try {
         await ensureStoreReady();
         const body = req.body || {};
-        const rawSession = String(body.session || '').trim();
+        const rawSession = typeof body.session === 'object' && body.session !== null
+            ? JSON.stringify(body.session) : String(body.session || '').trim();
         if (!rawSession) {
             return res.status(400).json({ success: false, error: '请提供 Session JSON' });
         }
@@ -3184,16 +3186,7 @@ async function spawnWorkerWithBrowser({ jobKey, runtimeEnv, runScript }) {
  * 用于为该账号选取"同地区代理"，避免跨地区访问触发 ChatGPT 账号登出（会话已过期）。
  */
 function resolveSessionRegion(sessionRaw) {
-    let data = sessionRaw;
-    if (typeof sessionRaw === 'string') {
-        const raw = sessionRaw.trim();
-        if (!raw.startsWith('{')) return '';
-        try { data = JSON.parse(raw); } catch (_) { return ''; }
-    }
-    if (!data || typeof data !== 'object') return '';
-    const env = data.__env || data.clientEnv || data.environment || {};
-    const statsig = data.statsigContext || {};
-    return String(env.country || statsig.country || '').trim().toUpperCase();
+    return resolveClientEnvironment(sessionRaw)?.country || '';
 }
 
 /**
@@ -3829,7 +3822,9 @@ function spawnActivationWorker({ task, token, sessionRaw, cdk, cdkDetails, clien
 async function handleActivationRequest(req, res) {
     if (updater.gate) return res.status(503).json({ success: false, message: '系统正在更新，请稍后再试' });
     let admissionKey = null;
-    const rawSession = String(req.body?.session || req.body?.token || '').trim();
+    const inputSession = req.body?.session || req.body?.token || '';
+    const rawSession = typeof inputSession === 'object' && inputSession !== null
+        ? JSON.stringify(inputSession) : String(inputSession).trim();
     const sessionJson = parseSessionJson(rawSession);
     const token = normalizeSessionToken(rawSession);
     const cdk = String(req.body?.cdk || '').trim();

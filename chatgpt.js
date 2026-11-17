@@ -360,12 +360,6 @@ async function assertCheckoutPageReady(page) {
         return currentUrl;
     }
 
-    const checkoutReady = /Configure your plan|Subscribe|Plus plan|Pro plan|Due today|Card number|Expiration date|Security code|Monthly subscription/i.test(pageText);
-
-    if (checkoutReady) {
-        return currentUrl;
-    }
-
     if (/Page not found|could not be found|Something went wrong|contact the merchant/i.test(pageText)) {
         throw new Error(`支付链接无效: ${currentUrl.slice(0, 120)}`);
     }

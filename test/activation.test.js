@@ -35,6 +35,13 @@ beforeEach(() => {
 afterEach(() => { updater.gate = false; vi.restoreAllMocks(); vi.useRealTimers(); vi.unstubAllEnvs(); activeForegroundJobs.clear(); });
 
 describe('activation admission', () => {
+    it('accepts a Session object and keeps its environment fields in the worker payload', async () => {
+        const req = request();
+        req.body.session = { ...JSON.parse(req.body.session), statsigContext: { deviceId: 'request-device', country: 'US' } };
+        await handleActivationRequest(req, response());
+        const payload = JSON.parse(store.createActivationTask.mock.calls[0][0].sessionPayload);
+        expect(payload).toEqual(req.body.session);
+    });
     it('does not consume a Pro 500 CDK if the provider has no enabled matching plan', async () => {
         store.verifyCdkDetails.mockResolvedValue({ type: '自助', plan_type: 'pro_500' });
         vi.spyOn(api, 'fetchPlans').mockResolvedValue({ success: true, plans: [{ key: 'pro20x', plan_name: 'chatgptpro200', enabled: 1 }] });

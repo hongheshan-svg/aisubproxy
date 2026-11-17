@@ -1,6 +1,7 @@
 const { executePaymentWithRetry } = require('./payment-retry');
 const { openPricingCheckout } = require('./pricing-checkout');
 const { openApiCheckout } = require('./chatgpt');
+const { ensureCardPaymentTabSelected, uncheckSavePaymentDetails } = require('./stripe-payment');
 const store = require('./mysql-store');
 const { getRegionConfig, getRegionBrowserProfile } = require('./region-config');
 const { installChatGptSession, bootstrapChatGptSession } = require('./session-auth');
@@ -10,11 +11,9 @@ const { lookupIpGeo, localeForCountry, maskIp } = require('./ip-geo');
 const {
     resolveClientEnvironment,
     timezoneFromClientEnv,
-    clampNum,
-    detectUaInfo,
-    buildUaBrands,
     maskId
 } = require('./session-environment');
+const { buildBrowserEnvironment, installBrowserEnvironment, prepareBrowserPage } = require('./browser-environment');
 const fs = require('fs');
 const path = require('path');
 
@@ -197,413 +196,155 @@ async function run() {
     let page = null;
     let paymentSucceeded = false;
 
-    const preparedProxy = await preparePlaywrightProxy(CONFIG.proxy);
-    proxyCleanup = preparedProxy.cleanup;
-    const proxyConfig = preparedProxy.proxyConfig;
-
-    if (proxyConfig) {
-        console.log(`🌐 [系统] 代理已配置${preparedProxy.relayed ? '（SOCKS→本地 HTTP 中继）' : ''}`);
-    }
-
-    browserSession = await connectTaskBrowser({
-        proxyConfig,
-        headful: DEBUG_HEADFUL,
-        chromiumChannel: CHROMIUM_CHANNEL
-    });
-    applyCdpEnv(browserSession);
-    browser = browserSession.browser;
-
-    const realUserAgent = browserSession.realUserAgent;
-
-    const paymentRegion = String(CONFIG.paymentRegionOverride || '').trim().toUpperCase()
-        || await store.getPaymentRegion();
-    const regionCfg = getRegionConfig(paymentRegion);
-    const browserProfile = getRegionBrowserProfile(paymentRegion);
-
-    // ===== 探测代理实际出口地区：让地理指纹（时区/语言）跟系统设置的代理 IP 一致 =====
-    // 用一个临时 context（走同一代理出口）查询 ip-api，拿到出口 IP 的国家与 IANA 时区。
-    // 失败则 proxyGeo=null，指纹回退到 session / 默认值。
-    let proxyGeo = null;
     try {
-        const probeOpts = {};
+        const preparedProxy = await preparePlaywrightProxy(CONFIG.proxy);
+        proxyCleanup = preparedProxy.cleanup;
+        const proxyConfig = preparedProxy.proxyConfig;
+
         if (proxyConfig) {
-            probeOpts.proxy = proxyConfig;
+            console.log(`🌐 [系统] 代理已配置${preparedProxy.relayed ? '（SOCKS→本地 HTTP 中继）' : ''}`);
         }
-        const probeContext = await browser.newContext(probeOpts);
+
+        browserSession = await connectTaskBrowser({
+            proxyConfig,
+            headful: DEBUG_HEADFUL,
+            chromiumChannel: CHROMIUM_CHANNEL
+        });
+        applyCdpEnv(browserSession);
+        browser = browserSession.browser;
+
+        const realUserAgent = browserSession.realUserAgent;
+
+        const paymentRegion = String(CONFIG.paymentRegionOverride || '').trim().toUpperCase()
+            || await store.getPaymentRegion();
+        const regionCfg = getRegionConfig(paymentRegion);
+        const browserProfile = getRegionBrowserProfile(paymentRegion);
+
+        // ===== 探测代理实际出口地区：让地理指纹（时区/语言）跟系统设置的代理 IP 一致 =====
+        // 用一个临时 context（走同一代理出口）查询 ip-api，拿到出口 IP 的国家与 IANA 时区。
+        // 失败则 proxyGeo=null，指纹回退到 session / 默认值。
+        let proxyGeo = null;
         try {
-            proxyGeo = await lookupIpGeo(probeContext.request);
-        } finally {
-            await probeContext.close().catch(() => {});
-        }
-    } catch (geoErr) {
-        console.warn(`⚠️ [指纹] 代理出口地区探测失败，地理指纹将回退 session/默认值: ${geoErr.message}`);
-    }
-    // 由出口地区推导地理 profile（时区来自 ip-api，locale 由国家码推导）
-    const geoProfile = proxyGeo
-        ? { locale: localeForCountry(proxyGeo.countryCode), timezoneId: proxyGeo.timezone }
-        : null;
-    if (proxyGeo) {
-        console.log(`🌐 [指纹] 代理出口: ${maskIp(proxyGeo.ip)} · ${proxyGeo.countryCode}`
-            + `${proxyGeo.regionName ? '/' + proxyGeo.regionName : ''} · ${proxyGeo.timezone || '时区未知'}`);
-    }
-
-    // ===== 对齐用户真实环境：读取用户提交的 session 里的 statsigContext / __env =====
-    const sessionRawForEnv = CONFIG.chatgptSessionJson || CONFIG.chatgptToken;
-    const clientEnv = resolveClientEnvironment(sessionRawForEnv);
-    const envUa = String(clientEnv?.userAgent || '').trim();
-    const envUaValid = /^Mozilla\/5\.0 /.test(envUa) && /(Chrome|Chromium|Edg|Firefox|Safari)\//.test(envUa);
-    const userAgent = envUaValid ? envUa : realUserAgent;
-    const uaInfo = detectUaInfo(userAgent);
-    const chromeMatch = userAgent.match(/(?:Chrome|Chromium|Edg)\/(\d+)/);
-    const chromeMajor = chromeMatch ? Number(chromeMatch[1]) : 147;
-    const isChromium = /Chrome\/|Chromium\/|Edg\//.test(userAgent);
-
-    const screenWidth = clampNum(clientEnv?.screen?.width, 800, 5120, 1920);
-    const screenHeight = clampNum(clientEnv?.screen?.height, 600, 2880, 1080);
-    const viewWidth = clampNum(clientEnv?.window?.innerWidth, 640, screenWidth, Math.round(screenWidth * 0.9));
-    const viewHeight = clampNum(clientEnv?.window?.innerHeight, 480, screenHeight, Math.round(screenHeight * 0.85));
-    const deviceScaleFactor = clampNum(clientEnv?.devicePixelRatio, 1, 3, 1);
-    // 浏览器语言跟随出口 IP：US→en-US、PH→en-PH；页面按钮/文案语言与出口地区一致。
-    // Session 的 locale 只在没有出口地理信息时兜底（UA/时区/设备仍以 Session 为准）。
-    const egressLocale = proxyGeo ? String(localeForCountry(proxyGeo.countryCode) || '') : '';
-    const localeFallback = (geoProfile || browserProfile).locale || 'en-US';
-    const locale = String(
-        egressLocale
-        || clientEnv?.locale
-        || (geoProfile ? geoProfile.locale : '')
-        || localeFallback
-    ).trim();
-    const languages = [locale, String(locale).split('-')[0]]
-        .map((item) => String(item || '').trim())
-        .filter(Boolean)
-        .slice(0, 4);
-    if (egressLocale && clientEnv?.locale && egressLocale !== clientEnv.locale) {
-        console.log(`[指纹] 浏览器语言跟随出口 ${proxyGeo.countryCode}: ${egressLocale}（Session 记录 ${clientEnv.locale}）`);
-    }
-    let timezoneId = String(
-        clientEnv?.timezone
-        || timezoneFromClientEnv(clientEnv)
-        || (geoProfile ? geoProfile.timezoneId : '')
-        || browserProfile.timezoneId || 'Asia/Manila'
-    ).trim();
-    try {
-        Intl.DateTimeFormat('en-US', { timeZone: timezoneId });
-    } catch (_) {
-        console.warn(`⚠️ [指纹] 用户时区 ${timezoneId} 无效，回退到 ${browserProfile.timezoneId}`);
-        timezoneId = browserProfile.timezoneId;
-    }
-
-    const fingerprint = {
-        chromeMajor,
-        isChromium,
-        uaPlatform: uaInfo.uaPlatform,
-        platformWin: uaInfo.platformWin,
-        platformVersion: uaInfo.platformVersion,
-        arch: uaInfo.arch,
-        isMobile: uaInfo.isMobile,
-        maxTouchPoints: uaInfo.isMobile ? clampNum(clientEnv?.maxTouchPoints, 1, 10, 5) : 0,
-        languages,
-        hardwareConcurrency: clampNum(clientEnv?.hardwareConcurrency, 2, 32, 8),
-        deviceMemory: clampNum(clientEnv?.deviceMemory, 1, 32, 8),
-        brands: buildUaBrands(userAgent, chromeMajor)
-    };
-
-    const viewport = { width: viewWidth, height: viewHeight };
-    const contextOptions = {
-        userAgent,
-        viewport,
-        locale,
-        timezoneId,
-        screen: { width: screenWidth, height: screenHeight },
-        deviceScaleFactor,
-        isMobile: uaInfo.isMobile,
-        hasTouch: uaInfo.isMobile
-    };
-    if (isChromium) {
-        contextOptions.extraHTTPHeaders = {
-            'sec-ch-ua': fingerprint.brands.map((b) => `"${b.brand}";v="${b.version}"`).join(', '),
-            'sec-ch-ua-mobile': uaInfo.isMobile ? '?1' : '?0',
-            'sec-ch-ua-platform': `"${uaInfo.uaPlatform}"`
-        };
-    }
-    if (clientEnv) {
-        console.log('[指纹] 对齐策略：UA/平台/语言/时区/设备 ID 以 Session 为准；IP 仅提示（非必选）');
-        console.log(`[指纹] 已对齐用户 session 环境（除 IP 外全部沿用）: ${uaInfo.uaPlatform} · ${timezoneId} · ${locale} · ${viewWidth}x${viewHeight}@${deviceScaleFactor}x`
-            + `${proxyGeo ? ` · 出口 IP ${maskIp(proxyGeo.ip)}/${proxyGeo.countryCode}` : ''}`);
-        console.log(`[指纹] 会话身份: device=${maskId(clientEnv.deviceId) || '-'} · account=${maskId(clientEnv.accountId) || '-'}`
-            + ` · sessionIp=${maskIp(clientEnv.ip) || '-'} · country=${clientEnv.country || '-'}${clientEnv.regionCode ? '/' + clientEnv.regionCode : ''}`);
-    } else {
-        console.log(`[指纹] 未读取到用户环境(statsigContext/__env)，回退默认/代理地区: ${uaInfo.uaPlatform} · ${timezoneId} · ${locale} · ${viewWidth}x${viewHeight}`);
-    }
-    if (proxyConfig) {
-        contextOptions.proxy = proxyConfig;
-    }
-
-    // 全程录像，便于回看自动化卡在哪一步（输出到挂载目录，前台可播放）
-    if (RECORD_VIDEO) {
-        contextOptions.recordVideo = {
-            dir: VIDEO_DIR,
-            size: { width: 1280, height: 720 }
-        };
-    }
-
-    context = await browser.newContext(contextOptions);
-
-    // ===== Sentinel 网络抓包（CAPTURE_SENTINEL=1）：捕获 checkout/sentinel/payment 请求响应 =====
-    if (process.env.CAPTURE_SENTINEL === '1') {
-        const capPath = path.join(VIDEO_DIR, '..', 'sentinel-capture.json');
-        const captured = [];
-        const interesting = (u) => /\/backend-api\/(payments|sentinel|checkout|subscriptions|billing)|chat-requirements|pay\.openai\.com|\/checkout|arkose|turnstile|proofofwork|stripe/i.test(u);
-        const maskTok = (h) => {
-            const o = {};
-            for (const k of Object.keys(h || {})) {
-                const v = String(h[k]);
-                o[k] = /authorization|token|cookie|sentinel|proof/i.test(k) ? `${v.slice(0, 28)}…(len=${v.length})` : v;
+            const probeOpts = {};
+            if (proxyConfig) {
+                probeOpts.proxy = proxyConfig;
             }
-            return o;
-        };
-        const dump = () => { try { fs.writeFileSync(capPath, JSON.stringify(captured, null, 2)); } catch (_) {} };
-        context.on('request', (req) => {
-            if (!interesting(req.url())) return;
-            captured.push({ dir: 'REQ', method: req.method(), url: req.url(), headers: maskTok(req.headers()), postData: String(req.postData() || '').slice(0, 800) });
-            dump();
-        });
-        context.on('response', async (resp) => {
-            if (!interesting(resp.url())) return;
-            let body = '';
-            try { body = (await resp.text()).slice(0, 2000); } catch (_) {}
-            captured.push({ dir: 'RESP', status: resp.status(), url: resp.url(), headers: maskTok(resp.headers()), body });
-            dump();
-        });
-        console.log(`[抓包] Sentinel 网络抓包已启用 → ${capPath}`);
-    }
-
-    const sessionRaw = CONFIG.chatgptSessionJson || CONFIG.chatgptToken;
-    // 对齐原则：UA / 平台 / 语言 / 时区 / 设备 ID 一律以用户 Session 为准；
-    // IP 不是必选条件，只做提示，不阻断、不改写 Session 内容。
-    if (proxyGeo && proxyGeo.ip) {
-        const sessionIp = String(clientEnv?.ip || '').trim();
-        if (sessionIp && sessionIp !== proxyGeo.ip) {
-            console.log(`ℹ️ [指纹] IP 不一致（非必选）: session=${maskIp(sessionIp)} · egress=${maskIp(proxyGeo.ip)}`
-                + '；其余环境已按 Session 对齐，继续执行');
-        } else if (sessionIp) {
-            console.log('✅ [指纹] 出口 IP 与 Session 记录一致');
-        }
-    }
-    const installResult = await installChatGptSession(context, sessionRaw);
-    const sessionData = installResult?.sessionData || installResult;
-    const cookieVerified = Boolean(installResult?.cookieVerified);
-
-    // ============= 指纹伪装 =============
-    await context.addInitScript((fp) => {
-        const NavProto = Object.getPrototypeOf(navigator);
-        const ScrProto = Object.getPrototypeOf(screen);
-        const safeDefine = (obj, key, getter) => {
+            const probeContext = await browser.newContext(probeOpts);
             try {
-                Object.defineProperty(obj, key, { get: getter, configurable: true });
-            } catch (_) { /* ignore */ }
-        };
-
-        // 隐藏 webdriver
-        try { delete Object.getPrototypeOf(navigator).webdriver; } catch (_) { }
-        safeDefine(NavProto, 'webdriver', () => undefined);
-        try { Object.defineProperty(navigator, 'webdriver', { get: () => undefined, configurable: true }); } catch (_) { }
-
-        // navigator.userAgentData（按用户真实 UA 对齐）
-        try {
-            if (fp.isChromium) {
-                const uaData = {
-                    brands: fp.brands,
-                    mobile: fp.isMobile,
-                    platform: fp.uaPlatform,
-                    getHighEntropyValues: () => Promise.resolve({
-                        architecture: fp.arch,
-                        bitness: '64',
-                        mobile: fp.isMobile,
-                        model: '',
-                        platform: fp.uaPlatform,
-                        platformVersion: fp.platformVersion,
-                        wow64: false
-                    }),
-                    toJSON: () => ({ brands: uaData.brands, mobile: uaData.mobile, platform: uaData.platform })
-                };
-                safeDefine(NavProto, 'userAgentData', () => uaData);
-            } else {
-                safeDefine(NavProto, 'userAgentData', () => undefined);
+                proxyGeo = await lookupIpGeo(probeContext.request);
+            } finally {
+                await probeContext.close().catch(() => {});
             }
-        } catch (_) { }
+        } catch (geoErr) {
+            console.warn(`⚠️ [指纹] 代理出口地区探测失败，地理指纹将回退 session/默认值: ${geoErr.message}`);
+        }
+        // 由出口地区推导地理 profile（时区来自 ip-api，locale 由国家码推导）
+        const geoProfile = proxyGeo
+            ? { locale: localeForCountry(proxyGeo.countryCode), timezoneId: proxyGeo.timezone }
+            : null;
+        if (proxyGeo) {
+            console.log(`🌐 [指纹] 代理出口: ${maskIp(proxyGeo.ip)} · ${proxyGeo.countryCode}`
+                + `${proxyGeo.regionName ? '/' + proxyGeo.regionName : ''} · ${proxyGeo.timezone || '时区未知'}`);
+        }
 
-        // plugins / mimeTypes
+        // ===== 对齐用户真实环境：读取用户提交的 session 里的 statsigContext / __env =====
+        const sessionRawForEnv = CONFIG.chatgptSessionJson || CONFIG.chatgptToken;
+        const clientEnv = resolveClientEnvironment(sessionRawForEnv);
+        // 浏览器语言跟随出口 IP：US→en-US、PH→en-PH；页面按钮/文案语言与出口地区一致。
+        // Session 的 locale 只在没有出口地理信息时兜底（UA/时区/设备仍以 Session 为准）。
+        const egressLocale = proxyGeo ? String(localeForCountry(proxyGeo.countryCode) || '') : '';
+        const localeFallback = (geoProfile || browserProfile).locale || 'en-US';
+        const locale = String(
+            egressLocale
+            || clientEnv?.locale
+            || (geoProfile ? geoProfile.locale : '')
+            || localeFallback
+        ).trim();
+        if (egressLocale && clientEnv?.locale && egressLocale !== clientEnv.locale) {
+            console.log(`[指纹] 浏览器语言跟随出口 ${proxyGeo.countryCode}: ${egressLocale}（Session 记录 ${clientEnv.locale}）`);
+        }
+        let timezoneId = String(
+            clientEnv?.timezone
+            || timezoneFromClientEnv(clientEnv)
+            || (geoProfile ? geoProfile.timezoneId : '')
+            || browserProfile.timezoneId || 'Asia/Manila'
+        ).trim();
         try {
-            const pdfMime = Object.create(MimeType.prototype);
-            Object.defineProperties(pdfMime, {
-                type: { get: () => 'application/pdf' },
-                suffixes: { get: () => 'pdf' },
-                description: { get: () => 'Portable Document Format' }
-            });
-            const pdfPlugin = Object.create(Plugin.prototype);
-            Object.defineProperties(pdfPlugin, {
-                name: { get: () => 'Chrome PDF Plugin' },
-                filename: { get: () => 'internal-pdf-viewer' },
-                description: { get: () => 'Portable Document Format' },
-                length: { get: () => 1 },
-                0: { get: () => pdfMime }
-            });
-            pdfPlugin.item = () => pdfMime;
-            pdfPlugin.namedItem = () => pdfMime;
+            Intl.DateTimeFormat('en-US', { timeZone: timezoneId });
+        } catch (_) {
+            console.warn(`⚠️ [指纹] 用户时区 ${timezoneId} 无效，回退到 ${browserProfile.timezoneId}`);
+            timezoneId = browserProfile.timezoneId;
+        }
 
-            const fakePlugins = Object.create(PluginArray.prototype);
-            Object.defineProperties(fakePlugins, {
-                length: { get: () => 1 },
-                0: { get: () => pdfPlugin }
-            });
-            fakePlugins.item = () => pdfPlugin;
-            fakePlugins.namedItem = (n) => n === pdfPlugin.name ? pdfPlugin : null;
-            fakePlugins.refresh = () => { };
+        const environment = buildBrowserEnvironment(clientEnv, { realUserAgent, locale, timezoneId });
+        const contextOptions = environment.contextOptions;
+        console.log(`[环境] UA=${clientEnv?.userAgent ? 'Session' : '运行浏览器'} · ${timezoneId} · ${locale}`
+            + ` · ${contextOptions.viewport.width}x${contextOptions.viewport.height}@${contextOptions.deviceScaleFactor}x`);
+        if (clientEnv) {
+            console.log(`[环境] device=${maskId(clientEnv.deviceId) || '-'} · account=${maskId(clientEnv.accountId) || '-'}；未采集的硬件信息不推断为用户真实配置`);
+        }
+        // APIRequestContext 不经过页面 CDP；显式复用最终 UA/语言与同一身份字段。
+        const requestEnv = { ...clientEnv, locale, userAgent: contextOptions.userAgent, userAgentData: environment.uaOverride.userAgentMetadata };
+        if (proxyConfig) {
+            contextOptions.proxy = proxyConfig;
+        }
 
-            const fakeMimeTypes = Object.create(MimeTypeArray.prototype);
-            Object.defineProperties(fakeMimeTypes, {
-                length: { get: () => 1 },
-                0: { get: () => pdfMime }
-            });
-            fakeMimeTypes.item = () => pdfMime;
-            fakeMimeTypes.namedItem = (n) => n === pdfMime.type ? pdfMime : null;
-
-            safeDefine(NavProto, 'plugins', () => fakePlugins);
-            safeDefine(NavProto, 'mimeTypes', () => fakeMimeTypes);
-        } catch (_) { }
-
-        // 语言、平台、硬件（按用户真实环境对齐）
-        safeDefine(NavProto, 'languages', () => fp.languages);
-        safeDefine(NavProto, 'language', () => fp.languages[0]);
-        safeDefine(NavProto, 'platform', () => fp.platformWin);
-        safeDefine(NavProto, 'hardwareConcurrency', () => fp.hardwareConcurrency);
-        safeDefine(NavProto, 'deviceMemory', () => fp.deviceMemory);
-        safeDefine(NavProto, 'maxTouchPoints', () => fp.maxTouchPoints);
-        safeDefine(NavProto, 'vendor', () => 'Google Inc.');
-
-        // navigator.connection
-        try {
-            const conn = { effectiveType: '4g', rtt: 100, downlink: 10, saveData: false };
-            safeDefine(NavProto, 'connection', () => conn);
-        } catch (_) { }
-
-        // window.chrome
-        try {
-            const fakeChrome = {
-                app: {
-                    isInstalled: false,
-                    InstallState: { DISABLED: 'disabled', INSTALLED: 'installed', NOT_INSTALLED: 'not_installed' },
-                    RunningState: { CANNOT_RUN: 'cannot_run', READY_TO_RUN: 'ready_to_run', RUNNING: 'running' },
-                    getDetails: () => null,
-                    getIsInstalled: () => false
-                },
-                runtime: {
-                    OnInstalledReason: { CHROME_UPDATE: 'chrome_update', INSTALL: 'install', SHARED_MODULE_UPDATE: 'shared_module_update', UPDATE: 'update' },
-                    OnRestartRequiredReason: { APP_UPDATE: 'app_update', OS_UPDATE: 'os_update', PERIODIC: 'periodic' },
-                    PlatformArch: { ARM: 'arm', ARM64: 'arm64', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' },
-                    PlatformNaclArch: { ARM: 'arm', MIPS: 'mips', MIPS64: 'mips64', X86_32: 'x86-32', X86_64: 'x86-64' },
-                    PlatformOs: { ANDROID: 'android', CROS: 'cros', LINUX: 'linux', MAC: 'mac', OPENBSD: 'openbsd', WIN: 'win' },
-                    RequestUpdateCheckStatus: { NO_UPDATE: 'no_update', THROTTLED: 'throttled', UPDATE_AVAILABLE: 'update_available' },
-                    connect: () => { },
-                    sendMessage: () => { }
-                },
-                csi: () => ({ onloadT: Date.now(), pageT: Date.now() - 1000, startE: Date.now() - 2000, tran: 15 }),
-                loadTimes: () => ({
-                    requestTime: Date.now() / 1000 - 2,
-                    startLoadTime: Date.now() / 1000 - 1.5,
-                    commitLoadTime: Date.now() / 1000 - 1,
-                    finishDocumentLoadTime: Date.now() / 1000 - 0.5,
-                    finishLoadTime: Date.now() / 1000,
-                    firstPaintTime: Date.now() / 1000 - 0.3,
-                    firstPaintAfterLoadTime: 0,
-                    navigationType: 'Other',
-                    wasFetchedViaSpdy: true,
-                    wasNpnNegotiated: true,
-                    npnNegotiatedProtocol: 'h2',
-                    wasAlternateProtocolAvailable: false,
-                    connectionInfo: 'h2'
-                })
+        // 全程录像，便于回看自动化卡在哪一步（输出到挂载目录，前台可播放）
+        if (RECORD_VIDEO) {
+            contextOptions.recordVideo = {
+                dir: VIDEO_DIR,
+                size: { width: 1280, height: 720 }
             };
-            Object.defineProperty(window, 'chrome', { value: fakeChrome, writable: true, configurable: true });
-        } catch (_) { }
+        }
 
-        // permissions.query
-        try {
-            const origQuery = navigator.permissions.query.bind(navigator.permissions);
-            navigator.permissions.query = (params) => {
-                if (params && params.name === 'notifications') {
-                    return Promise.resolve({ state: typeof Notification !== 'undefined' ? Notification.permission : 'default', onchange: null });
+        context = await browser.newContext(contextOptions);
+        await installBrowserEnvironment(context, environment);
+
+        // ===== Sentinel 网络抓包（CAPTURE_SENTINEL=1）：捕获 checkout/sentinel/payment 请求响应 =====
+        if (process.env.CAPTURE_SENTINEL === '1') {
+            const capPath = path.join(VIDEO_DIR, '..', 'sentinel-capture.json');
+            const captured = [];
+            const interesting = (u) => /\/backend-api\/(payments|sentinel|checkout|subscriptions|billing)|chat-requirements|pay\.openai\.com|\/checkout|arkose|turnstile|proofofwork|stripe/i.test(u);
+            const maskTok = (h) => {
+                const o = {};
+                for (const k of Object.keys(h || {})) {
+                    const v = String(h[k]);
+                    o[k] = /authorization|token|cookie|sentinel|proof/i.test(k) ? `${v.slice(0, 28)}…(len=${v.length})` : v;
                 }
-                return origQuery(params).catch(() => ({ state: 'prompt', onchange: null }));
+                return o;
             };
-        } catch (_) { }
+            const dump = () => { try { fs.writeFileSync(capPath, JSON.stringify(captured, null, 2)); } catch (_) {} };
+            context.on('request', (req) => {
+                if (!interesting(req.url())) return;
+                captured.push({ dir: 'REQ', method: req.method(), url: req.url(), headers: maskTok(req.headers()), postData: String(req.postData() || '').slice(0, 800) });
+                dump();
+            });
+            context.on('response', async (resp) => {
+                if (!interesting(resp.url())) return;
+                let body = '';
+                try { body = (await resp.text()).slice(0, 2000); } catch (_) {}
+                captured.push({ dir: 'RESP', status: resp.status(), url: resp.url(), headers: maskTok(resp.headers()), body });
+                dump();
+            });
+            console.log(`[抓包] Sentinel 网络抓包已启用 → ${capPath}`);
+        }
 
-        // screen
-        safeDefine(ScrProto, 'availHeight', () => 1032);
-        safeDefine(ScrProto, 'availWidth', () => 1920);
-        safeDefine(ScrProto, 'colorDepth', () => 24);
-        safeDefine(ScrProto, 'pixelDepth', () => 24);
-        safeDefine(ScrProto, 'width', () => 1920);
-        safeDefine(ScrProto, 'height', () => 1080);
-
-        // Canvas 微噪声
-        try {
-            const origToDataURL = HTMLCanvasElement.prototype.toDataURL;
-            HTMLCanvasElement.prototype.toDataURL = function (...args) {
-                const ctx = this.getContext('2d');
-                if (ctx) {
-                    try {
-                        const w = this.width, h = this.height;
-                        if (w > 0 && h > 0) {
-                            const data = ctx.getImageData(0, 0, 1, 1);
-                            data.data[3] = Math.max(1, data.data[3] - 1);
-                            ctx.putImageData(data, 0, 0);
-                        }
-                    } catch (_) { }
-                }
-                return origToDataURL.apply(this, args);
-            };
-        } catch (_) { }
-
-        // WebGL
-        try {
-            const fakeWebGL = (gl) => {
-                const origGetParameter = gl.getParameter.bind(gl);
-                gl.getParameter = function (param) {
-                    if (param === 0x9245) return 'Google Inc. (Intel)';
-                    if (param === 0x9246) return 'ANGLE (Intel, Intel(R) UHD Graphics 620 Direct3D11 vs_5_0 ps_5_0, D3D11)';
-                    return origGetParameter(param);
-                };
-            };
-            const origGetCtx = HTMLCanvasElement.prototype.getContext;
-            HTMLCanvasElement.prototype.getContext = function (type, ...args) {
-                const ctx = origGetCtx.call(this, type, ...args);
-                if (ctx && (type === 'webgl' || type === 'webgl2' || type === 'experimental-webgl')) {
-                    try { fakeWebGL(ctx); } catch (_) { }
-                }
-                return ctx;
-            };
-        } catch (_) { }
-
-        // ChromeDriver 痕迹
-        try {
-            for (const key of Object.keys(window)) {
-                if (/^(cdc_|\$cdc_|_phantom|callPhantom|webdriver-|driver-)/.test(key)) {
-                    try { delete window[key]; } catch (_) { }
-                }
+        const sessionRaw = CONFIG.chatgptSessionJson || CONFIG.chatgptToken;
+        // UA / 平台 / 设备 ID 使用已有 Session 信息；语言保留当前出口策略。
+        // IP 不是必选条件，只做提示，不阻断、不改写 Session 内容。
+        if (proxyGeo && proxyGeo.ip) {
+            const sessionIp = String(clientEnv?.ip || '').trim();
+            if (sessionIp && sessionIp !== proxyGeo.ip) {
+                console.log(`ℹ️ [指纹] IP 不一致（非必选）: session=${maskIp(sessionIp)} · egress=${maskIp(proxyGeo.ip)}`
+                    + '；使用已提供的环境字段，继续执行');
+            } else if (sessionIp) {
+                console.log('✅ [指纹] 出口 IP 与 Session 记录一致');
             }
-        } catch (_) { }
+        }
+        const installResult = await installChatGptSession(context, sessionRaw, { clientEnv: requestEnv });
+        const sessionData = installResult?.sessionData || installResult;
+        const cookieVerified = Boolean(installResult?.cookieVerified);
 
-        // Notification.permission
-        try {
-            if (typeof Notification !== 'undefined') {
-                Object.defineProperty(Notification, 'permission', { get: () => 'default', configurable: true });
-            }
-        } catch (_) { }
-    }, fingerprint);
-
-    try {
         // --- Phase 0: Proxy Connectivity Check ---
         let egressIp = '';
         if (proxyConfig) {
@@ -626,7 +367,7 @@ async function run() {
             }
         }
 
-        // 指纹（UA/时区/语言/设备 ID）已在创建 context 前以用户 Session 为准对齐；
+        // 所有已知环境字段均在首次页面导航前设置；
         // IP 不是必选条件，仅走代理真实出口，这里不做一致性中断。
 
         // --- Phase 1: Resolve payment parameters ---
@@ -662,12 +403,12 @@ async function run() {
 
         console.log(`[1] 套餐类型: ${planType}, 地区: ${paymentRegion}, 币种: ${billingCurrency}`);
 
-        page = await context.newPage();
+        page = await prepareBrowserPage(await context.newPage());
         page.on('close', () => {
             console.warn(`⚠️ [系统] 当前页面已关闭，关闭前最后 URL: ${page.url()}`);
         });
 
-        const loginInfo = await bootstrapChatGptSession(page, sessionRaw, { sessionData, cookieVerified });
+        const loginInfo = await bootstrapChatGptSession(page, sessionRaw, { sessionData, cookieVerified, clientEnv: requestEnv });
         if (loginInfo.email && !email) {
             console.log(`[Info] 账号邮箱: ${loginInfo.email}`);
         }
@@ -686,15 +427,15 @@ async function run() {
                     country: billingCountry,
                     currency: billingCurrency,
                     planNameOverride,
-                    clientEnv,
-                    verifyPage: !debugOnly
+                    clientEnv: requestEnv,
+                    verifyPage: true
                 });
                 checkoutOpened = true;
             } catch (apiError) {
                 console.warn(`[Warn] API Checkout 失败: ${apiError.message}`);
                 if (planType === 'pro_500') throw apiError;
                 if (debugOnly) {
-                    console.warn('[调试] API 路径不可用（Checkout 接口新增 Sentinel 风控校验），改走 UI 定价页生成支付链接...');
+                    console.warn('[调试] API 路径不可用，尝试通过网页升级入口打开支付页...');
                 } else if (checkoutMode === 'api') {
                     console.log('[Info] 正在回退到 UI 定价页流程...');
                 } else {
@@ -713,25 +454,15 @@ async function run() {
             checkoutResult = { checkoutUrl: page.url() };
         }
 
+        // API 与网页升级两条路径共用此关卡，调试和正式任务都必须进入新卡表单。
+        await ensureCardPaymentTabSelected(page);
+        await uncheckSavePaymentDetails(page, 4000);
+        console.log('CARD_ENTRY_READY');
+
         if (debugOnly) {
             const checkoutUrl = checkoutResult?.checkoutUrl || page.url();
             console.log(`🔗 [调试] 支付链接: ${checkoutUrl}`);
 
-            // 调试模式：等付款界面真正渲染后再保持一段时间，让录像能看到完整页面。
-            // 若默认选中 Saved（已保存卡），主动切到 Card 新卡，录像里能看到卡号输入界面。
-            if (String(process.env.CHECKOUT_DEBUG_SELECT_CARD || '1') !== '0') {
-                try {
-                    const { ensureCardPaymentTabSelected, uncheckSavePaymentDetails } = require('./stripe-payment');
-                    const cardSelected = await ensureCardPaymentTabSelected(page);
-                    console.log(cardSelected
-                        ? '[调试] 已切换到 Card 新卡标签（避免使用 Saved）'
-                        : '[调试] 未检测到 Saved/Card 标签，保持当前支付方式');
-                    await uncheckSavePaymentDetails(page, 4000);
-                    await page.waitForTimeout(1500);
-                } catch (cardErr) {
-                    console.warn(`[调试] 切换 Card 标签失败: ${cardErr.message}`);
-                }
-            }
             const holdMs = Math.max(0, Number(process.env.CHECKOUT_DEBUG_HOLD_MS || 15000));
             if (holdMs > 0) {
                 console.log(`[调试] 等待付款界面渲染，并保持 ${(holdMs / 1000).toFixed(1)}s（用于录像/截图）...`);
@@ -802,6 +533,7 @@ async function run() {
         console.log("👋 [系统] 流程结束，正在关闭浏览器...");
         // 先关闭 context 以 flush 录像并取回路径，再关浏览器
         await finalizeVideo(context, page, { deleteOnSuccess: paymentSucceeded }).catch(() => { });
+        await context?.close().catch(() => {});
         await closeTaskBrowser(browserSession, browser);
         await proxyCleanup();
     }

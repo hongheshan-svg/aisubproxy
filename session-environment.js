@@ -4,9 +4,8 @@
  * Session 环境对齐
  *
  * 用户在自己电脑登录 ChatGPT 后导出的 Session JSON 里，statsigContext 记录了
- * 真实浏览器的 UA、locale、IP、country/region 和 deviceId。登录页与支付页
- * 必须使用同一套环境，否则 ChatGPT 会把会话判定为“异地/换设备”，触发
- * token_revoked 或 checkout 的 session expired。
+ * 浏览器的 UA、locale、IP、country/region 和 deviceId。保持请求与页面一致，
+ * 但这些信息不足以还原浏览器内核、硬件或服务端的会话状态。
  *
  * 本模块只做“解析 + 构造”，不发起网络请求：
  * - resolveClientEnvironment: 解析 Session 里的核心环境字段
@@ -49,40 +48,81 @@ function maskId(value, keep = 6) {
  * 优先取用户采集的 __env，缺失时回退 statsigContext（ChatGPT 自带）。
  */
 function resolveClientEnvironment(sessionRaw) {
-    const raw = String(sessionRaw || '').trim();
-    if (!raw.startsWith('{')) {
-        return null;
-    }
     try {
-        const data = JSON.parse(raw);
-        const env = (data && (data.__env || data.clientEnv || data.environment)) || {};
-        const statsig = (data && data.statsigContext) || {};
-        const account = (data && data.account) || {};
-        const user = (data && data.user) || {};
-        const merged = {
-            userAgent: String(env.userAgent || statsig.userAgent || '').trim(),
-            locale: String(env.locale || statsig.locale || '').trim(),
-            languages: Array.isArray(env.languages) && env.languages.length ? env.languages : [],
-            timezone: String(env.timezone || '').trim(),
-            ip: String(env.ip || statsig.ip || '').trim(),
-            country: String(env.country || statsig.country || '').trim().toUpperCase(),
-            region: String(env.region || statsig.region || '').trim(),
-            regionCode: String(env.regionCode || statsig.regionCode || '').trim().toUpperCase(),
-            deviceId: String(env.deviceId || statsig.deviceId || data.deviceId || data.device_id || '').trim(),
-            accountId: String(env.accountId || account.id || data.accountId || '').trim(),
-            email: String(env.email || user.email || '').trim(),
-            planType: String(account.planType || '').trim(),
-            screen: env.screen || null,
-            window: env.window || null,
-            devicePixelRatio: env.devicePixelRatio,
-            hardwareConcurrency: env.hardwareConcurrency,
-            deviceMemory: env.deviceMemory,
-            maxTouchPoints: env.maxTouchPoints
+        const raw = String(sessionRaw || '').trim();
+        const data = typeof sessionRaw === 'object' && sessionRaw !== null ? sessionRaw
+            : raw.startsWith('{') ? JSON.parse(raw) : { accessToken: raw };
+        const record = value => value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+        if (data !== record(data)) return null;
+        // 按字段合并，空对象/空值不能遮盖另一来源已提供的信息。
+        const sources = [data.__env, data.clientEnv, data.clientEnvironment, data.environment, data.statsigContext]
+            .map(record).flatMap(env => [env, record(env.navigator)]);
+        const text = value => typeof value === 'string' && !/[\r\n\0]/.test(value) ? value.trim() : '';
+        const choose = (keys, accept = value => text(value) !== '') => {
+            for (const env of sources) for (const key of keys) if (accept(env[key])) return env[key];
+            return undefined;
         };
-        if (!merged.userAgent && !merged.locale && !merged.ip && !merged.deviceId) {
-            return null;
-        }
-        return merged;
+        const number = value => (typeof value === 'number' || (typeof value === 'string' && value.trim() !== ''))
+            && Number.isFinite(Number(value)) && Number(value) >= 0;
+        const objectFields = (names, keys) => {
+            const result = {};
+            for (const key of keys) {
+                for (const env of sources) {
+                    const value = names.map(name => record(env[name])[key]).find(value => number(value) && Number(value) > 0);
+                    if (value !== undefined) { result[key] = Number(value); break; }
+                }
+            }
+            return Object.keys(result).length ? result : null;
+        };
+        const locale = choose(['locale', 'language'], value => {
+            try { return Boolean(text(value) && Intl.getCanonicalLocales(text(value))[0]); } catch (_) { return false; }
+        });
+        const timezone = choose(['timezone', 'timezoneId', 'timeZone'], value => {
+            try { if (!text(value)) return false; Intl.DateTimeFormat('en-US', { timeZone: value }); return true; } catch (_) { return false; }
+        });
+        const account = record(data.account), user = record(data.user);
+        let auth = {};
+        try {
+            const part = String(data.accessToken || data.access_token || '').split('.')[1];
+            auth = JSON.parse(Buffer.from(part, 'base64url').toString('utf8'))['https://api.openai.com/auth'] || {};
+        } catch (_) { /* JWT 仅用于补齐字段；授权有效性由服务端校验 */ }
+        const cookieDevice = Array.isArray(data.cookies) ? data.cookies.find(c => c?.name === 'oai-did'
+            && text(c.value) && (!c.domain || /^\.?chatgpt\.com$/i.test(c.domain)))?.value : '';
+        const headerDevice = String(data.cookieHeader || data.cookie_header || '').match(/(?:^|;)\s*oai-did=([^;]+)/)?.[1];
+        const screen = objectFields(['screen'], ['width', 'height']);
+        const window = objectFields(['window'], ['innerWidth', 'innerHeight']);
+        const viewport = objectFields(['viewport'], ['width', 'height']);
+        const dimensions = window || viewport ? {
+            innerWidth: window?.innerWidth ?? viewport?.width,
+            innerHeight: window?.innerHeight ?? viewport?.height
+        } : null;
+        const hints = {};
+        for (const env of [...sources].reverse()) Object.assign(hints, record(env.userAgentData));
+        const merged = {
+            userAgent: text(choose(['userAgent', 'user_agent'], value => /^Mozilla\/5\.0 [^\r\n]{1,500}$/.test(text(value)))),
+            locale: locale ? Intl.getCanonicalLocales(locale)[0] : '',
+            languages: choose(['languages'], value => Array.isArray(value) && value.length > 0 && value.every(v => text(v))) || [],
+            timezone: text(timezone),
+            ip: text(choose(['ip'])),
+            country: text(choose(['country'], value => /^[a-z]{2}$/i.test(text(value)))).toUpperCase(),
+            region: text(choose(['region'])),
+            regionCode: text(choose(['regionCode'])).toUpperCase(),
+            deviceId: text(cookieDevice) || text(headerDevice) || text(choose(['deviceId', 'device_id']))
+                || text(data.deviceId) || text(data.device_id) || text(data['oai-did']),
+            accountId: text(account.id) || text(choose(['accountId'])) || text(data.accountId) || text(auth.chatgpt_account_id),
+            email: text(user.email) || text(choose(['email'])),
+            planType: text(account.planType),
+            screen,
+            window: dimensions,
+            devicePixelRatio: choose(['devicePixelRatio'], value => number(value) && Number(value) > 0),
+            hardwareConcurrency: choose(['hardwareConcurrency'], value => number(value) && Number(value) > 0),
+            deviceMemory: choose(['deviceMemory'], value => number(value) && Number(value) > 0),
+            maxTouchPoints: choose(['maxTouchPoints'], number),
+            userAgentData: Object.keys(hints).length ? hints : null,
+            platform: text(choose(['platform']))
+        };
+        return Object.values(merged).some(value => value !== undefined && value !== null && value !== ''
+            && (!Array.isArray(value) || value.length)) ? merged : null;
     } catch (_) {
         return null;
     }
@@ -104,6 +144,7 @@ function timezoneFromClientEnv(env) {
 }
 
 function clampNum(value, min, max, fallback) {
+    if (value === null || value === undefined || value === '') return fallback;
     const n = Number(value);
     if (!Number.isFinite(n)) {
         return fallback;
@@ -114,18 +155,18 @@ function clampNum(value, min, max, fallback) {
 function detectUaInfo(userAgent) {
     const ua = String(userAgent || '');
     if (/iPhone|iPad/i.test(ua)) {
-        return { isMobile: true, uaPlatform: 'iOS', platformWin: 'iPhone', platformVersion: '17.0.0', arch: 'arm' };
+        return { isMobile: true, uaPlatform: 'iOS', platformWin: /iPad/i.test(ua) ? 'iPad' : 'iPhone' };
     }
     if (/Android/i.test(ua)) {
-        return { isMobile: true, uaPlatform: 'Android', platformWin: 'Linux armv8l', platformVersion: '13.0.0', arch: 'arm' };
+        return { isMobile: true, uaPlatform: 'Android', platformWin: 'Linux armv8l' };
     }
     if (/Macintosh|Mac OS X/i.test(ua)) {
-        return { isMobile: false, uaPlatform: 'macOS', platformWin: 'MacIntel', platformVersion: '14.0.0', arch: 'arm' };
+        return { isMobile: false, uaPlatform: 'macOS', platformWin: 'MacIntel' };
     }
     if (/Linux/i.test(ua)) {
-        return { isMobile: false, uaPlatform: 'Linux', platformWin: 'Linux x86_64', platformVersion: '6.0.0', arch: 'x86' };
+        return { isMobile: false, uaPlatform: 'Linux', platformWin: 'Linux x86_64' };
     }
-    return { isMobile: false, uaPlatform: 'Windows', platformWin: 'Win32', platformVersion: '15.0.0', arch: 'x86' };
+    return { isMobile: false, uaPlatform: 'Windows', platformWin: 'Win32' };
 }
 
 function buildUaBrands(userAgent, chromeMajor) {
@@ -162,9 +203,16 @@ function buildSessionApiHeaders(env) {
     if (env.locale) {
         headers['oai-language'] = env.locale;
     }
+    if (env.userAgent) headers['user-agent'] = env.userAgent;
+    if (env.userAgentData?.brands) {
+        headers['sec-ch-ua'] = env.userAgentData.brands.map(b => `"${b.brand}";v="${b.version}"`).join(', ');
+        headers['sec-ch-ua-mobile'] = env.userAgentData.mobile ? '?1' : '?0';
+        headers['sec-ch-ua-platform'] = `"${env.userAgentData.platform}"`;
+    }
     headers.origin = 'https://chatgpt.com';
     headers.referer = 'https://chatgpt.com/';
-    return headers;
+    return Object.fromEntries(Object.entries(headers).filter(([, value]) => typeof value === 'string'
+        && value.length < 2048 && !/[\r\n\0]/.test(value)));
 }
 
 module.exports = {
